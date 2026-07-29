@@ -37,6 +37,38 @@ reqwest = { version = "0.13.4", default-features = false, features = [
   "rustls",
   "http2",
   "system-proxy",
+  # 令牌端点按 OAuth2 规范收 application/x-www-form-urlencoded
+  "form",
+] }
+sha2 = "0.11.0"
+url = "2.5.8"
+# keyring 默认不带任何平台后端,漏配会静默退化成内存存储——凭证根本进不了钥匙串,
+# 且重启即失效。故按平台显式指定原生后端。
+keyring = { version = "4.1.5", default-features = false, features = ["v1"] }
+getrandom = "0.4.3"
+tokio = { version = "1.53.1", features = ["rt"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "4.1.5", default-features = false, features = [
+  "v1",
+  "apple-native-keyring-store",
+] }
+# 后端还要再选一种 keychain 实现:keychain 是传统钥匙串,未签名的开发构建也能用;
+# protected(数据保护钥匙串)要求应用已签名并带相应授权,不适合本地开发。
+apple-native-keyring-store = { version = "1", default-features = false, features = [
+  "keychain",
+] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "4.1.5", default-features = false, features = [
+  "v1",
+  "windows-native-keyring-store",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "4.1.5", default-features = false, features = [
+  "v1",
+  "zbus-secret-service-keyring-store",
 ] }
 
 [dev-dependencies]

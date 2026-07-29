@@ -8,5 +8,6 @@ pub mod gitea;
 pub mod github;
 pub mod installer;
 pub mod registry;
+pub mod session;
 pub mod skills;
 pub mod state;

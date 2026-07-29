@@ -193,11 +193,20 @@ impl GiteaClient {
                 AppError::new("NET_CLIENT_INIT", "网络组件初始化失败,请重启应用")
                     .with_detail(e.to_string())
             })?;
-        Ok(Self {
+        Ok(Self::with_http(base_url, token, http))
+    }
+
+    /// 复用已有的 HTTP 客户端。连接池与代理配置跟着复用,登录流程与后续 API 调用共用一份。
+    pub fn with_http(
+        base_url: impl Into<String>,
+        token: Option<String>,
+        http: reqwest::Client,
+    ) -> Self {
+        Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             token,
             http,
-        })
+        }
     }
 
     fn api(&self, path: &str) -> String {
