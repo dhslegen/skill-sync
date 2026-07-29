@@ -27,4 +27,19 @@ dirs = "6"
 # 从 yaml-rust2 延续下来的活跃分支。0.0.x 版本号意味着 cargo 会精确锁定,升级需人工过一遍 API。
 # 所有 YAML 访问都收在 core::skills::frontmatter 一处,换库只影响该模块。
 saphyr = "0.0.11"
+base64 = "0.23.0"
+zip = "8.6.0"
+# rustls 而非系统 TLS:免去 OpenSSL 的构建依赖,双平台交叉构建一致。
+# 内建 Gitea 走的是内网 http,TLS 只用于用户自定义的 https 源。
+# system-proxy 保持 reqwest 默认行为(读系统代理设置,遵守 NO_PROXY),与企业环境预期一致。
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "json",
+  "rustls",
+  "http2",
+  "system-proxy",
+] }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6.5"
 
