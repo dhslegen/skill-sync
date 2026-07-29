@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# fixture 生成的本地连接信息(含令牌)
+fixtures/.env.local

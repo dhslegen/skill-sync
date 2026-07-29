@@ -1,0 +1,37 @@
+# 本地 Gitea 测试环境(交接包 3.6)。
+#
+# 假设:镜像版本用 1.25.3 而非交接包 3.6 写的 1.24——C1 已确认生产实例是 1.25.3,
+# 而本 fixture 要验证的多文件提交与 PR 接口正是次版本之间可能有差异的地方,
+# 拿 1.24 验证、往 1.25.3 上线等于没验证。
+#
+# 用法见 fixtures/README.md,一键起环境:./fixtures/init.sh
+
+services:
+  gitea:
+    image: gitea/gitea:1.25.3
+    container_name: skillsync-fixture-gitea
+    restart: unless-stopped
+    environment:
+      GITEA__database__DB_TYPE: sqlite3
+      # 跳过网页安装向导,直接按环境变量成型
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__server__ROOT_URL: http://127.0.0.1:3300/
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__log__LEVEL: warn
+      # 测试实例不发信,省掉邮箱验证环节
+      GITEA__service__REGISTER_EMAIL_CONFIRM: "false"
+    ports:
+      # 3300 避开开发机上其他常见服务;生产实例是 3000
+      - "3300:3000"
+    volumes:
+      - gitea-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/healthz >/dev/null || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+
+volumes:
+  gitea-data:
