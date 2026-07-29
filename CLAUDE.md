@@ -25,6 +25,7 @@ pnpm test           # 前端 vitest
 cargo test --workspace   # Rust 单测(在 src-tauri/ 下)
 pnpm lint           # eslint
 cargo clippy -- -D warnings
+pnpm verify:agents  # 与上游 vercel-labs/skills 差分校验 agents.json 并重生成 fixture(需联网)
 ```
 
 ## 目录结构
@@ -43,6 +44,7 @@ src-tauri/src/
   core/scheduler.rs  # 定时更新检查(M2)
   commands.rs        # Tauri IPC command 定义(薄壳,逻辑在 core)
 resources/agents.json   # 75-agent 注册表(移植自 vercel-labs/skills v1.5.20,MIT,保留出处注释)
+scripts/             # 维护脚本(verify-agents-registry.mjs:与上游差分校验并生成 fixture)
 fixtures/            # docker Gitea 测试环境 + 样例技能仓库(见交接包 3.6)
 docs/                # 设计方案、交接包、UI 规范、UI-Demo、术语表
 ```

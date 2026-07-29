@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 
+use crate::core::agents::{AgentRegistry, DetectedAgent, SystemEnv};
 use crate::core::builtin;
 use crate::error::AppError;
 
@@ -19,5 +20,25 @@ pub fn app_info() -> Result<AppInfo, AppError> {
     Ok(AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         builtin_configured: builtin::builtin_configured(),
+    })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedAgents {
+    pub agents: Vec<DetectedAgent>,
+    /// 技能本体的落盘目录(`~/.agents/skills`),与 npx skills 共用。
+    pub canonical_dir: Option<String>,
+}
+
+#[tauri::command]
+pub fn agents_detected() -> Result<DetectedAgents, AppError> {
+    let registry = AgentRegistry::builtin();
+    let env = SystemEnv;
+    Ok(DetectedAgents {
+        agents: registry.detect_all(&env),
+        canonical_dir: registry
+            .canonical_global_dir(&env)
+            .map(|p| p.to_string_lossy().into_owned()),
     })
 }
