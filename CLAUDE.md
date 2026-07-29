@@ -71,6 +71,18 @@ docs/                # 设计方案、交接包、UI 规范、UI-Demo、术语�
 - Gitea client 用 wiremock-rs 模拟;e2e 用 docker compose 起 gitea(见 fixtures/)
 - Windows 相关(junction、路径、CRLF)必须在 Windows CI runner 上跑,不得只测 macOS
 
+## 生产环境事实(已实测确认,勿再按文档旧假设推导)
+- Gitea **1.25.3**;内建技能库坐标 **`skills/skills`**,默认分支 `main`
+  ——设计文档里的 `ai-skills/team-skills` 只是示例,以此为准
+- 技能库**公开可匿名读**:商店浏览与详情预览可以先于登录,登录只是分享与个性化的前提
+- 普通员工对该库是**写权限 + main 受保护**:分享默认走「开分支 + 提交审核」(决策 C3 描述的正是这一档);
+  直推仅在 main 未保护时可用;纯只读用户走不通开分支,须 fork 后提交审核(见 core/gitea.rs 权限矩阵)
+- 真实仓库布局为 `skills/<名称>/SKILL.md`,8 个技能全部能被发现规则正确解析(冒烟测试已验证)
+- CI 验收矩阵的 Trae **国际版 `trae` 与国内版 `trae-cn` 都要覆盖**(补充决策 C10),两者链接目标不同
+
+## 编译期注入的常量(源码中不得出现真实值)
+`SKILLSYNC_BUILTIN_GITEA_URL` / `SKILLSYNC_OAUTH_CLIENT_ID` / `SKILLSYNC_BUILTIN_REPO` / `SKILLSYNC_BUILTIN_BRANCH`
+
 ## 开发纪律
 - 严格按交接包 3.5 的 M1 任务 1→13 顺序推进;每任务先写测试清单,再实现,DoD 全部满足才进下一任务
 - 每完成一个任务 git commit,信息格式:`M1-任务N: 摘要`

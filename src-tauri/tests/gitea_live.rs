@@ -182,6 +182,48 @@ async fn full_flow_list_download_commit() {
     assert_eq!(client.file_sha(&r, probe_path).await.unwrap(), None);
 }
 
+/// 对真实公司技能库做只读冒烟:确认发现规则在生产内容上确实能解析出技能。
+///
+/// 地址不写进源码(架构铁律 5),从环境变量取,未设置则跳过:
+/// ```sh
+/// SKILLSYNC_SMOKE_GITEA_URL=http://<内网地址> SKILLSYNC_SMOKE_REPO=<owner>/<repo> \
+///   cargo test --test gitea_live smoke -- --ignored --nocapture
+/// ```
+/// 标了 ignored:它依赖内网可达,不能进常规 test 流程。
+#[tokio::test]
+#[ignore]
+async fn smoke_real_company_repo_is_parseable() {
+    let (Ok(url), Ok(repo)) = (
+        std::env::var("SKILLSYNC_SMOKE_GITEA_URL"),
+        std::env::var("SKILLSYNC_SMOKE_REPO"),
+    ) else {
+        eprintln!("跳过:需设置 SKILLSYNC_SMOKE_GITEA_URL 与 SKILLSYNC_SMOKE_REPO");
+        return;
+    };
+    let (owner, name) = repo.split_once('/').expect("格式为 owner/repo");
+
+    // 匿名访问,不带令牌
+    let client = GiteaClient::new(url, None).unwrap();
+    let info = client.repo_info(owner, name).await.unwrap();
+    let r = RepoRef {
+        owner: owner.into(),
+        repo: name.into(),
+        branch: info.default_branch.clone(),
+    };
+
+    let archive = client.download_archive(&r).await.unwrap();
+    let discovery = discover_skills(&archive.tree, &archive.root, &DiscoverOptions::default());
+
+    println!("技能库 {repo} @ {} — 压缩包顶层 {}", info.default_branch, archive.root);
+    for s in &discovery.skills {
+        println!("  ✓ {:<24} {}", s.name, s.dir);
+    }
+    for s in &discovery.skipped {
+        println!("  ✗ {} — {}", s.path, s.reason);
+    }
+    assert!(!discovery.skills.is_empty(), "真实技能库应能解析出技能");
+}
+
 #[tokio::test]
 async fn readonly_user_cannot_push_and_must_fork() {
     let env = env_or_skip!();
