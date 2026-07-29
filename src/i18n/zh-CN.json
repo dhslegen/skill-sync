@@ -1,0 +1,5 @@
+{
+  "app.name": "SkillSync",
+  "app.tagline": "团队技能,一键同步",
+  "app.builtinMissing": "本次构建未配置公司技能库,请联系 IT 获取正式安装包"
+}

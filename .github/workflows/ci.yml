@@ -1,0 +1,63 @@
+# CI:macOS + Windows 双平台跑 lint / test / build(M1 任务 1 DoD)。
+# 假设:workflow 采用 GitHub Actions 语法,与内网 Gitea Actions 兼容(Gitea Actions 兼容该格式);
+# 推送到内网 Gitea 后如 runner 标签不同,仅需调整 runs-on。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # CI 构建不注入真实内网地址;编译期常量缺省时代码走"未配置"分支,不影响构建与测试
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 前端 lint
+        run: pnpm lint
+
+      - name: 前端测试
+        run: pnpm test
+
+      - name: 前端构建
+        run: pnpm build:web
+
+      - name: Rust clippy
+        run: cargo clippy --workspace -- -D warnings
+        working-directory: src-tauri
+
+      - name: Rust 测试
+        run: cargo test --workspace
+        working-directory: src-tauri
+
+      - name: Tauri 构建(无签名)
+        run: pnpm tauri build --no-bundle

@@ -1,0 +1,123 @@
+@import "tailwindcss";
+
+/*
+ * SkillSync 设计 token(docs/UI设计规范.md §3,视觉基准 docs/SkillSync-UI-Demo.html)。
+ * 主题机制:<html data-theme="light|dark" data-accent="clay|teal|ink">,全套走 CSS 变量整体换肤。
+ */
+
+:root {
+  --font-sans: "Inter", -apple-system, "PingFang SC", "MiSans VF", "HarmonyOS Sans SC",
+    "Microsoft YaHei UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Geist Mono", Menlo, Consolas, monospace;
+  --r-ctl: 6px;
+  --r-card: 8px;
+  --r-pop: 10px;
+  --t: 150ms ease-out;
+  --ok: #2e8b57;
+}
+
+[data-theme="light"] {
+  --bg: #f7f6f3;
+  --surface1: #ffffff;
+  --surface2: #fbfaf8;
+  --surface3: #f2f0ec;
+  --border: #e8e6e1;
+  --border-strong: #d9d6cf;
+  --text: #1f1e1c;
+  --text-2: #6f6c66;
+  --text-3: #9a968e;
+  --shadow-card: 0 1px 3px rgba(20, 18, 12, 0.06);
+  --shadow-pop: 0 8px 24px rgba(20, 18, 12, 0.12), 0 2px 6px rgba(20, 18, 12, 0.05);
+  --sidebar-bg: rgba(247, 246, 243, 0.85);
+}
+
+[data-theme="dark"] {
+  --bg: #161514;
+  --surface1: #1c1b1a;
+  --surface2: #201f1d;
+  --surface3: #262421;
+  --border: #2e2c29;
+  --border-strong: #3a3733;
+  --text: #ece9e4;
+  --text-2: #8a867f;
+  --text-3: #625f59;
+  --shadow-card: none;
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --sidebar-bg: rgba(22, 21, 20, 0.85);
+}
+
+[data-accent="clay"] {
+  --accent: #c2410c;
+  --accent-hover: #a83809;
+  --accent-soft: rgba(194, 65, 12, 0.08);
+}
+[data-theme="dark"][data-accent="clay"] {
+  --accent: #e05d2a;
+  --accent-hover: #ea6f3f;
+  --accent-soft: rgba(224, 93, 42, 0.12);
+}
+[data-accent="teal"] {
+  --accent: #0d7a68;
+  --accent-hover: #0a6455;
+  --accent-soft: rgba(13, 122, 104, 0.09);
+}
+[data-theme="dark"][data-accent="teal"] {
+  --accent: #2aa08c;
+  --accent-hover: #35b39e;
+  --accent-soft: rgba(42, 160, 140, 0.12);
+}
+[data-accent="ink"] {
+  --accent: #1e5a8a;
+  --accent-hover: #174a73;
+  --accent-soft: rgba(30, 90, 138, 0.08);
+}
+[data-theme="dark"][data-accent="ink"] {
+  --accent: #4d8fc4;
+  --accent-hover: #61a0d1;
+  --accent-soft: rgba(77, 143, 196, 0.12);
+}
+
+@theme inline {
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --color-bg: var(--bg);
+  --color-surface-1: var(--surface1);
+  --color-surface-2: var(--surface2);
+  --color-surface-3: var(--surface3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-ok: var(--ok);
+  --radius-ctl: var(--r-ctl);
+  --radius-card: var(--r-card);
+  --radius-pop: var(--r-pop);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  /* 去 web 味(UI 规范 §6):默认光标 + 禁选中,详情正文区局部放开 */
+  user-select: none;
+  cursor: default;
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
