@@ -98,7 +98,8 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 
 ## 当前进度(2026-07-29)
 
-M1 任务 1–6 已完成并提交(本地仓库,尚无远端)。测试 151 通过、clippy 干净。
+M1 任务 1–6 已完成并提交。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
+本机测试 151 通过、clippy 干净;**双平台 CI 已首次真实跑通**(macOS 131 / Windows 123 个单测,差额 8 个是 `cfg(unix)` 用例)。
 
 | 任务 | 状态 | 关键产物 |
 |---|---|---|
@@ -138,10 +139,15 @@ M1 任务 1–6 已完成并提交(本地仓库,尚无远端)。测试 151 通�
   任务 7 须在 state 里记 `contentHash`,不一致时按设计方案 2.5③ 弹三选一
   (保留本地 / 用远端覆盖 / 把本地改动分享上去),拿到结论再调 install。
   **在此之前不要把 install 接到自动更新路径上。**
-- **任务 6 的 DoD 有一半尚未验证**:"Windows 普通用户权限下安装成功且 Claude Code 能读到 skill"
-  在本机无从验证——没有 Windows 机器,仓库无远端故 CI 从未真正跑过。代码里已把
-  "必须是 junction 而不是 symlink"写成断言(`fsops` 的建链测试),一旦 CI 跑起来,
-  带提权的 runner 也会被这条断言挡下;但**普通权限下的真机验证仍欠一次**。
+- **任务 6 的 DoD 还差"普通权限真机"这一档**(CI 已覆盖的部分见下):
+  - ✅ 已验:Windows runner 上 `junction::create` / `remove_dir` 摘链 / `junction::get_target`
+    真实执行通过,且建链测试断言"**必须是 junction 而不是 symlink**"——runner 即便有足够权限
+    创建 symlink 也会被这条挡下,C11 的提权假阳性从此有自动护栏。
+  - ❌ 未验:GitHub runner 权限宽松,**不等于**普通员工的受限机器;
+    "不开开发者模式、普通用户权限下安装成功且 Claude Code 能读到 skill"仍欠一次真机验证。
+  - ❌ 未验:8 个 `cfg(unix)` 测试在 Windows 上不跑(自指防护、坏软链跳过、软链子目录解引用、
+    被改指链接的卸载)。它们要构造场景就得先有 symlink 权限,而那正是 Windows 上假定没有的东西。
+    若要在 Windows 上覆盖这几条,需另想构造方式(如用 junction 代替 symlink 搭场景)。
 - **系统代理会拦截内网请求**:企业机器普遍配了 `http_proxy`,内网 Gitea 若不在 `NO_PROXY` 中,
   用户会在登录第一步遇到看不懂的失败。任务 13 需二选一:随包设免代理,或部署文档要求 IT 配置。
   细节见 `core/gitea.rs` 模块头。
