@@ -23,4 +23,8 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "6"
+# YAML(SKILL.md frontmatter)。serde_yaml 已于 2024 归档不再维护,saphyr 是同一维护者
+# 从 yaml-rust2 延续下来的活跃分支。0.0.x 版本号意味着 cargo 会精确锁定,升级需人工过一遍 API。
+# 所有 YAML 访问都收在 core::skills::frontmatter 一处,换库只影响该模块。
+saphyr = "0.0.11"
 

@@ -1,0 +1,288 @@
+{
+  "$comment": [
+    "由 scripts/verify-skill-discovery.mjs 从上游 discoverSkills 的实际执行结果生成,请勿手改。",
+    "files 是仓库布局,expected 是上游在该布局下发现的技能(顺序即优先级)。"
+  ],
+  "source": {
+    "project": "vercel-labs/skills",
+    "version": "v1.5.20",
+    "file": "src/skills.ts"
+  },
+  "cases": [
+    {
+      "name": "根目录本身就是技能",
+      "files": {
+        "SKILL.md": "---\nname: 根技能\ndescription: 根技能 的说明\n---\n\n正文\n",
+        "skills/其他/SKILL.md": "---\nname: 其他技能\ndescription: 其他技能 的说明\n---\n\n正文\n"
+      },
+      "expected": [
+        {
+          "name": "根技能",
+          "description": "根技能 的说明",
+          "dir": ""
+        }
+      ]
+    },
+    {
+      "name": "skills 目录下的扁平布局",
+      "files": {
+        "skills/a/SKILL.md": "---\nname: 甲\ndescription: 甲 的说明\n---\n\n正文\n",
+        "skills/b/SKILL.md": "---\nname: 乙\ndescription: 乙 的说明\n---\n\n正文\n"
+      },
+      "expected": [
+        {
+          "name": "甲",
+          "description": "甲 的说明",
+          "dir": "skills/a"
+        },
+        {
+          "name": "乙",
+          "description": "乙 的说明",
+          "dir": "skills/b"
+        }
+      ]
+    },
+    {
+      "name": "skills 下按类目再分一层",
+      "files": {
+        "skills/办公/周报/SKILL.md": "---\nname: 周报\ndescription: 周报 的说明\n---\n\n正文\n",
+        "skills/研发/代码走查/SKILL.md": "---\nname: 代码走查\ndescription: 代码走查 的说明\n---\n\n正文\n"
+      },
+      "expected": [
+        {
+          "name": "周报",
+          "description": "周报 的说明",
+          "dir": "skills/办公/周报"
+        },
+        {
+          "name": "代码走查",
+          "description": "代码走查 的说明",
+          "dir": "skills/研发/代码走查"
+        }
+      ]
+    },
+    {
+      "name": "三层嵌套且另有技能时不应被发现",
+      "files": {
+        "skills/a/SKILL.md": "---\nname: 甲\ndescription: 甲 的说明\n---\n\n正文\n",
+        "skills/太/深/了/SKILL.md": "---\nname: 深藏\ndescription: 深藏 的说明\n---\n\n正文\n"
+      },
+      "expected": [
+        {
+          "name": "甲",
+          "description": "甲 的说明",
+          "dir": "skills/a"
+        }
+      ]
+    },
+    {
+      "name": "三层嵌套且别无所获时由递归兜底发现",
+      "files": {
+        "杂物/很/深/的技能/SKILL.md": "---\nname: 深藏\ndescription: 深藏 的说明\n---\n\n正文\n"
+      },
+      "expected": [
+        {
+          "name": "深藏",
+          "description": "深藏 的说明",
+          "dir": "杂物/很/深/的技能"
+        }
+      ]
+    },
+    {
+      "name": "curated 与实验目录",
+      "files": {
+        "skills/.curated/精选/SKILL.md": "---\nname: 精选\ndescription: 精选 的说明\n---\n\n正文\n",
+        "skills/.experimental/实验/SKILL.md": "---\nname: 实验\ndescription: 实验 的说明\n---\n\n正文\n",
+        "skills/.system/系统/SKILL.md": "---\nname: 系统\ndescription: 系统 的说明\n---\n\n正文\n"
+      },
+      "expected": [
+        {
+          "name": "精选",
+          "description": "精选 的说明",
+          "dir": "skills/.curated/精选"
+        },
+        {
+          "name": "实验",
+          "description": "实验 的说明",
+          "dir": "skills/.experimental/实验"
+        },
+        {
+          "name": "系统",
+          "description": "系统 的说明",
+          "dir": "skills/.system/系统"
+        }
+      ]
+    },
+    {
+      "name": "agent 约定目录",
+      "files": {
+        ".claude/skills/克劳德/SKILL.md": "---\nname: 克劳德\ndescription: 克劳德 的说明\n---\n\n正文\n",
+        ".github/skills/copilot/SKILL.md": "---\nname: copilot\ndescription: copilot 的说明\n---\n\n正文\n",
+        ".trae/skills/trae技能/SKILL.md": "---\nname: trae技能\ndescription: trae技能 的说明\n---\n\n正文\n"
+      },
+      "expected": [
+        {
+          "name": "克劳德",
+          "description": "克劳德 的说明",
+          "dir": ".claude/skills/克劳德"
+        },
+        {
+          "name": "copilot",
+          "description": "copilot 的说明",
+          "dir": ".github/skills/copilot"
+        },
+        {
+          "name": "trae技能",
+          "description": "trae技能 的说明",
+          "dir": ".trae/skills/trae技能"
+        }
+      ]
+    },
+    {
+      "name": "同名遮蔽",
+      "files": {
+        "skills/dup/SKILL.md": "---\nname: 重名技能\ndescription: 来自 skills 目录\n---\n\n正文\n",
+        ".claude/skills/dup/SKILL.md": "---\nname: 重名技能\ndescription: 来自 claude 目录\n---\n\n正文\n"
+      },
+      "expected": [
+        {
+          "name": "重名技能",
+          "description": "来自 skills 目录",
+          "dir": "skills/dup"
+        }
+      ]
+    },
+    {
+      "name": "技能目录内部还有技能时不再下探",
+      "files": {
+        "skills/外层/SKILL.md": "---\nname: 外层\ndescription: 外层 的说明\n---\n\n正文\n",
+        "skills/外层/内层/SKILL.md": "---\nname: 内层\ndescription: 内层 的说明\n---\n\n正文\n"
+      },
+      "expected": [
+        {
+          "name": "外层",
+          "description": "外层 的说明",
+          "dir": "skills/外层"
+        }
+      ]
+    },
+    {
+      "name": "跳过 node_modules 与 dist",
+      "files": {
+        "skills/正常/SKILL.md": "---\nname: 正常\ndescription: 正常 的说明\n---\n\n正文\n",
+        "skills/node_modules/pkg/SKILL.md": "---\nname: 不该出现\ndescription: 不该出现 的说明\n---\n\n正文\n",
+        "skills/dist/built/SKILL.md": "---\nname: 也不该出现\ndescription: 也不该出现 的说明\n---\n\n正文\n"
+      },
+      "expected": [
+        {
+          "name": "正常",
+          "description": "正常 的说明",
+          "dir": "skills/正常"
+        }
+      ]
+    },
+    {
+      "name": "缺 description 的技能被跳过但不影响其他",
+      "files": {
+        "skills/好的/SKILL.md": "---\nname: 好的\ndescription: 好的 的说明\n---\n\n正文\n",
+        "skills/缺项/SKILL.md": "---\nname: 只有名字\n---\n正文\n"
+      },
+      "expected": [
+        {
+          "name": "好的",
+          "description": "好的 的说明",
+          "dir": "skills/好的"
+        }
+      ]
+    },
+    {
+      "name": "frontmatter 字段类型错误",
+      "files": {
+        "skills/好的/SKILL.md": "---\nname: 好的\ndescription: 好的 的说明\n---\n\n正文\n",
+        "skills/数字名/SKILL.md": "---\nname: 42\ndescription: d\n---\n"
+      },
+      "expected": [
+        {
+          "name": "好的",
+          "description": "好的 的说明",
+          "dir": "skills/好的"
+        }
+      ]
+    },
+    {
+      "name": "YAML 语法错误",
+      "files": {
+        "skills/好的/SKILL.md": "---\nname: 好的\ndescription: 好的 的说明\n---\n\n正文\n",
+        "skills/坏语法/SKILL.md": "---\nname: [没闭合\n---\n"
+      },
+      "expected": [
+        {
+          "name": "好的",
+          "description": "好的 的说明",
+          "dir": "skills/好的"
+        }
+      ]
+    },
+    {
+      "name": "完全没有 frontmatter",
+      "files": {
+        "skills/好的/SKILL.md": "---\nname: 好的\ndescription: 好的 的说明\n---\n\n正文\n",
+        "skills/纯文档/SKILL.md": "# 只是文档\n"
+      },
+      "expected": [
+        {
+          "name": "好的",
+          "description": "好的 的说明",
+          "dir": "skills/好的"
+        }
+      ]
+    },
+    {
+      "name": "空仓库",
+      "files": {
+        "README.md": "# 空仓库\n"
+      },
+      "expected": []
+    },
+    {
+      "name": "internal 技能默认隐藏",
+      "files": {
+        "skills/公开/SKILL.md": "---\nname: 公开\ndescription: 公开 的说明\n---\n\n正文\n",
+        "skills/内部/SKILL.md": "---\nname: 内部技能\ndescription: d\nmetadata:\n  internal: true\n---\n"
+      },
+      "expected": [
+        {
+          "name": "公开",
+          "description": "公开 的说明",
+          "dir": "skills/公开"
+        }
+      ]
+    },
+    {
+      "name": "名称含终端转义与多行描述",
+      "files": {
+        "skills/花哨/SKILL.md": "---\nname: \"\\e[31m红色\\e[0m\"\ndescription: |\n  第一行\n  第二行\n---\n"
+      },
+      "expected": [
+        {
+          "name": "红色",
+          "description": "第一行 第二行",
+          "dir": "skills/花哨"
+        }
+      ]
+    },
+    {
+      "name": "CRLF 行尾",
+      "files": {
+        "skills/win/SKILL.md": "---\r\nname: win\r\ndescription: 来自 Windows 仓库\r\n---\r\n正文\r\n"
+      },
+      "expected": [
+        {
+          "name": "win",
+          "description": "来自 Windows 仓库",
+          "dir": "skills/win"
+        }
+      ]
+    }
+  ]
+}

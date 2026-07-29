@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "verify:agents": "node scripts/verify-agents-registry.mjs",
+    "verify:discovery": "node scripts/verify-skill-discovery.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
