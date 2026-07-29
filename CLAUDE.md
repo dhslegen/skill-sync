@@ -4,9 +4,10 @@
 
 ## 技术栈(锁定,勿擅自更换)
 - Tauri 2.x + Rust (edition 2021, stable toolchain) / 前端 React 19 + TypeScript + Vite(假设:交接包草案写 React 18,但 create-tauri-app 与 shadcn/ui Base UI 底座当前默认 React 19,按 19 执行)
-- 状态管理 Zustand;UI 组件库 **shadcn/ui(Base UI 底座)+ tweakcn 换肤**;样式 Tailwind(v4, `@theme` token)
-- HTTP: Rust 侧 reqwest;序列化 serde;密钥存储 keyring crate;日志 tracing + 滚动文件
-- 包管理 pnpm;Rust 侧 workspace: src-tauri/
+- 样式 Tailwind v4(`@theme` token,已接入);包管理 pnpm;Rust 侧 workspace: src-tauri/
+- Rust 侧已接入:reqwest(rustls)、serde、keyring(按平台指定原生后端)、saphyr(YAML)、zip、sha2、getrandom、url
+- **已选型但尚未引入**(到对应任务再装,勿以为已可用):状态管理 Zustand、
+  UI 组件库 shadcn/ui(Base UI 底座)+ tweakcn 换肤、日志 tracing + 滚动文件
 
 ## 架构铁律
 1. 所有业务逻辑在 Rust core(src-tauri/src/core/),前端只做展示与交互;**前端不直接发任何 HTTP 请求**
@@ -31,24 +32,28 @@ pnpm verify:discovery  # 同上,校验技能发现规则
 
 ## 目录结构
 ```
-src/                 # React 前端(pages/ store/ components/ i18n/)
+src/                 # React 前端(目前只有 i18n/ 与 styles/,页面随任务 8 起建)
 src-tauri/src/
-  core/registry.rs   # 仓库源管理(内建 Gitea + 自定义)
-  core/auth.rs       # OAuth PKCE(主)+ PAT(备用)+ keyring
-  core/gitea.rs      # Gitea API client(archive 下载、contents 提交、branches、pulls)
-  core/github.rs     # GitHub client(M3 前留空壳)
-  core/skills.rs     # skill 发现/解析(SKILL.md frontmatter)
-  core/installer.rs  # canonical + 链接层(symlink→junction→copy 降级)
-  core/agents.rs     # agent 注册表加载与探测(数据在 resources/agents.json)
-  core/fsops.rs      # 文件系统操作统一入口
-  core/state.rs      # config.json/state.json 读写 + skill-lock 双写 + schema 迁移
-  core/scheduler.rs  # 定时更新检查(M2)
+  core/builtin.rs    # ✅ 编译期注入的常量(地址/ClientID/仓库坐标)
+  core/agents.rs     # ✅ agent 注册表加载与探测(数据在 resources/agents.json)
+  core/skills.rs     # ✅ SKILL.md 解析 + 仓库发现规则 + SkillTree(MemTree/FsTree)
+  core/gitea.rs      # ✅ Gitea API client(分支/压缩包/多文件提交/提交审核/fork)
+  core/auth.rs       # ✅ OAuth PKCE 原语 + 回环回调 + 凭证存储抽象
+  core/session.rs    # ✅ 登录态编排(登录/查状态/退出)
+  core/installer.rs  # ⬜ 任务 6:canonical + 链接层(symlink→junction→copy 降级)
+  core/fsops.rs      # ⬜ 任务 6:文件系统操作统一入口
+  core/state.rs      # ⬜ 任务 7:config/state 读写 + skill-lock 双写 + schema 迁移
+  core/registry.rs   # ⬜ 仓库源管理(内建 Gitea + 自定义)
+  core/github.rs     # ⬜ GitHub client(M3 前留空壳)
   commands.rs        # Tauri IPC command 定义(薄壳,逻辑在 core)
 resources/agents.json   # 75-agent 注册表(移植自 vercel-labs/skills v1.5.20,MIT,保留出处注释)
 scripts/             # 维护脚本(verify-*.mjs:跑上游源码生成 ground-truth fixture,供 Rust 差分测试)
-fixtures/            # docker Gitea 测试环境 + 样例技能仓库(见交接包 3.6)
-docs/                # 设计方案、交接包、UI 规范、UI-Demo、术语表
+fixtures/            # docker Gitea 测试环境 + 样例技能仓库
+docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进版本控制**(在 .git/info/exclude 中),
+                     #    只有 terminology.md 是受版本控制的;换机器需另行拷贝这些文档
 ```
+
+> `core/scheduler.rs`(定时更新检查)属 M2,尚未创建。
 
 ## UI 规范(已拍板,详见 docs/UI设计规范.md,违反第 2 节即打回)
 - **视觉基准 = docs/SkillSync-UI-Demo.html**,最终实现观感必须与它一致;信息密度对齐该 Demo,不得放宽
@@ -88,4 +93,35 @@ docs/                # 设计方案、交接包、UI 规范、UI-Demo、术语�
 - 每完成一个任务 git commit,信息格式:`M1-任务N: 摘要`
 - 决策记录 C1-C12 + C-UI + C-OAuth 已全部拍板(见交接包),直接执行不复议
 - 文档未覆盖的决策:按决策记录精神自行选择,在 commit message 与代码注释中显式标注"假设:xxx";涉及删除用户数据、安全、对外网络请求的新增行为必须停下询问
-- 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae,其余注册表 agent 尽力支持
+- 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
+  其余注册表 agent 尽力支持
+
+## 当前进度(2026-07-29)
+
+M1 任务 1–5 已完成并提交,7 次提交在 `main`(本地仓库,尚无远端)。测试 110 通过、clippy 干净。
+
+| 任务 | 状态 | 关键产物 |
+|---|---|---|
+| 1 脚手架 | ✅ | Tauri2+React19+Tailwind v4、双平台 CI、i18n 骨架与禁 git 术语守卫 |
+| 2 agents.json | ✅ | 75 条注册表 + 声明式探测 + 与上游的差分测试 |
+| 3 SKILL.md 解析 | ✅ | frontmatter 校验 + 发现规则 + 18 布局差分测试 |
+| 4 Gitea client | ✅ | REST 原语 + 14 wiremock + 实机全链路;fixture 环境可一键起 |
+| 5 登录 | ✅ | OAuth PKCE + 回环回调 + 钥匙串;**登录界面留到任务 8 随外壳一起做** |
+| 6 installer 链接层 | ⬜ | **下一个任务** |
+| 7–13 | ⬜ | state 双写 / 商店页 / 获取流程 / 我的技能 / 分享 / 向导 / 打包 |
+
+### 进入任务 6 前必须知道的三件事
+1. **建链解链以「目录」为单位,不是按 agent**:多个 agent 共用同一 `globalSkillsDir` 是常态
+   (6 个共用 canonical、zencoder 与 zenflow 共用),按 agent 逐个解链会删掉别人还在用的目录
+   ——直接违反"绝不静默删除用户文件"。`AgentRegistry::group_by_global_dir` 已备好,并有测试钉住该契约。
+2. **universal agent 全局安装不建链**:`skillsDir == ".agents/skills"` 的 agent(含 cursor/codex)
+   技能落在 canonical 即可见;只有 claude-code/trae 这类才需要链接。判定用 `global_install_needs_link()`。
+3. **Windows 是主战场**:junction 为主路径,symlink 需开发者模式,失败要降级复制。
+   C11 记录首台机器的 symlink 成功可能是管理员提权造成的假阳性,需以普通权限复测。
+
+### 已知待处理(不阻塞任务 6)
+- **系统代理会拦截内网请求**:企业机器普遍配了 `http_proxy`,内网 Gitea 若不在 `NO_PROXY` 中,
+  用户会在登录第一步遇到看不懂的失败。任务 13 需二选一:随包设免代理,或部署文档要求 IT 配置。
+  细节见 `core/gitea.rs` 模块头。
+- 本机 Rust 环境需走镜像:`RUSTUP_DIST_SERVER` 用清华、crates.io 用 rsproxy(已配在 `~/.cargo/config.toml`);
+  `~/.cargo/bin` 不在非交互 shell 的 PATH 中,跑 cargo 前需 `export PATH="$HOME/.cargo/bin:$PATH"`。
