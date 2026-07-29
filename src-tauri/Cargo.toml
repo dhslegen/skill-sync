@@ -60,6 +60,11 @@ apple-native-keyring-store = { version = "1", default-features = false, features
 ] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Windows 建链主路径。std 没有 junction API,而 junction 相比 symlink_dir 的决定性优势是
+# **免管理员权限**(C11:首台机器 symlink 成功疑为提权假阳性)。该 crate 零第三方依赖树之外的负担,
+# 且 delete 只摘除 reparse point、不触碰目标目录内容——正是"绝不静默删除用户文件"要的语义。
+# 关掉 default features:unstable_admin 只服务于它自己的测试。
+junction = { version = "2.0.0", default-features = false }
 keyring = { version = "4.1.5", default-features = false, features = [
   "v1",
   "windows-native-keyring-store",
@@ -72,6 +77,7 @@ keyring = { version = "4.1.5", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+tempfile = "3.24.0"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6.5"
 

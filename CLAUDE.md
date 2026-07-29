@@ -40,8 +40,8 @@ src-tauri/src/
   core/gitea.rs      # ✅ Gitea API client(分支/压缩包/多文件提交/提交审核/fork)
   core/auth.rs       # ✅ OAuth PKCE 原语 + 回环回调 + 凭证存储抽象
   core/session.rs    # ✅ 登录态编排(登录/查状态/退出)
-  core/installer.rs  # ⬜ 任务 6:canonical + 链接层(symlink→junction→copy 降级)
-  core/fsops.rs      # ⬜ 任务 6:文件系统操作统一入口
+  core/installer.rs  # ✅ canonical 落盘 + 按目录建链/解链编排(不碰 state)
+  core/fsops.rs      # ✅ 链接原语:降级链、自指防护、链接健康态、安全复制/删除
   core/state.rs      # ⬜ 任务 7:config/state 读写 + skill-lock 双写 + schema 迁移
   core/registry.rs   # ⬜ 仓库源管理(内建 Gitea + 自定义)
   core/github.rs     # ⬜ GitHub client(M3 前留空壳)
@@ -98,7 +98,7 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 
 ## 当前进度(2026-07-29)
 
-M1 任务 1–5 已完成并提交,7 次提交在 `main`(本地仓库,尚无远端)。测试 110 通过、clippy 干净。
+M1 任务 1–6 已完成并提交(本地仓库,尚无远端)。测试 151 通过、clippy 干净。
 
 | 任务 | 状态 | 关键产物 |
 |---|---|---|
@@ -107,10 +107,23 @@ M1 任务 1–5 已完成并提交,7 次提交在 `main`(本地仓库,尚无远�
 | 3 SKILL.md 解析 | ✅ | frontmatter 校验 + 发现规则 + 18 布局差分测试 |
 | 4 Gitea client | ✅ | REST 原语 + 14 wiremock + 实机全链路;fixture 环境可一键起 |
 | 5 登录 | ✅ | OAuth PKCE + 回环回调 + 钥匙串;**登录界面留到任务 8 随外壳一起做** |
-| 6 installer 链接层 | ⬜ | **下一个任务** |
-| 7–13 | ⬜ | state 双写 / 商店页 / 获取流程 / 我的技能 / 分享 / 向导 / 打包 |
+| 6 installer 链接层 | ✅ | fsops 降级链/自指防护/健康态 + installer 编排;40 单测,4 处注入验证 |
+| 7 state 双写 | ⬜ | **下一个任务** |
+| 8–13 | ⬜ | 商店页 / 获取流程 / 我的技能 / 分享 / 向导 / 打包 |
 
-### 进入任务 6 前必须知道的三件事
+### 任务 6 确立的事实(后续任务直接用,勿重新推导)
+1. **安装目录名取「仓库中的技能目录名」,不是 frontmatter 的 `name`**——对齐上游远端安装
+   (`installer.ts` 用 `installName: entry.name`)。真实公司技能库现有 **20 个技能,全为 ASCII kebab-case**。
+   `Installer::install(dir_slug, ...)` 的第一个参数就是它。
+2. **纯中文名会被 `sanitize_name` 整体折成 `unnamed-skill`**,两个中文技能会装进同一目录互相覆盖。
+   installer 对"信息全丢"的名字直接报 `FS_UNUSABLE_NAME` 拒绝,不擅自放宽 `sanitize_name`
+   (它同时决定 `.skill-lock.json` 的键)。任务 11 收编本地技能时会正面撞上这条,届时定策略。
+3. **Windows 建链用 `junction` crate**(2.0,MIT,免提权,delete 只摘 reparse point)。
+   降级链:Windows `[Junction, Copy]`、POSIX `[Symlink, Copy]`——**Windows 不试 symlink**。
+4. **整包 `cargo check --target x86_64-pc-windows-msvc` 在 macOS 上跑不通**(aws-lc-sys 需 Windows SDK 头文件),
+   要验 Windows 分支只能把 fsops.rs 单独拷进一个 scratch crate 做定向 check。
+
+### 任务 6 之前已知、依然成立的三件事
 1. **建链解链以「目录」为单位,不是按 agent**:多个 agent 共用同一 `globalSkillsDir` 是常态
    (6 个共用 canonical、zencoder 与 zenflow 共用),按 agent 逐个解链会删掉别人还在用的目录
    ——直接违反"绝不静默删除用户文件"。`AgentRegistry::group_by_global_dir` 已备好,并有测试钉住该契约。
@@ -119,7 +132,16 @@ M1 任务 1–5 已完成并提交,7 次提交在 `main`(本地仓库,尚无远�
 3. **Windows 是主战场**:junction 为主路径,symlink 需开发者模式,失败要降级复制。
    C11 记录首台机器的 symlink 成功可能是管理员提权造成的假阳性,需以普通权限复测。
 
-### 已知待处理(不阻塞任务 6)
+### 已知待处理
+- **`Installer::install` 会无条件清空重建 canonical**(任务 7 必须补的守卫):用户改过技能本体时,
+  重装/更新会静默抹掉改动,属铁律 7 管的破坏性操作,而 `on_occupied` 只管 agent 目录那一侧。
+  任务 7 须在 state 里记 `contentHash`,不一致时按设计方案 2.5③ 弹三选一
+  (保留本地 / 用远端覆盖 / 把本地改动分享上去),拿到结论再调 install。
+  **在此之前不要把 install 接到自动更新路径上。**
+- **任务 6 的 DoD 有一半尚未验证**:"Windows 普通用户权限下安装成功且 Claude Code 能读到 skill"
+  在本机无从验证——没有 Windows 机器,仓库无远端故 CI 从未真正跑过。代码里已把
+  "必须是 junction 而不是 symlink"写成断言(`fsops` 的建链测试),一旦 CI 跑起来,
+  带提权的 runner 也会被这条断言挡下;但**普通权限下的真机验证仍欠一次**。
 - **系统代理会拦截内网请求**:企业机器普遍配了 `http_proxy`,内网 Gitea 若不在 `NO_PROXY` 中,
   用户会在登录第一步遇到看不懂的失败。任务 13 需二选一:随包设免代理,或部署文档要求 IT 配置。
   细节见 `core/gitea.rs` 模块头。
