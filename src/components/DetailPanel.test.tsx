@@ -166,6 +166,34 @@ describe("DetailPanel", () => {
     expect(useStoreIndex.getState().detailSlug).toBeNull();
   });
 
+  it("打开时焦点进面板,关闭后还给点开它的元素", async () => {
+    // 声明了 aria-modal 就得真的管焦点:否则 Tab 会走到遮罩背后的列表里
+    const trigger = document.createElement("button");
+    document.body.appendChild(trigger);
+    trigger.focus();
+
+    open();
+    const { rerender } = render(<DetailPanel />);
+    expect(screen.getByRole("dialog")).toHaveFocus();
+
+    useStoreIndex.setState({ detailSlug: null, detail: null });
+    rerender(<DetailPanel />);
+    expect(trigger).toHaveFocus();
+    trigger.remove();
+  });
+
+  it("Tab 在面板内循环,不会跑到遮罩背后", async () => {
+    open();
+    render(<DetailPanel />);
+    const dialog = screen.getByRole("dialog");
+    const focusable = dialog.querySelectorAll<HTMLElement>("button:not([disabled])");
+    const last = focusable[focusable.length - 1];
+
+    last.focus();
+    await userEvent.tab();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
   it("正文区放开选中(全站禁选中的唯一例外)", () => {
     open();
     const { container } = render(<DetailPanel />);

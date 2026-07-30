@@ -324,12 +324,18 @@ async fn archive_failure_falls_back_to_the_stale_cache() {
     assert_eq!(store::load_cache(&cache).unwrap().commit_sha, "aaa1111", "失败不得污染缓存");
 }
 
-/// DoD:缓存命中 <300ms。
+/// 缓存命中路径不能退化成"每次重下"。
 ///
-/// 计时含完整命中路径——读缓存文件、问一次分支头(loopback mock)、构造返回值。
-/// 不含真实内网往返(那部分见 commit message 里记录的实测冷启动数字)。
+/// **阈值刻意放宽到 1s,而不是 DoD 的 300ms。** 这条断言要进 CI,而 CI 是共享 I/O 的
+/// Windows/macOS runner:把 300ms 这个在开发机上量出来的数字钉进去,迟早会在没人改坏任何东西
+/// 的情况下变红,而一个会乱叫的性能门会顺带拖垮整套测试的可信度。
+///
+/// 真正钉住"没有重新下载"的是 [`unchanged_sha_serves_cache_without_downloading_again`]
+/// 里的请求条数断言——那个是确定性的。这里只兜住"缓存路径本身慢得离谱"这一类退化
+/// (真去下载 + 解压 50 个技能会明显超过 1s)。
+/// DoD 的 300ms 由 `tests/store_live.rs` 在受控环境下量,并把实测值记进 commit message。
 #[tokio::test]
-async fn cache_hit_for_fifty_skills_stays_under_300ms() {
+async fn cache_hit_for_fifty_skills_does_not_silently_redownload() {
     let server = MockServer::start().await;
     mount_branch(&server, "aaa1111").await;
     mount_archive(&server, &slugs(50)).await;
@@ -344,8 +350,9 @@ async fn cache_hit_for_fifty_skills_stays_under_300ms() {
 
     assert!(outcome.from_cache);
     assert_eq!(index.skills.len(), 50);
+    assert_eq!(archive_hits(&server).await, 1, "命中缓存就不该再下载一次");
     assert!(
-        elapsed < std::time::Duration::from_millis(300),
-        "缓存命中耗时 {elapsed:?},超出 DoD 的 300ms"
+        elapsed < std::time::Duration::from_secs(1),
+        "缓存命中耗时 {elapsed:?} —— 这个量级说明它根本没走缓存"
     );
 }

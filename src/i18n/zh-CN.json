@@ -26,6 +26,7 @@
   "store.filterInstalled": "已安装",
   "store.loading": "正在获取技能列表…",
   "store.empty": "这个技能库里还没有技能。",
+  "store.emptyFilter": "这一档下暂时没有技能。",
   "store.emptySearch": "没有匹配「{query}」的技能。",
   "store.skippedNotice": "{count} 个技能因信息不完整未能显示",
   "store.offline": "连不上公司技能库,当前显示上次获取到的内容。请确认已接入公司内网或 VPN。",
@@ -59,6 +60,8 @@
   "time.daysAgo": "{n} 天前",
   "time.weeksAgo": "{n} 周前",
   "time.monthsAgo": "{n} 个月前",
+  "error.ipcFailed": "应用内部通信失败,请重启应用后再试",
+  "error.signInFailed": "登录没能完成,请重试",
   "error.generic": "操作没能完成,请稍后重试",
   "error.detailToggle": "查看技术细节"
 }

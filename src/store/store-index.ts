@@ -2,6 +2,7 @@
 // 这里只做"取过来、记住、按搜索与筛选算出要显示哪些"。
 import { create } from "zustand";
 
+import { t } from "@/i18n";
 import {
   isAppError,
   storeIndex,
@@ -39,7 +40,7 @@ interface StoreIndexState {
 function toAppError(raw: unknown): AppError {
   return isAppError(raw)
     ? raw
-    : { code: "IPC_FAILED", message: "操作没能完成,请稍后重试", detail: String(raw) };
+    : { code: "IPC_FAILED", message: t("error.generic"), detail: String(raw) };
 }
 
 export const useStoreIndex = create<StoreIndexState>((set, get) => ({

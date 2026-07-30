@@ -2,6 +2,8 @@
 // 一切数据都经由这里的 command 调用。
 import { invoke } from "@tauri-apps/api/core";
 
+import { t } from "@/i18n";
+
 /** 契约 3.3 的统一错误模型。message 是可直接展示的中文,detail 只进诊断。 */
 export interface AppError {
   code: string;
@@ -29,7 +31,7 @@ export async function call<T>(cmd: string, args?: Record<string, unknown>): Prom
     if (isAppError(raw)) throw raw;
     throw {
       code: "IPC_FAILED",
-      message: "应用内部通信失败,请重启应用后再试",
+      message: t("error.ipcFailed"),
       detail: String(raw),
     } satisfies AppError;
   }

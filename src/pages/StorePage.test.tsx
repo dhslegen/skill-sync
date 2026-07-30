@@ -97,6 +97,21 @@ describe("StorePage", () => {
     expect(screen.getByText("这个技能库里还没有技能。")).toBeInTheDocument();
   });
 
+  it("切到「已安装」而一个都没装时,不能谎称技能库是空的", () => {
+    // M1 的 installed 恒为空集,所以这是**用户点一下就能撞到**的路径:
+    // 技能库里有 3 个技能,说"这个技能库里还没有技能"是错的。
+    seed({ filter: "installed", installed: new Set() });
+    render(<StorePage />);
+    expect(screen.queryByText("这个技能库里还没有技能。")).not.toBeInTheDocument();
+    expect(screen.getByText("这一档下暂时没有技能。")).toBeInTheDocument();
+  });
+
+  it("筛选档下的搜索无结果仍然优先报搜索词", () => {
+    seed({ filter: "available", query: "不存在的东西" });
+    render(<StorePage />);
+    expect(screen.getByText("没有匹配「不存在的东西」的技能。")).toBeInTheDocument();
+  });
+
   it("筛选档切换生效", async () => {
     seed({ installed: new Set(["weekly-report"]) });
     render(<StorePage />);

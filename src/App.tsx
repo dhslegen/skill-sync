@@ -12,9 +12,11 @@ import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
 
+/** 只取版本号。core 还返回 builtinConfigured,但"内建库没配"这件事
+ *  已经由 store_index 的 REPO_NOT_CONFIGURED 带着可读文案报出来了,
+ *  这里再存一份没人用的标志只会变成死字段。 */
 interface AppInfo {
   version: string;
-  builtinConfigured: boolean;
 }
 
 export default function App() {

@@ -16,11 +16,35 @@ export function DetailPanel() {
   const { detailSlug, detail, detailError, closeDetail, index } = useStoreIndex();
   const open = detailSlug !== null;
   const panelRef = useRef<HTMLDivElement>(null);
+  const returnFocusTo = useRef<HTMLElement | null>(null);
 
-  // 打开时把焦点移进面板,关闭时交还——否则键盘用户会被留在背后的列表里
+  // 焦点管理。声明了 aria-modal 就得真的把焦点圈住:
+  // 否则 Tab 会走到遮罩背后的卡片列表里,读屏用户完全不知道自己已经离开了面板。
   useEffect(() => {
-    if (open) panelRef.current?.focus();
+    if (!open) return;
+    returnFocusTo.current = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+    // 关闭时把焦点还给点开它的那张卡片,而不是丢回 <body>
+    return () => returnFocusTo.current?.focus?.();
   }, [open]);
+
+  const trapTab = (e: React.KeyboardEvent) => {
+    if (e.key !== "Tab" || !panelRef.current) return;
+    const focusable = panelRef.current.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === panelRef.current)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
 
   return (
     <>
@@ -38,6 +62,7 @@ export function DetailPanel() {
         aria-modal="true"
         aria-label={detail?.name ?? t("detail.loading")}
         tabIndex={-1}
+        onKeyDown={trapTab}
         className={cn(
           "fixed inset-y-0 right-0 z-51 flex w-[480px] flex-col border-l border-border bg-surface-1 shadow-[var(--shadow-pop)] outline-none",
           "transition-[transform,opacity] duration-[180ms] ease-out",

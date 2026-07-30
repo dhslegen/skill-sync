@@ -232,5 +232,7 @@ M1 任务 1–8 已完成并提交。远端 `origin` = github.com/dhslegen/skill
   Windows 实色化都留给任务 12/13;任务 8 只用 `data-tauri-drag-region` 让出 44px 顶栏。
 - **外观偏好目前存 localStorage**(任务 8 的假设):`skillsync.theme` / `skillsync.accent`。
   设置页要落进 `config.json` 才算跨机器,那是设置页所在任务的事——本任务不动 config 的 schema。
+- **退出登录还没有界面入口**:`useSession.signOut` 与文案 `account.signOut` 都已就绪但无人调用
+  ——UI-Demo 把「退出登录」放在设置页的账号区,所以它随设置页一起落地(侧边栏那行只做登录入口)。
 - 本机 Rust 环境需走镜像:`RUSTUP_DIST_SERVER` 用清华、crates.io 用 rsproxy(已配在 `~/.cargo/config.toml`);
   `~/.cargo/bin` 不在非交互 shell 的 PATH 中,跑 cargo 前需 `export PATH="$HOME/.cargo/bin:$PATH"`。

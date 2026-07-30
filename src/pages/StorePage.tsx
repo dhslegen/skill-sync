@@ -93,7 +93,16 @@ export function StorePage() {
 
       {visible.length === 0 ? (
         <p className="py-6 text-[12.5px] text-text-3">
-          {query.trim() ? t("store.emptySearch", { query }) : t("store.empty")}
+          {/*
+            三种"没东西"要分清,否则会对用户撒谎:
+            切到「已安装」而一个都没装时,说"这个技能库里还没有技能"是错的
+            ——技能库里明明有 9 个。第三档专门给筛选用。
+          */}
+          {query.trim()
+            ? t("store.emptySearch", { query })
+            : filter !== "all"
+              ? t("store.emptyFilter")
+              : t("store.empty")}
         </p>
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(288px,1fr))] gap-2.5">

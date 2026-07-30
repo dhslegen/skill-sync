@@ -2,6 +2,7 @@
 // 侧边栏底部那一行。完整登录页不在本任务范围(商店可先于登录浏览)。
 import { create } from "zustand";
 
+import { t } from "@/i18n";
 import { authLoginOauth, authLogout, authStatus, isAppError, type AppError, type SessionUser } from "@/lib/ipc";
 
 type Status = "unknown" | "signedOut" | "signedIn" | "signingIn";
@@ -43,7 +44,7 @@ export const useSession = create<SessionState>((set) => ({
       set({
         status: "signedOut",
         user: null,
-        error: isAppError(raw) ? raw : { code: "AUTH_FAILED", message: "登录没能完成,请重试" },
+        error: isAppError(raw) ? raw : { code: "AUTH_FAILED", message: t("error.signInFailed") },
       });
     }
   },
