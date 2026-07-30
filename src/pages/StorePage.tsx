@@ -7,7 +7,17 @@ import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { relativeTimeFromIso, relativeTimeFromUnix } from "@/lib/format";
 import { filterSkills, type StoreFilter } from "@/lib/search";
+import { useInstall } from "@/store/install";
 import { useStoreIndex } from "@/store/store-index";
+
+/** 卡片按钮状态:没装→安装;装了但版本落后→更新;否则→已启用。 */
+function cardState(
+  record: { commitSha: string } | undefined,
+  remoteSha: string,
+): "install" | "installed" | "update" {
+  if (!record) return "install";
+  return record.commitSha === remoteSha ? "installed" : "update";
+}
 
 const FILTERS: { id: StoreFilter; label: MessageKey }[] = [
   { id: "all", label: "store.filterAll" },
@@ -16,8 +26,10 @@ const FILTERS: { id: StoreFilter; label: MessageKey }[] = [
 ];
 
 export function StorePage() {
-  const { index, status, error, query, filter, installed, setFilter, openDetail, load } =
-    useStoreIndex();
+  const { index, status, error, query, filter, setFilter, openDetail, load } = useStoreIndex();
+  const records = useInstall((s) => s.installed);
+  // 已安装集合来自 installed_list(core 的 state.json),不再是恒空的占位
+  const installed = useMemo(() => new Set(records.keys()), [records]);
 
   const visible = useMemo(
     () => (index ? filterSkills(index.skills, query, filter, installed) : []),
@@ -112,7 +124,7 @@ export function StorePage() {
               skill={skill}
               repo={index.repo}
               updatedAt={updatedAt}
-              state={installed.has(skill.dirSlug) ? "installed" : "install"}
+              state={cardState(records.get(skill.dirSlug), index.commitSha)}
               onOpen={() => void openDetail(skill.dirSlug)}
             />
           ))}

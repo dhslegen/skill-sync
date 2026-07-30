@@ -70,7 +70,11 @@ export function SkillCard({
       <div className="mt-auto flex items-center gap-2 text-[11.5px] text-text-3">
         <span>{t("store.updatedAt", { when: updatedAt })}</span>
         <div className="ml-auto">
-          <InstallButton state={state} disabled hint={t("skill.installNotReady")} />
+          {/* 卡片上放不下 agent 多选,所以点这个按钮的归宿也是打开详情面板,
+              在那儿看清会装到哪些工具再确认 —— 不做"点一下就动磁盘"。
+              **刻意不接 onClick**:点击本来就会冒泡到外层卡片,两边都接会把详情开两次
+              (也就是两次 IPC)。注入验证时正是靠"调用次数"这条断言抓出来的。 */}
+          <InstallButton state={state} hint={t("skill.openToInstall")} />
         </div>
       </div>
     </div>

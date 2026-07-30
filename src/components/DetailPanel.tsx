@@ -2,7 +2,7 @@ import { FileCode, FileText, Folder, TriangleAlert, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Icon } from "@/components/Icon";
-import { InstallButton } from "@/components/InstallButton";
+import { InstallPanel } from "@/components/InstallPanel";
 import { Markdown } from "@/components/Markdown";
 import { SkillIcon } from "@/components/SkillIcon";
 import { t } from "@/i18n";
@@ -140,10 +140,7 @@ function PanelBody({ detail, repo }: { detail: SkillDetail; repo: string }) {
         )}
       </div>
 
-      <div className="flex items-center gap-2.5 border-t border-border px-5 py-3.5">
-        <InstallButton state="install" size="lg" disabled hint={t("skill.installNotReady")} />
-        <span className="text-[11.5px] text-text-3">{t("skill.installNotReady")}</span>
-      </div>
+      <InstallPanel dirSlug={detail.dirSlug} />
     </>
   );
 }

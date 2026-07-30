@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { StorePage } from "./StorePage";
 import type { StoreIndexView, StoreSkillCard } from "@/lib/ipc";
+import { useInstall } from "@/store/install";
 import { useStoreIndex } from "@/store/store-index";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -53,7 +54,10 @@ function seed(over: Partial<Parameters<typeof useStoreIndex.setState>[0]> = {}) 
 }
 
 describe("StorePage", () => {
-  beforeEach(() => seed());
+  beforeEach(() => {
+    seed();
+    useInstall.setState({ installed: new Map() });
+  });
 
   it("首屏就是搜索结果与卡片,没有 hero 区", () => {
     render(<StorePage />);
@@ -113,7 +117,7 @@ describe("StorePage", () => {
   });
 
   it("筛选档切换生效", async () => {
-    seed({ installed: new Set(["weekly-report"]) });
+    useInstall.setState({ installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", localModified: false }]]) });
     render(<StorePage />);
     await userEvent.click(screen.getByRole("button", { name: "已安装" }));
     expect(useStoreIndex.getState().filter).toBe("installed");
@@ -165,14 +169,48 @@ describe("StorePage", () => {
     expect(openDetail).toHaveBeenCalledWith("weekly-report");
   });
 
-  it("卡片上的安装按钮点不动 —— 获取流程还没接上", () => {
+  it("卡片上的安装按钮把人带进详情,而不是直接开装", async () => {
+    const openDetail = vi.fn();
+    useStoreIndex.setState({ openDetail });
     render(<StorePage />);
-    // 用 /^安装/ 而不是 /安装/:后者会把「未安装」这个筛选 chip 一起捞进来
-    const installButtons = screen.getAllByRole("button", { name: /^安装 —/ });
-    expect(installButtons).toHaveLength(3);
-    for (const button of installButtons) {
-      expect(button).toBeDisabled();
-      expect(button).toHaveAccessibleName(/获取功能将在下个版本开放/);
-    }
+
+    // 用 /^安装 —/ 而不是 /安装/:后者会把「未安装」这个筛选 chip 一起捞进来
+    const buttons = screen.getAllByRole("button", { name: /^安装 —/ });
+    expect(buttons).toHaveLength(3);
+    await userEvent.click(buttons[0]);
+    expect(openDetail).toHaveBeenCalledWith("weekly-report");
+    // 只能开一次:按钮的点击会冒泡到卡片,两边都接 onClick 就会发两次 IPC
+    expect(openDetail).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("卡片安装状态", () => {
+  beforeEach(() => {
+    seed();
+    useInstall.setState({ installed: new Map() });
+  });
+
+  it("没装过 → 安装", () => {
+    render(<StorePage />);
+    expect(screen.getAllByRole("button", { name: /^安装 —/ })).toHaveLength(3);
+  });
+
+  it("装了且版本一致 → 已启用(且点不动,那是终态)", () => {
+    useInstall.setState({
+      installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", localModified: false }]]),
+    });
+    render(<StorePage />);
+    const done = screen.getByRole("button", { name: /已启用/ });
+    expect(done).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: /^安装 —/ })).toHaveLength(2);
+  });
+
+  it("装了但版本落后 → 更新", () => {
+    // 这一档在任务 8 里没有数据源、只能永远显示"安装";接上 installed_list 后才真正可达
+    useInstall.setState({
+      installed: new Map([["weekly-report", { commitSha: "老版本", localModified: false }]]),
+    });
+    render(<StorePage />);
+    expect(screen.getByRole("button", { name: /^更新 —/ })).toBeInTheDocument();
   });
 });

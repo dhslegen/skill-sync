@@ -264,8 +264,10 @@ fn collect_files(archive: &RepoArchive, dir: &str) -> Vec<SkillFile> {
             let rel = full.strip_prefix(prefix.as_str())?;
             // 只要目录内的文件;压缩包里目录条目已被 unzip_archive 过滤掉
             (!rel.is_empty()).then(|| SkillFile {
+                // 大小取自原始字节,二进制文件也有(它们不在文本树里,但在 entries 里)。
+                // 早先从 tree 的字符串长度推,于是图片一律显示"—"——那时 entries 还不存在。
                 path: rel.to_string(),
-                size: archive.tree.read_file(full).map(|c| c.len() as u64),
+                size: archive.entries.get(full).map(|e| e.bytes.len() as u64),
             })
         })
         .collect();
@@ -411,21 +413,37 @@ mod tests {
     /// 早先版本让两者同值,结果"安装目录名取目录名而不是 name"这条关键事实
     /// 在实现改坏后测试照样通过——注入验证抓出来的空转。
     fn archive_with(slugs: &[&str]) -> RepoArchive {
-        let mut tree = MemTree::new();
-        let mut files = Vec::new();
+        let mut archive = RepoArchive {
+            root: "skills".to_string(),
+            tree: MemTree::new(),
+            files: Vec::new(),
+            entries: Default::default(),
+        };
         for slug in slugs {
             let path = format!("skills/skills/{slug}/SKILL.md");
-            tree = tree.with_file(
-                &path,
-                &format!("---\nname: 技能·{slug}\ndescription: {slug} 的说明\n---\n\n正文\n"),
-            );
-            files.push(path);
+            let text = format!("---\nname: 技能·{slug}\ndescription: {slug} 的说明\n---\n\n正文\n");
+            put_text(&mut archive, &path, &text);
         }
-        RepoArchive {
-            root: "skills".to_string(),
-            tree,
-            files,
-        }
+        archive
+    }
+
+    /// 放一个文本文件:同时进文本树(发现扫描用)与 entries(落盘用)。
+    fn put_text(archive: &mut RepoArchive, path: &str, text: &str) {
+        archive.tree = std::mem::take(&mut archive.tree).with_file(path, text);
+        archive.files.push(path.to_string());
+        archive.entries.insert(
+            path.to_string(),
+            crate::core::gitea::ArchiveEntry { bytes: text.as_bytes().to_vec(), unix_mode: None },
+        );
+    }
+
+    /// 放一个二进制文件:只进 entries,不进文本树(与 unzip_archive 的行为一致)。
+    fn put_binary(archive: &mut RepoArchive, path: &str, bytes: &[u8]) {
+        archive.files.push(path.to_string());
+        archive.entries.insert(
+            path.to_string(),
+            crate::core::gitea::ArchiveEntry { bytes: bytes.to_vec(), unix_mode: None },
+        );
     }
 
     #[test]
@@ -453,12 +471,8 @@ mod tests {
     #[test]
     fn flags_skills_that_carry_executable_scripts() {
         let mut archive = archive_with(&["with-scripts", "docs-only"]);
-        archive.files.push("skills/skills/with-scripts/scripts/collect.py".into());
-        archive.tree = std::mem::take(&mut archive.tree)
-            .with_file("skills/skills/with-scripts/scripts/collect.py", "print(1)\n");
-        archive.files.push("skills/skills/docs-only/templates/dept.md".into());
-        archive.tree = std::mem::take(&mut archive.tree)
-            .with_file("skills/skills/docs-only/templates/dept.md", "# 模板\n");
+        put_text(&mut archive, "skills/skills/with-scripts/scripts/collect.py", "print(1)\n");
+        put_text(&mut archive, "skills/skills/docs-only/templates/dept.md", "# 模板\n");
 
         let index = build_index("company", &repo(), &head("abc"), &archive, 0);
         let by = |slug: &str| index.skills.iter().find(|s| s.dir_slug == slug).unwrap().clone();
@@ -473,25 +487,37 @@ mod tests {
     }
 
     #[test]
-    fn binary_files_appear_in_tree_without_size() {
-        // 压缩包里的二进制文件不进内存树(任务 4 的既定行为),路径仍要出现在文件清单里
+    fn binary_files_get_a_real_size_from_their_bytes() {
+        // 二进制文件不进**文本树**(既定行为),但字节在 entries 里——大小从那儿来。
+        // 任务 9 之前 size 是从文本树的字符串长度推的,于是图片一律显示"—";
+        // 有了 entries(安装要靠它拿字节)之后,这里就该给出真实大小。
         let mut archive = archive_with(&["with-image"]);
-        archive.files.push("skills/skills/with-image/logo.png".into());
+        put_binary(&mut archive, "skills/skills/with-image/logo.png", &[0x89, b'P', b'N', b'G', 1, 2, 3]);
 
         let index = build_index("company", &repo(), &head("abc"), &archive, 0);
         let png = index.skills[0].files.iter().find(|f| f.path == "logo.png").unwrap();
-        assert_eq!(png.size, None, "拿不到内容就不该编造大小");
+        assert_eq!(png.size, Some(7));
+    }
+
+    #[test]
+    fn files_missing_from_entries_report_no_size_instead_of_zero() {
+        // 路径在清单里但字节缺失(理论上不该发生)时,不编造 0 B
+        let mut archive = archive_with(&["odd"]);
+        archive.files.push("skills/skills/odd/ghost.bin".into());
+
+        let index = build_index("company", &repo(), &head("abc"), &archive, 0);
+        let ghost = index.skills[0].files.iter().find(|f| f.path == "ghost.bin").unwrap();
+        assert_eq!(ghost.size, None);
     }
 
     #[test]
     fn internal_skills_stay_out_of_the_store() {
         let mut archive = archive_with(&["public-one"]);
-        let path = "skills/skills/hidden-one/SKILL.md";
-        archive.tree = std::mem::take(&mut archive.tree).with_file(
-            path,
+        put_text(
+            &mut archive,
+            "skills/skills/hidden-one/SKILL.md",
             "---\nname: 技能·hidden-one\ndescription: 内部用\nmetadata:\n  internal: true\n---\n\n正文\n",
         );
-        archive.files.push(path.into());
 
         let index = build_index("company", &repo(), &head("abc"), &archive, 0);
         assert_eq!(
@@ -503,9 +529,7 @@ mod tests {
     #[test]
     fn unparseable_skills_are_reported_not_swallowed() {
         let mut archive = archive_with(&["good-one"]);
-        let path = "skills/skills/bad-one/SKILL.md";
-        archive.tree = std::mem::take(&mut archive.tree).with_file(path, "---\nname: 只有名字\n---\n");
-        archive.files.push(path.into());
+        put_text(&mut archive, "skills/skills/bad-one/SKILL.md", "---\nname: 只有名字\n---\n");
 
         let index = build_index("company", &repo(), &head("abc"), &archive, 0);
         assert_eq!(index.skills.len(), 1);

@@ -14,7 +14,9 @@ pub fn run() {
             commands::auth_status,
             commands::auth_logout,
             commands::store_index,
-            commands::store_skill_detail
+            commands::store_skill_detail,
+            commands::skill_install,
+            commands::installed_list
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

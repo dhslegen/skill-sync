@@ -1,5 +1,6 @@
 //! SkillSync 业务核心。全部业务逻辑在此层实现,`commands.rs` 只做 IPC 薄壳。
 
+pub mod acquire;
 pub mod agents;
 pub mod auth;
 pub mod builtin;

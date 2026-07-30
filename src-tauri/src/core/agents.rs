@@ -27,7 +27,11 @@ fn default_true() -> bool {
 }
 
 /// 运行环境抽象。生产走 [`SystemEnv`],单测注入假环境以覆盖 env var / XDG / 路径存在性分支。
-pub trait AgentEnv {
+/// `Send + Sync` 是必需的:获取流程是 async command,`&dyn AgentEnv` 要跨 await 存活,
+/// 而 `&T` 只在 `T: Sync` 时才是 `Send`。缺了它 Tauri 会拒绝注册整个 command,
+/// 报错只说 "future cannot be sent between threads"、指向宏,很难顺藤摸回这里。
+/// `session::BrowserOpener` 出于同样原因也带这两个约束。
+pub trait AgentEnv: Send + Sync {
     fn home(&self) -> Option<PathBuf>;
     /// 当前项目根目录。MVP 只做全局技能(决策 C7),返回 `None`,project 作用域规则随之全部跳过。
     fn cwd(&self) -> Option<PathBuf> {

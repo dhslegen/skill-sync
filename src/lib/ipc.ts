@@ -1,6 +1,7 @@
 // 与 Rust core 的唯一通道。架构铁律 1:前端不直接发任何 HTTP 请求,
 // 一切数据都经由这里的 command 调用。
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { t } from "@/i18n";
 
@@ -105,3 +106,89 @@ export const storeSkillDetail = (dirSlug: string) =>
 export const authStatus = () => call<SessionStatus>("auth_status", { args: {} });
 export const authLoginOauth = () => call<SessionUser>("auth_login_oauth", { args: {} });
 export const authLogout = () => call<void>("auth_logout", { args: {} });
+
+// ============================================================ 获取流程
+
+export interface DetectedAgent {
+  name: string;
+  displayName: string;
+  installed: boolean;
+  globalSkillsDir?: string;
+  isUniversal: boolean;
+  needsLink: boolean;
+}
+
+export interface DetectedAgents {
+  agents: DetectedAgent[];
+  canonicalDir?: string;
+}
+
+/** 与 core::acquire::Stage 的 serde 契约一一对应。 */
+export type InstallStage =
+  | "fetching"
+  | "checking"
+  | "writing"
+  | "linking"
+  | "recording"
+  | "done";
+
+export type Precheck =
+  | { status: "fresh" }
+  | { status: "managed"; installedSha: string; upToDate: boolean }
+  | { status: "locallyModified"; installedSha: string }
+  | { status: "foreign"; origin: ForeignOrigin };
+
+export type ForeignOrigin = { kind: "npxSkills"; source: string } | { kind: "unknown" };
+
+/** 冲突处置。只有两档:分享流程属后续任务,现在没有可推的通道,
+ *  所以"把本地改动分享上去"当下的落地就是"保留本地改动"。 */
+export type Resolution = "keepLocal" | "overwrite";
+
+export type LinkResult =
+  | { status: "linked"; mode: string }
+  | { status: "unchanged"; mode: string }
+  | { status: "sameLocation" }
+  | { status: "failed"; error: AppError };
+
+export interface LinkReport {
+  dir: string;
+  agents: string[];
+  result: LinkResult;
+}
+
+export interface InstallReport {
+  dirName: string;
+  canonicalDir: string;
+  links: LinkReport[];
+}
+
+export type AcquireOutcome =
+  | { outcome: "needsDecision"; precheck: Precheck }
+  | { outcome: "installed"; report: InstallReport; localKept: boolean; lock: string };
+
+export interface InstalledSkillView {
+  dirSlug: string;
+  commitSha: string;
+  agents: string[];
+  installedAt: string;
+  updatedAt: string;
+  localModified: boolean;
+}
+
+/** 订阅一次安装的进度。契约 3.3:长任务走 `progress://{taskId}` 事件。 */
+export function listenProgress(
+  taskId: string,
+  onStage: (stage: InstallStage) => void,
+): Promise<UnlistenFn> {
+  return listen<InstallStage>(`progress://${taskId}`, (e) => onStage(e.payload));
+}
+
+export const agentsDetected = () => call<DetectedAgents>("agents_detected");
+export const installedList = () => call<InstalledSkillView[]>("installed_list");
+
+export const skillInstall = (args: {
+  dirSlug: string;
+  agentIds: string[];
+  taskId: string;
+  resolution?: Resolution;
+}) => call<AcquireOutcome>("skill_install", { args });

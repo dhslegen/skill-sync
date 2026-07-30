@@ -2,10 +2,15 @@
 
 use serde::{Deserialize, Serialize};
 
+use tauri::Emitter;
+
+use crate::core::acquire;
 use crate::core::agents::{AgentRegistry, DetectedAgent, SystemEnv};
 use crate::core::auth::{self, KeyringStore, OAuthConfig};
 use crate::core::builtin;
+use crate::core::fsops;
 use crate::core::gitea::{GiteaClient, RepoRef};
+use crate::core::installer::Installer;
 use crate::core::session::{self, BrowserOpener, SessionStatus, SessionUser};
 use crate::core::state;
 use crate::core::store::{self, SkillDetail, StoreIndexView};
@@ -195,10 +200,7 @@ fn builtin_store_target() -> Result<(String, RepoRef), AppError> {
 
 /// 商店索引的缓存落点。与 config/state 同目录(`~/.skillsync`)。
 fn index_cache_file(registry_id: &str) -> Result<std::path::PathBuf, AppError> {
-    let dir = state::Store::for_env(&SystemEnv).ok_or_else(|| {
-        AppError::new("FS_NO_HOME", "找不到用户主目录,无法保存本地数据")
-    })?;
-    Ok(store::cache_path(dir.dir(), registry_id))
+    Ok(store::cache_path(app_store()?.dir(), registry_id))
 }
 
 /// M1 商店一律匿名读:内建技能库公开可读(已实测),而带上一个可能已过期的令牌
@@ -275,9 +277,153 @@ pub async fn store_skill_detail(args: StoreDetailArgs) -> Result<SkillDetail, Ap
     })
 }
 
+// ============================================================ 获取
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallArgs {
+    #[serde(default)]
+    pub registry_id: Option<String>,
+    /// 技能库中的技能目录名。
+    pub dir_slug: String,
+    /// 要关联到哪些 AI 工具。空数组表示只落到 canonical(universal agent 即可见)。
+    #[serde(default)]
+    pub agent_ids: Vec<String>,
+    /// 长任务进度事件的频道后缀:前端监听 `progress://{taskId}`。
+    pub task_id: String,
+    /// 冲突时的处置。首次调用不带,由前端拿到 `needsDecision` 后再带上重试。
+    #[serde(default)]
+    pub resolution: Option<acquire::Resolution>,
+}
+
+#[tauri::command]
+pub async fn skill_install(
+    app: tauri::AppHandle,
+    args: InstallArgs,
+) -> Result<acquire::AcquireOutcome, AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    let (base_url, repo) = builtin_store_target()?;
+    let store = app_store()?;
+    let registry = AgentRegistry::builtin();
+
+    // core 不认识 Tauri:编排只收一个回调,事件在这一层发。
+    let channel = format!("progress://{}", args.task_id);
+    let emit = |stage: acquire::Stage| {
+        let _ = app.emit(channel.as_str(), stage);
+    };
+
+    acquire::acquire(
+        &anonymous_client(base_url)?,
+        &registry,
+        &SystemEnv,
+        &store,
+        acquire::AcquireRequest {
+            registry_id,
+            repo: &repo,
+            dir_slug: &args.dir_slug,
+            agent_names: &args.agent_ids,
+            resolution: args.resolution,
+        },
+        &now_iso8601(),
+        auth::now_unix(),
+        &emit,
+    )
+    .await
+}
+
+/// 已安装技能的概览。任务 10 的"我的技能"页会在此基础上补链接健康态。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledSkillView {
+    /// 安装目录名,也是商店卡片的 `dirSlug`。
+    pub dir_slug: String,
+    pub commit_sha: String,
+    pub agents: Vec<String>,
+    pub installed_at: String,
+    pub updated_at: String,
+    /// 本体与安装时不一致——用户改过,有未分享的改动。
+    pub local_modified: bool,
+}
+
+#[tauri::command]
+pub fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
+    let store = app_store()?;
+    let registry = AgentRegistry::builtin();
+    let installer = Installer::new(&registry, &SystemEnv);
+    let state = store.load_state()?.value;
+
+    Ok(state
+        .installed
+        .iter()
+        .map(|s| InstalledSkillView {
+            dir_slug: s.name.clone(),
+            commit_sha: s.commit_sha.clone(),
+            agents: s.agents.clone(),
+            installed_at: s.installed_at.clone(),
+            updated_at: s.updated_at.clone(),
+            // 算不出 hash(目录没了、权限不足)时按"没改过"处理:
+            // 这个标记只用于提示,不该因为读不了目录就把整个列表拉挂。
+            local_modified: installer
+                .canonical_dir(&s.name)
+                .and_then(|dir| fsops::dir_content_hash(&dir))
+                .map(|actual| actual != s.content_hash)
+                .unwrap_or(false),
+        })
+        .collect())
+}
+
+fn app_store() -> Result<state::Store, AppError> {
+    state::Store::for_env(&SystemEnv)
+        .ok_or_else(|| AppError::new("FS_NO_HOME", "找不到用户主目录,无法保存本地数据"))
+}
+
+/// ISO-8601(UTC,毫秒),与 `.skill-lock.json` 里上游写的格式一致。
+///
+/// 不引 chrono:只为一个时间戳多一个依赖不划算,而这个格式是固定的。
+fn now_iso8601() -> String {
+    let secs = auth::now_unix().max(0) as u64;
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let (y, mo, d) = civil_from_days(days as i64);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}.000Z")
+}
+
+/// unix 天数 → 公历年月日(Howard Hinnant 的 civil_from_days)。
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iso8601_matches_the_lock_files_format() {
+        assert_eq!(civil_from_days(20_664), (2026, 7, 30));
+        // 闰年 2 月末与年初年末各查一处,这类手写历法最容易在边界上错
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(59), (1970, 3, 1));
+        assert_eq!(civil_from_days(19_051), (2022, 2, 28));
+        assert_eq!(civil_from_days(18_686), (2021, 2, 28));
+        assert_eq!(civil_from_days(18_321), (2020, 2, 29));
+    }
+
+    #[test]
+    fn iso8601_shape_is_what_the_external_contract_expects() {
+        let now = now_iso8601();
+        assert_eq!(now.len(), 24, "{now}");
+        assert!(now.ends_with(".000Z"), "{now}");
+        assert_eq!(now.as_bytes()[10], b'T', "{now}");
+    }
 
     #[test]
     fn store_target_does_not_depend_on_oauth_configuration() {

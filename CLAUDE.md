@@ -44,8 +44,10 @@ src/
   i18n/              # ✅ 文案资源 + t() 插值;测试里带术语与禁 emoji 的自动门
   styles/global.css  # ✅ 设计 token、dark: 变体绑定 data-theme、.md/.skill-tint 等少量非 utility 样式
   lib/               # ✅ ipc(唯一 invoke 通道 + core 返回类型)、format、search、tint、cn
-  store/             # ✅ Zustand:appearance(主题/强调色)、store-index(商店)、session(登录)、ui(页/面板/IME)
-  components/        # ✅ Sidebar/Toolbar/SearchBox/SkillCard/InstallButton/DetailPanel/CommandPalette/Markdown/Icon
+  store/             # ✅ Zustand:appearance(主题/强调色)、store-index(商店)、install(获取流程)、
+                     #    session(登录)、ui(页/面板/IME)
+  components/        # ✅ Sidebar/Toolbar/SearchBox/SkillCard/InstallButton/DetailPanel/
+                     #    CommandPalette/Markdown/Icon/InstallPanel/ConflictDialog
   pages/StorePage.tsx  # ✅ 商店页
   hooks/             # ✅ useDesktopChrome(快捷键 + 右键拦截)
 src-tauri/src/
@@ -60,6 +62,7 @@ src-tauri/src/
   core/state.rs      # ✅ config.json/state.json + schema 版本闸门 + 原子写
   core/skill_lock.rs # ✅ npx skills 的 .skill-lock.json(v3)双写,外部契约
   core/store.rs      # ✅ 商店索引:压缩包→技能发现→可离线复用的缓存 + 前端 DTO
+  core/acquire.rs    # ✅ 获取编排:下载→预检(contentHash 守卫)→落盘→建链→记账+双写
   core/registry.rs   # ⬜ 仓库源管理(内建 Gitea + 自定义)
   core/github.rs     # ⬜ GitHub client(M3 前留空壳)
   commands.rs        # Tauri IPC command 定义(薄壳,逻辑在 core)
@@ -125,6 +128,22 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
   这句话在字段被拼成 `newBranch` 时同样通过,拼错完全没被拦住。现已补上正面断言。
 
 
+**压缩包里的权限位与二进制内容**(任务 9 实测,fixture 已录)
+- Gitea 的 `archive/{branch}.zip` **只给可执行文件写 mode `0o755`,普通文件写 `0`**
+  ——`0` 是"没记录"、不是 `0o644`。判定必须是"带 `0o111` 任一位才算可执行"。
+  实测产物存在 `tests/fixtures/gitea-archive-modes.zip`(真实 push + archive 下载得到)。
+- zip crate 的 `unix_mode()` 返回**完整 st_mode**(可执行文件是 `0o100755`),必须 `& 0o777` 掩掉类型位。
+- `RepoArchive` 有两套内容:`tree`(仅文本,给技能发现扫描)与 `entries`(全部字节 + 权限位,给落盘)。
+  **落盘必须走 entries**——文本树里没有二进制文件(带图片的技能会装成残缺品),也没有可执行位。
+- 上游 `npx skills` 用 `chmod(dest, sourceStats.mode & 0o777)` 保留 mode(它 git clone 到临时目录,
+  文件系统上就有);我们走压缩包,所以只能从 zip 里取。
+
+**内部标识不能露给用户**(任务 9 连撞两次)
+- core 里流转的一直是**目录名**(`weekly-report`)与 **agent name**(`claude-code`),
+  到界面这一层必须换成展示名(「周报生成」、Claude Code)。
+- 已撞过两处:安装结果文案"已启用到 claude-code、trae"、冲突弹窗标题「weekly-report」。
+  两处都是视觉验证时才看出来的——单测断言的是"有没有这个词",没人断言"是不是人话"。
+
 **命名与目录**
 - 安装目录名取「**仓库中的技能目录名**」,不是 frontmatter 的 `name`——对齐上游远端安装
   (`installer.ts` 用 `installName: entry.name`)。真实公司技能库现有 **20 个技能,全为 ASCII kebab-case**。
@@ -177,8 +196,8 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 
 ## 当前进度(2026-07-30)
 
-M1 任务 1–8 已完成并提交。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
-本机测试 **Rust 200 通过 + 前端 84 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
+M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
+本机测试 **Rust 226 通过 + 前端 120 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
 (Windows 上少跑的 8 个是 `cfg(unix)` 用例,已逐一核对)。
 
 | 任务 | 状态 | 关键产物 |
@@ -191,18 +210,20 @@ M1 任务 1–8 已完成并提交。远端 `origin` = github.com/dhslegen/skill
 | 6 installer 链接层 | ✅ | fsops 降级链/自指防护/健康态 + installer 编排;40 单测,4 处注入验证 |
 | 7 state 双写 | ✅ | state/config schema 闸门 + 原子写;lock 双写对上游做**字节级**差分;`npx skills list` 实测可见 |
 | 8 商店页 | ✅ | core/store.rs 索引缓存(离线可浏览)+ 外壳/商店页/详情面板/命令面板;9+12 处注入验证 |
-| 9 获取流程 | ⬜ | **下一个任务**:接 `skill_install`,并把 contentHash 守卫接进去(见下) |
-| 10–13 | ⬜ | 我的技能 / 分享 / 向导 / 打包 |
+| 9 获取流程 | ✅ | core/acquire.rs 编排 + contentHash 守卫接上;agent 多选/进度/结果/冲突弹窗;16+10 处注入验证 |
+| 10 我的技能 | ⬜ | **下一个任务**:列表、来源、链接健康、手动更新、移除(双确认) |
+| 11–13 | ⬜ | 分享 / 向导 / 打包 |
 
 ### 已知待处理
-- **商店页的安装按钮是刻意不接线的**(任务 9 才接):三档状态机(安装/已启用/更新)组件与测试都在,
-  但按钮 `disabled`、点卡片只打开详情。原因就是下面这条——`Installer::install` 会抹掉用户改动。
-  接线时必须同时:①接上 contentHash 守卫 ②给 `installed` 提供真实数据源(现在恒为空集,
-  所以运行时只会出现"安装"那一档)。
-- **`Installer::install` 仍会无条件清空重建 canonical**(任务 9 获取流程必须接上守卫):
-  任务 7 已备好料——`state.installed[].contentHash` 与 `fsops::dir_content_hash`,
-  两者不符即说明用户改过本体。但**把它接进获取/更新流程是任务 9 的事**,目前还没有调用方在用。
-  在接上之前不要把 install 挂到自动更新路径上。
+- **`Installer::install` 依然会无条件清空重建 canonical**——守卫在 `core/acquire.rs`,不在它自己身上。
+  任何**新的**调用方(自动更新 scheduler、向导批量安装)都必须走 `acquire::acquire`,
+  或自行先跑 `acquire::precheck` 拿到用户结论。直接调 `install()` 就是在静默抹用户改动。
+- **「把本地改动分享上去」当下只做到「保留本地改动」**:分享流程属任务 11,现在没有可推的通道。
+  `Resolution` 因此只有 `KeepLocal` / `Overwrite` 两档,弹窗文案也只承诺"保留、之后可分享"。
+  任务 11 落地后要回来把这条路接上(判据现成:`contentHash` 不符 = 有未分享的改动)。
+- **agent 目录侧的实体目录占位只报不处理**:`OnOccupied::Fail`,结果面板逐目录列出失败原因。
+  给它做二次确认(替换/跳过)属任务 10 的范围——那和 canonical 侧的冲突是两回事。
+- **批量安装没做**:编排签名留了余地(一次下载可服务多个技能),但没有调用方。向导(任务 12)再接。
 - **任务 6 的 DoD 还差"普通权限真机"这一档**(CI 已覆盖的部分见下):
   - ✅ 已验:Windows runner 上 `junction::create` / `remove_dir` 摘链 / `junction::get_target`
     真实执行通过,且建链测试断言"**必须是 junction 而不是 symlink**"——runner 即便有足够权限
@@ -232,6 +253,8 @@ M1 任务 1–8 已完成并提交。远端 `origin` = github.com/dhslegen/skill
   Windows 实色化都留给任务 12/13;任务 8 只用 `data-tauri-drag-region` 让出 44px 顶栏。
 - **外观偏好目前存 localStorage**(任务 8 的假设):`skillsync.theme` / `skillsync.accent`。
   设置页要落进 `config.json` 才算跨机器,那是设置页所在任务的事——本任务不动 config 的 schema。
+- **进度事件只报阶段,不报字节**:压缩包是一次性下完的,没有可信的字节级进度可报。
+  阶段(取内容/检查/写入/关联/记账)是当前最诚实的粒度。
 - **退出登录还没有界面入口**:`useSession.signOut` 与文案 `account.signOut` 都已就绪但无人调用
   ——UI-Demo 把「退出登录」放在设置页的账号区,所以它随设置页一起落地(侧边栏那行只做登录入口)。
 - 本机 Rust 环境需走镜像:`RUSTUP_DIST_SERVER` 用清华、crates.io 用 rsproxy(已配在 `~/.cargo/config.toml`);

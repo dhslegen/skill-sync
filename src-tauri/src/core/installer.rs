@@ -60,6 +60,11 @@ impl SkillPayload {
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
     }
+
+    /// 已放入的文件。供编排层的测试断言"取了哪些、权限位对不对"。
+    pub fn files(&self) -> &BTreeMap<String, PayloadFile> {
+        &self.files
+    }
 }
 
 /// 一个建链目标目录,以及共用它的 agent 名单。
@@ -241,34 +246,68 @@ impl<'a> Installer<'a> {
             fsops::write_file(&path, &file.bytes, file.unix_mode)?;
         }
 
-        let links = targets
+        Ok(InstallReport {
+            dir_name: dir_name.clone(),
+            canonical_dir: canonical.to_string_lossy().into_owned(),
+            links: self.link_all(&canonical, &dir_name, targets, on_occupied),
+        })
+    }
+
+    /// 只建链,**不碰 canonical 里的内容**。
+    ///
+    /// 用于两种场景:①用户改过技能本体、选择保留改动,但仍要把它关联到新的 agent;
+    /// ②修复断链。走 [`Self::install`] 会先 `reset_dir` 清空重建,那正是要避开的事。
+    pub fn link_only(
+        &self,
+        dir_slug: &str,
+        agent_names: &[String],
+        on_occupied: OnOccupied,
+    ) -> Result<InstallReport, AppError> {
+        let canonical = self.canonical_dir(dir_slug)?;
+        if !canonical.is_dir() {
+            return Err(AppError::new(
+                "FS_MISSING_SKILL",
+                "这个技能的本体不在了,请重新获取一次",
+            )
+            .with_detail(format!("canonical dir absent: {}", canonical.display())));
+        }
+        let targets = self.link_targets(agent_names)?;
+        let dir_name = dir_name_of(&canonical);
+        Ok(InstallReport {
+            dir_name: dir_name.clone(),
+            canonical_dir: canonical.to_string_lossy().into_owned(),
+            links: self.link_all(&canonical, &dir_name, targets, on_occupied),
+        })
+    }
+
+    fn link_all(
+        &self,
+        canonical: &Path,
+        dir_name: &str,
+        targets: Vec<LinkTarget>,
+        on_occupied: OnOccupied,
+    ) -> Vec<LinkReport> {
+        targets
             .into_iter()
             .map(|t| {
-                let link = t.dir.join(&dir_name);
-                let result =
-                    match fsops::link_dir(&canonical, &link, &self.chain, on_occupied) {
-                        Ok(LinkOutcome::Created(kind)) => LinkResult::Linked {
-                            mode: kind.as_str().to_string(),
-                        },
-                        Ok(LinkOutcome::Unchanged(kind)) => LinkResult::Unchanged {
-                            mode: kind.as_str().to_string(),
-                        },
-                        Ok(LinkOutcome::SameLocation) => LinkResult::SameLocation,
-                        Err(error) => LinkResult::Failed { error },
-                    };
+                let link = t.dir.join(dir_name);
+                let result = match fsops::link_dir(canonical, &link, &self.chain, on_occupied) {
+                    Ok(LinkOutcome::Created(kind)) => LinkResult::Linked {
+                        mode: kind.as_str().to_string(),
+                    },
+                    Ok(LinkOutcome::Unchanged(kind)) => LinkResult::Unchanged {
+                        mode: kind.as_str().to_string(),
+                    },
+                    Ok(LinkOutcome::SameLocation) => LinkResult::SameLocation,
+                    Err(error) => LinkResult::Failed { error },
+                };
                 LinkReport {
                     dir: t.dir.to_string_lossy().into_owned(),
                     agents: t.agents,
                     result,
                 }
             })
-            .collect();
-
-        Ok(InstallReport {
-            dir_name,
-            canonical_dir: canonical.to_string_lossy().into_owned(),
-            links,
-        })
+            .collect()
     }
 
     /// 卸载:按记账逐个解除关联,`delete_canonical` 由前端确认后传入。
@@ -410,6 +449,40 @@ mod tests {
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    // ---- 只建链,不碰本体 ----
+
+    #[test]
+    fn link_only_leaves_the_skill_body_untouched() {
+        // 「保留本地改动」走的就是这条路:用户改过的内容必须一个字节都不动
+        let (tmp, reg, env) = setup();
+        let inst = Installer::new(&reg, &env);
+        inst.install("weekly-report", &payload(), &[], OnOccupied::Fail).unwrap();
+
+        let canonical = tmp.path().join(".agents").join("skills").join("weekly-report");
+        fs::write(canonical.join("SKILL.md"), "我改过的内容").unwrap();
+
+        inst.link_only("weekly-report", &names(&["claude-code"]), OnOccupied::Fail).unwrap();
+
+        assert_eq!(fs::read_to_string(canonical.join("SKILL.md")).unwrap(), "我改过的内容");
+        // 链接照建
+        assert!(tmp.path().join(".claude").join("skills").join("weekly-report").exists());
+    }
+
+    #[test]
+    fn link_only_refuses_when_the_skill_body_is_gone() {
+        // 本体不在还去建链,会造出一堆指向空处的坏链接。这道守卫在获取流程里不可达
+        // (那条路上 canonical 不存在就是"全新安装"),但任务 10 的"修复断链"会直接调它。
+        let (_tmp, reg, env) = setup();
+        let inst = Installer::new(&reg, &env);
+
+        let err = inst
+            .link_only("never-installed", &names(&["claude-code"]), OnOccupied::Fail)
+            .unwrap_err();
+
+        assert_eq!(err.code, "FS_MISSING_SKILL");
+        assert!(err.message.contains("重新获取"), "{}", err.message);
     }
 
     // ---- canonical 落盘 ----

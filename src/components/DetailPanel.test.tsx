@@ -6,7 +6,22 @@ import { DetailPanel, stripFrontmatter } from "./DetailPanel";
 import type { SkillDetail } from "@/lib/ipc";
 import { useStoreIndex } from "@/store/store-index";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+// agent 探测走 IPC:mock 掉才能让"点安装 → 展开勾选"这条路走通
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (cmd: string) => {
+    if (cmd === "agents_detected") {
+      return {
+        agents: [
+          { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true },
+        ],
+        canonicalDir: "~/.agents/skills",
+      };
+    }
+    if (cmd === "installed_list") return [];
+    return null;
+  }),
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 const openUrl = vi.fn();
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: (url: string) => openUrl(url) }));
 
@@ -151,12 +166,16 @@ describe("DetailPanel", () => {
     expect(screen.queryByText("含可执行脚本")).not.toBeInTheDocument();
   });
 
-  it("底部安装按钮置灰并说明原因", () => {
+  it("底部安装按钮点开 agent 勾选,而不是直接开装", async () => {
     open();
     render(<DetailPanel />);
-    const install = screen.getByRole("button", { name: /^安装 —/ });
-    expect(install).toBeDisabled();
-    expect(screen.getByText(/获取功能将在下个版本开放/)).toBeInTheDocument();
+    const install = screen.getByRole("button", { name: "安装" });
+    expect(install).toBeEnabled();
+
+    await userEvent.click(install);
+    // 先让用户看清会装到哪儿去,再确认 —— 不做"点一下就动磁盘"
+    expect(await screen.findByText("选择要启用的 AI 工具")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确认安装" })).toBeInTheDocument();
   });
 
   it("关闭按钮收起面板", async () => {

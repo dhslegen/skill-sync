@@ -177,14 +177,40 @@ pub struct ForkResult {
     pub already_existed: bool,
 }
 
+/// 压缩包里的一个文件。
+#[derive(Debug, Clone)]
+pub struct ArchiveEntry {
+    pub bytes: Vec<u8>,
+    /// zip 里记录的 unix 权限位。
+    ///
+    /// **2026-07-30 对 Gitea 1.25.3 实测**(fixture:`tests/fixtures/gitea-archive-modes.zip`,
+    /// 由真实 push + archive 下载得到):Gitea **只给可执行文件写 `0o755`,普通文件的
+    /// external_attr 高位是 `0`**——是"没记 mode",不是 `0o644`。
+    /// 所以判定必须是"带 `0o111` 任一位才算可执行",不能拿 `0o644` 当基准去比。
+    pub unix_mode: Option<u32>,
+}
+
+impl ArchiveEntry {
+    /// 是否该以可执行位落盘。
+    pub fn is_executable(&self) -> bool {
+        self.unix_mode.is_some_and(|m| m & 0o111 != 0)
+    }
+}
+
 /// 下载下来的仓库压缩包解开后的内容。
 pub struct RepoArchive {
     /// 压缩包顶层目录名。Gitea 用仓库名(`team-skills/`),GitHub 用 `<repo>-<ref>/`,
     /// 因此扫描技能时的起始路径必须以此为准,不能写死。
     pub root: String,
+    /// 仅文本文件,供 [`crate::core::skills::discover_skills`] 扫描。
     pub tree: crate::core::skills::MemTree,
     /// 全部文件的逻辑路径,用于文件树展示与"含可执行脚本"判断。
     pub files: Vec<String>,
+    /// 全部文件的原始字节与权限位。
+    ///
+    /// 安装要靠它:`tree` 里没有二进制文件(带图片或模板包的技能会被装成残缺品),
+    /// 也没有权限位(`run.sh` 会被装成不可执行)。展示只用 `tree` 就够,落盘必须用这里。
+    pub entries: std::collections::BTreeMap<String, ArchiveEntry>,
 }
 
 pub struct GiteaClient {
@@ -484,6 +510,7 @@ pub fn unzip_archive(bytes: &[u8]) -> Result<RepoArchive, AppError> {
 
     let mut tree = crate::core::skills::MemTree::new();
     let mut files = Vec::new();
+    let mut entries: std::collections::BTreeMap<String, ArchiveEntry> = Default::default();
     let mut root: Option<String> = None;
 
     for i in 0..zip.len() {
@@ -507,19 +534,30 @@ pub fn unzip_archive(bytes: &[u8]) -> Result<RepoArchive, AppError> {
         }
         files.push(path.clone());
 
+        // 两处都不能省:
+        // 1. `& 0o777` —— zip crate 给的是完整 st_mode(可执行文件是 0o100755,高位是文件类型),
+        //    不掩掉就会把 0o100755 一路传给 set_permissions,且记进日志的值也是错的;
+        // 2. `filter(!= 0)` —— Gitea 只对可执行文件写 mode,普通文件给 0(实测)。
+        //    那是"未记录",要当成 None;当成 0o000 落盘,文件会连读都读不了。
+        let unix_mode = entry.unix_mode().map(|m| m & 0o777).filter(|m| *m != 0);
+
         use std::io::Read;
-        let mut buf = Vec::new();
-        if entry.read_to_end(&mut buf).is_ok() {
-            if let Ok(text) = String::from_utf8(buf) {
-                tree = tree.with_file(&path, &text);
-            }
+        let mut bytes = Vec::new();
+        if entry.read_to_end(&mut bytes).is_err() {
+            continue;
         }
+        // 文本文件同时进 tree,供技能发现扫描;二进制只进 entries
+        if let Ok(text) = std::str::from_utf8(&bytes) {
+            tree = tree.with_file(&path, text);
+        }
+        entries.insert(path, ArchiveEntry { bytes, unix_mode });
     }
 
     Ok(RepoArchive {
         root: root.unwrap_or_default(),
         tree,
         files,
+        entries,
     })
 }
 

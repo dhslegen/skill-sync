@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { CommandPalette } from "@/components/CommandPalette";
+import { ConflictDialog } from "@/components/ConflictDialog";
 import { DetailPanel } from "@/components/DetailPanel";
 import { Sidebar } from "@/components/Sidebar";
 import { Toolbar } from "@/components/Toolbar";
@@ -8,6 +9,7 @@ import { useDesktopChrome } from "@/hooks/useDesktopChrome";
 import { t } from "@/i18n";
 import { call } from "@/lib/ipc";
 import { StorePage } from "@/pages/StorePage";
+import { useInstall } from "@/store/install";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
@@ -28,6 +30,7 @@ export default function App() {
     // 商店索引与登录态并行拉:技能库公开可匿名读,浏览不必等登录查完
     void useStoreIndex.getState().load();
     void useSession.getState().refresh();
+    void useInstall.getState().refreshInstalled();
     void call<AppInfo>("app_info").then(setInfo).catch(() => {});
   }, []);
 
@@ -53,6 +56,7 @@ export default function App() {
 
       <DetailPanel />
       <CommandPalette />
+      <ConflictDialog />
     </div>
   );
 }
