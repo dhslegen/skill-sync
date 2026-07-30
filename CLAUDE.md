@@ -6,8 +6,13 @@
 - Tauri 2.x + Rust (edition 2021, stable toolchain) / 前端 React 19 + TypeScript + Vite(假设:交接包草案写 React 18,但 create-tauri-app 与 shadcn/ui Base UI 底座当前默认 React 19,按 19 执行)
 - 样式 Tailwind v4(`@theme` token,已接入);包管理 pnpm;Rust 侧 workspace: src-tauri/
 - Rust 侧已接入:reqwest(rustls)、serde、keyring(按平台指定原生后端)、saphyr(YAML)、zip、sha2、getrandom、url
-- **已选型但尚未引入**(到对应任务再装,勿以为已可用):状态管理 Zustand、
-  UI 组件库 shadcn/ui(Base UI 底座)+ tweakcn 换肤、日志 tracing + 滚动文件
+- 前端已接入(任务 8):Zustand、cmdk(命令面板)、lucide-react、react-markdown、clsx + tailwind-merge(`lib/cn.ts`)
+- **已选型但尚未引入**(到对应任务再装,勿以为已可用):日志 tracing + 滚动文件
+- **关于 shadcn/ui**(C-UI 拍板):任务 8 只引入了它的**基础设施**(`cn()` 工具 + CSS 变量换肤),
+  组件目录没建。原因是 UI-Demo 已把 card/chip/24px 按钮的形态定死,用 shadcn 默认样式再逐个剥
+  (删 `shadow-sm`、压 h-10→h-8、收 Card padding)比直接照 Demo 写更费事。
+  **假设**:设置页表单与向导那类真正需要焦点管理/ARIA 的组件,到对应任务再 `npx shadcn add` 逐个加。
+  交互组件的键盘与焦点行为目前是手写的,并有测试钉住(Esc/Tab/aria-*)。
 
 ## 架构铁律
 1. 所有业务逻辑在 Rust core(src-tauri/src/core/),前端只做展示与交互;**前端不直接发任何 HTTP 请求**
@@ -35,7 +40,14 @@ pnpm verify:lock       # 同上,录制 .skill-lock.json(v3)的真实读写行为
 
 ## 目录结构
 ```
-src/                 # React 前端(目前只有 i18n/ 与 styles/,页面随任务 8 起建)
+src/
+  i18n/              # ✅ 文案资源 + t() 插值;测试里带术语与禁 emoji 的自动门
+  styles/global.css  # ✅ 设计 token、dark: 变体绑定 data-theme、.md/.skill-tint 等少量非 utility 样式
+  lib/               # ✅ ipc(唯一 invoke 通道 + core 返回类型)、format、search、tint、cn
+  store/             # ✅ Zustand:appearance(主题/强调色)、store-index(商店)、session(登录)、ui(页/面板/IME)
+  components/        # ✅ Sidebar/Toolbar/SearchBox/SkillCard/InstallButton/DetailPanel/CommandPalette/Markdown/Icon
+  pages/StorePage.tsx  # ✅ 商店页
+  hooks/             # ✅ useDesktopChrome(快捷键 + 右键拦截)
 src-tauri/src/
   core/builtin.rs    # ✅ 编译期注入的常量(地址/ClientID/仓库坐标)
   core/agents.rs     # ✅ agent 注册表加载与探测(数据在 resources/agents.json)
@@ -47,6 +59,7 @@ src-tauri/src/
   core/fsops.rs      # ✅ 链接原语:降级链、自指防护、链接健康态、安全复制/删除
   core/state.rs      # ✅ config.json/state.json + schema 版本闸门 + 原子写
   core/skill_lock.rs # ✅ npx skills 的 .skill-lock.json(v3)双写,外部契约
+  core/store.rs      # ✅ 商店索引:压缩包→技能发现→可离线复用的缓存 + 前端 DTO
   core/registry.rs   # ⬜ 仓库源管理(内建 Gitea + 自定义)
   core/github.rs     # ⬜ GitHub client(M3 前留空壳)
   commands.rs        # Tauri IPC command 定义(薄壳,逻辑在 core)
@@ -79,6 +92,17 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 - core 模块单测覆盖:installer 降级链、SKILL.md 解析边界、state 迁移、同名预检三分支
 - Gitea client 用 wiremock-rs 模拟;e2e 用 docker compose 起 gitea(见 fixtures/)
 - Windows 相关(junction、路径、CRLF)必须在 Windows CI runner 上跑,不得只测 macOS
+- **写完测试必做注入验证**(本项目最有价值的一条实践):故意改坏实现,确认对应测试真的变红。
+  截至任务 8 已抓出 6 处空转测试,每一处都属于下面这三种写法之一——写测试时优先自查:
+  1. **同一条规则查了两遍** → 其中一遍永远不触发,改坏也不红(store.rs 的 schemaVersion、
+     fsops 的链接位置守卫、format.ts 里多余的 `Math.max(0, …)`)。发现即删掉多余那道。
+  2. **断言只查"不存在"** → 区分不了"字段被省略"和"字段名拼错"
+     (`assert!(json.get("new_branch").is_none())` 放过了 `newBranch`,见下面「关键事实」)。
+     要么断言键的完整集合,要么正面断言值。
+  3. **fixture 让两个不同概念取了同值** → 它们的差别就测没了
+     (`name: weekly-report` + 目录名 `weekly-report`,让"安装目录名取目录名而非 name"失去保护)。
+- 前端测试用 vitest + jsdom(`vitest.config.ts`,**注意它优先于 vite.config.ts**,后者里的
+  `test` 字段读不到)。IME 组合输入、快捷键让路、不渲染不可信 HTML 这几条都有专门用例。
 
 ## 关键事实(已实测确认,勿按文档旧说法重新推导)
 
@@ -90,6 +114,15 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
   直推仅在 main 未保护时可用;纯只读用户走不通开分支,须 fork 后提交审核(见 core/gitea.rs 权限矩阵)
 - 真实布局 `skills/<slug>/SKILL.md`;**2026-07-30 实测为 20 个技能**(交接包写的 8 个是更早的快照),
   发现规则零跳过全部解析成功
+
+**Gitea 请求体的字段名是 snake_case,不是驼峰**(任务 8 撞出的真实缺陷,已修)
+- `ChangeFilesRequest` 原本带 `#[serde(rename_all = "camelCase")]`,`new_branch` 因此被发成
+  `newBranch`。Gitea 对不认识的字段**静默忽略**,于是「先开分支再提交审核」会悄悄退化成
+  **直推 main**——决策 C3 的主路径整个失效,而且不报任何错。
+- 发给 Gitea 的请求体结构一律**不加 `rename_all`**。现有字段大多是单个单词、驼峰化后不变,
+  所以这个坑只在有人加带下划线的字段时才炸,平时看不出来。
+- 当时的单测写的是 `assert!(json.get("new_branch").is_none())`(针对 `new_branch: None` 的场景),
+  这句话在字段被拼成 `newBranch` 时同样通过,拼错完全没被拦住。现已补上正面断言。
 
 
 **命名与目录**
@@ -144,9 +177,9 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 
 ## 当前进度(2026-07-30)
 
-M1 任务 1–7 已完成并提交。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
-本机测试 **173 通过**、clippy 干净;双平台 CI 已真实跑通(Windows 上跑 123 个单测,
-比 macOS 少的 8 个是 `cfg(unix)` 用例,已逐一核对)。
+M1 任务 1–8 已完成并提交。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
+本机测试 **Rust 200 通过 + 前端 84 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
+(Windows 上少跑的 8 个是 `cfg(unix)` 用例,已逐一核对)。
 
 | 任务 | 状态 | 关键产物 |
 |---|---|---|
@@ -157,10 +190,15 @@ M1 任务 1–7 已完成并提交。远端 `origin` = github.com/dhslegen/skill
 | 5 登录 | ✅ | OAuth PKCE + 回环回调 + 钥匙串;**登录界面留到任务 8 随外壳一起做** |
 | 6 installer 链接层 | ✅ | fsops 降级链/自指防护/健康态 + installer 编排;40 单测,4 处注入验证 |
 | 7 state 双写 | ✅ | state/config schema 闸门 + 原子写;lock 双写对上游做**字节级**差分;`npx skills list` 实测可见 |
-| 8 商店页 | ⬜ | **下一个任务** |
-| 9–13 | ⬜ | 获取流程 / 我的技能 / 分享 / 向导 / 打包 |
+| 8 商店页 | ✅ | core/store.rs 索引缓存(离线可浏览)+ 外壳/商店页/详情面板/命令面板;9+12 处注入验证 |
+| 9 获取流程 | ⬜ | **下一个任务**:接 `skill_install`,并把 contentHash 守卫接进去(见下) |
+| 10–13 | ⬜ | 我的技能 / 分享 / 向导 / 打包 |
 
 ### 已知待处理
+- **商店页的安装按钮是刻意不接线的**(任务 9 才接):三档状态机(安装/已启用/更新)组件与测试都在,
+  但按钮 `disabled`、点卡片只打开详情。原因就是下面这条——`Installer::install` 会抹掉用户改动。
+  接线时必须同时:①接上 contentHash 守卫 ②给 `installed` 提供真实数据源(现在恒为空集,
+  所以运行时只会出现"安装"那一档)。
 - **`Installer::install` 仍会无条件清空重建 canonical**(任务 9 获取流程必须接上守卫):
   任务 7 已备好料——`state.installed[].contentHash` 与 `fsops::dir_content_hash`,
   两者不符即说明用户改过本体。但**把它接进获取/更新流程是任务 9 的事**,目前还没有调用方在用。
@@ -177,5 +215,22 @@ M1 任务 1–7 已完成并提交。远端 `origin` = github.com/dhslegen/skill
 - **系统代理会拦截内网请求**:企业机器普遍配了 `http_proxy`,内网 Gitea 若不在 `NO_PROXY` 中,
   用户会在登录第一步遇到看不懂的失败。任务 13 需二选一:随包设免代理,或部署文档要求 IT 配置。
   细节见 `core/gitea.rs` 模块头。
+- **商店卡片上没有作者、也没有安装量**(任务 8 的假设,见 `core/store.rs` 模块头):
+  frontmatter 只有 name/description/metadata.internal,而逐技能的提交人归因要对每个目录各发
+  一次 commits 请求,50 个技能撑不住首屏 <2s。UI-Demo 里那两栏因此留空——**不编造**。
+  安装量本就是 C5 预留字段,等 M4 埋点服务。若以后要作者,需先给 gitea.rs 加 commits API
+  并想清楚 50 次请求怎么摊。
+- **UI-Demo 的分类 chip(文档/代码/数据/办公)换成了"全部/未安装/已安装"**(任务 8 的假设):
+  SKILL.md 里没有分类字段,硬造分类等于在界面上撒谎。形态与密度保持 Demo 原样。
+  若以后要分类,需要技能库侧先约定 frontmatter 字段或 `curated.json`。
+- **任务 8 的性能数字来自 loopback docker fixture,不是内网真机**:
+  53 个技能实测冷启动 76.6ms、缓存命中 28.1ms(`cargo test --test store_live -- --nocapture`),
+  远低于 DoD 的 2s / 300ms。但那是本机 docker,真实内网要加网络往返与更大的压缩包。
+  `tests/store_index.rs` 里的 300ms 断言跑在 wiremock 上、进 CI;`tests/store_live.rs` 需要
+  `./fixtures/init.sh`,环境不在时自动跳过(会往 fixture 建 `store-perf-50` 分支,幂等复用)。
+- **Windows 平台外观细节未做**:原生窗口控制(tauri-plugin-decorum)、侧边栏 vibrancy、
+  Windows 实色化都留给任务 12/13;任务 8 只用 `data-tauri-drag-region` 让出 44px 顶栏。
+- **外观偏好目前存 localStorage**(任务 8 的假设):`skillsync.theme` / `skillsync.accent`。
+  设置页要落进 `config.json` 才算跨机器,那是设置页所在任务的事——本任务不动 config 的 schema。
 - 本机 Rust 环境需走镜像:`RUSTUP_DIST_SERVER` 用清华、crates.io 用 rsproxy(已配在 `~/.cargo/config.toml`);
   `~/.cargo/bin` 不在非交互 shell 的 PATH 中,跑 cargo 前需 `export PATH="$HOME/.cargo/bin:$PATH"`。

@@ -97,8 +97,11 @@ pub enum FileOperation {
 }
 
 /// 一次提交里的单个文件改动。
+///
+/// **不加 `rename_all`**:这是发给 Gitea 的请求体,它的字段名是 snake_case。
+/// 现有字段恰好都是单个单词、驼峰化后不变,所以加了也看不出问题
+/// ——直到有人加一个带下划线的字段(见 [`ChangeFilesRequest`] 上的教训)。
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct FileChange {
     pub operation: FileOperation,
     pub path: String,
@@ -130,8 +133,14 @@ impl FileChange {
     }
 }
 
+/// 多文件单次提交的请求体。
+///
+/// **不加 `rename_all`**:Gitea 收的是 snake_case。这里原本写着
+/// `rename_all = "camelCase"`,`new_branch` 因此被发成 `newBranch`;Gitea 对不认识的字段
+/// 静默忽略,于是"先开分支再提交审核"会**悄悄退化成直推 main**(决策 C3 的主路径失效)。
+/// 当时的单测只断 `json.get("new_branch").is_none()` —— 那句话在字段被拼成 `newBranch` 时
+/// 同样成立,所以拼错完全没被拦住。任务 8 对真 Gitea 灌数据时才撞出来。
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ChangeFilesRequest {
     pub branch: String,
     /// 目标分支不存在时先从 branch 开出来——走提交审核时用。
@@ -543,6 +552,29 @@ mod tests {
         assert_eq!(json["files"][0]["operation"], "create");
         // 新建文件不带 sha,否则 Gitea 会拒绝
         assert!(json["files"][0].get("sha").is_none());
+        // 请求体里除了这四个键不该多出别的(拼错的字段名会以"多出一个键"的形式露出来)
+        let keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["branch", "message", "files"]);
+    }
+
+    #[test]
+    fn change_files_request_spells_new_branch_the_way_gitea_expects() {
+        // 这条测试是补上来的:原先只有上面那句 `get("new_branch").is_none()`,
+        // 它在字段被序列化成 `newBranch` 时**同样通过**,于是 rename_all 把
+        // "开分支提交审核"悄悄变成"直推 main"却没有任何测试变红。
+        // 断言必须查"键在、且正是这个拼法"。
+        let req = ChangeFilesRequest {
+            branch: "main".into(),
+            new_branch: Some("share/weekly-report".into()),
+            message: "保存".into(),
+            files: vec![FileChange::create("a.md", b"x")],
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["new_branch"], "share/weekly-report");
+        assert!(
+            json.get("newBranch").is_none(),
+            "驼峰拼法会被 Gitea 静默忽略,提交审核会退化成直推 main"
+        );
     }
 
     #[test]

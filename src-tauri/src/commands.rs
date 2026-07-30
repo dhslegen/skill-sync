@@ -3,9 +3,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::agents::{AgentRegistry, DetectedAgent, SystemEnv};
-use crate::core::auth::{KeyringStore, OAuthConfig};
+use crate::core::auth::{self, KeyringStore, OAuthConfig};
 use crate::core::builtin;
+use crate::core::gitea::{GiteaClient, RepoRef};
 use crate::core::session::{self, BrowserOpener, SessionStatus, SessionUser};
+use crate::core::state;
+use crate::core::store::{self, SkillDetail, StoreIndexView};
 use crate::error::AppError;
 
 /// 应用基础信息,供前端启动时展示与自检。
@@ -146,4 +149,164 @@ pub async fn auth_status(args: RegistryArg) -> Result<SessionStatus, AppError> {
 #[tauri::command]
 pub fn auth_logout(args: RegistryArg) -> Result<(), AppError> {
     session::logout(&KeyringStore, args.id())
+}
+
+// ============================================================ 商店
+
+/// 解析商店要访问的技能库坐标。
+///
+/// **刻意不看 OAuth 配置**:技能库公开可匿名读(已实测),商店浏览与详情预览先于登录。
+/// 若拿 [`builtin::builtin_configured`] 当门,只缺 Client ID 的构建就会连商店都打不开
+/// ——那等于把"先逛后登录"这条产品前提废掉。抽成接受参数的纯函数以便单测。
+fn store_target(
+    gitea_url: Option<&str>,
+    repo: Option<(&str, &str)>,
+    branch: &str,
+) -> Result<(String, RepoRef), AppError> {
+    let Some(base_url) = gitea_url.filter(|u| !u.is_empty()) else {
+        return Err(AppError::new(
+            "REPO_NOT_CONFIGURED",
+            "这个版本没有配置公司技能库,请向 IT 索取正式安装包",
+        ));
+    };
+    let Some((owner, repo)) = repo else {
+        return Err(AppError::new(
+            "REPO_NOT_CONFIGURED",
+            "这个版本没有指定公司技能库,请向 IT 索取正式安装包",
+        ));
+    };
+    Ok((
+        base_url.to_string(),
+        RepoRef {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            branch: branch.to_string(),
+        },
+    ))
+}
+
+fn builtin_store_target() -> Result<(String, RepoRef), AppError> {
+    store_target(
+        builtin::BUILTIN_GITEA_URL,
+        builtin::builtin_repo(),
+        builtin::builtin_branch(),
+    )
+}
+
+/// 商店索引的缓存落点。与 config/state 同目录(`~/.skillsync`)。
+fn index_cache_file(registry_id: &str) -> Result<std::path::PathBuf, AppError> {
+    let dir = state::Store::for_env(&SystemEnv).ok_or_else(|| {
+        AppError::new("FS_NO_HOME", "找不到用户主目录,无法保存本地数据")
+    })?;
+    Ok(store::cache_path(dir.dir(), registry_id))
+}
+
+/// M1 商店一律匿名读:内建技能库公开可读(已实测),而带上一个可能已过期的令牌
+/// 反而会把本来能成的匿名请求变成 401。私有技能库源到任务 11 支持自定义源时再接凭证。
+fn anonymous_client(base_url: String) -> Result<GiteaClient, AppError> {
+    Ok(GiteaClient::with_http(base_url, None, http_client()?))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreIndexArgs {
+    #[serde(default)]
+    pub registry_id: Option<String>,
+    /// 用户手动点刷新:跳过"版本没变就不下载"的判定。
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[tauri::command]
+pub async fn store_index(args: StoreIndexArgs) -> Result<StoreIndexView, AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    let (base_url, repo) = builtin_store_target()?;
+    let cache = index_cache_file(registry_id)?;
+    let (index, outcome) = store::refresh_index(
+        &anonymous_client(base_url)?,
+        &repo,
+        registry_id,
+        &cache,
+        args.force,
+        auth::now_unix(),
+    )
+    .await?;
+    Ok(index.to_view(outcome.from_cache, outcome.offline))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreDetailArgs {
+    #[serde(default)]
+    pub registry_id: Option<String>,
+    /// 技能库中的技能目录名(卡片上展示的 slug 后半段)。
+    pub dir_slug: String,
+}
+
+#[tauri::command]
+pub async fn store_skill_detail(args: StoreDetailArgs) -> Result<SkillDetail, AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    let (base_url, repo) = builtin_store_target()?;
+    let cache = index_cache_file(registry_id)?;
+
+    // 详情走缓存:打开面板不该再等一次网络往返。
+    if let Some(detail) = store::load_cache(&cache)
+        .filter(|index| index.is_for(registry_id, &repo))
+        .and_then(|index| index.detail(&args.dir_slug))
+    {
+        return Ok(detail);
+    }
+
+    // 缓存里没有(首次进入、或缓存刚被丢弃):刷一次再找。
+    let (index, _) = store::refresh_index(
+        &anonymous_client(base_url)?,
+        &repo,
+        registry_id,
+        &cache,
+        false,
+        auth::now_unix(),
+    )
+    .await?;
+    index.detail(&args.dir_slug).ok_or_else(|| {
+        AppError::new(
+            "REPO_NOT_FOUND",
+            "这个技能已不在公司技能库中,请返回列表刷新后再试",
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn store_target_does_not_depend_on_oauth_configuration() {
+        // 本函数的签名里根本没有 client_id 这个参数——这就是"商店浏览不依赖登录配置"
+        // 这条产品前提的机器可读证据。改成走 builtin_configured() 会让本测试无从表达。
+        let (url, repo) = store_target(
+            Some("http://gitea.internal:3000"),
+            Some(("skills", "skills")),
+            "main",
+        )
+        .unwrap();
+        assert_eq!(url, "http://gitea.internal:3000");
+        assert_eq!(repo.owner, "skills");
+        assert_eq!(repo.repo, "skills");
+        assert_eq!(repo.branch, "main");
+    }
+
+    #[test]
+    fn missing_builtin_config_gives_an_actionable_message() {
+        for (url, repo) in [
+            (None, Some(("skills", "skills"))),
+            (Some(""), Some(("skills", "skills"))),
+            (Some("http://gitea.internal:3000"), None),
+        ] {
+            let err = store_target(url, repo, "main").unwrap_err();
+            assert_eq!(err.code, "REPO_NOT_CONFIGURED");
+            // 文案规范:必须给下一步动作,且不含 git 术语
+            assert!(err.message.contains("IT"), "{}", err.message);
+            assert!(!err.message.contains("仓库"), "{}", err.message);
+        }
+    }
 }

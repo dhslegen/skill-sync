@@ -12,7 +12,9 @@ pub fn run() {
             commands::auth_login_oauth,
             commands::auth_login_token,
             commands::auth_status,
-            commands::auth_logout
+            commands::auth_logout,
+            commands::store_index,
+            commands::store_skill_detail
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

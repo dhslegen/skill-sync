@@ -6,7 +6,18 @@ type MessageKey = keyof typeof zhCN;
 
 const messages: Record<MessageKey, string> = zhCN;
 
-/** 取文案。key 不存在时返回 key 本身(开发期显眼暴露缺失,不抛错阻断渲染)。 */
-export function t(key: MessageKey): string {
-  return messages[key] ?? key;
+export type MessageParams = Record<string, string | number>;
+
+/**
+ * 取文案。`{name}` 占位符按 params 替换;缺的占位符原样保留(开发期显眼暴露)。
+ * key 不存在时返回 key 本身,不抛错阻断渲染。
+ */
+export function t(key: MessageKey, params?: MessageParams): string {
+  const raw: string = messages[key] ?? key;
+  if (!params) return raw;
+  return raw.replace(/\{(\w+)\}/g, (whole, name: string) =>
+    name in params ? String(params[name]) : whole,
+  );
 }
+
+export type { MessageKey };

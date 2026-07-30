@@ -1,6 +1,13 @@
 @import "tailwindcss";
 
 /*
+ * `dark:` 变体必须跟着**用户选的**主题走。Tailwind 默认把它绑到 prefers-color-scheme,
+ * 那样"设置里选浅色、系统是深色"就会出现半深半浅的界面。这里改绑到 <html data-theme>,
+ * 与 initAppearance() 写入的属性对齐(三档模式的解析已经在那里做完了)。
+ */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
  * SkillSync 设计 token(docs/UI设计规范.md §3,视觉基准 docs/SkillSync-UI-Demo.html)。
  * 主题机制:<html data-theme="light|dark" data-accent="clay|teal|ink">,全套走 CSS 变量整体换肤。
  */
@@ -120,4 +127,120 @@ body {
 
 ::selection {
   background: var(--accent-soft);
+}
+
+/*
+ * 以下是 utility class 表达不了的那几处:主题相关的算法色、多行截断、
+ * SKILL.md 的正文排版、滚动条。其余一律用 Tailwind utility。
+ */
+
+/* 技能图标底色:色相由技能名算出(lib/tint.ts),饱和度与亮度按主题各一档。
+   内联样式做不到"跟着主题变",所以色相走自定义属性、成色留在 CSS 里。 */
+.skill-tint {
+  background: hsl(var(--tint-h) 38% 42% / 0.09);
+  color: hsl(var(--tint-h) 46% 32%);
+}
+[data-theme="dark"] .skill-tint {
+  background: hsl(var(--tint-h) 42% 62% / 0.14);
+  color: hsl(var(--tint-h) 48% 64%);
+}
+
+/* 卡片描述固定两行,保证卡片等高、网格不参差 */
+.clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 详情正文是唯一放开选中与文本光标的区域(UI 规范 §6.3 的例外) */
+.selectable {
+  user-select: text;
+  cursor: auto;
+}
+
+/* SKILL.md 渲染。技能内容来自技能库,是不可信输入:react-markdown 默认不渲染裸 HTML,
+   这里也不引 rehype-raw。样式对齐 UI-Demo 的 .md 区块。 */
+.md > :first-child {
+  margin-top: 0;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  font-size: 13.5px;
+  font-weight: 600;
+  margin: 14px 0 6px;
+  color: var(--text);
+}
+.md p,
+.md li {
+  font-size: 12.8px;
+  color: var(--text-2);
+  line-height: 1.7;
+}
+.md ul,
+.md ol {
+  padding-left: 18px;
+  margin: 4px 0;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: var(--surface3);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--text);
+}
+.md pre {
+  background: var(--surface3);
+  border-radius: var(--r-ctl);
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+.md pre code {
+  background: none;
+  padding: 0;
+}
+.md a {
+  color: var(--accent);
+  cursor: pointer;
+}
+.md blockquote {
+  border-left: 2px solid var(--border-strong);
+  padding-left: 10px;
+  margin: 8px 0;
+  color: var(--text-3);
+}
+.md table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12.5px;
+}
+.md th,
+.md td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 5px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }

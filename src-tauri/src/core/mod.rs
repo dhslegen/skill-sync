@@ -12,3 +12,4 @@ pub mod session;
 pub mod skill_lock;
 pub mod skills;
 pub mod state;
+pub mod store;
