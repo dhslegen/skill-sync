@@ -12,7 +12,9 @@
 ## 架构铁律
 1. 所有业务逻辑在 Rust core(src-tauri/src/core/),前端只做展示与交互;**前端不直接发任何 HTTP 请求**
 2. 与 Gitea/GitHub 的一切交互走 REST/GraphQL API,**禁止引入 git2/libgit2/嵌入式 git**
-3. 文件系统操作全部经过 core::fsops 模块(含 symlink→junction→copy 降级链),禁止散落各处直接 std::fs::symlink
+3. 文件系统操作全部经过 core::fsops 模块,禁止散落各处直接 std::fs::symlink / remove_dir_all
+   —— 「symlink→junction→copy」指的是本模块**具备的能力集合**,不是任一平台上的尝试顺序:
+   实际降级链 Windows 是 `[Junction, Copy]`(不试 symlink),POSIX 是 `[Symlink, Copy]`
 4. canonical 目录布局必须与 npx skills 兼容(`~/.agents/skills/` + `~/.agents/.skill-lock.json` 双写)
 5. 内网 Gitea baseUrl 来自编译期环境变量 `SKILLSYNC_BUILTIN_GITEA_URL`,OAuth Client ID 来自 `SKILLSYNC_OAUTH_CLIENT_ID`;**源码中不得出现真实内网地址,不得出现任何 OAuth secret**(公共客户端 + PKCE,无 secret)
 6. 用户可见文案全部走 i18n 资源文件(zh-CN 为主),禁用 git 术语(见 docs/terminology.md):commit→保存、push→分享、pull→获取、repository→技能库、branch/PR→提交审核
@@ -78,14 +80,56 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 - Gitea client 用 wiremock-rs 模拟;e2e 用 docker compose 起 gitea(见 fixtures/)
 - Windows 相关(junction、路径、CRLF)必须在 Windows CI runner 上跑,不得只测 macOS
 
-## 生产环境事实(已实测确认,勿再按文档旧假设推导)
+## 关键事实(已实测确认,勿按文档旧说法重新推导)
+
+**技能库与权限**
 - Gitea **1.25.3**;内建技能库坐标 **`skills/skills`**,默认分支 `main`
   ——设计文档里的 `ai-skills/team-skills` 只是示例,以此为准
 - 技能库**公开可匿名读**:商店浏览与详情预览可以先于登录,登录只是分享与个性化的前提
-- 普通员工对该库是**写权限 + main 受保护**:分享默认走「开分支 + 提交审核」(决策 C3 描述的正是这一档);
+- 普通员工对该库是**写权限 + main 受保护**:分享默认走「开分支 + 提交审核」(决策 C3 的正是这一档);
   直推仅在 main 未保护时可用;纯只读用户走不通开分支,须 fork 后提交审核(见 core/gitea.rs 权限矩阵)
-- 真实仓库布局为 `skills/<名称>/SKILL.md`,8 个技能全部能被发现规则正确解析(冒烟测试已验证)
-- CI 验收矩阵的 Trae **国际版 `trae` 与国内版 `trae-cn` 都要覆盖**(补充决策 C10),两者链接目标不同
+- 真实布局 `skills/<slug>/SKILL.md`;**2026-07-30 实测为 20 个技能**(交接包写的 8 个是更早的快照),
+  发现规则零跳过全部解析成功
+
+
+**命名与目录**
+- 安装目录名取「**仓库中的技能目录名**」,不是 frontmatter 的 `name`——对齐上游远端安装
+  (`installer.ts` 用 `installName: entry.name`)。真实公司技能库现有 **20 个技能,全为 ASCII kebab-case**。
+  `Installer::install(dir_slug, ...)` 的第一个参数就是它。
+- 纯中文名会被 `sanitize_name` 整体折成 `unnamed-skill`,两个中文技能会装进同一目录互相覆盖。
+  installer 对"信息全丢"的名字报 `FS_UNUSABLE_NAME` 拒绝,**不放宽 `sanitize_name`**
+  (它同时决定 `.skill-lock.json` 的键)。任务 11 收编本地技能时会正面撞上,届时定策略。
+
+**建链与解链**
+- **以「目录」为单位,不是按 agent**:多个 agent 共用同一 `globalSkillsDir` 是常态
+  (6 个共用 canonical、zencoder 与 zenflow 共用),按 agent 逐个解链会删掉别人还在用的目录。
+  用 `AgentRegistry::group_by_global_dir`,有测试钉住该契约。
+- **universal agent 全局安装不建链**:`skillsDir == ".agents/skills"` 的(含 cursor/codex)
+  落在 canonical 即可见;只有 claude-code/trae 这类才需要。判定用 `global_install_needs_link()`。
+- **canonical 永不作为建链目标**。真实可达场景:`CLAUDE_CONFIG_DIR` 指到 `~/.agents` 时
+  claude-code 的目录恰好等于 canonical,若当成目标,解链就等于删技能本体。
+- Windows 用 `junction` crate(2.0,MIT,免提权,delete 只摘 reparse point)。
+
+**外部契约 `.skill-lock.json`(npx skills,v3)**
+- **落点有两个**:`XDG_STATE_HOME` 设了就是 `$XDG_STATE_HOME/skills/.skill-lock.json`,否则才是
+  `~/.agents/.skill-lock.json`。设计文档只写了后者,漏掉会双写到一个 npx skills 根本不看的位置。
+- **上游对不认识的版本会破坏用户数据**(已录进 fixture):v2 → 整份抹掉重建(他人条目、
+  `dismissed`、`lastSelectedAgents` 全没);v4 → 照写不误。本 app 一律**跳过、一个字节不动**。
+- `skillFolderHash` 对非 GitHub 源填**空串**(上游对 well-known 源就这么填,`add.ts:916`)。
+- `serde_json` 必须开 `preserve_order`,否则双写会把用户 lock 的键重排成字母序。
+- 已实证:临时 HOME 下跑真实 `npx skills@1.5.20 list -g --json`,能看到技能、Claude Code 关联,
+  以及我们写进 lock 的 source/sourceUrl/sourceType。
+
+**数据模型偏离设计文档处**
+- `state.json` 的 `links` 按**目录**记(`[{dir, mode}]`),不是设计方案 2.4 的单个 `linkMode`
+  ——同一次安装的不同目录可能落在不同档,且卸载降级复制的副本必须凭这份记账才敢动。
+
+**Windows 验证的边界**
+- 整包 `cargo check --target x86_64-pc-windows-msvc` 在 macOS 上**跑不通**(aws-lc-sys 需 Windows SDK
+  头文件);要验 Windows 分支,把 fsops.rs 单独拷进一个 scratch crate 做定向 check。
+- CI 已在 Windows runner 上真实跑通 junction 建链/摘链,且断言"必须是 junction 而不是 symlink"
+  ——带提权的 runner 也会被挡下(C11 的提权假阳性有护栏了)。但 runner ≠ 普通员工受限机器。
+
 
 ## 编译期注入的常量(源码中不得出现真实值)
 `SKILLSYNC_BUILTIN_GITEA_URL` / `SKILLSYNC_OAUTH_CLIENT_ID` / `SKILLSYNC_BUILTIN_REPO` / `SKILLSYNC_BUILTIN_BRANCH`
@@ -98,10 +142,11 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 - 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
   其余注册表 agent 尽力支持
 
-## 当前进度(2026-07-29)
+## 当前进度(2026-07-30)
 
 M1 任务 1–7 已完成并提交。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
-本机测试 173 通过、clippy 干净;双平台 CI 已真实跑通(差额 8 个是 `cfg(unix)` 用例)。
+本机测试 **173 通过**、clippy 干净;双平台 CI 已真实跑通(Windows 上跑 123 个单测,
+比 macOS 少的 8 个是 `cfg(unix)` 用例,已逐一核对)。
 
 | 任务 | 状态 | 关键产物 |
 |---|---|---|
@@ -114,42 +159,6 @@ M1 任务 1–7 已完成并提交。远端 `origin` = github.com/dhslegen/skill
 | 7 state 双写 | ✅ | state/config schema 闸门 + 原子写;lock 双写对上游做**字节级**差分;`npx skills list` 实测可见 |
 | 8 商店页 | ⬜ | **下一个任务** |
 | 9–13 | ⬜ | 获取流程 / 我的技能 / 分享 / 向导 / 打包 |
-
-### 任务 7 确立的事实
-1. **lock 落点有两个**:`XDG_STATE_HOME` 设了就是 `$XDG_STATE_HOME/skills/.skill-lock.json`,
-   否则才是 `~/.agents/.skill-lock.json`。设计文档只写了后者,漏掉会在设了该变量的机器上双写到
-   一个 `npx skills` 根本不看的位置——等于没写,且悄无声息。
-2. **上游对不认识的版本会破坏用户数据**(已录进 fixture):v2 → 把整份 lock 抹掉重建
-   (他人条目、`dismissed`、`lastSelectedAgents` 全没);v4 → 照写不误。
-   本 app 一律**跳过、一个字节不动**,这是有意分歧,已写成测试。
-3. **`skillFolderHash` 对非 GitHub 源填空串**——上游自己对 well-known 源就是这么填的
-   (`add.ts:916`),不必硬塞一个 sha256 冒充 GitHub tree SHA。
-4. **`serde_json` 必须开 `preserve_order`**,否则双写会把用户 lock 的键重排成字母序。
-5. **DoD 已实证**:临时 HOME 下跑真实 `npx skills@1.5.20 list -g --json`,
-   能看到技能、Claude Code 关联,以及我们写进 lock 的 source/sourceUrl/sourceType。
-6. `state.json` 的 `links` 按**目录**记(`[{dir, mode}]`),不是设计方案 2.4 写的单个 `linkMode`
-   ——同一次安装的不同目录可能落在不同档,且卸载降级复制的副本必须凭这份记账才敢动。
-
-### 任务 6 确立的事实(后续任务直接用,勿重新推导)
-1. **安装目录名取「仓库中的技能目录名」,不是 frontmatter 的 `name`**——对齐上游远端安装
-   (`installer.ts` 用 `installName: entry.name`)。真实公司技能库现有 **20 个技能,全为 ASCII kebab-case**。
-   `Installer::install(dir_slug, ...)` 的第一个参数就是它。
-2. **纯中文名会被 `sanitize_name` 整体折成 `unnamed-skill`**,两个中文技能会装进同一目录互相覆盖。
-   installer 对"信息全丢"的名字直接报 `FS_UNUSABLE_NAME` 拒绝,不擅自放宽 `sanitize_name`
-   (它同时决定 `.skill-lock.json` 的键)。任务 11 收编本地技能时会正面撞上这条,届时定策略。
-3. **Windows 建链用 `junction` crate**(2.0,MIT,免提权,delete 只摘 reparse point)。
-   降级链:Windows `[Junction, Copy]`、POSIX `[Symlink, Copy]`——**Windows 不试 symlink**。
-4. **整包 `cargo check --target x86_64-pc-windows-msvc` 在 macOS 上跑不通**(aws-lc-sys 需 Windows SDK 头文件),
-   要验 Windows 分支只能把 fsops.rs 单独拷进一个 scratch crate 做定向 check。
-
-### 任务 6 之前已知、依然成立的三件事
-1. **建链解链以「目录」为单位,不是按 agent**:多个 agent 共用同一 `globalSkillsDir` 是常态
-   (6 个共用 canonical、zencoder 与 zenflow 共用),按 agent 逐个解链会删掉别人还在用的目录
-   ——直接违反"绝不静默删除用户文件"。`AgentRegistry::group_by_global_dir` 已备好,并有测试钉住该契约。
-2. **universal agent 全局安装不建链**:`skillsDir == ".agents/skills"` 的 agent(含 cursor/codex)
-   技能落在 canonical 即可见;只有 claude-code/trae 这类才需要链接。判定用 `global_install_needs_link()`。
-3. **Windows 是主战场**:junction 为主路径,symlink 需开发者模式,失败要降级复制。
-   C11 记录首台机器的 symlink 成功可能是管理员提权造成的假阳性,需以普通权限复测。
 
 ### 已知待处理
 - **`Installer::install` 仍会无条件清空重建 canonical**(任务 9 获取流程必须接上守卫):
