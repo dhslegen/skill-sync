@@ -17,6 +17,7 @@
     "lint": "eslint .",
     "verify:agents": "node scripts/verify-agents-registry.mjs",
     "verify:discovery": "node scripts/verify-skill-discovery.mjs",
+    "verify:lock": "node scripts/verify-skill-lock.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

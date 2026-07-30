@@ -28,6 +28,7 @@ pnpm lint           # eslint
 cargo clippy -- -D warnings
 pnpm verify:agents     # 与上游 vercel-labs/skills 差分校验 agents.json 并重生成 fixture(需联网)
 pnpm verify:discovery  # 同上,校验技能发现规则
+pnpm verify:lock       # 同上,录制 .skill-lock.json(v3)的真实读写行为
 ```
 
 ## 目录结构
@@ -42,7 +43,8 @@ src-tauri/src/
   core/session.rs    # ✅ 登录态编排(登录/查状态/退出)
   core/installer.rs  # ✅ canonical 落盘 + 按目录建链/解链编排(不碰 state)
   core/fsops.rs      # ✅ 链接原语:降级链、自指防护、链接健康态、安全复制/删除
-  core/state.rs      # ⬜ 任务 7:config/state 读写 + skill-lock 双写 + schema 迁移
+  core/state.rs      # ✅ config.json/state.json + schema 版本闸门 + 原子写
+  core/skill_lock.rs # ✅ npx skills 的 .skill-lock.json(v3)双写,外部契约
   core/registry.rs   # ⬜ 仓库源管理(内建 Gitea + 自定义)
   core/github.rs     # ⬜ GitHub client(M3 前留空壳)
   commands.rs        # Tauri IPC command 定义(薄壳,逻辑在 core)
@@ -98,8 +100,8 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 
 ## 当前进度(2026-07-29)
 
-M1 任务 1–6 已完成并提交。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
-本机测试 151 通过、clippy 干净;**双平台 CI 已首次真实跑通**(macOS 131 / Windows 123 个单测,差额 8 个是 `cfg(unix)` 用例)。
+M1 任务 1–7 已完成并提交。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
+本机测试 173 通过、clippy 干净;双平台 CI 已真实跑通(差额 8 个是 `cfg(unix)` 用例)。
 
 | 任务 | 状态 | 关键产物 |
 |---|---|---|
@@ -109,8 +111,24 @@ M1 任务 1–6 已完成并提交。远端 `origin` = github.com/dhslegen/skill
 | 4 Gitea client | ✅ | REST 原语 + 14 wiremock + 实机全链路;fixture 环境可一键起 |
 | 5 登录 | ✅ | OAuth PKCE + 回环回调 + 钥匙串;**登录界面留到任务 8 随外壳一起做** |
 | 6 installer 链接层 | ✅ | fsops 降级链/自指防护/健康态 + installer 编排;40 单测,4 处注入验证 |
-| 7 state 双写 | ⬜ | **下一个任务** |
-| 8–13 | ⬜ | 商店页 / 获取流程 / 我的技能 / 分享 / 向导 / 打包 |
+| 7 state 双写 | ✅ | state/config schema 闸门 + 原子写;lock 双写对上游做**字节级**差分;`npx skills list` 实测可见 |
+| 8 商店页 | ⬜ | **下一个任务** |
+| 9–13 | ⬜ | 获取流程 / 我的技能 / 分享 / 向导 / 打包 |
+
+### 任务 7 确立的事实
+1. **lock 落点有两个**:`XDG_STATE_HOME` 设了就是 `$XDG_STATE_HOME/skills/.skill-lock.json`,
+   否则才是 `~/.agents/.skill-lock.json`。设计文档只写了后者,漏掉会在设了该变量的机器上双写到
+   一个 `npx skills` 根本不看的位置——等于没写,且悄无声息。
+2. **上游对不认识的版本会破坏用户数据**(已录进 fixture):v2 → 把整份 lock 抹掉重建
+   (他人条目、`dismissed`、`lastSelectedAgents` 全没);v4 → 照写不误。
+   本 app 一律**跳过、一个字节不动**,这是有意分歧,已写成测试。
+3. **`skillFolderHash` 对非 GitHub 源填空串**——上游自己对 well-known 源就是这么填的
+   (`add.ts:916`),不必硬塞一个 sha256 冒充 GitHub tree SHA。
+4. **`serde_json` 必须开 `preserve_order`**,否则双写会把用户 lock 的键重排成字母序。
+5. **DoD 已实证**:临时 HOME 下跑真实 `npx skills@1.5.20 list -g --json`,
+   能看到技能、Claude Code 关联,以及我们写进 lock 的 source/sourceUrl/sourceType。
+6. `state.json` 的 `links` 按**目录**记(`[{dir, mode}]`),不是设计方案 2.4 写的单个 `linkMode`
+   ——同一次安装的不同目录可能落在不同档,且卸载降级复制的副本必须凭这份记账才敢动。
 
 ### 任务 6 确立的事实(后续任务直接用,勿重新推导)
 1. **安装目录名取「仓库中的技能目录名」,不是 frontmatter 的 `name`**——对齐上游远端安装
@@ -134,11 +152,10 @@ M1 任务 1–6 已完成并提交。远端 `origin` = github.com/dhslegen/skill
    C11 记录首台机器的 symlink 成功可能是管理员提权造成的假阳性,需以普通权限复测。
 
 ### 已知待处理
-- **`Installer::install` 会无条件清空重建 canonical**(任务 7 必须补的守卫):用户改过技能本体时,
-  重装/更新会静默抹掉改动,属铁律 7 管的破坏性操作,而 `on_occupied` 只管 agent 目录那一侧。
-  任务 7 须在 state 里记 `contentHash`,不一致时按设计方案 2.5③ 弹三选一
-  (保留本地 / 用远端覆盖 / 把本地改动分享上去),拿到结论再调 install。
-  **在此之前不要把 install 接到自动更新路径上。**
+- **`Installer::install` 仍会无条件清空重建 canonical**(任务 9 获取流程必须接上守卫):
+  任务 7 已备好料——`state.installed[].contentHash` 与 `fsops::dir_content_hash`,
+  两者不符即说明用户改过本体。但**把它接进获取/更新流程是任务 9 的事**,目前还没有调用方在用。
+  在接上之前不要把 install 挂到自动更新路径上。
 - **任务 6 的 DoD 还差"普通权限真机"这一档**(CI 已覆盖的部分见下):
   - ✅ 已验:Windows runner 上 `junction::create` / `remove_dir` 摘链 / `junction::get_target`
     真实执行通过,且建链测试断言"**必须是 junction 而不是 symlink**"——runner 即便有足够权限

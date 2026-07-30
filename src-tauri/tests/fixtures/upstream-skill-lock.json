@@ -1,0 +1,275 @@
+{
+  "upstreamVersion": "v1.5.20",
+  "fixedNow": "2026-07-30T00:00:00.000Z",
+  "scenarios": [
+    {
+      "name": "文件不存在时新建",
+      "initial": null,
+      "ops": [
+        {
+          "add": [
+            "docx-to-markdown",
+            {
+              "source": "skills/skills",
+              "sourceType": "gitea",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills",
+              "ref": "main",
+              "skillPath": "skills/docx-to-markdown/SKILL.md",
+              "skillFolderHash": ""
+            }
+          ]
+        }
+      ],
+      "lockPathUnderHome": ".agents/.skill-lock.json",
+      "xdg": false,
+      "exists": true,
+      "bytes": "{\n  \"version\": 3,\n  \"skills\": {\n    \"docx-to-markdown\": {\n      \"source\": \"skills/skills\",\n      \"sourceType\": \"gitea\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/docx-to-markdown/SKILL.md\",\n      \"skillFolderHash\": \"\",\n      \"installedAt\": \"2026-07-30T00:00:00.000Z\",\n      \"updatedAt\": \"2026-07-30T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {}\n}"
+    },
+    {
+      "name": "v3 文件中新增条目,保留他人条目与未知顶层字段",
+      "initial": "{\n  \"version\": 3,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"vercel-labs/agent-skills\",\n      \"sourceType\": \"github\",\n      \"sourceUrl\": \"https://github.com/vercel-labs/agent-skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"skillFolderHash\": \"aabbccddeeff00112233445566778899aabbccdd\",\n      \"installedAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-02T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {\n    \"findSkillsPrompt\": true\n  },\n  \"lastSelectedAgents\": [\n    \"claude-code\",\n    \"cursor\"\n  ]\n}",
+      "ops": [
+        {
+          "add": [
+            "docx-to-markdown",
+            {
+              "source": "skills/skills",
+              "sourceType": "gitea",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills",
+              "ref": "main",
+              "skillPath": "skills/docx-to-markdown/SKILL.md",
+              "skillFolderHash": ""
+            }
+          ]
+        }
+      ],
+      "lockPathUnderHome": ".agents/.skill-lock.json",
+      "xdg": false,
+      "exists": true,
+      "bytes": "{\n  \"version\": 3,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"vercel-labs/agent-skills\",\n      \"sourceType\": \"github\",\n      \"sourceUrl\": \"https://github.com/vercel-labs/agent-skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"skillFolderHash\": \"aabbccddeeff00112233445566778899aabbccdd\",\n      \"installedAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-02T00:00:00.000Z\"\n    },\n    \"docx-to-markdown\": {\n      \"source\": \"skills/skills\",\n      \"sourceType\": \"gitea\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/docx-to-markdown/SKILL.md\",\n      \"skillFolderHash\": \"\",\n      \"installedAt\": \"2026-07-30T00:00:00.000Z\",\n      \"updatedAt\": \"2026-07-30T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {\n    \"findSkillsPrompt\": true\n  },\n  \"lastSelectedAgents\": [\n    \"claude-code\",\n    \"cursor\"\n  ]\n}"
+    },
+    {
+      "name": "覆盖已有条目:installedAt 保留,updatedAt 刷新",
+      "initial": "{\n  \"version\": 3,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"vercel-labs/agent-skills\",\n      \"sourceType\": \"github\",\n      \"sourceUrl\": \"https://github.com/vercel-labs/agent-skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"skillFolderHash\": \"aabbccddeeff00112233445566778899aabbccdd\",\n      \"installedAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-02T00:00:00.000Z\"\n    },\n    \"docx-to-markdown\": {\n      \"source\": \"skills/skills\",\n      \"sourceType\": \"gitea\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/docx-to-markdown/SKILL.md\",\n      \"skillFolderHash\": \"\",\n      \"installedAt\": \"2026-01-05T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-06T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {\n    \"findSkillsPrompt\": true\n  },\n  \"lastSelectedAgents\": [\n    \"claude-code\",\n    \"cursor\"\n  ]\n}",
+      "ops": [
+        {
+          "add": [
+            "docx-to-markdown",
+            {
+              "source": "skills/skills",
+              "sourceType": "gitea",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills",
+              "ref": "dev",
+              "skillPath": "skills/docx-to-markdown/SKILL.md",
+              "skillFolderHash": ""
+            }
+          ]
+        }
+      ],
+      "lockPathUnderHome": ".agents/.skill-lock.json",
+      "xdg": false,
+      "exists": true,
+      "bytes": "{\n  \"version\": 3,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"vercel-labs/agent-skills\",\n      \"sourceType\": \"github\",\n      \"sourceUrl\": \"https://github.com/vercel-labs/agent-skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"skillFolderHash\": \"aabbccddeeff00112233445566778899aabbccdd\",\n      \"installedAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-02T00:00:00.000Z\"\n    },\n    \"docx-to-markdown\": {\n      \"source\": \"skills/skills\",\n      \"sourceType\": \"gitea\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills\",\n      \"ref\": \"dev\",\n      \"skillPath\": \"skills/docx-to-markdown/SKILL.md\",\n      \"skillFolderHash\": \"\",\n      \"installedAt\": \"2026-01-05T00:00:00.000Z\",\n      \"updatedAt\": \"2026-07-30T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {\n    \"findSkillsPrompt\": true\n  },\n  \"lastSelectedAgents\": [\n    \"claude-code\",\n    \"cursor\"\n  ]\n}"
+    },
+    {
+      "name": "移除条目",
+      "initial": "{\n  \"version\": 3,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"vercel-labs/agent-skills\",\n      \"sourceType\": \"github\",\n      \"sourceUrl\": \"https://github.com/vercel-labs/agent-skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"skillFolderHash\": \"aabbccddeeff00112233445566778899aabbccdd\",\n      \"installedAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-02T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {\n    \"findSkillsPrompt\": true\n  },\n  \"lastSelectedAgents\": [\n    \"claude-code\",\n    \"cursor\"\n  ]\n}",
+      "ops": [
+        {
+          "add": [
+            "docx-to-markdown",
+            {
+              "source": "skills/skills",
+              "sourceType": "gitea",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills",
+              "ref": "main",
+              "skillPath": "skills/docx-to-markdown/SKILL.md",
+              "skillFolderHash": ""
+            }
+          ]
+        },
+        {
+          "remove": "docx-to-markdown"
+        }
+      ],
+      "lockPathUnderHome": ".agents/.skill-lock.json",
+      "xdg": false,
+      "exists": true,
+      "bytes": "{\n  \"version\": 3,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"vercel-labs/agent-skills\",\n      \"sourceType\": \"github\",\n      \"sourceUrl\": \"https://github.com/vercel-labs/agent-skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"skillFolderHash\": \"aabbccddeeff00112233445566778899aabbccdd\",\n      \"installedAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-02T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {\n    \"findSkillsPrompt\": true\n  },\n  \"lastSelectedAgents\": [\n    \"claude-code\",\n    \"cursor\"\n  ]\n}"
+    },
+    {
+      "name": "移除不存在的条目",
+      "initial": "{\n  \"version\": 3,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"vercel-labs/agent-skills\",\n      \"sourceType\": \"github\",\n      \"sourceUrl\": \"https://github.com/vercel-labs/agent-skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"skillFolderHash\": \"aabbccddeeff00112233445566778899aabbccdd\",\n      \"installedAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-02T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {\n    \"findSkillsPrompt\": true\n  },\n  \"lastSelectedAgents\": [\n    \"claude-code\",\n    \"cursor\"\n  ]\n}",
+      "ops": [
+        {
+          "remove": "从来没装过"
+        }
+      ],
+      "lockPathUnderHome": ".agents/.skill-lock.json",
+      "xdg": false,
+      "exists": true,
+      "bytes": "{\n  \"version\": 3,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"vercel-labs/agent-skills\",\n      \"sourceType\": \"github\",\n      \"sourceUrl\": \"https://github.com/vercel-labs/agent-skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"skillFolderHash\": \"aabbccddeeff00112233445566778899aabbccdd\",\n      \"installedAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-02T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {\n    \"findSkillsPrompt\": true\n  },\n  \"lastSelectedAgents\": [\n    \"claude-code\",\n    \"cursor\"\n  ]\n}"
+    },
+    {
+      "name": "旧版本 v2:上游整体丢弃重建(本 app 有意分歧,见 Rust 侧测试)",
+      "initial": "{\n  \"version\": 2,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"vercel-labs/agent-skills\",\n      \"sourceType\": \"github\",\n      \"sourceUrl\": \"https://github.com/vercel-labs/agent-skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"skillFolderHash\": \"aabbccddeeff00112233445566778899aabbccdd\",\n      \"installedAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-02T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {\n    \"findSkillsPrompt\": true\n  },\n  \"lastSelectedAgents\": [\n    \"claude-code\",\n    \"cursor\"\n  ]\n}",
+      "ops": [
+        {
+          "add": [
+            "docx-to-markdown",
+            {
+              "source": "skills/skills",
+              "sourceType": "gitea",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills",
+              "ref": "main",
+              "skillPath": "skills/docx-to-markdown/SKILL.md",
+              "skillFolderHash": ""
+            }
+          ]
+        }
+      ],
+      "lockPathUnderHome": ".agents/.skill-lock.json",
+      "xdg": false,
+      "exists": true,
+      "bytes": "{\n  \"version\": 3,\n  \"skills\": {\n    \"docx-to-markdown\": {\n      \"source\": \"skills/skills\",\n      \"sourceType\": \"gitea\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/docx-to-markdown/SKILL.md\",\n      \"skillFolderHash\": \"\",\n      \"installedAt\": \"2026-07-30T00:00:00.000Z\",\n      \"updatedAt\": \"2026-07-30T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {}\n}"
+    },
+    {
+      "name": "更高版本 v4:上游原样保留并写入(本 app 有意分歧)",
+      "initial": "{\n  \"version\": 4,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"vercel-labs/agent-skills\",\n      \"sourceType\": \"github\",\n      \"sourceUrl\": \"https://github.com/vercel-labs/agent-skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"skillFolderHash\": \"aabbccddeeff00112233445566778899aabbccdd\",\n      \"installedAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-02T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {\n    \"findSkillsPrompt\": true\n  },\n  \"lastSelectedAgents\": [\n    \"claude-code\",\n    \"cursor\"\n  ]\n}",
+      "ops": [
+        {
+          "add": [
+            "docx-to-markdown",
+            {
+              "source": "skills/skills",
+              "sourceType": "gitea",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills",
+              "ref": "main",
+              "skillPath": "skills/docx-to-markdown/SKILL.md",
+              "skillFolderHash": ""
+            }
+          ]
+        }
+      ],
+      "lockPathUnderHome": ".agents/.skill-lock.json",
+      "xdg": false,
+      "exists": true,
+      "bytes": "{\n  \"version\": 4,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"vercel-labs/agent-skills\",\n      \"sourceType\": \"github\",\n      \"sourceUrl\": \"https://github.com/vercel-labs/agent-skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"skillFolderHash\": \"aabbccddeeff00112233445566778899aabbccdd\",\n      \"installedAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-02T00:00:00.000Z\"\n    },\n    \"docx-to-markdown\": {\n      \"source\": \"skills/skills\",\n      \"sourceType\": \"gitea\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/docx-to-markdown/SKILL.md\",\n      \"skillFolderHash\": \"\",\n      \"installedAt\": \"2026-07-30T00:00:00.000Z\",\n      \"updatedAt\": \"2026-07-30T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {\n    \"findSkillsPrompt\": true\n  },\n  \"lastSelectedAgents\": [\n    \"claude-code\",\n    \"cursor\"\n  ]\n}"
+    },
+    {
+      "name": "version 字段缺失",
+      "initial": "{\n  \"skills\": {}\n}",
+      "ops": [
+        {
+          "add": [
+            "docx-to-markdown",
+            {
+              "source": "skills/skills",
+              "sourceType": "gitea",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills",
+              "ref": "main",
+              "skillPath": "skills/docx-to-markdown/SKILL.md",
+              "skillFolderHash": ""
+            }
+          ]
+        }
+      ],
+      "lockPathUnderHome": ".agents/.skill-lock.json",
+      "xdg": false,
+      "exists": true,
+      "bytes": "{\n  \"version\": 3,\n  \"skills\": {\n    \"docx-to-markdown\": {\n      \"source\": \"skills/skills\",\n      \"sourceType\": \"gitea\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/docx-to-markdown/SKILL.md\",\n      \"skillFolderHash\": \"\",\n      \"installedAt\": \"2026-07-30T00:00:00.000Z\",\n      \"updatedAt\": \"2026-07-30T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {}\n}"
+    },
+    {
+      "name": "version 非数字",
+      "initial": "{\n  \"version\": \"3\",\n  \"skills\": {}\n}",
+      "ops": [
+        {
+          "add": [
+            "docx-to-markdown",
+            {
+              "source": "skills/skills",
+              "sourceType": "gitea",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills",
+              "ref": "main",
+              "skillPath": "skills/docx-to-markdown/SKILL.md",
+              "skillFolderHash": ""
+            }
+          ]
+        }
+      ],
+      "lockPathUnderHome": ".agents/.skill-lock.json",
+      "xdg": false,
+      "exists": true,
+      "bytes": "{\n  \"version\": 3,\n  \"skills\": {\n    \"docx-to-markdown\": {\n      \"source\": \"skills/skills\",\n      \"sourceType\": \"gitea\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/docx-to-markdown/SKILL.md\",\n      \"skillFolderHash\": \"\",\n      \"installedAt\": \"2026-07-30T00:00:00.000Z\",\n      \"updatedAt\": \"2026-07-30T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {}\n}"
+    },
+    {
+      "name": "JSON 损坏",
+      "initial": "{ 这不是合法 JSON",
+      "ops": [
+        {
+          "add": [
+            "docx-to-markdown",
+            {
+              "source": "skills/skills",
+              "sourceType": "gitea",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills",
+              "ref": "main",
+              "skillPath": "skills/docx-to-markdown/SKILL.md",
+              "skillFolderHash": ""
+            }
+          ]
+        }
+      ],
+      "lockPathUnderHome": ".agents/.skill-lock.json",
+      "xdg": false,
+      "exists": true,
+      "bytes": "{\n  \"version\": 3,\n  \"skills\": {\n    \"docx-to-markdown\": {\n      \"source\": \"skills/skills\",\n      \"sourceType\": \"gitea\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/docx-to-markdown/SKILL.md\",\n      \"skillFolderHash\": \"\",\n      \"installedAt\": \"2026-07-30T00:00:00.000Z\",\n      \"updatedAt\": \"2026-07-30T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {}\n}"
+    },
+    {
+      "name": "中文技能名作为键",
+      "initial": null,
+      "ops": [
+        {
+          "add": [
+            "周报生成",
+            {
+              "source": "skills/skills",
+              "sourceType": "gitea",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills",
+              "ref": "main",
+              "skillPath": "skills/docx-to-markdown/SKILL.md",
+              "skillFolderHash": ""
+            }
+          ]
+        }
+      ],
+      "lockPathUnderHome": ".agents/.skill-lock.json",
+      "xdg": false,
+      "exists": true,
+      "bytes": "{\n  \"version\": 3,\n  \"skills\": {\n    \"周报生成\": {\n      \"source\": \"skills/skills\",\n      \"sourceType\": \"gitea\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/docx-to-markdown/SKILL.md\",\n      \"skillFolderHash\": \"\",\n      \"installedAt\": \"2026-07-30T00:00:00.000Z\",\n      \"updatedAt\": \"2026-07-30T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {}\n}"
+    },
+    {
+      "name": "XDG_STATE_HOME 改变落点",
+      "initial": null,
+      "ops": [
+        {
+          "add": [
+            "docx-to-markdown",
+            {
+              "source": "skills/skills",
+              "sourceType": "gitea",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills",
+              "ref": "main",
+              "skillPath": "skills/docx-to-markdown/SKILL.md",
+              "skillFolderHash": ""
+            }
+          ]
+        }
+      ],
+      "lockPathUnderHome": "xdgstate/skills/.skill-lock.json",
+      "xdg": true,
+      "exists": true,
+      "bytes": "{\n  \"version\": 3,\n  \"skills\": {\n    \"docx-to-markdown\": {\n      \"source\": \"skills/skills\",\n      \"sourceType\": \"gitea\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills\",\n      \"ref\": \"main\",\n      \"skillPath\": \"skills/docx-to-markdown/SKILL.md\",\n      \"skillFolderHash\": \"\",\n      \"installedAt\": \"2026-07-30T00:00:00.000Z\",\n      \"updatedAt\": \"2026-07-30T00:00:00.000Z\"\n    }\n  },\n  \"dismissed\": {}\n}"
+    }
+  ]
+}

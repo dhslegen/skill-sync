@@ -405,6 +405,74 @@ pub fn write_file(path: &Path, bytes: &[u8], unix_mode: Option<u32>) -> Result<(
     Ok(())
 }
 
+/// 计算目录内容的 sha256,用于判断用户是否改过技能本体。
+///
+/// 路径与内容都参与:改内容、改文件名、增删文件都会让结果变化。
+/// **排除清单必须与 [`copy_dir`] 完全一致**——装进来的目录本就没有被排除的那些条目,
+/// 若此处口径更宽,一装完就会被判成"用户改过",更新流程会永远停在冲突提示上。
+pub fn dir_content_hash(dir: &Path) -> Result<String, AppError> {
+    use sha2::{Digest, Sha256};
+
+    let mut files = Vec::new();
+    collect_files(dir, dir, &mut files).map_err(|e| {
+        AppError::new("FS_HASH_FAILED", "无法读取技能目录内容,请重试")
+            .with_detail(format!("hash {}: {e}", dir.display()))
+    })?;
+    // 文件系统不保证枚举顺序,排序后 hash 才可复现
+    files.sort();
+
+    let mut hasher = Sha256::new();
+    for rel in &files {
+        let bytes = std::fs::read(dir.join(rel)).map_err(|e| {
+            AppError::new("FS_HASH_FAILED", "无法读取技能目录内容,请重试")
+                .with_detail(format!("hash {}: {e}", rel.display()))
+        })?;
+        // 路径与长度都进 hash:否则把 a.md 的内容挪进 b.md 后 hash 不变,
+        // 相邻文件内容首尾相接也会撞成同一个值。
+        let rel = rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR_STR, "/");
+        hasher.update((rel.len() as u64).to_le_bytes());
+        hasher.update(rel.as_bytes());
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(7 + digest.len() * 2);
+    hex.push_str("sha256:");
+    for b in digest {
+        use std::fmt::Write;
+        let _ = write!(hex, "{b:02x}");
+    }
+    Ok(hex)
+}
+
+/// 收集目录下全部文件的相对路径,排除清单与 [`copy_dir`] 共用同一套判定。
+fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if EXCLUDE_FILES.contains(&name.as_ref()) {
+            continue;
+        }
+        let path = entry.path();
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            // 与 copy_dir 一致:坏软链跳过。复制时它进不来,算 hash 时也不该算进去。
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        if meta.is_dir() {
+            if EXCLUDE_DIRS.contains(&name.as_ref()) {
+                continue;
+            }
+            collect_files(root, &path, out)?;
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            out.push(rel.to_path_buf());
+        }
+    }
+    Ok(())
+}
+
 /// 复制时排除的条目(上游 installer.ts:423)。`metadata.json` 是上游安装器自己的记账文件,
 /// 目录三项则是绝不该随技能分发的构建/版本控制产物。
 const EXCLUDE_FILES: &[&str] = &["metadata.json"];
@@ -719,6 +787,79 @@ mod tests {
 
         fs::remove_dir_all(&target).unwrap();
         assert_eq!(link_state(&ours, &target), LinkState::Broken);
+    }
+
+    // ---- 内容 hash ----
+
+    #[test]
+    fn content_hash_is_stable_for_identical_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = skill_dir(tmp.path(), "a", "正文");
+        fs::write(a.join("b.md"), "另一个文件").unwrap();
+        let b = skill_dir(tmp.path(), "b", "正文");
+        fs::write(b.join("b.md"), "另一个文件").unwrap();
+
+        assert_eq!(dir_content_hash(&a).unwrap(), dir_content_hash(&b).unwrap());
+    }
+
+    #[test]
+    fn content_hash_changes_when_anything_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = skill_dir(tmp.path(), "s", "正文");
+        let base = dir_content_hash(&dir).unwrap();
+
+        fs::write(dir.join("SKILL.md"), "改过的正文").unwrap();
+        let changed_content = dir_content_hash(&dir).unwrap();
+        assert_ne!(base, changed_content, "改内容应改变 hash");
+
+        fs::rename(dir.join("SKILL.md"), dir.join("别的名字.md")).unwrap();
+        let renamed = dir_content_hash(&dir).unwrap();
+        assert_ne!(changed_content, renamed, "改文件名应改变 hash");
+
+        fs::write(dir.join("新增.md"), "新增").unwrap();
+        assert_ne!(renamed, dir_content_hash(&dir).unwrap(), "增文件应改变 hash");
+    }
+
+    #[test]
+    fn content_hash_covers_nested_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = skill_dir(tmp.path(), "s", "正文");
+        fs::create_dir_all(dir.join("模板")).unwrap();
+        fs::write(dir.join("模板").join("t.md"), "模板").unwrap();
+        let base = dir_content_hash(&dir).unwrap();
+
+        fs::write(dir.join("模板").join("t.md"), "改过的模板").unwrap();
+
+        assert_ne!(base, dir_content_hash(&dir).unwrap());
+    }
+
+    #[test]
+    fn content_hash_ignores_exactly_what_copying_ignores() {
+        // 口径不一致的后果:技能一装完就被判成"用户改过",更新会永远卡在冲突提示。
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(src.join(".git")).unwrap();
+        fs::create_dir_all(src.join("__pycache__")).unwrap();
+        fs::write(src.join("SKILL.md"), "正文").unwrap();
+        fs::write(src.join("metadata.json"), "{}").unwrap();
+        fs::write(src.join(".git").join("HEAD"), "ref").unwrap();
+        fs::write(src.join("__pycache__").join("x.pyc"), "x").unwrap();
+        let dst = tmp.path().join("dst");
+        copy_dir(&src, &dst).unwrap();
+
+        assert_eq!(
+            dir_content_hash(&src).unwrap(),
+            dir_content_hash(&dst).unwrap(),
+            "复制出来的副本必须与源同 hash,否则装完立刻被判成被改过"
+        );
+    }
+
+    #[test]
+    fn missing_directory_is_an_error_not_a_silent_empty_hash() {
+        // 静默返回"空目录的 hash"会让"技能被整个删掉"看起来像"没有改动"。
+        let tmp = tempfile::tempdir().unwrap();
+        let err = dir_content_hash(&tmp.path().join("不存在")).unwrap_err();
+        assert_eq!(err.code, "FS_HASH_FAILED");
     }
 
     // ---- 复制 ----
