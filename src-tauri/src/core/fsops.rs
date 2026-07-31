@@ -23,6 +23,17 @@ impl LinkKind {
             LinkKind::Copy => "copy",
         }
     }
+
+    /// [`Self::as_str`] 的逆:从 `state.json` 读回。认不出返回 `None`,
+    /// 由调用方决定跳过还是报错——绝不猜一个默认值,猜错会拿删除逻辑去动错误的目录形态。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "symlink" => Some(LinkKind::Symlink),
+            "junction" => Some(LinkKind::Junction),
+            "copy" => Some(LinkKind::Copy),
+            _ => None,
+        }
+    }
 }
 
 /// 本平台的降级链。

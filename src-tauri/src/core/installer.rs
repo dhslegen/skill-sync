@@ -141,6 +141,31 @@ pub struct RecordedLink {
     pub mode: LinkKind,
 }
 
+/// 一条关联当前的健康程度,给「我的技能」页显示用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkHealth {
+    /// 形态与记账相符,技能可被对应工具读到。
+    Healthy,
+    /// 链接还在,但指向的内容已不存在。
+    Broken,
+    /// 被改指到别处,或副本被换成了别的形态——都不是我们放的那份了。
+    Redirected,
+    /// 位置被一个实体目录顶掉了。
+    Occupied,
+    /// 关联整个不见了。
+    Missing,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkHealthReport {
+    pub dir: String,
+    /// `symlink` / `junction` / `copy`,来自安装时的记账。
+    pub mode: String,
+    pub health: LinkHealth,
+}
+
 pub struct Installer<'a> {
     registry: &'a AgentRegistry,
     env: &'a dyn AgentEnv,
@@ -332,6 +357,43 @@ impl<'a> Installer<'a> {
                 }
             })
             .collect()
+    }
+
+    /// 按记账逐条检查关联的健康态,不动磁盘。
+    ///
+    /// 输出给「我的技能」页显示:mode 与判定都基于安装时的记账,
+    /// 所以降级复制(Copy)的实体目录会被正确认成健康,而不是"被占位"。
+    pub fn link_health(
+        &self,
+        dir_slug: &str,
+        recorded: &[RecordedLink],
+    ) -> Result<Vec<LinkHealthReport>, AppError> {
+        let canonical = self.canonical_dir(dir_slug)?;
+        let dir_name = dir_name_of(&canonical);
+
+        Ok(recorded
+            .iter()
+            .map(|rec| {
+                let link = rec.dir.join(&dir_name);
+                let health = match (rec.mode, fsops::link_state(&link, &canonical)) {
+                    // 降级复制:实体目录在,就是它该有的样子
+                    (LinkKind::Copy, LinkState::Real) => LinkHealth::Healthy,
+                    (LinkKind::Copy, LinkState::Missing) => LinkHealth::Missing,
+                    // 副本被换成了链接/别的形态:不是我们放的那份了
+                    (LinkKind::Copy, _) => LinkHealth::Redirected,
+                    (_, LinkState::Linked(_)) | (_, LinkState::SameLocation) => LinkHealth::Healthy,
+                    (_, LinkState::Broken) => LinkHealth::Broken,
+                    (_, LinkState::Foreign(_)) => LinkHealth::Redirected,
+                    (_, LinkState::Real) => LinkHealth::Occupied,
+                    (_, LinkState::Missing) => LinkHealth::Missing,
+                };
+                LinkHealthReport {
+                    dir: rec.dir.to_string_lossy().into_owned(),
+                    mode: rec.mode.as_str().to_string(),
+                    health,
+                }
+            })
+            .collect())
     }
 
     /// 卸载:按记账逐个解除关联,`delete_canonical` 由前端确认后传入。

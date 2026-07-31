@@ -9,6 +9,7 @@ pub mod gitea;
 pub mod github;
 pub mod installer;
 pub mod registry;
+pub mod remove;
 pub mod session;
 pub mod skill_lock;
 pub mod skills;

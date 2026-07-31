@@ -362,24 +362,7 @@ fn record(
     // "用户改过",更新流程会永远停在冲突提示上。
     let content_hash = fsops::dir_content_hash(Path::new(&report.canonical_dir))?;
 
-    let links: Vec<LinkRecord> = report
-        .links
-        .iter()
-        .filter_map(|l| link_mode(l).map(|mode| LinkRecord { dir: l.dir.clone(), mode }))
-        .collect();
-    // `agents` 的含义是「技能**实际对哪些工具生效**」,必须与 `links` 讲同一件事:
-    //   成功建链的  +  落在 canonical 就能读到、无需建链的(universal)
-    // 早先直接把 report.links 里的 agents 全收下来,同时错两头——
-    // 建链失败的被记成已生效(界面会把它画成启用中),universal 的又被整个漏掉。
-    let mut agents: Vec<String> = report
-        .links
-        .iter()
-        .filter(|l| link_mode(l).is_some())
-        .flat_map(|l| l.agents.clone())
-        .collect();
-    agents.extend(canonical_visible);
-    agents.sort();
-    agents.dedup();
+    let (links, agents) = active_accounting(report, canonical_visible);
 
     match existing {
         // 保留本地改动:关于**内容**的字段一个都不动。
@@ -447,6 +430,71 @@ fn record(
             "failed".into()
         }
     })
+}
+
+/// 从建链报告推导 state 记账:`links` 只记成功建立的,`agents` 是技能**实际对哪些工具生效**。
+///
+/// 两者必须讲同一件事:成功建链的 + 落在 canonical 就能读到、无需建链的(universal)。
+/// 早先直接把 report.links 里的 agents 全收下来,同时错两头——
+/// 建链失败的被记成已生效(界面会把它画成启用中),universal 的又被整个漏掉。
+fn active_accounting(
+    report: &InstallReport,
+    canonical_visible: Vec<String>,
+) -> (Vec<LinkRecord>, Vec<String>) {
+    let links: Vec<LinkRecord> = report
+        .links
+        .iter()
+        .filter_map(|l| link_mode(l).map(|mode| LinkRecord { dir: l.dir.clone(), mode }))
+        .collect();
+    let mut agents: Vec<String> = report
+        .links
+        .iter()
+        .filter(|l| link_mode(l).is_some())
+        .flat_map(|l| l.agents.clone())
+        .collect();
+    agents.extend(canonical_visible);
+    agents.sort();
+    agents.dedup();
+    (links, agents)
+}
+
+/// 修复关联:按 state 记账里的 agents 重建链接,**不碰技能本体**,并把账更新为实际结果。
+///
+/// [`fsops::link_dir`] 对各异常形态的语义正好是修复需要的:missing 重建、
+/// 被改指/断链的**链接**直接换回来(链接不是用户数据本体,无需确认),
+/// 而实体目录占位是否替换必须由 `replace_occupied`(前端确认结果,铁律 7)决定。
+/// 本体已丢时 `link_only` 会拒绝——那要走"重新获取",不是修复能解决的。
+pub fn repair_links(
+    installer: &Installer<'_>,
+    store: &Store,
+    dir_slug: &str,
+    replace_occupied: bool,
+) -> Result<InstallReport, AppError> {
+    let loaded = store.load_state()?;
+    let Some(idx) = loaded.value.installed.iter().position(|s| s.name == dir_slug) else {
+        return Err(AppError::new(
+            "FS_NOT_INSTALLED",
+            "这个技能不在已获取列表中,请先重新获取",
+        )
+        .with_detail(format!("not in state.installed: {dir_slug}")));
+    };
+    let record = &loaded.value.installed[idx];
+
+    let on_occupied = if replace_occupied {
+        OnOccupied::Replace
+    } else {
+        OnOccupied::Fail
+    };
+    let report = installer.link_only(dir_slug, &record.agents, on_occupied)?;
+
+    let canonical_visible = installer.canonical_visible_agents(&record.agents)?;
+    let (links, agents) = active_accounting(&report, canonical_visible);
+    let mut next = loaded.value.clone();
+    next.installed[idx].links = links;
+    next.installed[idx].agents = agents;
+    store.save_state(&next)?;
+
+    Ok(report)
 }
 
 fn source_of(req: &AcquireRequest<'_>, skill: &IndexedSkill, sha: &str) -> SkillSource {

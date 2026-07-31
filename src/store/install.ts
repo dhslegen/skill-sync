@@ -47,6 +47,8 @@ interface InstallState {
   refreshInstalled: () => Promise<void>;
   /** 点"安装"→ 展开 agent 勾选。 */
   begin: (dirSlug: string) => Promise<void>;
+  /** 「我的技能」页的更新:沿用上次记账的工具,不再问一遍。冲突照走 ConflictDialog。 */
+  beginUpdate: (dirSlug: string, agentIds: string[]) => Promise<void>;
   toggleAgent: (name: string) => void;
   /** 确认安装。`resolution` 只在从冲突弹窗回来时带。 */
   run: (resolution?: Resolution) => Promise<void>;
@@ -107,6 +109,21 @@ export const useInstall = create<InstallState>((set, get) => ({
     } catch (raw) {
       set({ phase: "error", error: toAppError(raw) });
     }
+  },
+
+  beginUpdate: async (dirSlug, agentIds) => {
+    set({
+      phase: "running",
+      dirSlug,
+      agents: [],
+      selected: new Set(agentIds),
+      stage: null,
+      report: null,
+      error: null,
+      precheck: null,
+      localKept: false,
+    });
+    await get().run();
   },
 
   toggleAgent: (name) => {

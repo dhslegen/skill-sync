@@ -3,11 +3,14 @@ import { useEffect, useState } from "react";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ConflictDialog } from "@/components/ConflictDialog";
 import { DetailPanel } from "@/components/DetailPanel";
+import { RemoveDialog } from "@/components/RemoveDialog";
+import { RepairDialog } from "@/components/RepairDialog";
 import { Sidebar } from "@/components/Sidebar";
 import { Toolbar } from "@/components/Toolbar";
 import { useDesktopChrome } from "@/hooks/useDesktopChrome";
 import { t } from "@/i18n";
 import { call } from "@/lib/ipc";
+import { MySkillsPage } from "@/pages/MySkillsPage";
 import { StorePage } from "@/pages/StorePage";
 import { useInstall } from "@/store/install";
 import { useSession } from "@/store/session";
@@ -47,6 +50,8 @@ export default function App() {
           <div className="max-w-[980px]">
             {page === "store" ? (
               <StorePage />
+            ) : page === "mine" ? (
+              <MySkillsPage />
             ) : (
               <p className="py-6 text-[12.5px] text-text-3">{t("page.comingSoon")}</p>
             )}
@@ -57,6 +62,8 @@ export default function App() {
       <DetailPanel />
       <CommandPalette />
       <ConflictDialog />
+      <RemoveDialog />
+      <RepairDialog />
     </div>
   );
 }

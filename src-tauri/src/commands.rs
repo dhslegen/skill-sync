@@ -8,9 +8,9 @@ use crate::core::acquire;
 use crate::core::agents::{AgentRegistry, DetectedAgent, SystemEnv};
 use crate::core::auth::{self, KeyringStore, OAuthConfig};
 use crate::core::builtin;
-use crate::core::fsops;
 use crate::core::gitea::{GiteaClient, RepoRef};
-use crate::core::installer::Installer;
+use crate::core::installer::{self, InstallReport, Installer};
+use crate::core::remove;
 use crate::core::session::{self, BrowserOpener, SessionStatus, SessionUser};
 use crate::core::state;
 use crate::core::store::{self, SkillDetail, StoreIndexView};
@@ -331,7 +331,7 @@ pub async fn skill_install(
     .await
 }
 
-/// 已安装技能的概览。任务 10 的"我的技能"页会在此基础上补链接健康态。
+/// 已安装技能的概览,「我的技能」页的整行数据都从这里来。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledSkillView {
@@ -343,6 +343,13 @@ pub struct InstalledSkillView {
     pub updated_at: String,
     /// 本体与安装时不一致——用户改过,有未分享的改动。
     pub local_modified: bool,
+    /// 来源技能库,展示为 `owner/repo`。
+    pub source_owner: String,
+    pub source_repo: String,
+    /// 技能本体是否还在 canonical 目录里。不在 = 残缺,界面要正面说出来。
+    pub body_present: bool,
+    /// 各关联目录的健康态(universal agent 不建链,不在此列)。
+    pub links: Vec<installer::LinkHealthReport>,
 }
 
 #[tauri::command]
@@ -355,29 +362,74 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
         let installer = Installer::new(&registry, &SystemEnv);
         let state = store.load_state()?.value;
 
-        Ok(state
+        state
             .installed
             .iter()
-            .map(|s| InstalledSkillView {
-                dir_slug: s.name.clone(),
-                commit_sha: s.commit_sha.clone(),
-                agents: s.agents.clone(),
-                installed_at: s.installed_at.clone(),
-                updated_at: s.updated_at.clone(),
-                // 算不出 hash(目录没了、权限不足)时按"没改过"处理:
-                // 这个标记只用于提示,不该因为读不了目录就把整个列表拉挂。
-                local_modified: installer
-                    .canonical_dir(&s.name)
-                    .and_then(|dir| fsops::dir_content_hash(&dir))
-                    .map(|actual| actual != s.content_hash)
-                    .unwrap_or(false),
+            .map(|s| {
+                let canonical = installer.canonical_dir(&s.name)?;
+                // 认不出 mode 的记账进不了健康检查——那是移除时才需要面对的问题
+                let (recorded, _) = remove::state_links_to_recorded(&s.links);
+                Ok(InstalledSkillView {
+                    dir_slug: s.name.clone(),
+                    commit_sha: s.commit_sha.clone(),
+                    agents: s.agents.clone(),
+                    installed_at: s.installed_at.clone(),
+                    updated_at: s.updated_at.clone(),
+                    local_modified: remove::is_locally_modified(&canonical, &s.content_hash),
+                    source_owner: s.source.owner.clone(),
+                    source_repo: s.source.repo.clone(),
+                    body_present: canonical.is_dir(),
+                    links: installer.link_health(&s.name, &recorded)?,
+                })
             })
-            .collect())
+            .collect()
     })
     .await
     .map_err(|e| {
         AppError::new("FS_TASK", "读取已安装列表失败,请重试").with_detail(e.to_string())
     })?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRepairArgs {
+    pub dir_slug: String,
+    /// 前端确认弹窗的结果:占位的实体目录会被替换,原内容无法找回。
+    #[serde(default)]
+    pub replace_occupied: bool,
+}
+
+#[tauri::command]
+pub async fn skill_repair(args: SkillRepairArgs) -> Result<InstallReport, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app_store()?;
+        let registry = AgentRegistry::builtin();
+        let installer = Installer::new(&registry, &SystemEnv);
+        acquire::repair_links(&installer, &store, &args.dir_slug, args.replace_occupied)
+    })
+    .await
+    .map_err(|e| AppError::new("FS_TASK", "修复操作未能完成,请重试").with_detail(e.to_string()))?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRemoveArgs {
+    pub dir_slug: String,
+    /// 前端确认弹窗的结果:用户已确认"连本地改动一起删"。
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[tauri::command]
+pub async fn skill_remove(args: SkillRemoveArgs) -> Result<remove::RemoveOutcome, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app_store()?;
+        let registry = AgentRegistry::builtin();
+        let installer = Installer::new(&registry, &SystemEnv);
+        remove::remove(&installer, &SystemEnv, &store, &args.dir_slug, args.force)
+    })
+    .await
+    .map_err(|e| AppError::new("FS_TASK", "移除操作未能完成,请重试").with_detail(e.to_string()))?
 }
 
 fn app_store() -> Result<state::Store, AppError> {

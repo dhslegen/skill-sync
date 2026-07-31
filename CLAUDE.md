@@ -45,10 +45,12 @@ src/
   styles/global.css  # ✅ 设计 token、dark: 变体绑定 data-theme、.md/.skill-tint 等少量非 utility 样式
   lib/               # ✅ ipc(唯一 invoke 通道 + core 返回类型)、format、search、tint、cn
   store/             # ✅ Zustand:appearance(主题/强调色)、store-index(商店)、install(获取流程)、
-                     #    session(登录)、ui(页/面板/IME)
+                     #    session(登录)、ui(页/面板/IME)、my-skills(我的技能列表/移除/修复)
   components/        # ✅ Sidebar/Toolbar/SearchBox/SkillCard/InstallButton/DetailPanel/
-                     #    CommandPalette/Markdown/Icon/InstallPanel/ConflictDialog
-  pages/StorePage.tsx  # ✅ 商店页
+                     #    CommandPalette/Markdown/Icon/InstallPanel/ConflictDialog/
+                     #    RemoveDialog(移除双确认)/RepairDialog(占位替换确认)
+  pages/StorePage.tsx    # ✅ 商店页
+  pages/MySkillsPage.tsx # ✅ 我的技能页(行式列表 + 徽标 + 更新/修复/移除)
   hooks/             # ✅ useDesktopChrome(快捷键 + 右键拦截)
 src-tauri/src/
   core/builtin.rs    # ✅ 编译期注入的常量(地址/ClientID/仓库坐标)
@@ -62,7 +64,8 @@ src-tauri/src/
   core/state.rs      # ✅ config.json/state.json + schema 版本闸门 + 原子写
   core/skill_lock.rs # ✅ npx skills 的 .skill-lock.json(v3)双写,外部契约
   core/store.rs      # ✅ 商店索引:压缩包→技能发现→可离线复用的缓存 + 前端 DTO
-  core/acquire.rs    # ✅ 获取编排:下载→预检(contentHash 守卫)→落盘→建链→记账+双写
+  core/acquire.rs    # ✅ 获取编排:下载→预检(contentHash 守卫)→落盘→建链→记账+双写;repair_links
+  core/remove.rs     # ✅ 移除编排:改过预检(NeedsDecision)→解链→删本体→清账+lock 移除
   core/registry.rs   # ⬜ 仓库源管理(内建 Gitea + 自定义)
   core/github.rs     # ⬜ GitHub client(M3 前留空壳)
   commands.rs        # Tauri IPC command 定义(薄壳,逻辑在 core)
@@ -203,7 +206,7 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 ## 当前进度(2026-07-30)
 
 M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
-本机测试 **Rust 234 通过 + 前端 120 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
+本机测试 **Rust 250 通过 + 前端 161 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
 (Windows 上少跑的 8 个是 `cfg(unix)` 用例,已逐一核对)。
 
 | 任务 | 状态 | 关键产物 |
@@ -217,8 +220,8 @@ M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill
 | 7 state 双写 | ✅ | state/config schema 闸门 + 原子写;lock 双写对上游做**字节级**差分;`npx skills list` 实测可见 |
 | 8 商店页 | ✅ | core/store.rs 索引缓存(离线可浏览)+ 外壳/商店页/详情面板/命令面板;9+12 处注入验证 |
 | 9 获取流程 | ✅ | core/acquire.rs 编排 + contentHash 守卫接上;agent 多选/进度/结果/冲突弹窗;16+10 处注入验证 |
-| 10 我的技能 | ⬜ | **下一个任务**:列表、来源、链接健康、手动更新、移除(双确认) |
-| 11–13 | ⬜ | 分享 / 向导 / 打包 |
+| 10 我的技能 | ✅ | core/remove.rs + repair_links + link_health;行式列表/徽标/更新/修复/移除双确认;8+15 处注入验证 |
+| 11–13 | ⬜ | **下一个任务:11 分享** / 向导 / 打包 |
 
 ### 已知待处理
 - **`Installer::install` 依然会无条件清空重建 canonical**——守卫在 `core/acquire.rs`,不在它自己身上。
@@ -227,8 +230,12 @@ M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill
 - **「把本地改动分享上去」当下只做到「保留本地改动」**:分享流程属任务 11,现在没有可推的通道。
   `Resolution` 因此只有 `KeepLocal` / `Overwrite` 两档,弹窗文案也只承诺"保留、之后可分享"。
   任务 11 落地后要回来把这条路接上(判据现成:`contentHash` 不符 = 有未分享的改动)。
-- **agent 目录侧的实体目录占位只报不处理**:`OnOccupied::Fail`,结果面板逐目录列出失败原因。
-  给它做二次确认(替换/跳过)属任务 10 的范围——那和 canonical 侧的冲突是两回事。
+- **agent 目录占位:事后可修,安装当下仍只报不处理**。任务 10 给了「我的技能」页的
+  修复通道(`acquire::repair_links` + 替换确认弹窗):断链/丢失/被改指直接重建,
+  实体目录占位需确认后替换。但**安装那一刻**的占位失败仍是 `OnOccupied::Fail` 只报不重试,
+  且修复按账上的 agents 全量重链——安装时就失败的 agent 不在账上,修复够不到它,
+  用户得回详情面板重装。给安装结果面板的失败项做逐条「替换」重试属后续任务
+  (动 `AcquireRequest`/InstallPanel 的范围)。
 - **批量安装没做**:编排签名留了余地(一次下载可服务多个技能),但没有调用方。向导(任务 12)再接。
 - **任务 6 的 DoD 还差"普通权限真机"这一档**(CI 已覆盖的部分见下):
   - ✅ 已验:Windows runner 上 `junction::create` / `remove_dir` 摘链 / `junction::get_target`

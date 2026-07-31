@@ -166,6 +166,14 @@ export type AcquireOutcome =
   | { outcome: "needsDecision"; precheck: Precheck }
   | { outcome: "installed"; report: InstallReport; localKept: boolean; lock: string };
 
+export type LinkHealth = "healthy" | "broken" | "redirected" | "occupied" | "missing";
+
+export interface LinkHealthReport {
+  dir: string;
+  mode: string;
+  health: LinkHealth;
+}
+
 export interface InstalledSkillView {
   dirSlug: string;
   commitSha: string;
@@ -173,7 +181,28 @@ export interface InstalledSkillView {
   installedAt: string;
   updatedAt: string;
   localModified: boolean;
+  sourceOwner: string;
+  sourceRepo: string;
+  /** 技能本体是否还在。false = 残缺,界面要正面说出来。 */
+  bodyPresent: boolean;
+  links: LinkHealthReport[];
 }
+
+export type UnlinkResult =
+  | { status: "unlinked" }
+  | { status: "missing" }
+  | { status: "skipped"; reason: string }
+  | { status: "failed"; error: AppError };
+
+export interface UninstallReport {
+  dirName: string;
+  unlinks: { dir: string; result: UnlinkResult }[];
+  canonicalRemoved: boolean;
+}
+
+export type RemoveOutcome =
+  | { outcome: "needsDecision" }
+  | { outcome: "removed"; report: UninstallReport; lock: string };
 
 /** 订阅一次安装的进度。契约 3.3:长任务走 `progress://{taskId}` 事件。 */
 export function listenProgress(
@@ -192,3 +221,9 @@ export const skillInstall = (args: {
   taskId: string;
   resolution?: Resolution;
 }) => call<AcquireOutcome>("skill_install", { args });
+
+export const skillRemove = (args: { dirSlug: string; force?: boolean }) =>
+  call<RemoveOutcome>("skill_remove", { args });
+
+export const skillRepair = (args: { dirSlug: string; replaceOccupied?: boolean }) =>
+  call<InstallReport>("skill_repair", { args });
