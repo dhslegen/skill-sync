@@ -223,22 +223,24 @@ App 自更新(M2 任务 5)另有 `SKILLSYNC_UPDATE_URL`(latest.json 地址)/ `SK
 (minisign 公钥),签名私钥走 `TAURI_SIGNING_PRIVATE_KEY`(只在构建机上,绝不进仓库)。
 
 ## 开发纪律
-- M1 按交接包 3.5 的任务 1→13 顺序推进,**已全部完成**;M2 开工前先按同粒度做任务分解
-  (范围见设计方案 2.7),之后同样逐任务:先写测试清单,再实现,DoD 全满足才进下一任务
-- 每完成一个任务 git commit,信息格式:`M2-任务N: 摘要`(M1 历史为 `M1-任务N: 摘要`)
+- M1(交接包 3.5,任务 1→13)与 M2(docs/M2-任务分解.md,任务 1→6)**均已全部完成**;
+  M3 开工前先按同粒度做任务分解(范围见设计方案 2.7),之后同样逐任务:
+  先写测试清单,再实现,DoD 全满足才进下一任务
+- 每完成一个任务 git commit,信息格式:`M3-任务N: 摘要`(历史为 `M1-`/`M2-`)
 - 决策记录 C1-C12 + C-UI + C-OAuth 已全部拍板(见交接包),直接执行不复议
 - 文档未覆盖的决策:按决策记录精神自行选择,在 commit message 与代码注释中显式标注"假设:xxx";涉及删除用户数据、安全、对外网络请求的新增行为必须停下询问
 - 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
   其余注册表 agent 尽力支持
 
-## 当前进度(2026-07-31,M1 收官)
+## 当前进度(2026-07-31,M2 收官)
 
-**M1 任务 1–13 全部完成并提交**。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
-本机测试 **Rust 286 通过 + 前端 213 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
-(Windows 上少跑的 8 个是 `cfg(unix)` 用例,已逐一核对)。本机 `pnpm tauri build`
-真实出过包(dmg 6.0MB)。**M2 进行中**(分解见 docs/M2-任务分解.md,本地文档,6 任务;
-用户已拍板:①按此分解执行;②关窗缩到托盘,「退出」只在托盘菜单)。
-交接材料见 docs/新会话交接提示词.md。
+**M1 任务 1–13 与 M2 任务 1–6 全部完成并提交**。远端 `origin` = github.com/dhslegen/skill-sync
+(**私有**)。本机测试 **Rust 314 通过 + 前端 255 通过**、clippy 与 eslint 干净;
+本机 `pnpm dev` 启动冒烟通过(托盘构建成功、日志落盘)。M1 阶段双平台 CI 真实跑通、
+`pnpm tauri build` 出过 dmg;**M2 的改动尚未在 Windows runner 上验过**(见已知待处理)。
+M2 拍板项:①按 docs/M2-任务分解.md 执行;②关窗缩到托盘,「退出」只在托盘菜单。
+**下一里程碑 M3**(设计方案 2.7:GitHub 源 device flow + 多源 registry + skill-lock 双向
+兼容打磨;OAuth PKCE 与 PR 评审式分享已在 M1 提前做掉)。交接材料见 docs/新会话交接提示词.md。
 
 | M2 任务 | 状态 | 关键产物 |
 |---|---|---|
@@ -248,6 +250,10 @@ App 自更新(M2 任务 5)另有 `SKILLSYNC_UPDATE_URL`(latest.json 地址)/ `SK
 | 4 托盘+通知 | ✅ | 托盘菜单(打开/立即检查/退出)+ 关窗缩托盘(拍板;`ExitRequested` 只放行显式退出)+ 通知文案纯函数(例行轮次不打扰/只报数量/禁术语,单测钉住);3 新测试,2 处注入验证;托盘交互真机验收见已知待处理 |
 | 5 App 自更新 | ✅ | tauri-plugin-updater(endpoint/pubkey 编译期注入)+ 启动探测与通知 + 设置页检查/安装/重启 + 发布通道 overlay 开 createUpdaterArtifacts(主 conf 不开)+ 部署指南 §7;3+6 新测试,5 处注入验证;**真实更新源联调待外部条件** |
 | 6 收尾打磨 | ✅ | 安装占位失败逐条重试(`acquire::link_agents`,并集合并记账)+ macOS 托盘 template image + `plugins.updater` 占位配置(修真机起不来的 bug)+ 文档同步;6+5 新测试,6 处注入验证。Windows decorum **决定不做**(无真机,见已知待处理) |
+
+> M2 新增的 IPC:`ui_prefs_get/set`、`auto_update_get/set`、`agents_set_disabled`、
+> `open_library_url`、`update_check_now`、`app_update_check/install`、`app_restart`、
+> `skill_link_agents`;新增事件:`scheduler://report`、`app-update://available`。
 
 | 任务 | 状态 | 关键产物 |
 |---|---|---|
@@ -332,6 +338,10 @@ App 自更新(M2 任务 5)另有 `SKILLSYNC_UPDATE_URL`(latest.json 地址)/ `SK
   远低于 DoD 的 2s / 300ms。但那是本机 docker,真实内网要加网络往返与更大的压缩包。
   `tests/store_index.rs` 里的 300ms 断言跑在 wiremock 上、进 CI;`tests/store_live.rs` 需要
   `./fixtures/init.sh`,环境不在时自动跳过(会往 fixture 建 `store-perf-50` 分支,幂等复用)。
+- **M2 的改动待 Windows CI 复核**:M2 全程只在 macOS 上跑过(Rust 314 / 前端 255 / dev 冒烟)。
+  托盘、关窗缩托盘、`ExitRequested` 防退出、updater 插件初始化在 Windows 上的行为
+  与 macOS 分支不同(`tray_with_icon` 有 `cfg` 分支),需要 push 后看 ci.yml 的
+  Windows job 结果;GUI 行为仍要真机(见下面两条)。
 - **App 自更新的端到端联调待外部条件**(M2 任务 5):代码侧与发布通道已就绪,
   但要真验一次"旧版本 → 检出 → 装上 → 重启后版本变了",需要①minisign 密钥对
   ②内网静态更新源落点 ③一次真实的双版本发布。步骤写在部署指南 §7.4。
