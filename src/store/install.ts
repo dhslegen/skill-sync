@@ -111,8 +111,11 @@ export const useInstall = create<InstallState>((set, get) => ({
       const detected = await agentsDetected();
       set({
         agents: detected.agents,
-        // 默认全选**已检测到**的(交接包 3.5 任务 9):没装的工具勾上也没意义
-        selected: new Set(detected.agents.filter((a) => a.installed).map((a) => a.name)),
+        // 默认全选**已检测到**的(交接包 3.5 任务 9):没装的工具勾上也没意义;
+        // 设置页关掉的也不进默认勾选(M2 任务 2),但手动勾选不拦
+        selected: new Set(
+          detected.agents.filter((a) => a.installed && !a.disabled).map((a) => a.name),
+        ),
       });
     } catch (raw) {
       set({ phase: "error", error: toAppError(raw) });

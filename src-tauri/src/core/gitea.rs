@@ -51,6 +51,24 @@ pub fn app_http_client() -> Result<reqwest::Client, AppError> {
         })
 }
 
+/// 判断一个链接是否与技能库同源(scheme + host + port 全等)。
+///
+/// 「在系统浏览器里打开」的白名单:只放行技能库自己的页面(评审链接等)。
+/// 这是从 webview 通往系统的通道,放行任意 URL 等于让技能库内容(或未来的
+/// 自定义源)能把用户带去任何地方——宁可保守。
+pub fn is_same_origin(base_url: &str, candidate: &str) -> bool {
+    let (Ok(base), Ok(url)) = (url::Url::parse(base_url), url::Url::parse(candidate)) else {
+        return false;
+    };
+    // 只认 http(s):javascript:/file: 这类 scheme 即便"同源"也绝不放行
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    base.scheme() == url.scheme()
+        && base.host_str() == url.host_str()
+        && base.port_or_known_default() == url.port_or_known_default()
+}
+
 /// 仓库坐标。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -680,6 +698,30 @@ pub fn unzip_archive(bytes: &[u8]) -> Result<RepoArchive, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_origin_accepts_only_the_library_itself() {
+        let base = "http://gitea.internal.example:3000";
+
+        // 同源的不同路径都放行(评审链接就长这样)
+        assert!(is_same_origin(base, "http://gitea.internal.example:3000/skills/skills/pulls/7"));
+
+        // 异 host / 异端口 / 异 scheme 一律拒绝
+        assert!(!is_same_origin(base, "http://evil.example/skills"));
+        assert!(!is_same_origin(base, "http://gitea.internal.example:8080/x"));
+        assert!(!is_same_origin(base, "https://gitea.internal.example:3000/x"));
+
+        // 非 http(s) 的 scheme 绝不放行,哪怕字符串上"同域"
+        assert!(!is_same_origin(base, "javascript:alert(1)"));
+        assert!(!is_same_origin(base, "file:///etc/hosts"));
+
+        // 默认端口等价:https 的 443 显式与省略等价
+        assert!(is_same_origin("https://g.example", "https://g.example:443/pulls/1"));
+
+        // 解析不动的输入按不放行处理
+        assert!(!is_same_origin(base, "不是链接"));
+        assert!(!is_same_origin("也不是", "http://g.example/"));
+    }
 
     #[test]
     fn file_change_encodes_content_as_base64() {

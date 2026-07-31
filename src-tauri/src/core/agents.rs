@@ -167,6 +167,17 @@ pub struct DetectedAgent {
     pub global_skills_dir: Option<String>,
     pub is_universal: bool,
     pub needs_link: bool,
+    /// 用户在设置页关掉了这个 agent(config.disabledAgents)。
+    /// 只影响默认勾选,不拦手动勾选,也不动既有关联。
+    pub disabled: bool,
+}
+
+/// 把 config 里的禁用名单标到探测结果上。不认识的名字直接忽略——
+/// 注册表随版本演进,旧 config 里残留的名字不该让整个探测报错。
+pub fn mark_disabled(agents: &mut [DetectedAgent], disabled: &[String]) {
+    for agent in agents.iter_mut() {
+        agent.disabled = disabled.iter().any(|d| d == &agent.name);
+    }
 }
 
 impl AgentRegistry {
@@ -238,6 +249,7 @@ impl AgentRegistry {
                     .map(|p| p.to_string_lossy().into_owned()),
                 is_universal: agent.is_universal(),
                 needs_link: agent.global_install_needs_link(),
+                disabled: false,
             })
             .collect()
     }
@@ -638,6 +650,26 @@ mod tests {
         let detected = r.detect_all(&env);
         assert!(detected.iter().all(|a| a.name != "universal"));
         assert_eq!(detected.len(), 74);
+    }
+
+    #[test]
+    fn mark_disabled_flags_only_the_listed_agents_and_ignores_unknown_names() {
+        let r = reg();
+        let env = FakeEnv::with_home("/h");
+        let mut detected = r.detect_all(&env);
+        assert!(detected.iter().all(|a| !a.disabled), "探测结果默认全部启用");
+
+        mark_disabled(&mut detected, &["trae".into(), "早已下架的名字".into()]);
+
+        assert!(detected.iter().find(|a| a.name == "trae").unwrap().disabled);
+        assert!(
+            detected.iter().filter(|a| a.disabled).count() == 1,
+            "不认识的名字必须被忽略,而不是波及别人"
+        );
+
+        // 再标一次空名单 = 全部恢复启用(开关是幂等的整体覆盖,不是增量)
+        mark_disabled(&mut detected, &[]);
+        assert!(detected.iter().all(|a| !a.disabled));
     }
 
     // ---- openclaw 目录择一 ----

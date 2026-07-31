@@ -100,8 +100,8 @@ export const useWizard = create<WizardState>((set, get) => ({
     try {
       const results = await skillInstallBatch({
         dirSlugs: [...selected],
-        // 关联到全部已检测到的工具——与获取流程的默认勾选同一口径
-        agentIds: agents.filter((a) => a.installed).map((a) => a.name),
+        // 关联到全部已检测到且未被关掉的工具——与获取流程的默认勾选同一口径
+        agentIds: agents.filter((a) => a.installed && !a.disabled).map((a) => a.name),
       });
       set({ results, installing: false });
       await useInstall.getState().refreshInstalled();

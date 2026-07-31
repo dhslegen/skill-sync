@@ -20,6 +20,7 @@ const AGENT = {
   globalSkillsDir: "~/.claude/skills",
   isUniversal: false,
   needsLink: true,
+  disabled: false,
 };
 
 const index = (curated: string[]): StoreIndexView => ({

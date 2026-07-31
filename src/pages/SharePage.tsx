@@ -1,8 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { SkillIcon } from "@/components/SkillIcon";
 import { t } from "@/i18n";
-import type { ShareCandidate } from "@/lib/ipc";
+import { isAppError, openLibraryUrl, type ShareCandidate } from "@/lib/ipc";
 import { useSession } from "@/store/session";
 import { useShare, validShareName } from "@/store/share";
 
@@ -115,6 +115,37 @@ function Row({ candidate, disabled }: { candidate: ShareCandidate; disabled: boo
   );
 }
 
+/**
+ * 评审链接:URL 照旧可选中复制,旁边给「在浏览器中查看」——webview 里 `<a>` 出不去,
+ * 打开走 core 的 open_library_url(仅放行与技能库同源的地址)。
+ */
+function ReviewLink({ url }: { url: string }) {
+  const [openError, setOpenError] = useState<string | null>(null);
+
+  return (
+    <div className="mt-1">
+      <p className="select-text font-mono text-[11.5px] text-text-3">
+        {t("share.doneReviewUrl", { url })}
+      </p>
+      <button
+        type="button"
+        onClick={() => {
+          setOpenError(null);
+          openLibraryUrl(url).catch((raw) =>
+            setOpenError(isAppError(raw) ? raw.message : t("error.generic")),
+          );
+        }}
+        className="mt-1.5 h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-accent hover:border-border-strong"
+      >
+        {t("share.openReview")}
+      </button>
+      {openError && (
+        <p className="mt-1 text-[11.5px] text-[#c0392b] dark:text-[#e0705f]">{openError}</p>
+      )}
+    </div>
+  );
+}
+
 function InlinePanel() {
   const { phase, target, form, setForm, submit, cancel, staleNotice, shareError, done } =
     useShare();
@@ -126,11 +157,7 @@ function InlinePanel() {
         <p className="text-text">
           {done.mode === "pushed" ? t("share.donePushed") : t("share.doneReview")}
         </p>
-        {done.reviewUrl && (
-          <p className="mt-1 select-text font-mono text-[11.5px] text-text-3">
-            {t("share.doneReviewUrl", { url: done.reviewUrl })}
-          </p>
-        )}
+        {done.reviewUrl && <ReviewLink url={done.reviewUrl} />}
         <button
           type="button"
           onClick={cancel}

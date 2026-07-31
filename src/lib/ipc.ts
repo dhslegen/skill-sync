@@ -101,6 +101,23 @@ export interface UiPrefs {
 export const uiPrefsGet = () => call<UiPrefs | null>("ui_prefs_get");
 export const uiPrefsSet = (prefs: UiPrefs) => call<void>("ui_prefs_set", { args: { prefs } });
 
+/** 与 core::state::AutoUpdate 的 serde 契约一一对应。 */
+export interface AutoUpdate {
+  skills: { enabled: boolean; intervalHours: number };
+  app: boolean;
+}
+
+export const autoUpdateGet = () => call<AutoUpdate>("auto_update_get");
+export const autoUpdateSet = (autoUpdate: AutoUpdate) =>
+  call<void>("auto_update_set", { args: { autoUpdate } });
+
+/** 整份覆盖禁用名单(开关是幂等的整体状态,不是增量操作)。 */
+export const agentsSetDisabled = (disabled: string[]) =>
+  call<void>("agents_set_disabled", { args: { disabled } });
+
+/** 在系统浏览器打开技能库页面(评审链接)。非同源地址会被 core 拒绝。 */
+export const openLibraryUrl = (url: string) => call<void>("open_library_url", { args: { url } });
+
 export interface SessionUser {
   login: string;
   displayName: string;
@@ -131,6 +148,8 @@ export interface DetectedAgent {
   globalSkillsDir?: string;
   isUniversal: boolean;
   needsLink: boolean;
+  /** 设置页里被关掉:不进默认勾选,手动勾选不拦。 */
+  disabled: boolean;
 }
 
 export interface DetectedAgents {

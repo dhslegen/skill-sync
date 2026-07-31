@@ -153,6 +153,56 @@ describe("分享页", () => {
     expect(screen.getByText(/pulls\/7/)).toBeInTheDocument();
   });
 
+  it("「在浏览器中查看」把审核地址交给系统浏览器打开", async () => {
+    seedIpc([candidate()]);
+    render(<SharePage />);
+    await userEvent.click(await screen.findByRole("button", { name: "分享…" }));
+    useShare.setState({
+      phase: "done",
+      done: {
+        outcome: "shared",
+        mode: "reviewRequested",
+        commitSha: "abc",
+        reviewUrl: "http://gitea/pulls/7",
+        adopted: false,
+        shareName: "my-notes",
+      },
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "在浏览器中查看" }));
+
+    expect(invoke).toHaveBeenCalledWith("open_library_url", {
+      args: { url: "http://gitea/pulls/7" },
+    });
+  });
+
+  it("打开被拒(非技能库地址)时把原因摆出来,不静默", async () => {
+    seedIpc([candidate()]);
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "share_candidates") return [candidate()];
+      if (cmd === "open_library_url")
+        throw { code: "REPO_UNTRUSTED_URL", message: "这个链接不属于公司技能库,已阻止打开" };
+      return null;
+    });
+    render(<SharePage />);
+    await userEvent.click(await screen.findByRole("button", { name: "分享…" }));
+    useShare.setState({
+      phase: "done",
+      done: {
+        outcome: "shared",
+        mode: "reviewRequested",
+        commitSha: "abc",
+        reviewUrl: "http://evil/pulls/7",
+        adopted: false,
+        shareName: "my-notes",
+      },
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "在浏览器中查看" }));
+
+    expect(await screen.findByText(/已阻止打开/)).toBeInTheDocument();
+  });
+
   it("收编提示只在 agent 目录的候选上出现", async () => {
     seedIpc([candidate({ inCanonical: false, path: "/home/u/.claude/skills/my-notes" })]);
     render(<SharePage />);

@@ -12,7 +12,7 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (cmd === "agents_detected") {
       return {
         agents: [
-          { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true },
+          { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
         ],
         canonicalDir: "~/.agents/skills",
       };

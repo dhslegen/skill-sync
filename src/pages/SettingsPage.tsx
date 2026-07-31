@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+
 import { LogIn } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
@@ -7,14 +9,27 @@ import type { Accent, ThemeMode } from "@/lib/ipc";
 import { skillGlyph } from "@/lib/tint";
 import { ACCENT_LABEL_KEY, ACCENT_SWATCH, useAppearance } from "@/store/appearance";
 import { useSession } from "@/store/session";
+import { useSettings } from "@/store/settings";
 
 /**
- * 设置页(M2 任务 1:账号 + 外观;技能库/Agent/更新分区随任务 2 落地)。
+ * 设置页(M2 任务 1-2:账号 / 外观 / AI 工具 / 更新;技能库源管理属 M3 registry)。
  * 视觉基准 = UI-Demo 的 set-section / set-card / set-row 形态,信息密度不放宽。
  */
 export function SettingsPage() {
+  const load = useSettings((s) => s.load);
+  const error = useSettings((s) => s.error);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
   return (
     <div className="py-4">
+      {error && (
+        <p className="mb-3 max-w-[620px] text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+          {error.message}
+        </p>
+      )}
       <Section title="settings.sectionAccount">
         <AccountRow />
       </Section>
@@ -22,6 +37,8 @@ export function SettingsPage() {
         <ThemeRow />
         <AccentRow />
       </Section>
+      <AgentsSection />
+      <UpdatesSection />
     </div>
   );
 }
@@ -108,6 +125,124 @@ const THEME_OPTIONS: { mode: ThemeMode; label: MessageKey }[] = [
   { mode: "dark", label: "settings.themeDark" },
   { mode: "system", label: "settings.themeSystem" },
 ];
+
+// ============================================================ AI 工具 / 更新
+
+/** Demo 的 .toggle:32×18 圆角开关。原生 button 自带键盘行为,ARIA 用 switch 语义。 */
+function Toggle({ on, label, onChange }: { on: boolean; label: string; onChange: () => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      onClick={onChange}
+      className={cn(
+        "relative h-[18px] w-8 flex-none rounded-[10px] transition-colors",
+        on ? "bg-accent" : "bg-border-strong",
+      )}
+    >
+      <span
+        className={cn(
+          "absolute top-0.5 size-3.5 rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.2)] transition-[left]",
+          on ? "left-[16px]" : "left-0.5",
+        )}
+      />
+    </button>
+  );
+}
+
+/**
+ * AI 工具开关。只列「已检测到的 ∪ 已被关掉的」:未检测到的 agent 本就不进默认勾选,
+ * 给它摆开关是没有意义的选项;被关掉但已卸载的仍要显示,否则用户永远找不回开关。
+ */
+function AgentsSection() {
+  const agents = useSettings((s) => s.agents);
+  const toggleAgent = useSettings((s) => s.toggleAgent);
+  if (!agents) return null;
+
+  const rows = agents.filter((a) => a.installed || a.disabled);
+  if (rows.length === 0) return null;
+
+  return (
+    <Section title="settings.sectionAgents">
+      {rows.map((agent) => (
+        <Row key={agent.name}>
+          <div className="min-w-0">
+            <div className="truncate text-[13px] font-medium">{agent.displayName}</div>
+            <div className="truncate font-mono text-[11.5px] text-text-3">
+              {agent.installed ? (agent.globalSkillsDir ?? "") : t("settings.agentNotDetected")}
+            </div>
+          </div>
+          <div className="ml-auto">
+            <Toggle
+              on={!agent.disabled}
+              label={agent.displayName}
+              onChange={() => void toggleAgent(agent.name)}
+            />
+          </div>
+        </Row>
+      ))}
+    </Section>
+  );
+}
+
+const FREQ_OPTIONS: { label: MessageKey; enabled: boolean; intervalHours?: number }[] = [
+  { label: "settings.freqManual", enabled: false },
+  { label: "settings.freqEvery4h", enabled: true, intervalHours: 4 },
+  { label: "settings.freqDaily", enabled: true, intervalHours: 24 },
+];
+
+function UpdatesSection() {
+  const autoUpdate = useSettings((s) => s.autoUpdate);
+  const setSkillsUpdate = useSettings((s) => s.setSkillsUpdate);
+  const setAppUpdate = useSettings((s) => s.setAppUpdate);
+  if (!autoUpdate) return null;
+
+  const active = (opt: (typeof FREQ_OPTIONS)[number]) =>
+    opt.enabled === autoUpdate.skills.enabled &&
+    (!opt.enabled || opt.intervalHours === autoUpdate.skills.intervalHours);
+
+  return (
+    <Section title="settings.sectionUpdates">
+      <Row>
+        <RowText label={t("settings.autoSkills")} desc={t("settings.autoSkillsHint")} />
+        <div
+          className="ml-auto flex overflow-hidden rounded-ctl border border-border"
+          role="group"
+          aria-label={t("settings.autoSkills")}
+        >
+          {FREQ_OPTIONS.map((opt) => (
+            <button
+              key={opt.label}
+              type="button"
+              aria-pressed={active(opt)}
+              onClick={() =>
+                void setSkillsUpdate({ enabled: opt.enabled, intervalHours: opt.intervalHours })
+              }
+              className={cn(
+                "border-l border-border px-2.5 py-[3px] text-[12px] text-text-2 first:border-l-0",
+                active(opt) && "bg-surface-3 font-[550] text-text",
+              )}
+            >
+              {t(opt.label)}
+            </button>
+          ))}
+        </div>
+      </Row>
+      <Row>
+        <RowText label={t("settings.autoApp")} desc={t("settings.autoAppHint")} />
+        <div className="ml-auto">
+          <Toggle
+            on={autoUpdate.app}
+            label={t("settings.autoApp")}
+            onChange={() => void setAppUpdate(!autoUpdate.app)}
+          />
+        </div>
+      </Row>
+    </Section>
+  );
+}
 
 function ThemeRow() {
   const mode = useAppearance((s) => s.mode);

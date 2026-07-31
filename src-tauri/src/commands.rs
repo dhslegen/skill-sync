@@ -46,8 +46,12 @@ pub struct DetectedAgents {
 pub fn agents_detected() -> Result<DetectedAgents, AppError> {
     let registry = AgentRegistry::builtin();
     let env = SystemEnv;
+    let mut agents = registry.detect_all(&env);
+    // 设置页的开关标上去:关掉的 agent 不进默认勾选(手动勾选不拦)
+    let disabled = app_store()?.load_config()?.value.disabled_agents;
+    crate::core::agents::mark_disabled(&mut agents, &disabled);
     Ok(DetectedAgents {
-        agents: registry.detect_all(&env),
+        agents,
         canonical_dir: registry
             .canonical_global_dir(&env)
             .map(|p| p.to_string_lossy().into_owned()),
@@ -70,6 +74,58 @@ pub struct UiPrefsArgs {
 #[tauri::command]
 pub fn ui_prefs_set(args: UiPrefsArgs) -> Result<(), AppError> {
     app_store()?.save_ui_prefs(&args.prefs)
+}
+
+#[tauri::command]
+pub fn auto_update_get() -> Result<state::AutoUpdate, AppError> {
+    Ok(app_store()?.load_config()?.value.auto_update)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoUpdateArgs {
+    pub auto_update: state::AutoUpdate,
+}
+
+#[tauri::command]
+pub fn auto_update_set(args: AutoUpdateArgs) -> Result<(), AppError> {
+    app_store()?.save_auto_update(&args.auto_update)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisabledAgentsArgs {
+    pub disabled: Vec<String>,
+}
+
+#[tauri::command]
+pub fn agents_set_disabled(args: DisabledAgentsArgs) -> Result<(), AppError> {
+    app_store()?.save_disabled_agents(&args.disabled)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenUrlArgs {
+    pub url: String,
+}
+
+/// 在系统浏览器里打开技能库页面(评审链接等)。白名单:仅放行与内建技能库同源的地址。
+#[tauri::command]
+pub fn open_library_url(args: OpenUrlArgs) -> Result<(), AppError> {
+    let Some(base_url) = builtin::BUILTIN_GITEA_URL else {
+        return Err(AppError::new(
+            "AUTH_NOT_CONFIGURED",
+            "这个版本没有配置公司技能库,请向 IT 索取正式安装包",
+        ));
+    };
+    if !crate::core::gitea::is_same_origin(base_url, &args.url) {
+        return Err(AppError::new(
+            "REPO_UNTRUSTED_URL",
+            "这个链接不属于公司技能库,已阻止打开",
+        )
+        .with_detail(args.url));
+    }
+    session::BrowserOpener::open(&SystemBrowser, &args.url)
 }
 
 // ============================================================ 登录

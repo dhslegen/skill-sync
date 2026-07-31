@@ -50,6 +50,12 @@ pub struct Config {
     /// 与 `Some(默认值)` 是两种不同状态,所以不能用 `#[serde(default)]` 折掉。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<UiPrefs>,
+    /// 用户在设置页关掉的 agent(存 agent name)。语义只有一条:**不进默认勾选**
+    /// (获取流程与向导);已装技能的既有关联不动,手动勾选也不拦。
+    /// 假设(M2 任务 2,文档未覆盖):按"禁用名单"记而不是"启用名单"——
+    /// 注册表会随版本新增 agent,新 agent 默认应当可用,白名单会把它们全关掉。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_agents: Vec<String>,
 }
 
 /// 界面偏好(M2 任务 1 起落盘,此前在前端 localStorage)。
@@ -138,6 +144,7 @@ impl Default for Config {
             registries: Vec::new(),
             auto_update: AutoUpdate::default(),
             ui: None,
+            disabled_agents: Vec::new(),
         }
     }
 }
@@ -266,6 +273,30 @@ impl Store {
         prefs.validate()?;
         let mut config = self.load_config()?.value;
         config.ui = Some(prefs.clone());
+        self.save_config(&config)
+    }
+
+    /// 自动更新配置写回(load-modify-save,同 save_ui_prefs 的只读闸门策略)。
+    pub fn save_auto_update(&self, auto_update: &AutoUpdate) -> Result<(), AppError> {
+        if auto_update.skills.interval_hours == 0 {
+            return Err(AppError::new(
+                "STATE_INVALID_CONFIG",
+                "自动更新的时间间隔不合法,请重新选择",
+            )
+            .with_detail("intervalHours must be >= 1"));
+        }
+        let mut config = self.load_config()?.value;
+        config.auto_update = auto_update.clone();
+        self.save_config(&config)
+    }
+
+    /// agent 禁用名单写回(去重排序,让 config 内容稳定可比对)。
+    pub fn save_disabled_agents(&self, disabled: &[String]) -> Result<(), AppError> {
+        let mut list: Vec<String> = disabled.to_vec();
+        list.sort();
+        list.dedup();
+        let mut config = self.load_config()?.value;
+        config.disabled_agents = list;
         self.save_config(&config)
     }
 
@@ -651,6 +682,61 @@ mod tests {
 
         assert_eq!(err.code, "STATE_READ_ONLY");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), future, "新版文件必须一字节不动");
+    }
+
+    #[test]
+    fn disabled_agents_survive_a_round_trip_and_preserve_the_rest() {
+        let (_tmp, s) = store();
+        s.save_ui_prefs(&sample_prefs()).unwrap();
+
+        s.save_disabled_agents(&["trae".into(), "cursor".into(), "trae".into()]).unwrap();
+        let back = s.load_config().unwrap().value;
+
+        // 去重 + 排序,内容稳定
+        assert_eq!(back.disabled_agents, vec!["cursor".to_string(), "trae".to_string()]);
+        assert_eq!(back.ui, Some(sample_prefs()), "写禁用名单不该动界面偏好");
+    }
+
+    #[test]
+    fn an_old_config_without_disabled_agents_reads_as_empty() {
+        let (_tmp, s) = store();
+        std::fs::create_dir_all(s.dir()).unwrap();
+        std::fs::write(s.dir().join("config.json"), r#"{"schemaVersion":1}"#).unwrap();
+
+        let loaded = s.load_config().unwrap();
+
+        assert!(matches!(loaded.access, Access::ReadWrite));
+        assert!(loaded.value.disabled_agents.is_empty());
+    }
+
+    #[test]
+    fn auto_update_settings_are_validated_and_preserve_the_rest() {
+        let (_tmp, s) = store();
+        s.save_disabled_agents(&["trae".into()]).unwrap();
+        let before = std::fs::read_to_string(s.dir().join("config.json")).unwrap();
+
+        let bad = AutoUpdate {
+            skills: SkillAutoUpdate { enabled: true, interval_hours: 0 },
+            app: true,
+        };
+        let err = s.save_auto_update(&bad).unwrap_err();
+        assert_eq!(err.code, "STATE_INVALID_CONFIG");
+        assert_eq!(
+            std::fs::read_to_string(s.dir().join("config.json")).unwrap(),
+            before,
+            "被拒的写入不该碰文件"
+        );
+
+        let ok = AutoUpdate {
+            skills: SkillAutoUpdate { enabled: false, interval_hours: 24 },
+            app: false,
+        };
+        s.save_auto_update(&ok).unwrap();
+        let back = s.load_config().unwrap().value;
+        assert!(!back.auto_update.skills.enabled);
+        assert_eq!(back.auto_update.skills.interval_hours, 24);
+        assert!(!back.auto_update.app);
+        assert_eq!(back.disabled_agents, vec!["trae".to_string()], "写更新配置不该动禁用名单");
     }
 
     #[test]

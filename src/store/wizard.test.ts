@@ -9,8 +9,8 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) })
 
 const AGENTS = {
   agents: [
-    { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true },
-    { name: "trae", displayName: "Trae", installed: false, globalSkillsDir: "~/.trae/skills", isUniversal: false, needsLink: true },
+    { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
+    { name: "trae", displayName: "Trae", installed: false, globalSkillsDir: "~/.trae/skills", isUniversal: false, needsLink: true, disabled: false },
   ],
   canonicalDir: "~/.agents/skills",
 };
@@ -113,6 +113,23 @@ describe("首次启动向导状态机", () => {
     // 没装的工具(trae)不该被带上——与获取流程的默认勾选同一口径
     expect(call?.[1].args.agentIds).toEqual(["claude-code"]);
     expect(useWizard.getState().results).toHaveLength(1);
+  });
+
+  it("一键安装:设置页关掉的工具不带上", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_install_batch") return [];
+      if (cmd === "installed_list") return [];
+      return AGENTS;
+    });
+    const agents = AGENTS.agents.map((a) =>
+      a.name === "claude-code" ? { ...a, disabled: true } : a,
+    );
+    useWizard.setState({ agents, selected: new Set(["weekly-report"]) });
+
+    await useWizard.getState().installSelected();
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_install_batch");
+    expect(call?.[1].args.agentIds).toEqual([]);
   });
 
   it("什么都没勾:不发请求", async () => {

@@ -10,9 +10,9 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: (...a: unknown[]) => listen(..
 
 const AGENTS = {
   agents: [
-    { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true },
-    { name: "trae", displayName: "Trae", installed: false, globalSkillsDir: "~/.trae/skills", isUniversal: false, needsLink: true },
-    { name: "cursor", displayName: "Cursor", installed: true, globalSkillsDir: "~/.agents/skills", isUniversal: true, needsLink: false },
+    { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
+    { name: "trae", displayName: "Trae", installed: false, globalSkillsDir: "~/.trae/skills", isUniversal: false, needsLink: true, disabled: false },
+    { name: "cursor", displayName: "Cursor", installed: true, globalSkillsDir: "~/.agents/skills", isUniversal: true, needsLink: false, disabled: false },
   ],
   canonicalDir: "~/.agents/skills",
 };
@@ -56,6 +56,23 @@ describe("获取流程状态机", () => {
     expect([...s.selected]).toEqual(["claude-code", "cursor"]);
     // 磁盘还没被碰过
     expect(invoke).not.toHaveBeenCalledWith("skill_install", expect.anything());
+  });
+
+  it("设置页关掉的工具不进默认勾选(手动仍可勾)", async () => {
+    const withDisabled = {
+      ...AGENTS,
+      agents: AGENTS.agents.map((a) =>
+        a.name === "cursor" ? { ...a, disabled: true } : a,
+      ),
+    };
+    invoke.mockImplementation(async (cmd) => (cmd === "agents_detected" ? withDisabled : null));
+
+    await useInstall.getState().begin("weekly-report");
+
+    const s = useInstall.getState();
+    expect([...s.selected]).toEqual(["claude-code"]);
+    // 列表里 cursor 仍然在——开关只影响默认勾选,不把选项藏起来
+    expect(s.agents.map((a) => a.name)).toContain("cursor");
   });
 
   it("确认后带着勾选的工具去装", async () => {

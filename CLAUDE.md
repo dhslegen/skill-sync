@@ -232,7 +232,7 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 | M2 任务 | 状态 | 关键产物 |
 |---|---|---|
 | 1 设置页 A | ✅ | config 新增可选 ui 字段(serde default,schemaVersion 仍 1)+ store/prefs.ts 同步(config 赢/一次性迁移/失败不硬推)+ 设置页账号区(退出登录接通)与外观区;6+11 新测试,7 处注入验证 |
-| 2 设置页 B | ⬜ | autoUpdate 配置 + agent 开关 + 评审链接可点 |
+| 2 设置页 B | ✅ | AI 工具开关(config.disabledAgents,只影响默认勾选)+ 更新三档(手动/4h/每天,「手动」保留频率)+ open_library_url(同源白名单)接通评审链接;9+16 新测试,5 处注入验证 |
 | 3 scheduler | ⬜ | 定时检查(唯一入口 acquire_batch)+ tracing 日志 |
 | 4 托盘+通知 | ⬜ | 关窗缩托盘(已拍板)+ 更新结果通知 |
 | 5 App 自更新 | ⬜ | tauri-plugin-updater + minisign(未签名先打通) |
@@ -274,8 +274,8 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
   清了 contentHash 等于把「已改动」标记藏起来。
 - **分享页的「新建技能」向导没做**(Demo 里有):交接包任务 11 范围不含它,
   不摆点了没反应的按钮;等价 `skills init` 的脚手架随任务 12 向导一起考虑。
-- **评审链接只展示不可点**:webview 里 `<a>` 出不去,打开系统浏览器需要 opener command,
-  属后续小任务(auth 的 SystemBrowser 已有现成通道可复用)。
+- ~~评审链接只展示不可点~~:已随 M2 任务 2 接通(`open_library_url`,白名单只放行与
+  内建 Gitea **同源**的地址;`gitea::is_same_origin` 拒绝 javascript:/file: 等 scheme)。
 - **frontmatter 补齐会重建头部**:只在 SKILL.md 不合规时发生,重写后只保证
   name/description 与正文;坏头部里残存的其他字段(license 等)不保证保留(见 share.rs 模块头)。
 - **agent 目录占位:事后可修,安装当下仍只报不处理**。任务 10 给了「我的技能」页的
