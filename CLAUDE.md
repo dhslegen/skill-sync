@@ -28,7 +28,8 @@
 ## 常用命令
 ```
 pnpm dev            # tauri dev
-pnpm build          # tauri build(需签名环境变量,本地开发跳过)
+pnpm build          # tauri build(无签名变量时产出未签名包,仅内部测试)
+./scripts/build-release.sh   # 发布构建:强校验编译期内网配置,缺任一变量拒绝出包
 pnpm test           # 前端 vitest
 cargo test --workspace   # Rust 单测(在 src-tauri/ 下)
 pnpm lint           # eslint
@@ -105,7 +106,7 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 - Gitea client 用 wiremock-rs 模拟;e2e 用 docker compose 起 gitea(见 fixtures/)
 - Windows 相关(junction、路径、CRLF)必须在 Windows CI runner 上跑,不得只测 macOS
 - **写完测试必做注入验证**(本项目最有价值的一条实践):故意改坏实现,确认对应测试真的变红。
-  截至任务 8 已抓出 6 处空转测试,每一处都属于下面这三种写法之一——写测试时优先自查:
+  M1 全程累计抓出十余处空转测试,几乎都属于下面四种写法——写测试时优先自查:
   1. **同一条规则查了两遍** → 其中一遍永远不触发,改坏也不红(store.rs 的 schemaVersion、
      fsops 的链接位置守卫、format.ts 里多余的 `Math.max(0, …)`)。发现即删掉多余那道。
   2. **断言只查"不存在"** → 区分不了"字段被省略"和"字段名拼错"
@@ -113,6 +114,11 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
      要么断言键的完整集合,要么正面断言值。
   3. **fixture 让两个不同概念取了同值** → 它们的差别就测没了
      (`name: weekly-report` + 目录名 `weekly-report`,让"安装目录名取目录名而非 name"失去保护)。
+  4. **测试环境有隐性豁免,把被测行为整个短路** → 怎么写都是绿的
+     (reqwest 对 loopback 目标默认豁免代理,拿 wiremock 当目标测代理策略必然空转;
+     `tests/proxy_bypass.rs` 用 `.invalid` 保留域名 + 对照组绕开)。
+  注入脚本自身的判定也会骗人:删 match 分支的注入被**编译器**拦下,只 grep "FAILED" 会误判
+  "没抓到"——判定要分三态(测试红/编译拦下/真没抓到),编译拦下的换成可编译的坏实现重验。
 - **注入脚本恢复现场必须用"先备份、后回拷",禁用 `git checkout <file>`**:
   工作区带着未提交的修复时,checkout 会连修复一起抹掉(任务 9 收尾时真实发生过一次,
   靠上下文里留存的完整代码才恢复回来)。
@@ -165,7 +171,9 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
   `Installer::install(dir_slug, ...)` 的第一个参数就是它。
 - 纯中文名会被 `sanitize_name` 整体折成 `unnamed-skill`,两个中文技能会装进同一目录互相覆盖。
   installer 对"信息全丢"的名字报 `FS_UNUSABLE_NAME` 拒绝,**不放宽 `sanitize_name`**
-  (它同时决定 `.skill-lock.json` 的键)。任务 11 收编本地技能时会正面撞上,届时定策略。
+  (它同时决定 `.skill-lock.json` 的键)。**中文名技能的分享策略已定**(任务 11,见 share.rs
+  模块头):分享时表单强制起 ASCII kebab 的远端目录名,frontmatter `name` 保持中文显示名;
+  本地目录一律不改名。
 
 **建链与解链**
 - **以「目录」为单位,不是按 agent**:多个 agent 共用同一 `globalSkillsDir` 是常态
@@ -202,18 +210,22 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 `SKILLSYNC_BUILTIN_GITEA_URL` / `SKILLSYNC_OAUTH_CLIENT_ID` / `SKILLSYNC_BUILTIN_REPO` / `SKILLSYNC_BUILTIN_BRANCH`
 
 ## 开发纪律
-- 严格按交接包 3.5 的 M1 任务 1→13 顺序推进;每任务先写测试清单,再实现,DoD 全部满足才进下一任务
-- 每完成一个任务 git commit,信息格式:`M1-任务N: 摘要`
+- M1 按交接包 3.5 的任务 1→13 顺序推进,**已全部完成**;M2 开工前先按同粒度做任务分解
+  (范围见设计方案 2.7),之后同样逐任务:先写测试清单,再实现,DoD 全满足才进下一任务
+- 每完成一个任务 git commit,信息格式:`M2-任务N: 摘要`(M1 历史为 `M1-任务N: 摘要`)
 - 决策记录 C1-C12 + C-UI + C-OAuth 已全部拍板(见交接包),直接执行不复议
 - 文档未覆盖的决策:按决策记录精神自行选择,在 commit message 与代码注释中显式标注"假设:xxx";涉及删除用户数据、安全、对外网络请求的新增行为必须停下询问
 - 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
   其余注册表 agent 尽力支持
 
-## 当前进度(2026-07-30)
+## 当前进度(2026-07-31,M1 收官)
 
-M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
-本机测试 **Rust 280 通过 + 前端 213 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
-(Windows 上少跑的 8 个是 `cfg(unix)` 用例,已逐一核对)。
+**M1 任务 1–13 全部完成并提交**。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
+本机测试 **Rust 286 通过 + 前端 213 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
+(Windows 上少跑的 8 个是 `cfg(unix)` 用例,已逐一核对)。本机 `pnpm tauri build`
+真实出过包(dmg 6.0MB)。**下一里程碑 M2**(设计方案 2.7:定时自动更新 + 冲突保护 +
+托盘通知 + App 自更新链路),开工前需按交接包 3.5 的粒度先做任务分解;
+交接材料见 docs/新会话交接提示词.md。
 
 | 任务 | 状态 | 关键产物 |
 |---|---|---|
