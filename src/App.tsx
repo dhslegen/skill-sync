@@ -8,6 +8,7 @@ import { RepairDialog } from "@/components/RepairDialog";
 import { ShareTakenDialog } from "@/components/ShareTakenDialog";
 import { Sidebar } from "@/components/Sidebar";
 import { Toolbar } from "@/components/Toolbar";
+import { Wizard } from "@/components/Wizard";
 import { useDesktopChrome } from "@/hooks/useDesktopChrome";
 import { t } from "@/i18n";
 import { call } from "@/lib/ipc";
@@ -15,6 +16,7 @@ import { MySkillsPage } from "@/pages/MySkillsPage";
 import { SharePage } from "@/pages/SharePage";
 import { StorePage } from "@/pages/StorePage";
 import { useInstall } from "@/store/install";
+import { useWizard } from "@/store/wizard";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
@@ -37,6 +39,8 @@ export default function App() {
     void useSession.getState().refresh();
     void useInstall.getState().refreshInstalled();
     void call<AppInfo>("app_info").then(setInfo).catch(() => {});
+    // 首次启动:没有完成标记才会真的打开
+    void useWizard.getState().maybeOpen();
   }, []);
 
   return (
@@ -69,6 +73,7 @@ export default function App() {
       <RemoveDialog />
       <RepairDialog />
       <ShareTakenDialog />
+      <Wizard />
     </div>
   );
 }

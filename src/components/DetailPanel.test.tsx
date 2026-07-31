@@ -72,6 +72,7 @@ function open(over: Partial<SkillDetail> = {}) {
       skipped: [],
       fromCache: false,
       offline: false,
+      curated: [],
     },
   });
   return d;

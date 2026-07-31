@@ -67,6 +67,8 @@ export interface StoreIndexView {
   skipped: SkippedEntry[];
   fromCache: boolean;
   offline: boolean;
+  /** 精选清单(dirSlug,已由 core 按 name 匹配好)。空 = 库里没有精选。 */
+  curated: string[];
 }
 
 export interface SkillFile {
@@ -224,6 +226,15 @@ export const skillInstall = (args: {
 
 export const skillRemove = (args: { dirSlug: string; force?: boolean }) =>
   call<RemoveOutcome>("skill_remove", { args });
+
+export type BatchItem = { dirSlug: string } & (
+  | { outcome: "installed"; report: InstallReport }
+  | { outcome: "skipped"; reason: string }
+  | { outcome: "failed"; error: AppError }
+);
+
+export const skillInstallBatch = (args: { dirSlugs: string[]; agentIds: string[] }) =>
+  call<BatchItem[]>("skill_install_batch", { args });
 
 export const skillRepair = (args: { dirSlug: string; replaceOccupied?: boolean }) =>
   call<InstallReport>("skill_repair", { args });

@@ -87,6 +87,11 @@ pub struct StoreIndex {
     pub skills: Vec<IndexedSkill>,
     #[serde(default)]
     pub skipped: Vec<SkippedEntry>,
+    /// 技能库根目录 `curated.json` 里的精选清单(按 frontmatter `name` 记,fixture 即此约定)。
+    /// 库里没有该文件就是空——向导据此决定"一键全装"还是引导去商店,**不编造精选**。
+    /// 旧缓存没有此字段(serde default 补空),效果与"库里没有"相同,无需升缓存版本。
+    #[serde(default)]
+    pub curated: Vec<String>,
 }
 
 impl StoreIndex {
@@ -135,6 +140,9 @@ pub struct StoreIndexView {
     pub from_cache: bool,
     /// 联系不上技能库,展示的是上一次取到的内容(界面显示提示条,不弹错误框)。
     pub offline: bool,
+    /// 精选清单,已解析为 `dirSlug`(清单里写的是 name,界面与安装都认目录名)。
+    /// 名称在库里对不上的条目直接丢弃——精选列表摆一个装不上的项就是撒谎。
+    pub curated: Vec<String>,
 }
 
 /// `store_skill_detail` 的返回(契约 3.3)。
@@ -244,6 +252,7 @@ pub fn build_index(
         committed_at: head.committed_at.clone(),
         fetched_at,
         skills: skills_out,
+        curated: parse_curated(archive),
         skipped: discovery
             .skipped
             .into_iter()
@@ -253,6 +262,28 @@ pub fn build_index(
             })
             .collect(),
     }
+}
+
+/// 读技能库根目录的 `curated.json`。没有、或格式不对都返回空——
+/// 精选是锦上添花,坏一个文件不该把整个索引拉挂。
+fn parse_curated(archive: &RepoArchive) -> Vec<String> {
+    let Some(raw) = archive.tree.read_file(&format!("{}/curated.json", archive.root)) else {
+        return Vec::new();
+    };
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        eprintln!("[store] curated.json 不是合法 JSON,忽略精选清单");
+        return Vec::new();
+    };
+    doc["curated"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn collect_files(archive: &RepoArchive, dir: &str) -> Vec<SkillFile> {
@@ -298,6 +329,16 @@ impl StoreIndex {
                 })
                 .collect(),
             skipped: self.skipped.clone(),
+            curated: self
+                .curated
+                .iter()
+                .filter_map(|name| {
+                    self.skills
+                        .iter()
+                        .find(|s| &s.name == name)
+                        .map(|s| s.dir_slug.clone())
+                })
+                .collect(),
             from_cache,
             offline,
         }

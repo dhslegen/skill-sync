@@ -102,7 +102,7 @@ describe("冲突对话框", () => {
     useStoreIndex.setState({
       index: {
         registryId: "company", owner: "skills", repo: "skills", branch: "main",
-        commitSha: "a", committedAt: "", fetchedAt: 0, skipped: [], fromCache: false, offline: false,
+        commitSha: "a", committedAt: "", fetchedAt: 0, skipped: [], fromCache: false, offline: false, curated: [],
         skills: [{ name: "周报生成", dirSlug: "weekly-report", description: "", path: "", hasScripts: false, fileCount: 1 }],
       },
     });

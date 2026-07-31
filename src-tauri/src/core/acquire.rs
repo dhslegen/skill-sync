@@ -13,10 +13,8 @@
 //!
 //! # 假设(文档未覆盖,按开发纪律显式标注)
 //!
-//! - **「把本地改动分享上去」当下的落地就是「保留本地改动」**:分享流程属任务 11,
-//!   现在没有可推的通道。所以本模块只提供 [`Resolution::KeepLocal`] 与
-//!   [`Resolution::Overwrite`] 两档,界面文案也只承诺"保留你的改动、之后可以分享",
-//!   不摆一个点了什么都不会发生的"分享"按钮。
+//! - **`Resolution` 只有两档**:「把本地改动分享上去」(任务 11 起可用)由前端编排——
+//!   先带 `KeepLocal` 走本函数落稳,再调 [`crate::core::share::share_installed`] 推改动。
 //!   保留时 `commitSha` 与 `contentHash` **一个都不更新**——它们不符正是
 //!   "有未分享的改动 / 有可用更新"这两个标记的判据,更新了标记就消失了。
 //! - **安装时重新下载一次压缩包**,不把全部文件内容塞进索引缓存:安装是低频操作,
@@ -338,6 +336,151 @@ pub async fn acquire(
         local_kept: keep_local,
         lock,
     })
+}
+
+// ============================================================ 批量获取(向导)
+
+/// 批量结果里单个技能的结局。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase", tag = "outcome")]
+pub enum BatchOutcome {
+    Installed { report: InstallReport },
+    /// 没装,但不是错误:原因是给用户看的一句话。
+    Skipped { reason: String },
+    Failed { error: AppError },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchItem {
+    pub dir_slug: String,
+    #[serde(flatten)]
+    pub outcome: BatchOutcome,
+}
+
+/// 一次下载装多个技能(首次启动向导的"一键全装")。
+///
+/// 与逐个 [`acquire`] 的关键差异:**冲突不弹窗,一律跳过**。向导面向刚装上 app 的
+/// 用户,真撞上"改过/被占用"说明那不是全新环境——跳过并说明,比在向导里
+/// 展开三选弹窗要诚实也要轻。单个技能失败不中断其余。
+#[allow(clippy::too_many_arguments)]
+pub async fn acquire_batch(
+    client: &GiteaClient,
+    registry: &AgentRegistry,
+    env: &dyn AgentEnv,
+    store: &Store,
+    registry_id: &str,
+    repo: &RepoRef,
+    dir_slugs: &[String],
+    agent_names: &[String],
+    now: &str,
+    fetched_at: i64,
+) -> Result<Vec<BatchItem>, AppError> {
+    let head = client.branch_head(repo).await?;
+    let archive = client.download_archive(repo).await?;
+    let index = store_index::build_index(registry_id, repo, &head, &archive, fetched_at);
+    let cache = store_index::cache_path(store.dir(), registry_id);
+    if let Err(err) = store_index::save_cache(&cache, &index) {
+        eprintln!("[acquire] 刷新索引缓存失败(不影响安装): {err}");
+    }
+
+    let installer = Installer::new(registry, env);
+    let mut out = Vec::new();
+    for dir_slug in dir_slugs {
+        let item = install_one_from_archive(
+            &installer,
+            env,
+            store,
+            registry_id,
+            repo,
+            &index,
+            &archive,
+            &head.sha,
+            dir_slug,
+            agent_names,
+            now,
+        );
+        out.push(BatchItem {
+            dir_slug: dir_slug.clone(),
+            outcome: item,
+        });
+    }
+    Ok(out)
+}
+
+/// 批量里的单个技能:预检 → 落盘 → 记账。任何一步不顺都折成结果,不向上抛。
+#[allow(clippy::too_many_arguments)]
+fn install_one_from_archive(
+    installer: &Installer<'_>,
+    env: &dyn AgentEnv,
+    store: &Store,
+    registry_id: &str,
+    repo: &RepoRef,
+    index: &store_index::StoreIndex,
+    archive: &RepoArchive,
+    head_sha: &str,
+    dir_slug: &str,
+    agent_names: &[String],
+    now: &str,
+) -> BatchOutcome {
+    let Some(skill) = index.skills.iter().find(|s| s.dir_slug == dir_slug) else {
+        return BatchOutcome::Skipped {
+            reason: "已不在公司技能库中".into(),
+        };
+    };
+
+    // 每轮重新读 state:上一轮的记账已经写回,拿旧快照会互相覆盖
+    let run = || -> Result<BatchOutcome, AppError> {
+        let loaded = store.load_state()?;
+        match precheck(installer, env, &loaded.value, dir_slug, head_sha)? {
+            Precheck::LocallyModified { .. } => {
+                return Ok(BatchOutcome::Skipped {
+                    reason: "已安装且有你的本地改动,未覆盖".into(),
+                })
+            }
+            Precheck::Foreign { .. } => {
+                return Ok(BatchOutcome::Skipped {
+                    reason: "这个位置已有其他来源的技能,未替换".into(),
+                })
+            }
+            Precheck::Managed { up_to_date: true, .. } => {
+                return Ok(BatchOutcome::Skipped {
+                    reason: "已安装,且是最新版本".into(),
+                })
+            }
+            Precheck::Fresh | Precheck::Managed { .. } => {}
+        }
+
+        let payload = extract_payload(archive, skill);
+        if payload.is_empty() {
+            return Err(AppError::new(
+                "REPO_EMPTY_SKILL",
+                "这个技能在公司技能库里是空的,请联系它的维护者",
+            ));
+        }
+        let report = installer.install(dir_slug, &payload, agent_names, OnOccupied::Fail)?;
+        let canonical_visible = installer.canonical_visible_agents(agent_names)?;
+        record(
+            store,
+            env,
+            &loaded.value,
+            &report,
+            skill,
+            AcquireRequest {
+                registry_id,
+                repo,
+                dir_slug,
+                agent_names,
+                resolution: None,
+            },
+            head_sha,
+            now,
+            false,
+            canonical_visible,
+        )?;
+        Ok(BatchOutcome::Installed { report })
+    };
+    run().unwrap_or_else(|error| BatchOutcome::Failed { error })
 }
 
 /// 写 `state.json` 并双写 `.skill-lock.json`。

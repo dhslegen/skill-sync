@@ -401,6 +401,41 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
     })?
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallBatchArgs {
+    #[serde(default)]
+    pub registry_id: Option<String>,
+    pub dir_slugs: Vec<String>,
+    #[serde(default)]
+    pub agent_ids: Vec<String>,
+}
+
+/// 首次启动向导的"一键全装":一次下载装多个,冲突一律跳过并说明。
+#[tauri::command]
+pub async fn skill_install_batch(
+    args: InstallBatchArgs,
+) -> Result<Vec<acquire::BatchItem>, AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    let (base_url, repo) = builtin_store_target()?;
+    let store = app_store()?;
+    let registry = AgentRegistry::builtin();
+
+    acquire::acquire_batch(
+        &anonymous_client(base_url)?,
+        &registry,
+        &SystemEnv,
+        &store,
+        registry_id,
+        &repo,
+        &args.dir_slugs,
+        &args.agent_ids,
+        &now_iso8601(),
+        auth::now_unix(),
+    )
+    .await
+}
+
 // ============================================================ 分享
 
 #[tauri::command]

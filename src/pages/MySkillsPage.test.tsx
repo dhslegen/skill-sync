@@ -56,6 +56,7 @@ function seedIndex(commitSha = "aaa1111") {
       skipped: [],
       fromCache: false,
       offline: false,
+      curated: [],
       skills: [
         {
           name: "周报生成",

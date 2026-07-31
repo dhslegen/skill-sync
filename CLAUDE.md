@@ -53,6 +53,7 @@ src/
   pages/StorePage.tsx    # ✅ 商店页
   pages/MySkillsPage.tsx # ✅ 我的技能页(行式列表 + 徽标 + 更新/修复/移除/分享改动)
   pages/SharePage.tsx    # ✅ 分享页(候选列表 + 来源标签 + 行内表单)
+  components/Wizard.tsx  # ✅ 首次启动向导(三步:认识工具/登录可跳过/精选一键装)
   hooks/             # ✅ useDesktopChrome(快捷键 + 右键拦截)
 src-tauri/src/
   core/builtin.rs    # ✅ 编译期注入的常量(地址/ClientID/仓库坐标)
@@ -66,7 +67,8 @@ src-tauri/src/
   core/state.rs      # ✅ config.json/state.json + schema 版本闸门 + 原子写
   core/skill_lock.rs # ✅ npx skills 的 .skill-lock.json(v3)双写,外部契约
   core/store.rs      # ✅ 商店索引:压缩包→技能发现→可离线复用的缓存 + 前端 DTO
-  core/acquire.rs    # ✅ 获取编排:下载→预检(contentHash 守卫)→落盘→建链→记账+双写;repair_links
+  core/acquire.rs    # ✅ 获取编排:下载→预检(contentHash 守卫)→落盘→建链→记账+双写;
+                     #    repair_links;acquire_batch(向导批量:一次下载装多个,冲突一律跳过)
   core/remove.rs     # ✅ 移除编排:改过预检(NeedsDecision)→解链→删本体→清账+lock 移除
   core/share.rs      # ✅ 分享编排:排除法扫描→预检三分支→收编→按权限矩阵提交→shared 记账;
                      #    share_installed(把已装技能的改动推回来源)
@@ -210,7 +212,7 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 ## 当前进度(2026-07-30)
 
 M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
-本机测试 **Rust 274 通过 + 前端 196 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
+本机测试 **Rust 280 通过 + 前端 213 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
 (Windows 上少跑的 8 个是 `cfg(unix)` 用例,已逐一核对)。
 
 | 任务 | 状态 | 关键产物 |
@@ -226,7 +228,8 @@ M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill
 | 9 获取流程 | ✅ | core/acquire.rs 编排 + contentHash 守卫接上;agent 多选/进度/结果/冲突弹窗;16+10 处注入验证 |
 | 10 我的技能 | ✅ | core/remove.rs + repair_links + link_health;行式列表/徽标/更新/修复/移除双确认;8+15 处注入验证 |
 | 11 分享 | ✅ | core/share.rs 全链路 + live e2e(三分支/竞态/只读 fork 对真 Gitea);冲突弹窗三选(保留并分享为默认);8+9 处注入验证 |
-| 12–13 | ⬜ | **下一个任务:12 首次启动向导** / 打包 |
+| 12 向导 | ✅ | curated.json 进索引 + acquire_batch(一次下载/冲突跳过);三步向导每步都可走通;7+5 处注入验证 |
+| 13 打包 | ⬜ | **下一个任务:13 打包与手动分发** |
 
 ### 已知待处理
 - **`Installer::install` 依然会无条件清空重建 canonical**——守卫在 `core/acquire.rs`,不在它自己身上。
@@ -249,7 +252,14 @@ M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill
   且修复按账上的 agents 全量重链——安装时就失败的 agent 不在账上,修复够不到它,
   用户得回详情面板重装。给安装结果面板的失败项做逐条「替换」重试属后续任务
   (动 `AcquireRequest`/InstallPanel 的范围)。
-- **批量安装没做**:编排签名留了余地(一次下载可服务多个技能),但没有调用方。向导(任务 12)再接。
+- **批量安装已接**(任务 12):`acquire::acquire_batch` 一次下载装多个,冲突(改过/外来)
+  一律跳过并说明,不弹三选——向导面向全新环境,静默覆盖比装不上危险得多。
+  安装时的占位失败逐条「替换」重试仍未做(见上一条)。
+- **向导完成标记存 localStorage**(`skillsync.wizardDone`,任务 12 的假设):
+  与主题偏好同一档;设置页把偏好落 config.json 时一并考虑。
+- **curated.json 约定**(fixture 即此约定):技能库根目录,`{"curated": ["<frontmatter name>", …]}`,
+  按显示名记;对不上的条目在 view 层直接丢弃。真实公司库(2026-07-30 快照)还没有这个文件,
+  向导第三步会引导去商店——需要技能库管理员补一份才有"一键全装"。
 - **任务 6 的 DoD 还差"普通权限真机"这一档**(CI 已覆盖的部分见下):
   - ✅ 已验:Windows runner 上 `junction::create` / `remove_dir` 摘链 / `junction::get_target`
     真实执行通过,且建链测试断言"**必须是 junction 而不是 symlink**"——runner 即便有足够权限

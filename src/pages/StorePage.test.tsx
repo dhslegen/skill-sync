@@ -27,6 +27,7 @@ const index = (over: Partial<StoreIndexView> = {}): StoreIndexView => ({
   commitSha: "a1b2c3d4e5",
   committedAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
   fetchedAt: Math.floor(Date.now() / 1000) - 180,
+  curated: [],
   skills: [
     card({}),
     card({ name: "合同审查助手", dirSlug: "contract-review", description: "逐条检查风险条款" }),
