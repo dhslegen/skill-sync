@@ -13,7 +13,16 @@ pnpm install
 # export SKILLSYNC_BUILTIN_GITEA_URL=...   # 内网 Gitea 地址
 # export SKILLSYNC_OAUTH_CLIENT_ID=...     # OAuth2 公共客户端 ID(PKCE,无 secret)
 pnpm dev        # 启动桌面应用(tauri dev)
-pnpm test       # 前端单测
-pnpm lint       # eslint
-cd src-tauri && cargo test && cargo clippy -- -D warnings
 ```
+
+提交前跑完这四道闸(缺一不可,`build:web` 最容易漏——vitest 不做类型检查):
+
+```bash
+pnpm test        # 前端单测
+pnpm lint        # eslint
+pnpm build:web   # tsc + vite build
+cd src-tauri && cargo test --workspace && cargo clippy -- -D warnings
+```
+
+动了 `tauri::Builder` 的插件/setup/窗口配置后,还要跑一次 `pnpm dev` 启动冒烟
+——两套测试都不启动 Tauri runtime,插件初始化失败会让应用起不来而测试全绿。

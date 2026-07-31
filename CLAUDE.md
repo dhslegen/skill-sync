@@ -48,50 +48,50 @@ eslint 也不管,只有 `tsc` 会拦。M2 任务 6 就因为只跑了 test+lint,
 (超出 tsconfig 的 ES2020 lib)提交进去,双平台 CI 一起红。
 
 ## 目录结构
+
+除 `core/registry.rs` 与 `core/github.rs` 两个**空壳**(归 M3,模块头写了开工点)外,
+下列模块均已实现。
+
 ```
 src/
-  i18n/              # ✅ 文案资源 + t() 插值;测试里带术语与禁 emoji 的自动门
-  styles/global.css  # ✅ 设计 token、dark: 变体绑定 data-theme、.md/.skill-tint 等少量非 utility 样式
-  lib/               # ✅ ipc(唯一 invoke 通道 + core 返回类型)、format、search、tint、cn
-  store/             # ✅ Zustand:appearance(主题/强调色)、store-index(商店)、install(获取流程)、
-                     #    session(登录)、ui(页/面板/IME)、my-skills(我的技能列表/移除/修复/分享改动)、
-                     #    share(分享候选/表单/占用三选)
-  components/        # ✅ Sidebar/Toolbar/SearchBox/SkillCard/InstallButton/DetailPanel/
-                     #    CommandPalette/Markdown/Icon/InstallPanel/ConflictDialog(三选:保留并分享为默认)/
-                     #    RemoveDialog(移除双确认)/RepairDialog(占位替换确认)/ShareTakenDialog(占用三选)
-  pages/StorePage.tsx    # ✅ 商店页
-  pages/MySkillsPage.tsx # ✅ 我的技能页(行式列表 + 徽标 + 更新/修复/移除/分享改动)
-  pages/SharePage.tsx    # ✅ 分享页(候选列表 + 来源标签 + 行内表单)
-  pages/SettingsPage.tsx # ✅ 设置页(M2 任务 1:账号/外观;技能库/agent/更新分区随任务 2)
-  store/prefs.ts         # ✅ 偏好落盘协调:config.ui 为准,localStorage 降为首帧缓存
-  components/Wizard.tsx  # ✅ 首次启动向导(三步:认识工具/登录可跳过/精选一键装)
-  hooks/             # ✅ useDesktopChrome(快捷键 + 右键拦截)
+  i18n/          文案资源 + t() 插值;测试里带术语与禁 emoji 的自动门
+  styles/        设计 token、dark: 变体绑定 data-theme、少量非 utility 样式
+  lib/           ipc(唯一 invoke 通道 + core 返回类型)、format、search、tint、cn
+  store/         Zustand:appearance/store-index/install/session/ui/my-skills/share/
+                 wizard/settings(agent 开关+更新档位+App 自更新)/prefs(偏好落盘协调)
+  components/    Sidebar/Toolbar/SearchBox/SkillCard/InstallButton/DetailPanel/CommandPalette/
+                 Markdown/Icon/SkillIcon/InstallPanel/Wizard + 五个弹窗:
+                 ConflictDialog(三选)/RemoveDialog(双确认)/RepairDialog(占位替换)/
+                 ShareTakenDialog(占用三选)/RetryLinkDialog(重试时的占位替换)
+  pages/         StorePage / MySkillsPage / SharePage / SettingsPage
+  hooks/         useDesktopChrome(快捷键 + 右键拦截)
 src-tauri/src/
-  core/builtin.rs    # ✅ 编译期注入的常量(地址/ClientID/仓库坐标)
-  core/agents.rs     # ✅ agent 注册表加载与探测(数据在 resources/agents.json)
-  core/skills.rs     # ✅ SKILL.md 解析 + 仓库发现规则 + SkillTree(MemTree/FsTree)
-  core/gitea.rs      # ✅ Gitea API client(分支/压缩包/多文件提交/提交审核/fork)
-  core/auth.rs       # ✅ OAuth PKCE 原语 + 回环回调 + 凭证存储抽象
-  core/session.rs    # ✅ 登录态编排(登录/查状态/退出)
-  core/installer.rs  # ✅ canonical 落盘 + 按目录建链/解链编排(不碰 state)
-  core/fsops.rs      # ✅ 链接原语:降级链、自指防护、链接健康态、安全复制/删除
-  core/state.rs      # ✅ config.json/state.json + schema 版本闸门 + 原子写
-  core/skill_lock.rs # ✅ npx skills 的 .skill-lock.json(v3)双写,外部契约
-  core/store.rs      # ✅ 商店索引:压缩包→技能发现→可离线复用的缓存 + 前端 DTO
-  core/acquire.rs    # ✅ 获取编排:下载→预检(contentHash 守卫)→落盘→建链→记账+双写;
-                     #    repair_links;acquire_batch(向导批量:一次下载装多个,冲突一律跳过)
-  core/remove.rs     # ✅ 移除编排:改过预检(NeedsDecision)→解链→删本体→清账+lock 移除
-  core/share.rs      # ✅ 分享编排:排除法扫描→预检三分支→收编→按权限矩阵提交→shared 记账;
-                     #    share_installed(把已装技能的改动推回来源)
-  core/scheduler.rs  # ✅ 定时更新检查:run_check(head 比对→FromAccount 批量)+ 可测的调度循环
-  core/registry.rs   # ⬜ 仓库源管理(内建 Gitea + 自定义)
-  core/github.rs     # ⬜ GitHub client(M3 前留空壳)
-  commands.rs        # Tauri IPC command 定义(薄壳,逻辑在 core)
-resources/agents.json   # 75-agent 注册表(移植自 vercel-labs/skills v1.5.20,MIT,保留出处注释)
-scripts/             # 维护脚本(verify-*.mjs:跑上游源码生成 ground-truth fixture,供 Rust 差分测试)
-fixtures/            # docker Gitea 测试环境 + 样例技能仓库
-docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进版本控制**(在 .git/info/exclude 中),
-                     #    只有 terminology.md 是受版本控制的;换机器需另行拷贝这些文档
+  core/builtin.rs    编译期注入的常量(内网地址/ClientID/仓库坐标/更新源+公钥)
+  core/agents.rs     agent 注册表加载与探测 + disabled 标记(数据在 resources/agents.json)
+  core/skills.rs     SKILL.md 解析 + 仓库发现规则 + SkillTree(MemTree/FsTree)
+  core/gitea.rs      Gitea API client(分支/压缩包/多文件提交/提交审核/fork)+ is_same_origin
+  core/auth.rs       OAuth PKCE 原语 + 回环回调 + 凭证存储抽象(按 registryId 存)
+  core/session.rs    登录态编排(登录/查状态/退出)
+  core/installer.rs  canonical 落盘 + 按目录建链/解链编排(不碰 state)
+  core/fsops.rs      链接原语:降级链、自指防护、链接健康态、安全复制/删除
+  core/state.rs      config.json/state.json + schema 版本闸门 + 原子写 + ui/disabledAgents
+  core/skill_lock.rs npx skills 的 .skill-lock.json(v3)双写,外部契约
+  core/store.rs      商店索引:压缩包→技能发现→可离线复用的缓存 + 前端 DTO
+  core/acquire.rs    获取编排:下载→预检(contentHash 守卫)→落盘→建链→记账+双写;
+                     repair_links / link_agents / acquire_batch(Uniform|FromAccount)
+  core/remove.rs     移除编排:改过预检(NeedsDecision)→解链→删本体→清账+lock 移除
+  core/share.rs      分享编排:排除法扫描→预检三分支→收编→按权限矩阵提交→shared 记账;
+                     share_installed(把已装技能的改动推回来源)
+  core/scheduler.rs  定时更新检查:run_check(head 比对→FromAccount 批量)+ 可测的调度循环
+                     + notification_copy(通知判定与文案)
+  core/registry.rs   ⬜ 仓库源管理(内建 Gitea + 自定义)—— M3
+  core/github.rs     ⬜ GitHub client —— M3
+  commands.rs        Tauri IPC command 定义(薄壳,逻辑在 core)+ 托盘/updater 接线在 lib.rs
+resources/agents.json  75-agent 注册表(移植自 vercel-labs/skills v1.5.20,MIT,保留出处注释)
+scripts/           维护脚本(verify-*.mjs 跑上游源码生成 ground-truth fixture;build-release.sh)
+fixtures/          docker Gitea 测试环境 + 样例技能仓库
+docs/              ⚠️ 设计方案/交接包/UI 规范/UI-Demo/任务分解/交接提示词 **不进版本控制**
+                   (在 .git/info/exclude 中);只有 terminology.md 与 部署分发指南.md 受版本控制
 ```
 
 
@@ -240,143 +240,111 @@ App 自更新(M2 任务 5)另有 `SKILLSYNC_UPDATE_URL`(latest.json 地址)/ `SK
 
 ## 当前进度(2026-07-31,M2 收官)
 
-**M1 任务 1–13 与 M2 任务 1–6 全部完成并提交**。远端 `origin` = github.com/dhslegen/skill-sync
-(**私有**)。本机测试 **Rust 314 通过 + 前端 255 通过**、clippy 与 eslint 干净;
-本机 `pnpm dev` 启动冒烟通过(托盘构建成功、日志落盘),`pnpm tauri build` 出过 dmg。
+**M1 任务 1–13 与 M2 任务 1–6 全部完成并提交**,逐任务的产物与假设见 `git log`
+(commit message 是这些细节的权威处,不在本文重复)。远端 `origin` =
+github.com/dhslegen/skill-sync(**私有**)。
 
-**双平台 CI 已在 `326093b` 全绿**(macOS + Windows 两个 job 均 success)。
+- 本机:Rust 314 + 前端 255 测试通过,clippy/eslint/tsc 干净,`pnpm dev` 启动冒烟通过,
+  `pnpm tauri build` 出过 dmg
+- **双平台 CI 在 `326093b`、`ecb3d57` 连续两次全绿**(macOS + Windows 两个 job 均 success)
+- **下一里程碑 M3**(设计方案 2.7):GitHub 源 device flow + 多源 registry + skill-lock
+  双向兼容;OAuth PKCE 与 PR 评审式分享已在 M1 提前做掉,**不要重做**。
+  交接材料见 docs/新会话交接提示词.md
 
-> ⚠️ 但这句话在此之前**假了很久**:macOS job 一直绿;**Windows job 从 M1 任务 10 起
-> 连红了六个提交**没被发现——M1 交接材料里"双平台 CI 已真实跑通"那句在任务 9 之后
-> 就不成立了,而 M2 全程照抄了它。失败一直是同一个:`remove_flow.rs` 用 `remove_file`
-> 删关联,而 Windows 上关联是 **junction**(目录重解析点),`remove_file` 直接
-> `Access is denied`。已修(`drop_link` 两种都试 + 断言真的删掉了)。
-> **教训:进度里写 CI 状态前先 `gh run list` 看一眼,别把上一份文档的结论当成事实抄下去。**
-M2 拍板项:①按 docs/M2-任务分解.md 执行;②关窗缩到托盘,「退出」只在托盘菜单。
-**下一里程碑 M3**(设计方案 2.7:GitHub 源 device flow + 多源 registry + skill-lock 双向
-兼容打磨;OAuth PKCE 与 PR 评审式分享已在 M1 提前做掉)。交接材料见 docs/新会话交接提示词.md。
+> ⚠️ **"CI 绿"这句话曾经假了很久**:macOS job 一直绿,**Windows job 从 M1 任务 10 起
+> 连红六个提交**没被发现——M1 交接材料里"双平台 CI 已真实跑通"在任务 9 之后就不成立,
+> 而 M2 全程照抄了它。根因在测试侧:`remove_flow.rs` 用 `remove_file` 删关联,而 Windows
+> 上关联是 **junction**(目录重解析点),直接 `Access is denied`。已修。
+> **教训:写任何"CI 绿"的结论前先 `gh run list` 看一眼,别把上一份文档的结论当事实抄下去。**
 
-| M2 任务 | 状态 | 关键产物 |
-|---|---|---|
-| 1 设置页 A | ✅ | config 新增可选 ui 字段(serde default,schemaVersion 仍 1)+ store/prefs.ts 同步(config 赢/一次性迁移/失败不硬推)+ 设置页账号区(退出登录接通)与外观区;6+11 新测试,7 处注入验证 |
-| 2 设置页 B | ✅ | AI 工具开关(config.disabledAgents,只影响默认勾选)+ 更新三档(手动/4h/每天,「手动」保留频率)+ open_library_url(同源白名单)接通评审链接;9+16 新测试,5 处注入验证 |
-| 3 scheduler | ✅ | run_check(head 未变不下载)+ `BatchAgents::FromAccount`(更新用账上 agents,自动流程不改写关联)+ 注入闭包的调度循环(paused clock 测频率/重排/关断)+ tracing 滚动日志;9+4 新测试,5 处注入验证 |
-| 4 托盘+通知 | ✅ | 托盘菜单(打开/立即检查/退出)+ 关窗缩托盘(拍板;`ExitRequested` 只放行显式退出)+ 通知文案纯函数(例行轮次不打扰/只报数量/禁术语,单测钉住);3 新测试,2 处注入验证;托盘交互真机验收见已知待处理 |
-| 5 App 自更新 | ✅ | tauri-plugin-updater(endpoint/pubkey 编译期注入)+ 启动探测与通知 + 设置页检查/安装/重启 + 发布通道 overlay 开 createUpdaterArtifacts(主 conf 不开)+ 部署指南 §7;3+6 新测试,5 处注入验证;**真实更新源联调待外部条件** |
-| 6 收尾打磨 | ✅ | 安装占位失败逐条重试(`acquire::link_agents`,并集合并记账)+ macOS 托盘 template image + `plugins.updater` 占位配置(修真机起不来的 bug)+ 文档同步;6+5 新测试,6 处注入验证。Windows decorum **决定不做**(无真机,见已知待处理) |
+M2 新增的 IPC:`ui_prefs_get/set`、`auto_update_get/set`、`agents_set_disabled`、
+`open_library_url`、`update_check_now`、`app_update_check/install`、`app_restart`、
+`skill_link_agents`;新增事件:`scheduler://report`、`app-update://available`。
 
-> M2 新增的 IPC:`ui_prefs_get/set`、`auto_update_get/set`、`agents_set_disabled`、
-> `open_library_url`、`update_check_now`、`app_update_check/install`、`app_restart`、
-> `skill_link_agents`;新增事件:`scheduler://report`、`app-update://available`。
+### 现役机制约束(动相关代码前必读)
 
-| 任务 | 状态 | 关键产物 |
-|---|---|---|
-| 1 脚手架 | ✅ | Tauri2+React19+Tailwind v4、双平台 CI、i18n 骨架与禁 git 术语守卫 |
-| 2 agents.json | ✅ | 75 条注册表 + 声明式探测 + 与上游的差分测试 |
-| 3 SKILL.md 解析 | ✅ | frontmatter 校验 + 发现规则 + 18 布局差分测试 |
-| 4 Gitea client | ✅ | REST 原语 + 14 wiremock + 实机全链路;fixture 环境可一键起 |
-| 5 登录 | ✅ | OAuth PKCE + 回环回调 + 钥匙串;**登录界面留到任务 8 随外壳一起做** |
-| 6 installer 链接层 | ✅ | fsops 降级链/自指防护/健康态 + installer 编排;40 单测,4 处注入验证 |
-| 7 state 双写 | ✅ | state/config schema 闸门 + 原子写;lock 双写对上游做**字节级**差分;`npx skills list` 实测可见 |
-| 8 商店页 | ✅ | core/store.rs 索引缓存(离线可浏览)+ 外壳/商店页/详情面板/命令面板;9+12 处注入验证 |
-| 9 获取流程 | ✅ | core/acquire.rs 编排 + contentHash 守卫接上;agent 多选/进度/结果/冲突弹窗;16+10 处注入验证 |
-| 10 我的技能 | ✅ | core/remove.rs + repair_links + link_health;行式列表/徽标/更新/修复/移除双确认;8+15 处注入验证 |
-| 11 分享 | ✅ | core/share.rs 全链路 + live e2e(三分支/竞态/只读 fork 对真 Gitea);冲突弹窗三选(保留并分享为默认);8+9 处注入验证 |
-| 12 向导 | ✅ | curated.json 进索引 + acquire_batch(一次下载/冲突跳过);三步向导每步都可走通;7+5 处注入验证 |
-| 13 打包 | ✅ | bundle 配置守卫测试 + 免代理直连 + build-release.sh/release.yml + 部署分发指南;真机验收清单待外部条件 |
+这些**都已实现**,列在这里是因为它们的不变量不看就会破坏。已完成的过程叙事在 git log。
 
-### 任务 13 交付说明(需外部条件才能闭环的部分)
-- **能自动化的已全部落地**:bundle 配置(NSIS 免管理员 currentUser、CSP 收紧、双平台 targets、
-  版本号一致性)有守卫测试钉住(`tests/bundle_config.rs`);`scripts/build-release.sh` 与
-  `release.yml` 在缺内网配置时拒绝出包;本机 `pnpm tauri build` 真实出过 dmg。
-- **待外部条件**(清单同部署指南 §6):Apple Developer ID 证书 + 公证凭证;Windows 内部 CA
-  签名或 IT 软件中心白名单;干净双平台真机的 ≤5 分钟验收(含 Windows 普通权限 junction 实测,
-  这同时补上任务 6 欠的那一档)。
-- 部署文档:`docs/部署分发指南.md`(**受版本控制**,与 terminology.md 同为 docs/ 白名单)。
-
-### 已知待处理
-- **`Installer::install` 依然会无条件清空重建 canonical**——守卫在 `core/acquire.rs`,不在它自己身上。
-  任何**新的**调用方(自动更新 scheduler、向导批量安装)都必须走 `acquire::acquire`,
-  或自行先跑 `acquire::precheck` 拿到用户结论。直接调 `install()` 就是在静默抹用户改动。
-- **「把本地改动分享上去」已接通**(任务 11):冲突弹窗三选,「保留并分享」为默认
-  (用户拍板)。core 的 `Resolution` 仍只有两档——"分享"是前端编排:先 `run("keepLocal")`
-  落稳,成功后再调 `skill_share_changes`;分享失败不影响"保留成功"的结果呈现。
-  回推走了评审(分支保护/只读)时 **installed 记账一个字不动**:改动没进 main,
-  清了 contentHash 等于把「已改动」标记藏起来。
-- **分享页的「新建技能」向导没做**(Demo 里有):交接包任务 11 范围不含它,
-  不摆点了没反应的按钮;等价 `skills init` 的脚手架随任务 12 向导一起考虑。
-- ~~评审链接只展示不可点~~:已随 M2 任务 2 接通(`open_library_url`,白名单只放行与
-  内建 Gitea **同源**的地址;`gitea::is_same_origin` 拒绝 javascript:/file: 等 scheme)。
-- **frontmatter 补齐会重建头部**:只在 SKILL.md 不合规时发生,重写后只保证
-  name/description 与正文;坏头部里残存的其他字段(license 等)不保证保留(见 share.rs 模块头)。
-- **agent 目录占位已可逐条重试**(M2 任务 6 补齐 M1 遗留):两条通道分工明确——
-  「我的技能」页的 `acquire::repair_links` 按**账上**的 agents 整体重来;
-  安装结果面板的 `acquire::link_agents` 处理"安装那一刻就没建成、因而根本没进账"的
-  agent(repair 够不到它们)。后者记账是**并集合并**不是覆盖(整份覆盖会把其余工具
-  从账上抹掉,卸载时漏解链接),前端先按不替换试一次,只有真撞上 `FS_LINK_OCCUPIED`
-  才升级成确认弹窗(RetryLinkDialog,默认焦点在取消)。
-- **批量安装已接**(任务 12):`acquire::acquire_batch` 一次下载装多个,冲突(改过/外来)
-  一律跳过并说明,不弹三选——向导面向全新环境,静默覆盖比装不上危险得多。
-- **偏好与向导标记已落 config.json**(M2 任务 1):config 的可选 `ui` 字段
-  (theme/accent/wizardDone,serde default 兼容,schemaVersion 仍 1)。同步方向唯一:
-  **config 有值则 config 赢**;localStorage(`skillsync.theme`/`accent`/`wizardDone`)降为
-  首帧防闪与 IPC 不可用时的兜底缓存。入口 `store/prefs.ts`:未同步成功绝不反推 config
-  (不拿猜的值覆盖真数据);向导 maybeOpen 现在会先发一次 `ui_prefs_get`。
+- **`Installer::install` 无条件清空重建 canonical**——守卫在 `core/acquire.rs`,不在它自己身上。
+  任何**新的**调用方都必须走 `acquire::acquire`/`acquire_batch`,或自行先跑
+  `acquire::precheck` 拿到用户结论。直接调 `install()` 就是在静默抹用户改动。
+- **建链/解链两条通道分工**:`repair_links` 按**账上**的 agents 整体重来(修断链/丢失/被改指);
+  `link_agents` 补"安装那一刻就没建成、因而根本没进账"的 agent——repair 够不到它们。
+  后者记账是**并集合并**不是覆盖(整份覆盖会把其余工具从账上抹掉,卸载时漏解链接)。
+  前端先按不替换试一次,只有真撞上 `FS_LINK_OCCUPIED` 才升级成确认弹窗(默认焦点在取消)。
+- **`acquire_batch` 的冲突语义**:改过/外来/已最新一律跳过并给人话原因,不弹三选。
+  scheduler 的冲突保护直接复用它,**不要另写一套判定**。两档链接目标:
+  `Uniform`(向导,统一列表)/ `FromAccount`(定时更新,各技能用账上 agents,自动流程绝不改写关联)。
+- **保留本地改动时,关于内容的记账一个字不动**:`commitSha` 与 `contentHash` 保持旧值,
+  它们不符正是"有可用更新 / 有未分享的改动"两个标记的判据。回推走了评审(分支保护/只读)时同理
+  ——改动没进 main,清了 contentHash 等于把「已改动」标记藏起来。
+  「保留并分享」是前端编排(先 `run("keepLocal")` 落稳再 `skill_share_changes`),core 的
+  `Resolution` 仍只有两档。
+- **偏好落 `config.json` 的 `ui` 字段**(theme/accent/wizardDone,serde default 兼容,
+  schemaVersion 仍 1)。同步方向唯一:**config 有值则 config 赢**;localStorage 降为首帧防闪
+  与 IPC 不可用时的兜底。入口 `store/prefs.ts`:**未同步成功绝不反推 config**(不拿猜的值
+  覆盖真数据)。agent 开关记在 `disabledAgents`(禁用名单而非启用白名单——注册表会新增 agent)。
+- **系统代理:一律直连**(任务 13):`gitea::app_http_client` 对全部请求 `.no_proxy()`
+  ——M1 只有内建源且必在内网,直连即正确语义。**M3 接外网源时必须按 registry 重新决定**。
+  测试坑:reqwest 对 loopback 目标**默认豁免代理**,拿 wiremock 当目标测代理行为必然空转;
+  `tests/proxy_bypass.rs` 用 `.invalid` 域名 + 对照组绕开。
+- **`open_library_url` 只放行与内建 Gitea 同源的地址**(scheme+host+port 全等),
+  `javascript:`/`file:` 一律拒绝——那是从 webview 通往系统的通道。多源之后要按 registry 放行,
+  但别放宽成"任意 URL"。
+- **托盘与退出**:关窗 = 缩到托盘(用户拍板),「退出」只在托盘菜单。
+  **`ExitRequested{code: None}` 的防退出不挡 Cmd+Q**——macOS 的退出走 `app.exit`(code=Some),
+  这条特意实测过,别照 tauri 文档"code 是 None 就是用户交互"的字面去推翻它。
+  macOS 托盘用 template image(`icons/tray-template.png`,单色只吃 alpha);图标加载失败
+  只记日志不拦托盘——没有托盘就彻底没入口了。
+- **通知只在有实际动作时发**(更新成功或失败),纯"已最新/全部跳过"的例行轮次不打扰;
+  文案只报数量不露目录名,判定与文案在 `scheduler::notification_copy`(可单测)。
+- **`plugins.updater` 在 conf 里必须有空占位**:插件 setup 会反序列化它,缺该节应用**起不来**。
+  真值走编译期注入并在运行时用 `updater_builder()` 覆盖,conf 里填真值就等于把内网地址
+  写进仓库(铁律 5)。有守卫测试钉住。
+- **frontmatter 补齐会重建头部**:只在 SKILL.md 不合规时发生,重写后只保证 name/description
+  与正文;坏头部里残存的其他字段(license 等)不保证保留(见 share.rs 模块头)。
+- **进度事件只报阶段,不报字节**:压缩包一次性下完,没有可信的字节级进度可报。
 - **curated.json 约定**(fixture 即此约定):技能库根目录,`{"curated": ["<frontmatter name>", …]}`,
-  按显示名记;对不上的条目在 view 层直接丢弃。真实公司库(2026-07-30 快照)还没有这个文件,
+  按显示名记;对不上的条目在 view 层丢弃。真实公司库(2026-07-30 快照)还没有这个文件,
   向导第三步会引导去商店——需要技能库管理员补一份才有"一键全装"。
-- **任务 6 的 DoD 还差"普通权限真机"这一档**(CI 已覆盖的部分见下):
-  - ✅ 已验:Windows runner 上 `junction::create` / `remove_dir` 摘链 / `junction::get_target`
-    真实执行通过,且建链测试断言"**必须是 junction 而不是 symlink**"——runner 即便有足够权限
-    创建 symlink 也会被这条挡下,C11 的提权假阳性从此有自动护栏。
-  - ❌ 未验:GitHub runner 权限宽松,**不等于**普通员工的受限机器;
-    "不开开发者模式、普通用户权限下安装成功且 Claude Code 能读到 skill"仍欠一次真机验证。
-  - ❌ 未验:8 个 `cfg(unix)` 测试在 Windows 上不跑(自指防护、坏软链跳过、软链子目录解引用、
-    被改指链接的卸载)。它们要构造场景就得先有 symlink 权限,而那正是 Windows 上假定没有的东西。
-    若要在 Windows 上覆盖这几条,需另想构造方式(如用 junction 代替 symlink 搭场景)。
-- **系统代理已拍板:一律直连**(任务 13):`gitea::app_http_client` 对全部请求 `.no_proxy()`
-  ——M1 只有内建源且必在内网,直连即正确语义。极端的全代理网络需 IT 放行,见部署指南 §4。
-  M3 自定义外网源时再按 registry 决定代理策略。
-  测试注意:reqwest 对 loopback 目标**默认豁免代理**,拿 wiremock 当目标测代理行为
-  必然空转;`tests/proxy_bypass.rs` 用 `.invalid` 保留域名 + 对照组的写法绕开了这一点。
-- **商店卡片上没有作者、也没有安装量**(任务 8 的假设,见 `core/store.rs` 模块头):
-  frontmatter 只有 name/description/metadata.internal,而逐技能的提交人归因要对每个目录各发
-  一次 commits 请求,50 个技能撑不住首屏 <2s。UI-Demo 里那两栏因此留空——**不编造**。
-  安装量本就是 C5 预留字段,等 M4 埋点服务。若以后要作者,需先给 gitea.rs 加 commits API
-  并想清楚 50 次请求怎么摊。
-- **UI-Demo 的分类 chip(文档/代码/数据/办公)换成了"全部/未安装/已安装"**(任务 8 的假设):
-  SKILL.md 里没有分类字段,硬造分类等于在界面上撒谎。形态与密度保持 Demo 原样。
-  若以后要分类,需要技能库侧先约定 frontmatter 字段或 `curated.json`。
-- **任务 8 的性能数字来自 loopback docker fixture,不是内网真机**:
-  53 个技能实测冷启动 76.6ms、缓存命中 28.1ms(`cargo test --test store_live -- --nocapture`),
-  远低于 DoD 的 2s / 300ms。但那是本机 docker,真实内网要加网络往返与更大的压缩包。
-  `tests/store_index.rs` 里的 300ms 断言跑在 wiremock 上、进 CI;`tests/store_live.rs` 需要
-  `./fixtures/init.sh`,环境不在时自动跳过(会往 fixture 建 `store-perf-50` 分支,幂等复用)。
-- **Windows 上的 GUI 行为仍未验**:托盘、关窗缩托盘、`ExitRequested` 防退出在 Windows 上
-  走的是另一条 `cfg` 分支,CI 只证明编译得过与测试通过,交互行为要真机(见下面两条)。
-- **App 自更新的端到端联调待外部条件**(M2 任务 5):代码侧与发布通道已就绪,
-  但要真验一次"旧版本 → 检出 → 装上 → 重启后版本变了",需要①minisign 密钥对
-  ②内网静态更新源落点 ③一次真实的双版本发布。步骤写在部署指南 §7.4。
-  已自动验证:未注入更新源时报 `UPDATE_NOT_CONFIGURED`、发布通道 overlay 与三个
-  新变量的闸门、前端状态机(装完不自动重启/安装中不被事件打断/失败不吞成成功)。
-- **托盘/关窗行为已在 macOS 实测通过**(M2 任务 4/6,用 AppleScript 驱动真实进程):
-  ①关窗后进程存活且窗口数归 0(缩到托盘)②托盘菜单存在,点「打开 SkillSync」
-  窗口从 0 恢复到 1 ③**Cmd+Q 正常退出**——`ExitRequested{code: None}` 的防退出
-  不挡它,macOS 的退出走 `app.exit`(code=Some),这一条是特意验过的,别照着
-  "code 是 None 就是用户交互"的文档字面去推翻它。
-  **仍待验**:更新成功轮次的系统通知(需要真实内网源才触发,macOS 首次还需授权);
-  Windows 上的同一组行为(`cfg` 分支不同,CI 只证明编译得过)。
-  macOS 托盘已用 **template image**
-  (`icons/tray-template.png`,单色 + 只吃 alpha,系统按菜单栏明暗自动反色);
-  图标加载失败只记日志不拦托盘。本机菜单栏状态项过多把它挤进了溢出区,
-  **图标外观没能目视确认**,留作真机验收的一项。
-- **Windows 平台外观细节仍未做,且 M2 决定不做**(任务 6 的判断):UI 规范 §75 要求用
-  tauri-plugin-decorum 做双平台 overlay 标题栏,但本机没有 Windows 真机,装上它等于
-  **把一个能用的 Windows 窗口装饰换成无法目视验证的自绘控件**——万一窗口控制画不出来,
-  用户连关窗都做不到,而关窗现在还接着"缩到托盘"。Windows 保持系统默认装饰(功能完好,
-  只是多一条系统标题栏)。等有 Windows 真机再做,连同 vibrancy/实色化一起。
-- **进度事件只报阶段,不报字节**:压缩包是一次性下完的,没有可信的字节级进度可报。
-  阶段(取内容/检查/写入/关联/记账)是当前最诚实的粒度。
-- ~~退出登录还没有界面入口~~:已随 M2 任务 1 的设置页账号区落地。
-- 本机 Rust 环境需走镜像:`RUSTUP_DIST_SERVER` 用清华、crates.io 用 rsproxy(已配在 `~/.cargo/config.toml`);
+- **商店卡片上没有作者、也没有安装量**(`core/store.rs` 模块头):frontmatter 只有
+  name/description/metadata.internal,逐技能的提交人归因要对每个目录各发一次 commits 请求,
+  50 个技能撑不住首屏 <2s。UI-Demo 里那两栏因此留空——**不编造**。安装量是 C5 预留字段,等 M4。
+- **UI-Demo 的分类 chip 换成了"全部/未安装/已安装"**:SKILL.md 里没有分类字段,
+  硬造分类等于在界面上撒谎。要分类得技能库侧先约定 frontmatter 字段。
+
+### 待处理
+
+**功能缺口**
+- **分享页的「新建技能」向导没做**(Demo 里有):等价 `skills init` 的脚手架,一直没排进任务。
+- **Windows 外观打磨决定不做**(M2 任务 6 的判断):UI 规范 §75 要 tauri-plugin-decorum,
+  但没有 Windows 真机,装上等于把能用的系统窗口装饰换成无法目视验证的自绘控件——画不出
+  窗口控制的话用户连关窗都做不到,而关窗现在还接着"缩到托盘"。等有真机再做,连同 vibrancy。
+
+**只能在真机/真实环境验的**
+- **Windows 普通权限真机**(任务 6 欠的最后一档):CI 已验 Windows runner 上 junction
+  建链/摘链真实通过,且断言"必须是 junction 而不是 symlink"(C11 的提权假阳性有护栏);
+  但 runner 权限宽松 ≠ 普通员工受限机器。"不开开发者模式、普通用户权限下装成功且
+  Claude Code 读得到"仍欠一次验证。
+- **8 个 `cfg(unix)` 测试在 Windows 上不跑**(自指防护、坏软链跳过、软链子目录解引用、
+  被改指链接的卸载):要构造场景就得先有 symlink 权限,而那正是 Windows 上假定没有的。
+  若要覆盖需另想构造方式(如用 junction 搭场景)。
+- **Windows 上的 GUI 行为未验**:托盘、关窗缩托盘、防退出走的是另一条 `cfg` 分支,
+  CI 只证明编译与测试通过。macOS 侧已用 AppleScript 实测通过(关窗后进程存活且窗口数归 0、
+  托盘「打开」把窗口从 0 恢复到 1、Cmd+Q 正常退出)。
+- **托盘图标外观没能目视确认**:本机菜单栏状态项过多把它挤进了溢出区。
+- **系统通知未验**:要真实内网源才触发,macOS 首次还需授权。
+- **App 自更新的端到端联调**:代码侧与发布通道已就绪,但要真验"旧版本 → 检出 → 装上 →
+  重启后版本变了",需要 minisign 密钥对 + 内网静态更新源落点 + 一次真实的双版本发布。
+  步骤见部署指南 §7.4。已自动验证的部分:未注入更新源时报 `UPDATE_NOT_CONFIGURED`、
+  发布通道 overlay 与三个新变量的闸门、前端状态机(装完不自动重启/安装中不被事件打断/
+  失败不吞成成功)。
+- **任务 8 的性能数字来自 loopback docker,不是内网真机**:53 个技能冷启动 76.6ms、
+  缓存命中 28.1ms(`cargo test --test store_live -- --nocapture`),远低于 DoD 的 2s/300ms,
+  但真实内网要加网络往返与更大的压缩包。`tests/store_index.rs` 的 300ms 断言跑在 wiremock 上、进 CI。
+- **正式分发的外部条件**(完整清单见部署指南 §6):Apple Developer ID 证书 + 公证凭证、
+  Windows 内部 CA 签名或 IT 软件中心白名单、干净双平台真机 ≤5 分钟验收。
+
+**本机环境**
+- Rust 走镜像:`RUSTUP_DIST_SERVER` 用清华、crates.io 用 rsproxy(已配在 `~/.cargo/config.toml`);
   `~/.cargo/bin` 不在非交互 shell 的 PATH 中,跑 cargo 前需 `export PATH="$HOME/.cargo/bin:$PATH"`。
