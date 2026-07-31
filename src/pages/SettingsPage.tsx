@@ -188,9 +188,12 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
         </div>
         {!registry.builtin && mode === "idle" && (
           <div className="flex flex-none items-center gap-1.5">
-            <button type="button" className={SMALL_BUTTON} onClick={() => setMode("credentials")}>
-              {t("registries.credentials")}
-            </button>
+            {registry.kind !== "github" && (
+              // GitHub 源的凭证走 device flow(任务 5),PAT 输入框对它不成立
+              <button type="button" className={SMALL_BUTTON} onClick={() => setMode("credentials")}>
+                {t("registries.credentials")}
+              </button>
+            )}
             <button type="button" className={SMALL_BUTTON} onClick={() => setMode("confirmRemove")}>
               {t("registries.remove")}
             </button>
@@ -260,6 +263,7 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
 function AddRegistryRow() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
+  const [kind, setKind] = useState<"gitea" | "github">("gitea");
   const [baseUrl, setBaseUrl] = useState("");
   const [repoPath, setRepoPath] = useState("");
   const add = useRegistries((s) => s.add);
@@ -268,8 +272,15 @@ function AddRegistryRow() {
   const reset = () => {
     setOpen(false);
     setName("");
+    setKind("gitea");
     setBaseUrl("");
     setRepoPath("");
+  };
+
+  // GitHub 的地址是固定的,替用户填好;切回 Gitea 时清掉,避免残留误导
+  const pickKind = (next: "gitea" | "github") => {
+    setKind(next);
+    setBaseUrl(next === "github" ? "https://github.com" : "");
   };
 
   if (!open) {
@@ -284,6 +295,29 @@ function AddRegistryRow() {
 
   return (
     <div className="flex flex-col gap-2 border-t border-border px-3.5 py-2.5">
+      <div className="flex items-center gap-2 text-[11.5px] text-text-3">
+        <span className="w-[76px] flex-none">{t("registries.formKind")}</span>
+        <div
+          className="flex overflow-hidden rounded-ctl border border-border"
+          role="group"
+          aria-label={t("registries.formKind")}
+        >
+          {(["gitea", "github"] as const).map((k) => (
+            <button
+              key={k}
+              type="button"
+              aria-pressed={kind === k}
+              onClick={() => pickKind(k)}
+              className={cn(
+                "border-l border-border px-2.5 py-[3px] text-[12px] text-text-2 first:border-l-0",
+                kind === k && "bg-surface-3 font-[550] text-text",
+              )}
+            >
+              {k === "gitea" ? "Gitea" : "GitHub"}
+            </button>
+          ))}
+        </div>
+      </div>
       <label className="flex items-center gap-2 text-[11.5px] text-text-3">
         <span className="w-[76px] flex-none">{t("registries.formName")}</span>
         <input
@@ -318,7 +352,7 @@ function AddRegistryRow() {
           type="button"
           disabled={busy || !name.trim() || !baseUrl.trim() || !repoPath.trim()}
           onClick={() => {
-            void add({ name, baseUrl, repoPath }).then((ok) => {
+            void add({ name, kind, baseUrl, repoPath }).then((ok) => {
               if (ok) reset();
             });
           }}

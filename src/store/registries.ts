@@ -23,6 +23,8 @@ function toAppError(raw: unknown): AppError {
 
 export interface RegistryAddForm {
   name: string;
+  /** `gitea` | `github`(任务 4 起两种都可加)。 */
+  kind: "gitea" | "github";
   baseUrl: string;
   /** `所属者/名称` 一段式输入,提交前在本地拆开。 */
   repoPath: string;
@@ -73,7 +75,7 @@ export const useRegistries = create<RegistriesState>((set, get) => ({
     try {
       const list = await registryAdd({
         name: form.name,
-        kind: "gitea",
+        kind: form.kind,
         baseUrl: form.baseUrl,
         owner,
         repo,

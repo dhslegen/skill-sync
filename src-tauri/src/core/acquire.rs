@@ -27,7 +27,7 @@ use serde::Serialize;
 
 use crate::core::agents::{AgentEnv, AgentRegistry};
 use crate::core::fsops::{self, OnOccupied};
-use crate::core::gitea::{GiteaClient, RepoArchive, RepoRef};
+use crate::core::gitea::{RepoArchive, RepoRef, RepoSource};
 use crate::core::installer::{InstallReport, Installer, SkillPayload};
 use crate::core::skill_lock::{self, LockEntry, LockOutcome};
 use crate::core::state::{self, InstalledSkill, LinkRecord, SkillSource, Store};
@@ -220,7 +220,7 @@ pub fn extract_payload(archive: &RepoArchive, skill: &IndexedSkill) -> SkillPayl
 /// `now` 为 ISO-8601 时间戳,由调用方注入以便测试(与 skill_lock 的约定一致)。
 #[allow(clippy::too_many_arguments)]
 pub async fn acquire(
-    client: &GiteaClient,
+    client: &impl RepoSource,
     registry: &AgentRegistry,
     env: &dyn AgentEnv,
     store: &Store,
@@ -375,7 +375,7 @@ pub enum BatchAgents<'a> {
 /// 展开三选弹窗要诚实也要轻。单个技能失败不中断其余。
 #[allow(clippy::too_many_arguments)]
 pub async fn acquire_batch(
-    client: &GiteaClient,
+    client: &impl RepoSource,
     registry: &AgentRegistry,
     env: &dyn AgentEnv,
     store: &Store,

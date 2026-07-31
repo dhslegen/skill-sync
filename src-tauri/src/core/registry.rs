@@ -117,14 +117,15 @@ impl ResolvedRegistry {
         })
     }
 
-    /// Gitea 专用链路(商店/获取/分享/scheduler)的类型闸门。
-    /// GitHub client 是 M3 任务 4:接通后此闸门摘除。
+    /// Gitea 专用链路的类型闸门。任务 4 起**读链路已放行 GitHub**(走 `RepoSource`),
+    /// 本闸门只剩登录与分享两条 Gitea 专属通道在用;GitHub 侧凭证与分享归任务 5,
+    /// 接通后按通道逐个摘除。
     pub fn require_gitea(&self) -> Result<&Self, AppError> {
         match self.kind {
             RegistryKind::Gitea => Ok(self),
             RegistryKind::Github => Err(AppError::new(
                 "REPO_KIND_UNSUPPORTED",
-                "GitHub 技能库来源将在后续版本开放,当前还不能访问",
+                "GitHub 技能库来源暂不支持登录与分享,浏览与获取不受影响",
             )
             .with_detail(format!("registry {} kind=github", self.id))),
         }

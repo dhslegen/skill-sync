@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 
 use crate::core::acquire::{self, BatchAgents, BatchOutcome};
 use crate::core::agents::{AgentEnv, AgentRegistry};
-use crate::core::gitea::{GiteaClient, RepoRef};
+use crate::core::gitea::{RepoRef, RepoSource};
 use crate::core::state::Store;
 use crate::error::AppError;
 
@@ -75,7 +75,7 @@ pub struct FailedSkill {
 /// ——自动流程绝不改写用户的关联。
 #[allow(clippy::too_many_arguments)]
 pub async fn run_check(
-    client: &GiteaClient,
+    client: &impl RepoSource,
     registry: &AgentRegistry,
     env: &dyn AgentEnv,
     store: &Store,

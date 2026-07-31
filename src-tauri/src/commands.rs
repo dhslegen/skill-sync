@@ -9,6 +9,7 @@ use crate::core::agents::{AgentRegistry, DetectedAgent, SystemEnv};
 use crate::core::auth::{self, KeyringStore, OAuthConfig};
 use crate::core::builtin;
 use crate::core::gitea::{GiteaClient, RepoRef};
+use crate::core::github;
 use crate::core::installer::{self, InstallReport, Installer};
 use crate::core::registry::{self, BUILTIN_REGISTRY_ID};
 use crate::core::remove;
@@ -243,26 +244,20 @@ async fn run_all_sources_check() -> Option<scheduler::CheckReport> {
 
     let mut reports = Vec::new();
     for id in ids {
-        let resolved = match registry::resolve(&builtin_src, &registries_cfg, &id) {
-            Ok(r) => r,
-            Err(err) => {
-                // 内建未注入配置的开发构建每轮都走到这:记 debug 免得刷日志
-                tracing::debug!(registry_id = %id, code = %err.code, "定时检查跳过该源");
-                continue;
-            }
-        };
-        if resolved.require_gitea().is_err() {
-            continue; // github 源待任务 4 接通,静默跳过不算失败
+        if registry::resolve(&builtin_src, &registries_cfg, &id).is_err() {
+            // 内建未注入配置的开发构建每轮都走到这:记 debug 免得刷日志
+            tracing::debug!(registry_id = %id, "定时检查跳过该源(解析失败)");
+            continue;
         }
         let round = async {
-            let client = store_client(&id, resolved.base_url.clone()).await?;
+            let (client, repo) = read_source(&id).await?;
             scheduler::run_check(
                 &client,
                 &registry,
                 &SystemEnv,
                 &store,
                 &id,
-                &resolved.repo,
+                &repo,
                 &now_iso8601(),
                 auth::now_unix(),
             )
@@ -540,11 +535,8 @@ pub fn auth_logout(args: RegistryArg) -> Result<(), AppError> {
 
 // ============================================================ 商店
 
-/// 解析某个源的技能库坐标(M3 任务 1 起经 `core/registry` 统一解析)。
-///
-/// **刻意不看 OAuth 配置**:技能库公开可匿名读(已实测),商店浏览与详情预览先于登录
-/// ——`registry::resolve` 的签名里没有 client_id,这条产品前提有测试钉在 registry.rs。
-/// kind=github 的源在 GitHub client(任务 4)接通前统一在此被拦。
+/// 解析某个源的技能库坐标。**分享链路专用**(Gitea-only,GitHub 分享归任务 5);
+/// 读链路走 [`read_source`],对来源类型无感。
 fn registry_target(registry_id: &str) -> Result<(String, RepoRef), AppError> {
     let resolved = resolve_registry(registry_id)?;
     resolved.require_gitea()?;
@@ -556,28 +548,66 @@ fn index_cache_file(registry_id: &str) -> Result<std::path::PathBuf, AppError> {
     Ok(store::cache_path(app_store()?.dir(), registry_id))
 }
 
-/// 读链路的 client(M3 任务 2)。内建源一律**匿名**:公开可读(M1 实测),
-/// 带上一个可能已过期的令牌反而会把本来能成的匿名请求变成 401。
-/// 自定义源可能是私有库:有凭证就带上,没有或取不出来就匿名——读不到再由请求自己报 401/404。
-async fn store_client(registry_id: &str, base_url: String) -> Result<GiteaClient, AppError> {
-    if registry_id == BUILTIN_REGISTRY_ID {
-        return Ok(GiteaClient::with_http(
-            base_url,
-            None,
-            http_client_for(registry_id)?,
-        ));
+/// 读链路的来源分发(M3 任务 4):store/acquire/scheduler 拿到的都是这个 enum,
+/// 具体是 Gitea 还是 GitHub 在此处消化,core 编排对来源类型无感。
+enum SourceClient {
+    Gitea(GiteaClient),
+    Github(github::GithubClient),
+}
+
+impl crate::core::gitea::RepoSource for SourceClient {
+    async fn branch_head(
+        &self,
+        r: &RepoRef,
+    ) -> Result<crate::core::gitea::BranchHead, AppError> {
+        match self {
+            Self::Gitea(c) => c.branch_head(r).await,
+            Self::Github(c) => c.branch_head(r).await,
+        }
     }
+    async fn download_archive(
+        &self,
+        r: &RepoRef,
+    ) -> Result<crate::core::gitea::RepoArchive, AppError> {
+        match self {
+            Self::Gitea(c) => c.download_archive(r).await,
+            Self::Github(c) => c.download_archive(r).await,
+        }
+    }
+}
+
+/// 读链路入口:解析源 → 构造对应 client,返回访问坐标。
+///
+/// **刻意不看 OAuth 配置**:技能库公开可匿名读,商店浏览先于登录(产品前提,
+/// 测试钉在 registry.rs)。凭证策略按源:内建源一律匿名(公开可读,M1 实测,
+/// 带过期令牌反而把能成的匿名请求变成 401);自定义 Gitea 源可能是私有库,
+/// 有凭证就带上,取不出来降级匿名;GitHub 源任务 4 先匿名(公共库),
+/// 凭证随 device flow(任务 5)接入。
+async fn read_source(registry_id: &str) -> Result<(SourceClient, RepoRef), AppError> {
+    let resolved = resolve_registry(registry_id)?;
     let http = http_client_for(registry_id)?;
-    let cfg = auth_config(registry_id)?;
-    let token = match auth::ensure_access_token(&http, &cfg, &KeyringStore, registry_id).await {
-        Ok(t) => t,
-        Err(err) => {
-            // 凭证层故障(钥匙串读不出等)不拦浏览:降级匿名,原因进日志
-            tracing::warn!(registry_id, code = %err.code, "读取凭证失败,按匿名访问");
-            None
+    let client = match resolved.kind {
+        registry::RegistryKind::Github => {
+            SourceClient::Github(github::GithubClient::new(&resolved.base_url, None, http))
+        }
+        registry::RegistryKind::Gitea if resolved.builtin => {
+            SourceClient::Gitea(GiteaClient::with_http(resolved.base_url.clone(), None, http))
+        }
+        registry::RegistryKind::Gitea => {
+            let cfg = resolved.auth_config(builtin::OAUTH_CLIENT_ID)?;
+            let token =
+                match auth::ensure_access_token(&http, &cfg, &KeyringStore, registry_id).await {
+                    Ok(t) => t,
+                    Err(err) => {
+                        // 凭证层故障(钥匙串读不出等)不拦浏览:降级匿名,原因进日志
+                        tracing::warn!(registry_id, code = %err.code, "读取凭证失败,按匿名访问");
+                        None
+                    }
+                };
+            SourceClient::Gitea(GiteaClient::with_http(resolved.base_url.clone(), token, http))
         }
     };
-    Ok(GiteaClient::with_http(base_url, token, http))
+    Ok((client, resolved.repo))
 }
 
 /// 分享是写操作,必须带登录凭证。没登录给一个前端能识别的错误码,引导去登录。
@@ -603,10 +633,10 @@ pub struct StoreIndexArgs {
 #[tauri::command]
 pub async fn store_index(args: StoreIndexArgs) -> Result<StoreIndexView, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (base_url, repo) = registry_target(registry_id)?;
+    let (client, repo) = read_source(registry_id).await?;
     let cache = index_cache_file(registry_id)?;
     let (index, outcome) = store::refresh_index(
-        &store_client(registry_id, base_url).await?,
+        &client,
         &repo,
         registry_id,
         &cache,
@@ -629,7 +659,7 @@ pub struct StoreDetailArgs {
 #[tauri::command]
 pub async fn store_skill_detail(args: StoreDetailArgs) -> Result<SkillDetail, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (base_url, repo) = registry_target(registry_id)?;
+    let (client, repo) = read_source(registry_id).await?;
     let cache = index_cache_file(registry_id)?;
 
     // 详情走缓存:打开面板不该再等一次网络往返。
@@ -642,7 +672,7 @@ pub async fn store_skill_detail(args: StoreDetailArgs) -> Result<SkillDetail, Ap
 
     // 缓存里没有(首次进入、或缓存刚被丢弃):刷一次再找。
     let (index, _) = store::refresh_index(
-        &store_client(registry_id, base_url).await?,
+        &client,
         &repo,
         registry_id,
         &cache,
@@ -683,7 +713,7 @@ pub async fn skill_install(
     args: InstallArgs,
 ) -> Result<acquire::AcquireOutcome, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (base_url, repo) = registry_target(registry_id)?;
+    let (client, repo) = read_source(registry_id).await?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
 
@@ -694,7 +724,7 @@ pub async fn skill_install(
     };
 
     acquire::acquire(
-        &store_client(registry_id, base_url).await?,
+        &client,
         &registry,
         &SystemEnv,
         &store,
@@ -801,12 +831,12 @@ pub async fn skill_install_batch(
     args: InstallBatchArgs,
 ) -> Result<Vec<acquire::BatchItem>, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (base_url, repo) = registry_target(registry_id)?;
+    let (client, repo) = read_source(registry_id).await?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
 
     acquire::acquire_batch(
-        &store_client(registry_id, base_url).await?,
+        &client,
         &registry,
         &SystemEnv,
         &store,

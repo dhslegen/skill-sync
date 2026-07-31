@@ -14,6 +14,7 @@
   "registries.builtinTag": "内建",
   "registries.notConfigured": "这个版本没有配置内建技能库",
   "registries.addButton": "添加来源",
+  "registries.formKind": "类型",
   "registries.formName": "名称",
   "registries.formNamePlaceholder": "比如:部门工具库",
   "registries.formBaseUrl": "服务器地址",

@@ -254,7 +254,8 @@ impl ArchiveEntry {
 
 /// 下载下来的仓库压缩包解开后的内容。
 pub struct RepoArchive {
-    /// 压缩包顶层目录名。Gitea 用仓库名(`team-skills/`),GitHub 用 `<repo>-<ref>/`,
+    /// 压缩包顶层目录名。Gitea 用仓库名(`team-skills/`),GitHub 用
+    /// `{owner}-{repo}-{短sha}/`(2026-07-31 实测,曾猜错为 `<repo>-<ref>/`),
     /// 因此扫描技能时的起始路径必须以此为准,不能写死。
     pub root: String,
     /// 仅文本文件,供 [`crate::core::skills::discover_skills`] 扫描。
@@ -569,12 +570,36 @@ impl GiteaClient {
     }
 }
 
+/// 读链路的最小抽象(M3 任务 4):商店索引、获取与定时检查只需要这两件事,
+/// Gitea 与 GitHub client 各自实现,store/acquire/scheduler 对来源类型无感。
+/// 写链路(分享)刻意不进这个 trait——两家的提交/评审 API 形状完全不同,
+/// 硬抽成一个接口只会得到谁都不像的东西(GitHub 侧分享归任务 5)。
+pub trait RepoSource: Sync {
+    fn branch_head(
+        &self,
+        r: &RepoRef,
+    ) -> impl std::future::Future<Output = Result<BranchHead, AppError>> + Send;
+    fn download_archive(
+        &self,
+        r: &RepoRef,
+    ) -> impl std::future::Future<Output = Result<RepoArchive, AppError>> + Send;
+}
+
+impl RepoSource for GiteaClient {
+    async fn branch_head(&self, r: &RepoRef) -> Result<BranchHead, AppError> {
+        GiteaClient::branch_head(self, r).await
+    }
+    async fn download_archive(&self, r: &RepoRef) -> Result<RepoArchive, AppError> {
+        GiteaClient::download_archive(self, r).await
+    }
+}
+
 /// "根本没连上"的判定。这一类要提示"确认已接入内网或 VPN",不能含糊成"稍后重试"。
 ///
 /// `is_connect()` **不涵盖 DNS 解析失败**(任务 13 的测试实测):员工不在内网时,
 /// 解析不了内网域名恰恰是最常见的失败形态。顺着 source 链找 io 层错误与
 /// hyper 的 dns 措辞把它们补进来。
-fn is_unreachable(e: &reqwest::Error) -> bool {
+pub(crate) fn is_unreachable(e: &reqwest::Error) -> bool {
     if e.is_timeout() || e.is_connect() {
         return true;
     }

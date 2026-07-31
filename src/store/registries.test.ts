@@ -50,6 +50,7 @@ describe("技能库来源 store", () => {
 
     const ok = await useRegistries.getState().add({
       name: "部门工具库",
+      kind: "gitea",
       baseUrl: "http://tools.example:8080",
       repoPath: "ai-skills/dept-skills",
     });
@@ -67,11 +68,34 @@ describe("技能库来源 store", () => {
     expect(useRegistries.getState().list).toHaveLength(2);
   });
 
+  it("add 把选择的 kind 原样传给后端(GitHub 源,M3 任务 4)", async () => {
+    useRegistries.setState({ list: [BUILTIN] });
+    invoke.mockResolvedValueOnce([BUILTIN]);
+
+    await useRegistries.getState().add({
+      name: "开源技能集",
+      kind: "github",
+      baseUrl: "https://github.com",
+      repoPath: "vercel-labs/skills",
+    });
+
+    expect(invoke).toHaveBeenCalledWith("registry_add", {
+      args: {
+        name: "开源技能集",
+        kind: "github",
+        baseUrl: "https://github.com",
+        owner: "vercel-labs",
+        repo: "skills",
+      },
+    });
+  });
+
   it("add 在本地就拦下没有斜杠的技能库路径,不发 IPC", async () => {
     useRegistries.setState({ list: [BUILTIN] });
 
     const ok = await useRegistries.getState().add({
       name: "部门工具库",
+      kind: "gitea",
       baseUrl: "http://tools.example:8080",
       repoPath: "只有一段",
     });
@@ -91,6 +115,7 @@ describe("技能库来源 store", () => {
 
     const ok = await useRegistries.getState().add({
       name: "x",
+      kind: "gitea",
       baseUrl: "not-a-url",
       repoPath: "a/b",
     });
