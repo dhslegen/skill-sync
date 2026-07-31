@@ -12,6 +12,8 @@
 #   export SKILLSYNC_OAUTH_CLIENT_ID="<OAuth 应用的 Client ID>"
 #   export SKILLSYNC_BUILTIN_REPO="skills/skills"
 #   export SKILLSYNC_BUILTIN_BRANCH="main"
+#   # 可选(M3):GitHub 源的一键登录。不设不拦构建,GitHub 源仍可匿名浏览获取。
+#   export SKILLSYNC_GITHUB_CLIENT_ID="<GitHub OAuth App 的 Client ID(需启用 Device Flow)>"
 #   # macOS 签名 + 公证(证书到位后):
 #   export APPLE_SIGNING_IDENTITY="Developer ID Application: <公司> (<TEAMID>)"
 #   export APPLE_ID="<公证用 Apple ID>" APPLE_PASSWORD="<app 专用密码>" APPLE_TEAM_ID="<TEAMID>"
@@ -40,6 +42,11 @@ if [[ $fail -ne 0 ]]; then
   echo "发布构建终止。上述 SKILLSYNC_*/TAURI_SIGNING_* 变量都设好后重试。" >&2
   echo "minisign 密钥对用 'pnpm tauri signer generate' 生成;私钥离线保管,丢失即永远无法推更新。" >&2
   exit 1
+fi
+
+# GitHub 一键登录是可选能力:不设只提示,不拦构建(M3 任务 5a)
+if [[ -z "${SKILLSYNC_GITHUB_CLIENT_ID:-}" ]]; then
+  echo "⚠️  未设置 SKILLSYNC_GITHUB_CLIENT_ID:GitHub 源可浏览获取,但「一键登录」不可用。" >&2
 fi
 
 case "$SKILLSYNC_BUILTIN_GITEA_URL" in

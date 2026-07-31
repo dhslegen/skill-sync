@@ -85,6 +85,9 @@ jobs:
           SKILLSYNC_OAUTH_CLIENT_ID: ${{ secrets.SKILLSYNC_OAUTH_CLIENT_ID }}
           SKILLSYNC_BUILTIN_REPO: ${{ secrets.SKILLSYNC_BUILTIN_REPO }}
           SKILLSYNC_BUILTIN_BRANCH: ${{ secrets.SKILLSYNC_BUILTIN_BRANCH }}
+          # 可选(M3):GitHub 一键登录的 Client ID;secret 未配置时注入空值,
+          # 不拦构建——GitHub 源仍可匿名浏览获取,仅登录报"未配置"
+          SKILLSYNC_GITHUB_CLIENT_ID: ${{ secrets.SKILLSYNC_GITHUB_CLIENT_ID }}
           # App 自更新:更新源与公钥编译进包;私钥给产物出 .sig(M2 任务 5)
           SKILLSYNC_UPDATE_URL: ${{ secrets.SKILLSYNC_UPDATE_URL }}
           SKILLSYNC_UPDATE_PUBKEY: ${{ secrets.SKILLSYNC_UPDATE_PUBKEY }}

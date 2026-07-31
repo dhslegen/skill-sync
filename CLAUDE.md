@@ -228,6 +228,8 @@ docs/              ⚠️ 设计方案/交接包/UI 规范/UI-Demo/任务分解/
 `SKILLSYNC_BUILTIN_GITEA_URL` / `SKILLSYNC_OAUTH_CLIENT_ID` / `SKILLSYNC_BUILTIN_REPO` / `SKILLSYNC_BUILTIN_BRANCH`
 App 自更新(M2 任务 5)另有 `SKILLSYNC_UPDATE_URL`(latest.json 地址)/ `SKILLSYNC_UPDATE_PUBKEY`
 (minisign 公钥),签名私钥走 `TAURI_SIGNING_PRIVATE_KEY`(只在构建机上,绝不进仓库)。
+M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow,无 secret):
+未注入不拦构建,GitHub 源仍可匿名浏览获取,仅「一键登录」报"未配置"。
 
 ## 开发纪律
 - M1(交接包 3.5,任务 1→13)与 M2(docs/M2-任务分解.md,任务 1→6)**均已全部完成**;
