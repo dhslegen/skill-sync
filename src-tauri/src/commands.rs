@@ -811,6 +811,36 @@ pub async fn skill_repair(args: SkillRepairArgs) -> Result<InstallReport, AppErr
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkillLinkAgentsArgs {
+    pub dir_slug: String,
+    /// 要补关联的工具(通常是安装结果面板里失败的那一条)。
+    pub agent_ids: Vec<String>,
+    /// 前端确认弹窗的结果:占位的实体目录会被替换,原内容无法找回。
+    #[serde(default)]
+    pub replace_occupied: bool,
+}
+
+/// 安装结果面板里逐条重试:把技能补关联到当时没建成的那个工具上。
+#[tauri::command]
+pub async fn skill_link_agents(args: SkillLinkAgentsArgs) -> Result<InstallReport, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app_store()?;
+        let registry = AgentRegistry::builtin();
+        let installer = Installer::new(&registry, &SystemEnv);
+        acquire::link_agents(
+            &installer,
+            &store,
+            &args.dir_slug,
+            &args.agent_ids,
+            args.replace_occupied,
+        )
+    })
+    .await
+    .map_err(|e| AppError::new("FS_TASK", "重试未能完成,请重试").with_detail(e.to_string()))?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillRemoveArgs {
     pub dir_slug: String,
     /// 前端确认弹窗的结果:用户已确认"连本地改动一起删"。

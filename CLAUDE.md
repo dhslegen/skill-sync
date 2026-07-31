@@ -282,15 +282,14 @@ App 自更新(M2 任务 5)另有 `SKILLSYNC_UPDATE_URL`(latest.json 地址)/ `SK
   内建 Gitea **同源**的地址;`gitea::is_same_origin` 拒绝 javascript:/file: 等 scheme)。
 - **frontmatter 补齐会重建头部**:只在 SKILL.md 不合规时发生,重写后只保证
   name/description 与正文;坏头部里残存的其他字段(license 等)不保证保留(见 share.rs 模块头)。
-- **agent 目录占位:事后可修,安装当下仍只报不处理**。任务 10 给了「我的技能」页的
-  修复通道(`acquire::repair_links` + 替换确认弹窗):断链/丢失/被改指直接重建,
-  实体目录占位需确认后替换。但**安装那一刻**的占位失败仍是 `OnOccupied::Fail` 只报不重试,
-  且修复按账上的 agents 全量重链——安装时就失败的 agent 不在账上,修复够不到它,
-  用户得回详情面板重装。给安装结果面板的失败项做逐条「替换」重试属后续任务
-  (动 `AcquireRequest`/InstallPanel 的范围)。
+- **agent 目录占位已可逐条重试**(M2 任务 6 补齐 M1 遗留):两条通道分工明确——
+  「我的技能」页的 `acquire::repair_links` 按**账上**的 agents 整体重来;
+  安装结果面板的 `acquire::link_agents` 处理"安装那一刻就没建成、因而根本没进账"的
+  agent(repair 够不到它们)。后者记账是**并集合并**不是覆盖(整份覆盖会把其余工具
+  从账上抹掉,卸载时漏解链接),前端先按不替换试一次,只有真撞上 `FS_LINK_OCCUPIED`
+  才升级成确认弹窗(RetryLinkDialog,默认焦点在取消)。
 - **批量安装已接**(任务 12):`acquire::acquire_batch` 一次下载装多个,冲突(改过/外来)
   一律跳过并说明,不弹三选——向导面向全新环境,静默覆盖比装不上危险得多。
-  安装时的占位失败逐条「替换」重试仍未做(见上一条)。
 - **偏好与向导标记已落 config.json**(M2 任务 1):config 的可选 `ui` 字段
   (theme/accent/wizardDone,serde default 兼容,schemaVersion 仍 1)。同步方向唯一:
   **config 有值则 config 赢**;localStorage(`skillsync.theme`/`accent`/`wizardDone`)降为

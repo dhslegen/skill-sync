@@ -18,6 +18,7 @@ import {
   isAppError,
   listenProgress,
   skillInstall,
+  skillLinkAgents,
   skillShareChanges,
   type AppError,
   type DetectedAgent,
@@ -59,6 +60,16 @@ interface InstallState {
   /** 冲突弹窗的默认选项(用户拍板):保留本地改动,随后把改动分享回公司技能库。 */
   keepLocalAndShare: () => Promise<void>;
   cancel: () => void;
+
+  /** 正在重试的目录(结果面板逐条重试)。 */
+  retryingDir: string | null;
+  /** 需要用户确认替换的占位目录;null = 没有待确认的。 */
+  retryConfirmDir: string | null;
+  retryError: AppError | null;
+  /** 结果面板里逐条重试:补关联到当时没建成的工具。占位一律先问过再动。 */
+  retryLink: (dir: string) => Promise<void>;
+  confirmRetry: () => Promise<void>;
+  cancelRetry: () => void;
 }
 
 function toAppError(raw: unknown): AppError {
@@ -212,8 +223,81 @@ export const useInstall = create<InstallState>((set, get) => ({
       error: null,
       localKept: false,
       shareResult: null,
+      retryingDir: null,
+      retryConfirmDir: null,
+      retryError: null,
     }),
+
+  retryingDir: null,
+  retryConfirmDir: null,
+  retryError: null,
+
+  retryLink: async (dir) => {
+    // 先按"不替换"试一次:断链/丢失这类形态直接就修好了,不该多问一句。
+    // 只有确实撞上实体目录占位(FS_LINK_OCCUPIED)才升级成确认弹窗——
+    // 那个目录可能是用户自己的技能,替换等于删他的文件(铁律 7)。
+    await runRetry(dir, false, set, get);
+    if (get().retryError?.code === "FS_LINK_OCCUPIED") {
+      set({ retryConfirmDir: dir, retryError: null });
+    }
+  },
+
+  confirmRetry: async () => {
+    const dir = get().retryConfirmDir;
+    if (!dir) return;
+    set({ retryConfirmDir: null });
+    await runRetry(dir, true, set, get);
+  },
+
+  cancelRetry: () => set({ retryConfirmDir: null, retryError: null }),
 }));
+
+/**
+ * 重试一个目录的关联。
+ *
+ * 目录 → agent 的映射取自本次的 report:core 的建链是**按目录**做的,一个目录可能
+ * 服务多个 agent(6 个工具共用 canonical 是常态),所以重试要把这条目录上的
+ * agents 整组带上,不能只挑一个。
+ */
+async function runRetry(
+  dir: string,
+  replaceOccupied: boolean,
+  set: (partial: Partial<InstallState>) => void,
+  get: () => InstallState,
+) {
+  const { dirSlug, report } = get();
+  const entry = report?.links.find((l) => l.dir === dir);
+  if (!dirSlug || !entry) return;
+
+  set({ retryingDir: dir, retryError: null });
+  try {
+    const next = await skillLinkAgents({
+      dirSlug,
+      agentIds: entry.agents,
+      replaceOccupied,
+    });
+    // 只把这条目录的结果并回去:其余目录的结局是上一次安装的事实,不该被这次覆盖
+    const merged = get().report;
+    if (merged) {
+      const updated = next.links.find((l) => l.dir === dir);
+      set({
+        report: {
+          ...merged,
+          links: merged.links.map((l) => (l.dir === dir && updated ? updated : l)),
+        },
+      });
+    }
+    const failure = next.links.find((l) => l.dir === dir && l.result.status === "failed");
+    if (failure && failure.result.status === "failed") {
+      set({ retryError: failure.result.error });
+    }
+    await get().refreshInstalled();
+  } catch (raw) {
+    set({ retryError: toAppError(raw) });
+  } finally {
+    set({ retryingDir: null });
+  }
+}
 
 /** 建链失败的目录数。技能本体已经装好了,这些只是关联没建上。 */
 export function failedLinks(report: InstallReport | null): number {

@@ -666,6 +666,60 @@ pub fn repair_links(
     Ok(report)
 }
 
+/// 把已装技能**补关联**到指定的一批工具上,并把成功的并进账里。
+///
+/// 与 [`repair_links`] 的分工:repair 处理"账上有、链接坏了",按账上的 agents **整体重来**;
+/// 本函数处理"安装那一刻就没建成、因而根本没进账"的 agent(M1 遗留:安装时占位是
+/// `OnOccupied::Fail` 只报不重试,修复够不到它们,用户只能回详情面板整个重装)。
+///
+/// 记账是**并集合并**而不是覆盖:只重链了一部分工具,拿这次的结果整份覆盖会把
+/// 其余工具从账上抹掉,卸载时就不会去解它们的链接了。
+///
+/// `replace_occupied` 必须是前端拿到的用户确认结果(铁律 7):那个位置上是别人的
+/// 实体目录,替换等于删用户文件。
+pub fn link_agents(
+    installer: &Installer<'_>,
+    store: &Store,
+    dir_slug: &str,
+    agent_names: &[String],
+    replace_occupied: bool,
+) -> Result<InstallReport, AppError> {
+    let loaded = store.load_state()?;
+    let Some(idx) = loaded.value.installed.iter().position(|s| s.name == dir_slug) else {
+        return Err(AppError::new(
+            "FS_NOT_INSTALLED",
+            "这个技能不在已获取列表中,请先重新获取",
+        )
+        .with_detail(format!("not in state.installed: {dir_slug}")));
+    };
+
+    let on_occupied = if replace_occupied {
+        OnOccupied::Replace
+    } else {
+        OnOccupied::Fail
+    };
+    let report = installer.link_only(dir_slug, agent_names, on_occupied)?;
+
+    let canonical_visible = installer.canonical_visible_agents(agent_names)?;
+    let (new_links, new_agents) = active_accounting(&report, canonical_visible);
+
+    let mut next = loaded.value.clone();
+    let record = &mut next.installed[idx];
+    for link in new_links {
+        // 同一目录只留一条记账:重链后 mode 可能变了(比如从复制升回链接)
+        match record.links.iter_mut().find(|l| l.dir == link.dir) {
+            Some(existing) => existing.mode = link.mode,
+            None => record.links.push(link),
+        }
+    }
+    record.agents.extend(new_agents);
+    record.agents.sort();
+    record.agents.dedup();
+    store.save_state(&next)?;
+
+    Ok(report)
+}
+
 fn source_of(req: &AcquireRequest<'_>, skill: &IndexedSkill, sha: &str) -> SkillSource {
     SkillSource {
         registry_id: req.registry_id.to_string(),

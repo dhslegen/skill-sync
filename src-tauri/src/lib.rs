@@ -124,6 +124,7 @@ pub fn run() {
             commands::installed_list,
             commands::skill_remove,
             commands::skill_repair,
+            commands::skill_link_agents,
             commands::share_candidates,
             commands::skill_share,
             commands::skill_share_changes

@@ -433,6 +433,120 @@ fn repair_replaces_the_occupant_only_when_the_user_confirmed() {
     assert!(body.contains("weekly-report"), "读到的不是技能本体: {body}");
 }
 
+// ============================================================ 逐条补关联(安装时没建成的重试)
+
+/// trae 的全局技能目录。安装时只关联了 claude-code,trae 因此**不在账上**
+/// ——这正是 repair 够不到、需要 link_agents 的那一档。
+fn trae_link(c: &Ctx, slug: &str) -> PathBuf {
+    c.home.join(".trae").join("skills").join(slug)
+}
+
+#[test]
+fn retrying_an_unaccounted_agent_links_it_and_merges_the_books() {
+    let (c, env) = ctx();
+    install_one(&c, &env, "weekly-report");
+    let before = c.store.load_state().unwrap().value;
+    assert_eq!(before.installed[0].agents, vec!["claude-code".to_string()]);
+    let claude_link_count = before.installed[0].links.len();
+
+    let installer = Installer::new(&c.registry, &env);
+    skillsync_lib::core::acquire::link_agents(
+        &installer,
+        &c.store,
+        "weekly-report",
+        &["trae".to_string()],
+        false,
+    )
+    .unwrap();
+
+    assert!(trae_link(&c, "weekly-report").join("SKILL.md").is_file());
+
+    let after = c.store.load_state().unwrap().value;
+    // 并集合并:新的进来了,原有的**一条都不能少**——整份覆盖会让卸载时漏解 claude-code 的链接
+    assert!(after.installed[0].agents.contains(&"claude-code".to_string()));
+    assert!(after.installed[0].agents.contains(&"trae".to_string()));
+    assert_eq!(
+        after.installed[0].links.len(),
+        claude_link_count + 1,
+        "原有关联记账被覆盖掉了: {:?}",
+        after.installed[0].links
+    );
+}
+
+#[test]
+fn retrying_does_not_touch_an_occupying_directory_without_confirmation() {
+    let (c, env) = ctx();
+    install_one(&c, &env, "weekly-report");
+    let occupied = trae_link(&c, "weekly-report");
+    std::fs::create_dir_all(&occupied).unwrap();
+    let theirs = "别人放在这里的东西\n";
+    std::fs::write(occupied.join("SKILL.md"), theirs).unwrap();
+
+    let installer = Installer::new(&c.registry, &env);
+    let report = skillsync_lib::core::acquire::link_agents(
+        &installer,
+        &c.store,
+        "weekly-report",
+        &["trae".to_string()],
+        false,
+    )
+    .unwrap();
+
+    assert!(report.links.iter().any(|l| matches!(
+        l.result,
+        skillsync_lib::core::installer::LinkResult::Failed { .. }
+    )));
+    assert_eq!(
+        std::fs::read_to_string(occupied.join("SKILL.md")).unwrap(),
+        theirs,
+        "未确认就动了用户的目录"
+    );
+    // 没建成就不该记进账——记了界面会把它画成已生效
+    let after = c.store.load_state().unwrap().value;
+    assert!(!after.installed[0].agents.contains(&"trae".to_string()));
+}
+
+#[test]
+fn retrying_replaces_the_occupant_only_when_the_user_confirmed() {
+    let (c, env) = ctx();
+    install_one(&c, &env, "weekly-report");
+    let occupied = trae_link(&c, "weekly-report");
+    std::fs::create_dir_all(&occupied).unwrap();
+    std::fs::write(occupied.join("SKILL.md"), "别人放在这里的东西\n").unwrap();
+
+    let installer = Installer::new(&c.registry, &env);
+    skillsync_lib::core::acquire::link_agents(
+        &installer,
+        &c.store,
+        "weekly-report",
+        &["trae".to_string()],
+        true,
+    )
+    .unwrap();
+
+    let body = std::fs::read_to_string(occupied.join("SKILL.md")).unwrap();
+    assert!(body.contains("weekly-report"), "读到的不是技能本体: {body}");
+    let after = c.store.load_state().unwrap().value;
+    assert!(after.installed[0].agents.contains(&"trae".to_string()));
+}
+
+#[test]
+fn retrying_refuses_for_a_skill_that_is_not_installed() {
+    let (c, env) = ctx();
+    let installer = Installer::new(&c.registry, &env);
+
+    let err = skillsync_lib::core::acquire::link_agents(
+        &installer,
+        &c.store,
+        "never-installed",
+        &["trae".to_string()],
+        false,
+    )
+    .unwrap_err();
+
+    assert_eq!(err.code, "FS_NOT_INSTALLED");
+}
+
 #[test]
 fn repair_refuses_when_the_skill_body_is_gone() {
     // 本体没了,修复无从谈起——这要走"重新获取",不能默默建一个指向空处的链接

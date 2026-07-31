@@ -305,6 +305,13 @@ export const skillInstallBatch = (args: { dirSlugs: string[]; agentIds: string[]
 export const skillRepair = (args: { dirSlug: string; replaceOccupied?: boolean }) =>
   call<InstallReport>("skill_repair", { args });
 
+/** 安装结果面板里逐条重试:把技能补关联到当时没建成的那个工具上。 */
+export const skillLinkAgents = (args: {
+  dirSlug: string;
+  agentIds: string[];
+  replaceOccupied?: boolean;
+}) => call<InstallReport>("skill_link_agents", { args });
+
 export type CandidateOrigin = { kind: "local" } | { kind: "npxSkills"; source: string };
 
 export interface ShareCandidate {

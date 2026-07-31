@@ -175,13 +175,43 @@ function DoneFooter() {
           {report?.links
             .filter((l) => l.result.status === "failed")
             .map((l) => (
-              <p key={l.dir} className="mt-1 font-mono text-[11px] text-text-3">
-                {l.dir}
-                {l.result.status === "failed" &&
-                  `${t("punct.labelSeparator")}${l.result.error.message}`}
-              </p>
+              <FailedLinkRow
+                key={l.dir}
+                dir={l.dir}
+                message={l.result.status === "failed" ? l.result.error.message : ""}
+              />
             ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+/** 失败的一条关联:说明 + 就地重试。重试成功后这一行会从列表里消失。 */
+function FailedLinkRow({ dir, message }: { dir: string; message: string }) {
+  const retryLink = useInstall((s) => s.retryLink);
+  const retryingDir = useInstall((s) => s.retryingDir);
+  const retryError = useInstall((s) => s.retryError);
+  const busy = retryingDir === dir;
+
+  return (
+    <div className="mt-1.5">
+      <div className="flex items-start gap-2">
+        <p className="min-w-0 flex-1 break-all font-mono text-[11px] text-text-3">
+          {dir}
+          {message && `${t("punct.labelSeparator")}${message}`}
+        </p>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void retryLink(dir)}
+          className="h-6 flex-none rounded-ctl border border-border px-2 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-60"
+        >
+          {busy ? t("install.retrying") : t("install.retryLink")}
+        </button>
+      </div>
+      {!busy && retryError && (
+        <p className="mt-1 text-[11px] text-[#c0392b] dark:text-[#e0705f]">{retryError.message}</p>
       )}
     </div>
   );
