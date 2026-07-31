@@ -49,8 +49,7 @@ eslint 也不管,只有 `tsc` 会拦。M2 任务 6 就因为只跑了 test+lint,
 
 ## 目录结构
 
-除 `core/registry.rs` 与 `core/github.rs` 两个**空壳**(归 M3,模块头写了开工点)外,
-下列模块均已实现。
+下列模块均已实现(M3 起两个前空壳模块也已落地)。
 
 ```
 src/
@@ -84,8 +83,10 @@ src-tauri/src/
                      share_installed(把已装技能的改动推回来源)
   core/scheduler.rs  定时更新检查:run_check(head 比对→FromAccount 批量)+ 可测的调度循环
                      + notification_copy(通知判定与文案)
-  core/registry.rs   ⬜ 仓库源管理(内建 Gitea + 自定义)—— M3
-  core/github.rs     ⬜ GitHub client —— M3
+  core/registry.rs   多源解析层:BuiltinSource(编译期常量经参数传入)+ resolve/list/
+                     add/remove/url_allowed/auth_config;内建源锁定不落 config
+  core/github.rs     GitHub client:读链路(branches/zipball,RepoSource trait)+
+                     device flow 原语 + current_user;分享写路径归 M3-5b(待外部条件)
   commands.rs        Tauri IPC command 定义(薄壳,逻辑在 core)+ 托盘/updater 接线在 lib.rs
 resources/agents.json  75-agent 注册表(移植自 vercel-labs/skills v1.5.20,MIT,保留出处注释)
 scripts/           维护脚本(verify-*.mjs 跑上游源码生成 ground-truth fixture;build-release.sh)
@@ -238,18 +239,20 @@ App 自更新(M2 任务 5)另有 `SKILLSYNC_UPDATE_URL`(latest.json 地址)/ `SK
 - 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
   其余注册表 agent 尽力支持
 
-## 当前进度(2026-07-31,M2 收官)
+## 当前进度(2026-07-31,M3 主体完成)
 
-**M1 任务 1–13 与 M2 任务 1–6 全部完成并提交**,逐任务的产物与假设见 `git log`
-(commit message 是这些细节的权威处,不在本文重复)。远端 `origin` =
+**M1 任务 1–13、M2 任务 1–6、M3 任务 1–4 + 5a + 6 全部完成并提交**(分解与拍板记录
+在 docs/M3-任务分解.md,本地文档),逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(**私有**)。
 
-- 本机:Rust 314 + 前端 255 测试通过,clippy/eslint/tsc 干净,`pnpm dev` 启动冒烟通过,
-  `pnpm tauri build` 出过 dmg
-- **双平台 CI 在 `326093b`、`ecb3d57` 连续两次全绿**(macOS + Windows 两个 job 均 success)
-- **下一里程碑 M3**(设计方案 2.7):GitHub 源 device flow + 多源 registry + skill-lock
-  双向兼容;OAuth PKCE 与 PR 评审式分享已在 M1 提前做掉,**不要重做**。
-  交接材料见 docs/新会话交接提示词.md
+- 本机:Rust 345 + 前端 272 测试通过,clippy/eslint/tsc 干净,`pnpm dev` 启动冒烟通过
+- **双平台 CI 在 M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿**;任务 6(`de7b233`)
+  的 CI **因 GitHub 账号计费限额未运行**(job 4 秒被拒,非代码问题)——处理账单后
+  `gh run rerun` 补验
+- **真实 GitHub e2e 已跑通**(任务 4:`SKILLSYNC_GITHUB_LIVE=1 cargo test --test
+  github_live`,对 dhslegen/skills 走完 索引→发现→安装→lock 双写)
+- **M3 剩余 = 任务 5b**(GitHub 分享写路径):DoD 要求提交端点先对真实 GitHub 录行为
+  再定,录制需要可写测试仓凭证(见待处理);其余 M3 范围已交付
 
 > ⚠️ **"CI 绿"这句话曾经假了很久**:macOS job 一直绿,**Windows job 从 M1 任务 10 起
 > 连红六个提交**没被发现——M1 交接材料里"双平台 CI 已真实跑通"在任务 9 之后就不成立,
@@ -260,10 +263,41 @@ github.com/dhslegen/skill-sync(**私有**)。
 M2 新增的 IPC:`ui_prefs_get/set`、`auto_update_get/set`、`agents_set_disabled`、
 `open_library_url`、`update_check_now`、`app_update_check/install`、`app_restart`、
 `skill_link_agents`;新增事件:`scheduler://report`、`app-update://available`。
+M3 新增的 IPC:`registry_list/add/remove`、`auth_device_start/wait`、`skill_claim`;
+既有读写类 command 全部接受 `registryId`(缺省内建);编译期新常量
+`SKILLSYNC_GITHUB_CLIENT_ID`(未注入仅登录不可用,浏览获取照常)。
 
 ### 现役机制约束(动相关代码前必读)
 
 这些**都已实现**,列在这里是因为它们的不变量不看就会破坏。已完成的过程叙事在 git log。
+
+- **多源解析只有一个入口**(M3 任务 1):commands 一律经 `registry::resolve`
+  (`BuiltinSource` 把编译期常量当参数传——测试构建不注入常量,直读会让测试只能测
+  "未配置"分支)。内建源锁定且**不落 config.registries**(坐标是编译期常量,落盘会造出
+  第二份真相);自定义源 id 生成 `custom-N` 取 max+1 **绝不复用**(缓存与凭证按 id 落)。
+- **读链路对来源类型无感**(M3 任务 4):store/acquire/scheduler 只吃 `gitea::RepoSource`
+  trait(branch_head + download_archive),分发在 `commands::read_source` 的 SourceClient
+  枚举。**写链路(分享)刻意不进 trait**——两家提交/评审 API 形状完全不同。
+  `require_gitea` 如今只守登录与分享两条通道。
+- **GitHub zipball 前缀是 `{owner}-{repo}-{短sha}/`**(2026-07-31 实测,曾猜错为
+  `<repo>-<ref>`);mode 语义与 Gitea 相同(可执行 0o755、其余 0=没记录)。
+  fixture: `tests/fixtures/github-zipball-modes.zip`(真实录制裁剪,裁剪脚本必须保留
+  原始 external_attr——python zipfile.writestr 会把 0 擅自补成 0o600)。
+- **代理两档**(M3 任务 3,推翻 M1"一律直连"):内建源 `app_http_client()` 直连;
+  外部源 `app_http_client_proxied()` 跟随系统代理;选择集中在 `commands::http_client_for`。
+  不加每源开关(用户拍板)。
+- **凭证按源分流**:内建 = OAuth PKCE;自定义 Gitea = PAT(`auth_config` 给空 client_id,
+  PAT 凭证 expires_at=0 永不触发续期端点;**内建 Client ID 绝不发给别家 Gitea**);
+  GitHub = device flow 主通道 + PAT 备用(`session.rs` 的 github 平行区段,不与 Gitea
+  函数硬参数化合并)。内建源的读**永远匿名**(公开可读,带过期令牌反而 401)。
+- **scheduler 逐源且常驻**(M3 任务 2):`run_all_sources_check` 一个源失败不拦其他源,
+  全失败则本轮**不上报**(报 NothingInstalled 等于撒谎);合并在 `scheduler::merge_reports`。
+- **删自定义源**:已装技能保留(界面标"来源已移除",更新/回推按钮消失),该源凭证与
+  索引缓存一并清掉;`registry_id` 解析失败即 `sourceRemoved`,认领绑不上源的技能同理。
+- **认领(M3 任务 6)读 lock 不写**:content_hash 以认领此刻为基线、commit_sha 留空
+  (第一次更新即对齐,覆盖前照走预检);npx 建的**链接收编入账**(只认确实指向 canonical
+  的链接,实体目录与用户目录无从区分不敢认),否则移除时留一地断链;来源绑定按
+  sourceUrl **同源比对**(只看 kind 会把别家 GHE 错绑上,有测试钉住)。
 
 - **`Installer::install` 无条件清空重建 canonical**——守卫在 `core/acquire.rs`,不在它自己身上。
   任何**新的**调用方都必须走 `acquire::acquire`/`acquire_batch`,或自行先跑
@@ -316,7 +350,14 @@ M2 新增的 IPC:`ui_prefs_get/set`、`auto_update_get/set`、`agents_set_disabl
 ### 待处理
 
 **功能缺口**
-- **分享页的「新建技能」向导没做**(Demo 里有):等价 `skills init` 的脚手架,一直没排进任务。
+- **M3-5b:GitHub 分享写路径**(唯一的 M3 剩余):权限矩阵 + 提交端点
+  (createCommitOnBranch vs contents)+ fork 时序。DoD 要求先对真实 GitHub 录写行为
+  再定端点——**待外部条件**:可写测试仓 + 凭证。开工点:share.rs 模块头 + gitea.rs
+  RepoSource 注释("写链路刻意不进 trait")。
+- **GitHub device flow 的真实联调**(代码侧已完成,任务 5a):需要用户在 github.com
+  注册 OAuth App(勾选 Enable Device Flow)后注入 `SKILLSYNC_GITHUB_CLIENT_ID`。
+- **分享页的「新建技能」向导没做**(Demo 里有):等价 `skills init` 的脚手架,
+  用户拍板(2026-07-31)留 M4。
 - **Windows 外观打磨决定不做**(M2 任务 6 的判断):UI 规范 §75 要 tauri-plugin-decorum,
   但没有 Windows 真机,装上等于把能用的系统窗口装饰换成无法目视验证的自绘控件——画不出
   窗口控制的话用户连关窗都做不到,而关窗现在还接着"缩到托盘"。等有真机再做,连同 vibrancy。
