@@ -1,13 +1,14 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { LogIn } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
-import type { Accent, CheckReport, ThemeMode } from "@/lib/ipc";
+import type { Accent, CheckReport, RegistryView, ThemeMode } from "@/lib/ipc";
 import { skillGlyph } from "@/lib/tint";
 import { ACCENT_LABEL_KEY, ACCENT_SWATCH, useAppearance } from "@/store/appearance";
+import { useRegistries } from "@/store/registries";
 import { useSession } from "@/store/session";
 import { useSettings } from "@/store/settings";
 
@@ -33,6 +34,7 @@ export function SettingsPage() {
       <Section title="settings.sectionAccount">
         <AccountRow />
       </Section>
+      <RegistriesSection />
       <Section title="settings.sectionAppearance">
         <ThemeRow />
         <AccentRow />
@@ -115,6 +117,220 @@ function AccountRow() {
         </button>
       </div>
     </Row>
+  );
+}
+
+// ============================================================ 技能库来源(M3 任务 2)
+
+function RegistriesSection() {
+  const list = useRegistries((s) => s.list);
+  const error = useRegistries((s) => s.error);
+  const load = useRegistries((s) => s.load);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (!list) return null;
+
+  return (
+    <Section title="settings.sectionRegistries">
+      {list.map((r) => (
+        <RegistryRow key={r.id} registry={r} />
+      ))}
+      <AddRegistryRow />
+      {error && (
+        <div className="border-t border-border px-3.5 py-2 text-[11.5px] text-[#c0392b] dark:text-[#e0705f]">
+          {error.message}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+const FIELD_INPUT =
+  "h-7 w-full rounded-ctl border border-border bg-surface-1 px-2 text-[12.5px] outline-none focus:border-accent";
+const SMALL_BUTTON =
+  "h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50";
+
+function RegistryRow({ registry }: { registry: RegistryView }) {
+  const [mode, setMode] = useState<"idle" | "confirmRemove" | "credentials">("idle");
+  const [token, setToken] = useState("");
+  const remove = useRegistries((s) => s.remove);
+  const tokenLogin = useRegistries((s) => s.tokenLogin);
+  const busy = useRegistries((s) => s.busy);
+  const loggedName = useRegistries((s) => s.loggedIn[registry.id]);
+
+  const name = registry.builtin ? t("registries.builtinName") : registry.name;
+  const coords = registry.repo
+    ? `${registry.baseUrl} · ${registry.repo.owner}/${registry.repo.repo}`
+    : registry.builtin
+      ? t("registries.notConfigured")
+      : registry.baseUrl;
+
+  return (
+    <div className="border-t border-border first:border-t-0">
+      <div className="flex items-center gap-3 px-3.5 py-2.5">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-[13px] font-medium">{name}</span>
+            {registry.builtin && (
+              <span className="flex-none rounded-[4px] border border-border px-1.5 py-px text-[10.5px] font-medium text-text-3">
+                {t("registries.builtinTag")}
+              </span>
+            )}
+          </div>
+          <div className="truncate font-mono text-[11.5px] text-text-3">
+            {coords}
+            {loggedName &&
+              `${t("punct.listSeparator")}${t("registries.loggedInAs", { name: loggedName })}`}
+          </div>
+        </div>
+        {!registry.builtin && mode === "idle" && (
+          <div className="flex flex-none items-center gap-1.5">
+            <button type="button" className={SMALL_BUTTON} onClick={() => setMode("credentials")}>
+              {t("registries.credentials")}
+            </button>
+            <button type="button" className={SMALL_BUTTON} onClick={() => setMode("confirmRemove")}>
+              {t("registries.remove")}
+            </button>
+          </div>
+        )}
+        {mode === "confirmRemove" && (
+          <div className="flex flex-none items-center gap-1.5">
+            <span className="text-[11.5px] text-text-3">{t("registries.removeConfirmHint")}</span>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                void remove(registry.id).then(() => setMode("idle"));
+              }}
+              className="h-6 rounded-ctl border border-[#c0392b]/50 px-2.5 text-[11.5px] font-medium text-[#c0392b] hover:border-[#c0392b] disabled:opacity-50 dark:border-[#e0705f]/50 dark:text-[#e0705f]"
+            >
+              {t("registries.removeConfirm")}
+            </button>
+            <button type="button" className={SMALL_BUTTON} onClick={() => setMode("idle")}>
+              {t("registries.formCancel")}
+            </button>
+          </div>
+        )}
+      </div>
+      {mode === "credentials" && (
+        <div className="flex items-center gap-2 px-3.5 pb-2.5">
+          <input
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder={t("registries.tokenPlaceholder")}
+            title={t("registries.credentialsHint")}
+            spellCheck={false}
+            className={cn(FIELD_INPUT, "max-w-[300px] font-mono text-[12px]")}
+          />
+          <button
+            type="button"
+            disabled={busy || !token.trim()}
+            onClick={() => {
+              void tokenLogin(registry.id, token).then((ok) => {
+                if (ok) {
+                  setMode("idle");
+                  setToken("");
+                }
+              });
+            }}
+            className={SMALL_BUTTON}
+          >
+            {t("registries.tokenSubmit")}
+          </button>
+          <button
+            type="button"
+            className={SMALL_BUTTON}
+            onClick={() => {
+              setMode("idle");
+              setToken("");
+            }}
+          >
+            {t("registries.formCancel")}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddRegistryRow() {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [repoPath, setRepoPath] = useState("");
+  const add = useRegistries((s) => s.add);
+  const busy = useRegistries((s) => s.busy);
+
+  const reset = () => {
+    setOpen(false);
+    setName("");
+    setBaseUrl("");
+    setRepoPath("");
+  };
+
+  if (!open) {
+    return (
+      <Row>
+        <button type="button" className={SMALL_BUTTON} onClick={() => setOpen(true)}>
+          {t("registries.addButton")}
+        </button>
+      </Row>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border px-3.5 py-2.5">
+      <label className="flex items-center gap-2 text-[11.5px] text-text-3">
+        <span className="w-[76px] flex-none">{t("registries.formName")}</span>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={t("registries.formNamePlaceholder")}
+          className={FIELD_INPUT}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-[11.5px] text-text-3">
+        <span className="w-[76px] flex-none">{t("registries.formBaseUrl")}</span>
+        <input
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+          placeholder={t("registries.formBaseUrlPlaceholder")}
+          spellCheck={false}
+          className={cn(FIELD_INPUT, "font-mono text-[12px]")}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-[11.5px] text-text-3">
+        <span className="w-[76px] flex-none">{t("registries.formRepoPath")}</span>
+        <input
+          value={repoPath}
+          onChange={(e) => setRepoPath(e.target.value)}
+          placeholder={t("registries.formRepoPathPlaceholder")}
+          spellCheck={false}
+          className={cn(FIELD_INPUT, "font-mono text-[12px]")}
+        />
+      </label>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          disabled={busy || !name.trim() || !baseUrl.trim() || !repoPath.trim()}
+          onClick={() => {
+            void add({ name, baseUrl, repoPath }).then((ok) => {
+              if (ok) reset();
+            });
+          }}
+          className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+        >
+          {t("registries.formSubmit")}
+        </button>
+        <button type="button" className={SMALL_BUTTON} onClick={reset}>
+          {t("registries.formCancel")}
+        </button>
+      </div>
+    </div>
   );
 }
 

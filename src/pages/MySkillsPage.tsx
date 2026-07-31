@@ -122,11 +122,15 @@ export function MySkillsPage() {
             skill={skill}
             name={nameOf(skill.dirSlug)}
             agentNames={agentNames}
-            updateAvailable={hasUpdate(skill, index?.commitSha)}
+            updateAvailable={hasUpdate(skill, index)}
             updating={activeSlug === skill.dirSlug && installPhase === "running"}
             repairing={repairBusy === skill.dirSlug}
             sharing={shareBusy === skill.dirSlug}
-            onUpdate={() => void useInstall.getState().beginUpdate(skill.dirSlug, skill.agents)}
+            onUpdate={() =>
+              void useInstall
+                .getState()
+                .beginUpdate(skill.dirSlug, skill.agents, skill.registryId)
+            }
             onRepair={() => void repair(skill.dirSlug)}
             onShareChanges={() => void shareChanges(skill.dirSlug)}
             onRemove={() => askRemove(skill.dirSlug)}
@@ -180,6 +184,11 @@ function Row({
           <span className="truncate text-[13px] font-[550]">{name}</span>
           {skill.localModified && <Badge tone="warn">{t("mine.badgeModified")}</Badge>}
           {!skill.bodyPresent && <Badge tone="danger">{t("mine.badgeBodyMissing")}</Badge>}
+          {skill.sourceRemoved && (
+            <Badge tone="warn" title={t("mine.badgeSourceRemovedHint")}>
+              {t("mine.badgeSourceRemoved")}
+            </Badge>
+          )}
           {issues.length > 0 && (
             <Badge
               tone="warn"
@@ -214,8 +223,8 @@ function Row({
       </div>
 
       <div className="flex flex-none items-center gap-1.5">
-        {skill.localModified && skill.bodyPresent && (
-          // 冲突弹窗承诺过的那条路:改动可以推回公司技能库
+        {skill.localModified && skill.bodyPresent && !skill.sourceRemoved && (
+          // 冲突弹窗承诺过的那条路:改动可以推回来源技能库;来源没了就没有去处
           <button
             type="button"
             disabled={sharing}

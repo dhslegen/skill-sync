@@ -160,6 +160,50 @@ pub async fn run_check(
     })
 }
 
+/// 逐源检查的合并(M3 任务 2):每个源一份 [`CheckReport`],合成对外的一份。
+///
+/// 只收**成功跑完**的轮次:源级失败(连不上、凭证失效)由调用方记日志后剔除
+/// ——与 M1 单源时"失败只记日志不上报"同一语义。假设:源级失败的界面展示
+/// 待有真实需求再做,报告结构不为它预留字段。
+///
+/// `head_sha` 在多源下取第一份同档报告的值:界面与通知只消费数量,这个字段
+/// 是单源时代的遗留,多源语义下仅供诊断参考。
+pub fn merge_reports(reports: Vec<CheckReport>) -> CheckReport {
+    let mut checked_head: Option<String> = None;
+    let mut all_updated = Vec::new();
+    let mut all_skipped = Vec::new();
+    let mut all_failed = Vec::new();
+    let mut up_to_date: Option<String> = None;
+
+    for report in reports {
+        match report {
+            CheckReport::NothingInstalled => {}
+            CheckReport::UpToDate { head_sha } => {
+                up_to_date.get_or_insert(head_sha);
+            }
+            CheckReport::Checked { head_sha, updated, skipped, failed } => {
+                checked_head.get_or_insert(head_sha);
+                all_updated.extend(updated);
+                all_skipped.extend(skipped);
+                all_failed.extend(failed);
+            }
+        }
+    }
+
+    if let Some(head_sha) = checked_head {
+        return CheckReport::Checked {
+            head_sha,
+            updated: all_updated,
+            skipped: all_skipped,
+            failed: all_failed,
+        };
+    }
+    if let Some(head_sha) = up_to_date {
+        return CheckReport::UpToDate { head_sha };
+    }
+    CheckReport::NothingInstalled
+}
+
 // ============================================================ 系统通知文案
 
 /// 一轮检查要不要通知、通知说什么。`None` = 不打扰。
@@ -318,6 +362,60 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn merge_prefers_the_most_informative_tier() {
+        // 全是"没装" → 没装
+        assert!(matches!(
+            merge_reports(vec![CheckReport::NothingInstalled, CheckReport::NothingInstalled]),
+            CheckReport::NothingInstalled
+        ));
+        // 有一份"已最新"就不是"没装"
+        assert!(matches!(
+            merge_reports(vec![
+                CheckReport::NothingInstalled,
+                CheckReport::UpToDate { head_sha: "sha-a".into() },
+            ]),
+            CheckReport::UpToDate { .. }
+        ));
+        // 有一份跑了批量,整体就是"跑了批量"
+        assert!(matches!(
+            merge_reports(vec![
+                CheckReport::UpToDate { head_sha: "sha-a".into() },
+                checked(1, 0, 0),
+            ]),
+            CheckReport::Checked { .. }
+        ));
+    }
+
+    #[test]
+    fn merge_concatenates_checked_lists_across_sources() {
+        let mut second = checked(1, 1, 0);
+        if let CheckReport::Checked { updated, head_sha, .. } = &mut second {
+            updated[0] = "dept-skill".into();
+            *head_sha = "sha-dept".into();
+        }
+        let merged = merge_reports(vec![checked(2, 0, 1), second]);
+        let CheckReport::Checked { head_sha, updated, skipped, failed } = merged else {
+            panic!("两份 Checked 合并后必须还是 Checked");
+        };
+        assert_eq!(head_sha, "sha-9", "head_sha 取第一份 Checked 的值");
+        assert_eq!(updated, vec!["skill-0", "skill-1", "dept-skill"]);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(failed.len(), 1);
+    }
+
+    #[test]
+    fn merge_of_a_single_report_is_identity() {
+        let CheckReport::Checked { updated, skipped, failed, .. } =
+            merge_reports(vec![checked(2, 1, 1)])
+        else {
+            panic!("单份合并不得改变档位");
+        };
+        assert_eq!((updated.len(), skipped.len(), failed.len()), (2, 1, 1));
+        // 空输入(全部源失败,调用方已剔除):按"没装"兜底,调用方负责不上报这种轮次
+        assert!(matches!(merge_reports(vec![]), CheckReport::NothingInstalled));
     }
 
     #[test]

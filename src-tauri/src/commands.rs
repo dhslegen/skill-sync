@@ -223,17 +223,65 @@ pub fn spawn_app_update_probe(app: tauri::AppHandle) {
     });
 }
 
-/// 组装并启动定时更新检查。内建库没配置时返回 `None`(不起后台任务)。
-/// 仍只查内建源:逐源检查归 M3 任务 2,这里刻意不读 config.registries。
-pub fn spawn_scheduler(app: tauri::AppHandle) -> Option<scheduler::Scheduler> {
-    let resolved = registry::resolve(
-        &registry::BuiltinSource::from_build(),
-        &[],
-        BUILTIN_REGISTRY_ID,
-    )
-    .ok()?;
-    let (base_url, repo) = (resolved.base_url, resolved.repo);
+/// 一轮逐源检查(M3 任务 2):内建 + 全部自定义源依次跑,一个源失败不拦其他源。
+/// 返回 `None` = 没有任何源成功跑完(全失败或没有可查的源),这一轮不上报
+/// ——把"全挂了"报成 `NothingInstalled` 等于撒谎。
+async fn run_all_sources_check() -> Option<scheduler::CheckReport> {
+    let store = app_store().ok()?;
+    let registries_cfg = match store.load_config() {
+        Ok(l) => l.value.registries,
+        Err(err) => {
+            tracing::warn!(code = %err.code, "定时检查读不到配置,本轮跳过");
+            return None;
+        }
+    };
+    let builtin_src = registry::BuiltinSource::from_build();
+    let registry = AgentRegistry::builtin();
 
+    let mut ids = vec![BUILTIN_REGISTRY_ID.to_string()];
+    ids.extend(registries_cfg.iter().map(|r| r.id.clone()));
+
+    let mut reports = Vec::new();
+    for id in ids {
+        let resolved = match registry::resolve(&builtin_src, &registries_cfg, &id) {
+            Ok(r) => r,
+            Err(err) => {
+                // 内建未注入配置的开发构建每轮都走到这:记 debug 免得刷日志
+                tracing::debug!(registry_id = %id, code = %err.code, "定时检查跳过该源");
+                continue;
+            }
+        };
+        if resolved.require_gitea().is_err() {
+            continue; // github 源待任务 4 接通,静默跳过不算失败
+        }
+        let round = async {
+            let client = store_client(&id, resolved.base_url.clone()).await?;
+            scheduler::run_check(
+                &client,
+                &registry,
+                &SystemEnv,
+                &store,
+                &id,
+                &resolved.repo,
+                &now_iso8601(),
+                auth::now_unix(),
+            )
+            .await
+        };
+        match round.await {
+            Ok(report) => reports.push(report),
+            Err(err) => {
+                // 连不上内网等环境性失败:记日志,继续查别的源(下一轮再试)
+                tracing::warn!(registry_id = %id, code = %err.code, detail = ?err.detail, "定时检查未完成");
+            }
+        }
+    }
+    (!reports.is_empty()).then(|| scheduler::merge_reports(reports))
+}
+
+/// 组装并启动定时更新检查。M3 任务 2 起 scheduler 常驻:哪些源可查在每轮里
+/// 现场判断(内建未配置就只查自定义源),不再以"内建已配置"为启动条件。
+pub fn spawn_scheduler(app: tauri::AppHandle) -> Option<scheduler::Scheduler> {
     let cadence = || {
         // 每次决策都重读 config:设置页改完频率,下一次决策立刻按新值走
         let auto = app_store()
@@ -248,41 +296,16 @@ pub fn spawn_scheduler(app: tauri::AppHandle) -> Option<scheduler::Scheduler> {
 
     let check = move || -> scheduler::BoxFuture {
         let app = app.clone();
-        let base_url = base_url.clone();
-        let repo = repo.clone();
         Box::pin(async move {
-            let run = async {
-                let client = anonymous_client(base_url)?;
-                let store = app_store()?;
-                let registry = AgentRegistry::builtin();
-                scheduler::run_check(
-                    &client,
-                    &registry,
-                    &SystemEnv,
-                    &store,
-                    BUILTIN_REGISTRY_ID,
-                    &repo,
-                    &now_iso8601(),
-                    auth::now_unix(),
-                )
-                .await
+            let Some(report) = run_all_sources_check().await else {
+                return;
             };
-            match run.await {
-                Ok(report) => {
-                    let _ = app.emit("scheduler://report", &report);
-                    // 有实际动作才弹系统通知(M2 任务 4;判定与文案在 core,有单测钉住)
-                    if let Some((title, body)) = scheduler::notification_copy(&report) {
-                        use tauri_plugin_notification::NotificationExt;
-                        if let Err(err) =
-                            app.notification().builder().title(&title).body(&body).show()
-                        {
-                            tracing::warn!(error = %err, "系统通知发送失败");
-                        }
-                    }
-                }
-                Err(err) => {
-                    // 连不上内网等环境性失败:记日志,不打扰用户(下一轮再试)
-                    tracing::warn!(code = %err.code, detail = ?err.detail, "定时检查未完成");
+            let _ = app.emit("scheduler://report", &report);
+            // 有实际动作才弹系统通知(M2 任务 4;判定与文案在 core,有单测钉住)
+            if let Some((title, body)) = scheduler::notification_copy(&report) {
+                use tauri_plugin_notification::NotificationExt;
+                if let Err(err) = app.notification().builder().title(&title).body(&body).show() {
+                    tracing::warn!(error = %err, "系统通知发送失败");
                 }
             }
         })
@@ -382,13 +405,21 @@ pub struct RegistryRemoveArgs {
     pub registry_id: String,
 }
 
-/// 移除自定义源(内建源在 core 层被拒)。已装技能保留,来源标记归任务 2。
+/// 移除自定义源(内建源在 core 层被拒)。**已装技能保留**(铁律 7,「我的技能」里
+/// 会标"来源已移除");该源的登录凭证与索引缓存一并清掉——凭证是敏感遗产,
+/// 缓存则会在同 id 复用时冒充新源的数据(id 不复用,但缓存文件没理由留)。
 #[tauri::command]
 pub fn registry_remove(args: RegistryRemoveArgs) -> Result<Vec<registry::RegistryView>, AppError> {
     let store = app_store()?;
     let mut config = store.load_config()?.value;
     registry::remove(&mut config.registries, &args.registry_id)?;
     store.save_config(&config)?;
+    if let Err(err) = session::logout(&KeyringStore, &args.registry_id) {
+        tracing::warn!(registry_id = %args.registry_id, code = %err.code, "移除源时清理凭证失败");
+    }
+    if let Ok(cache) = index_cache_file(&args.registry_id) {
+        store::drop_cache(&cache);
+    }
     Ok(registry::list(
         &registry::BuiltinSource::from_build(),
         &config.registries,
@@ -409,19 +440,21 @@ impl BrowserOpener for SystemBrowser {
     }
 }
 
-/// 从编译期注入的常量拼出 OAuth 配置。未注入时给出明确提示而不是拿空值去请求。
-fn oauth_config() -> Result<OAuthConfig, AppError> {
-    let (Some(base_url), Some(client_id)) = (builtin::BUILTIN_GITEA_URL, builtin::OAUTH_CLIENT_ID)
-    else {
-        return Err(AppError::new(
-            "AUTH_NOT_CONFIGURED",
-            "这个版本没有配置公司技能库,请向 IT 索取正式安装包",
-        ));
-    };
-    Ok(OAuthConfig {
-        base_url: base_url.to_string(),
-        client_id: client_id.to_string(),
-    })
+/// 解析某个源(不限 kind,github 的闸门由各调用方按需加)。
+fn resolve_registry(registry_id: &str) -> Result<registry::ResolvedRegistry, AppError> {
+    let registries = app_store()?.load_config()?.value.registries;
+    registry::resolve(
+        &registry::BuiltinSource::from_build(),
+        &registries,
+        registry_id,
+    )
+}
+
+/// 某个源的登录配置。内建:OAuth PKCE;自定义:PAT(client_id 留空,判定在 core)。
+fn auth_config(registry_id: &str) -> Result<OAuthConfig, AppError> {
+    let resolved = resolve_registry(registry_id)?;
+    resolved.require_gitea()?;
+    resolved.auth_config(builtin::OAUTH_CLIENT_ID)
 }
 
 fn http_client() -> Result<reqwest::Client, AppError> {
@@ -444,9 +477,18 @@ impl RegistryArg {
 
 #[tauri::command]
 pub async fn auth_login_oauth(args: RegistryArg) -> Result<SessionUser, AppError> {
+    let resolved = resolve_registry(args.id())?;
+    resolved.require_gitea()?;
+    // OAuth 应用是逐 Gitea 实例注册的,自定义源没有 Client ID 可用——只有 PAT 通道
+    if !resolved.builtin {
+        return Err(AppError::new(
+            "AUTH_TOKEN_ONLY",
+            "这个技能库来源不支持一键登录,请改用登录凭证",
+        ));
+    }
     session::login_oauth(
         &http_client()?,
-        &oauth_config()?,
+        &resolved.auth_config(builtin::OAUTH_CLIENT_ID)?,
         &KeyringStore,
         &SystemBrowser,
         args.id(),
@@ -464,11 +506,12 @@ pub struct LoginTokenArgs {
 
 #[tauri::command]
 pub async fn auth_login_token(args: LoginTokenArgs) -> Result<SessionUser, AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
     session::login_with_token(
         &http_client()?,
-        &oauth_config()?,
+        &auth_config(registry_id)?,
         &KeyringStore,
-        args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID),
+        registry_id,
         &args.token,
     )
     .await
@@ -478,7 +521,7 @@ pub async fn auth_login_token(args: LoginTokenArgs) -> Result<SessionUser, AppEr
 pub async fn auth_status(args: RegistryArg) -> Result<SessionStatus, AppError> {
     session::status(
         &http_client()?,
-        &oauth_config()?,
+        &auth_config(args.id())?,
         &KeyringStore,
         args.id(),
     )
@@ -498,12 +541,7 @@ pub fn auth_logout(args: RegistryArg) -> Result<(), AppError> {
 /// ——`registry::resolve` 的签名里没有 client_id,这条产品前提有测试钉在 registry.rs。
 /// kind=github 的源在 GitHub client(任务 4)接通前统一在此被拦。
 fn registry_target(registry_id: &str) -> Result<(String, RepoRef), AppError> {
-    let registries = app_store()?.load_config()?.value.registries;
-    let resolved = registry::resolve(
-        &registry::BuiltinSource::from_build(),
-        &registries,
-        registry_id,
-    )?;
+    let resolved = resolve_registry(registry_id)?;
     resolved.require_gitea()?;
     Ok((resolved.base_url, resolved.repo))
 }
@@ -513,19 +551,38 @@ fn index_cache_file(registry_id: &str) -> Result<std::path::PathBuf, AppError> {
     Ok(store::cache_path(app_store()?.dir(), registry_id))
 }
 
-/// M1 商店一律匿名读:内建技能库公开可读(已实测),而带上一个可能已过期的令牌
-/// 反而会把本来能成的匿名请求变成 401。私有技能库源到任务 11 支持自定义源时再接凭证。
+/// 匿名 client。内建源的读一律走它:公开可读(M1 实测),带上一个可能已过期的
+/// 令牌反而会把本来能成的匿名请求变成 401。
 fn anonymous_client(base_url: String) -> Result<GiteaClient, AppError> {
     Ok(GiteaClient::with_http(base_url, None, http_client()?))
+}
+
+/// 读链路的 client(M3 任务 2):内建源匿名(见上);自定义源可能是私有库,
+/// 有凭证就带上,没有或取不出来就匿名——读不到再由请求自己报 401/404。
+async fn store_client(registry_id: &str, base_url: String) -> Result<GiteaClient, AppError> {
+    if registry_id == BUILTIN_REGISTRY_ID {
+        return anonymous_client(base_url);
+    }
+    let http = http_client()?;
+    let cfg = auth_config(registry_id)?;
+    let token = match auth::ensure_access_token(&http, &cfg, &KeyringStore, registry_id).await {
+        Ok(t) => t,
+        Err(err) => {
+            // 凭证层故障(钥匙串读不出等)不拦浏览:降级匿名,原因进日志
+            tracing::warn!(registry_id, code = %err.code, "读取凭证失败,按匿名访问");
+            None
+        }
+    };
+    Ok(GiteaClient::with_http(base_url, token, http))
 }
 
 /// 分享是写操作,必须带登录凭证。没登录给一个前端能识别的错误码,引导去登录。
 async fn authed_client(registry_id: &str) -> Result<GiteaClient, AppError> {
     let http = http_client()?;
-    let cfg = oauth_config()?;
+    let cfg = auth_config(registry_id)?;
     let token = auth::ensure_access_token(&http, &cfg, &KeyringStore, registry_id)
         .await?
-        .ok_or_else(|| AppError::new("AUTH_REQUIRED", "分享前请先登录公司技能库"))?;
+        .ok_or_else(|| AppError::new("AUTH_REQUIRED", "分享前请先在设置中登录这个技能库"))?;
     Ok(GiteaClient::with_http(cfg.base_url.clone(), Some(token), http))
 }
 
@@ -545,7 +602,7 @@ pub async fn store_index(args: StoreIndexArgs) -> Result<StoreIndexView, AppErro
     let (base_url, repo) = registry_target(registry_id)?;
     let cache = index_cache_file(registry_id)?;
     let (index, outcome) = store::refresh_index(
-        &anonymous_client(base_url)?,
+        &store_client(registry_id, base_url).await?,
         &repo,
         registry_id,
         &cache,
@@ -581,7 +638,7 @@ pub async fn store_skill_detail(args: StoreDetailArgs) -> Result<SkillDetail, Ap
 
     // 缓存里没有(首次进入、或缓存刚被丢弃):刷一次再找。
     let (index, _) = store::refresh_index(
-        &anonymous_client(base_url)?,
+        &store_client(registry_id, base_url).await?,
         &repo,
         registry_id,
         &cache,
@@ -633,7 +690,7 @@ pub async fn skill_install(
     };
 
     acquire::acquire(
-        &anonymous_client(base_url)?,
+        &store_client(registry_id, base_url).await?,
         &registry,
         &SystemEnv,
         &store,
@@ -666,6 +723,11 @@ pub struct InstalledSkillView {
     /// 来源技能库,展示为 `owner/repo`。
     pub source_owner: String,
     pub source_repo: String,
+    /// 来源 registry(更新/回推改动时前端原样带回,不展示给用户)。
+    pub registry_id: String,
+    /// 来源已解析不出来(自定义源被移除,或该构建没配内建源):
+    /// 技能照常可用可移除,但更新与回推没了去处,界面要正面说出来。
+    pub source_removed: bool,
     /// 技能本体是否还在 canonical 目录里。不在 = 残缺,界面要正面说出来。
     pub body_present: bool,
     /// 各关联目录的健康态(universal agent 不建链,不在此列)。
@@ -681,6 +743,8 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
         let registry = AgentRegistry::builtin();
         let installer = Installer::new(&registry, &SystemEnv);
         let state = store.load_state()?.value;
+        let registries_cfg = store.load_config()?.value.registries;
+        let builtin_src = registry::BuiltinSource::from_build();
 
         state
             .installed
@@ -698,6 +762,13 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                     local_modified: remove::is_locally_modified(&canonical, &s.content_hash),
                     source_owner: s.source.owner.clone(),
                     source_repo: s.source.repo.clone(),
+                    registry_id: s.source.registry_id.clone(),
+                    source_removed: registry::resolve(
+                        &builtin_src,
+                        &registries_cfg,
+                        &s.source.registry_id,
+                    )
+                    .is_err(),
                     body_present: canonical.is_dir(),
                     links: installer.link_health(&s.name, &recorded)?,
                 })
@@ -731,7 +802,7 @@ pub async fn skill_install_batch(
     let registry = AgentRegistry::builtin();
 
     acquire::acquire_batch(
-        &anonymous_client(base_url)?,
+        &store_client(registry_id, base_url).await?,
         &registry,
         &SystemEnv,
         &store,

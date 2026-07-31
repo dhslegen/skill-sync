@@ -6,6 +6,7 @@ import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
 import type { InstallStage } from "@/lib/ipc";
 import { failedLinks, linkedAgents, useInstall } from "@/store/install";
+import { useStoreIndex } from "@/store/store-index";
 
 const STAGE_LABEL: Record<InstallStage, MessageKey> = {
   fetching: "install.stageFetching",
@@ -24,10 +25,12 @@ const STAGE_LABEL: Record<InstallStage, MessageKey> = {
  */
 export function InstallPanel({ dirSlug }: { dirSlug: string }) {
   const { phase, dirSlug: active, begin, cancel } = useInstall();
+  // 详情面板只会从商店打开:装的就是商店当前浏览的那个源(M3 多源)
+  const activeRegistry = useStoreIndex((s) => s.activeRegistry);
   const mine = active === dirSlug;
 
   if (!mine || phase === "idle") {
-    return <IdleFooter dirSlug={dirSlug} onBegin={() => void begin(dirSlug)} />;
+    return <IdleFooter dirSlug={dirSlug} onBegin={() => void begin(dirSlug, activeRegistry)} />;
   }
   if (phase === "choosing") return <AgentChooser onCancel={cancel} />;
   if (phase === "running") return <Running />;

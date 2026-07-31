@@ -163,15 +163,47 @@ export interface SessionStatus {
   user?: SessionUser;
 }
 
-export const storeIndex = (force = false) =>
-  call<StoreIndexView>("store_index", { args: { force } });
+// ============================================================ 技能库来源(M3)
 
-export const storeSkillDetail = (dirSlug: string) =>
-  call<SkillDetail>("store_skill_detail", { args: { dirSlug } });
+/** 与 core::registry::RegistryView 的 serde 契约一一对应。 */
+export interface RegistryView {
+  id: string;
+  name: string;
+  kind: string;
+  baseUrl: string;
+  builtin: boolean;
+  /** 内建源在未注入配置的构建上为 null,界面据此显示"构建未配置"。 */
+  repo: { owner: string; repo: string; branch: string } | null;
+}
+
+export const registryList = () => call<RegistryView[]>("registry_list");
+
+/** 新增自定义源。返回更新后的完整列表,前端整份替换。 */
+export const registryAdd = (args: {
+  name: string;
+  kind: string;
+  baseUrl: string;
+  owner: string;
+  repo: string;
+  branch?: string;
+}) => call<RegistryView[]>("registry_add", { args });
+
+export const registryRemove = (registryId: string) =>
+  call<RegistryView[]>("registry_remove", { args: { registryId } });
+
+export const storeIndex = (force = false, registryId?: string) =>
+  call<StoreIndexView>("store_index", { args: { force, registryId } });
+
+export const storeSkillDetail = (dirSlug: string, registryId?: string) =>
+  call<SkillDetail>("store_skill_detail", { args: { dirSlug, registryId } });
 
 export const authStatus = () => call<SessionStatus>("auth_status", { args: {} });
 export const authLoginOauth = () => call<SessionUser>("auth_login_oauth", { args: {} });
 export const authLogout = () => call<void>("auth_logout", { args: {} });
+
+/** 个人访问凭证登录。内建源是备用通道;自定义源是唯一通道(按 registryId 分开存)。 */
+export const authLoginToken = (args: { registryId?: string; token: string }) =>
+  call<SessionUser>("auth_login_token", { args });
 
 // ============================================================ 获取流程
 
@@ -251,6 +283,10 @@ export interface InstalledSkillView {
   localModified: boolean;
   sourceOwner: string;
   sourceRepo: string;
+  /** 来源 registry(更新/回推时原样带回,不展示给用户)。 */
+  registryId: string;
+  /** 来源已解析不出来(自定义源被移除等):可用可移除,但更新与回推没了去处。 */
+  sourceRemoved: boolean;
   /** 技能本体是否还在。false = 残缺,界面要正面说出来。 */
   bodyPresent: boolean;
   links: LinkHealthReport[];
@@ -288,6 +324,7 @@ export const skillInstall = (args: {
   agentIds: string[];
   taskId: string;
   resolution?: Resolution;
+  registryId?: string;
 }) => call<AcquireOutcome>("skill_install", { args });
 
 export const skillRemove = (args: { dirSlug: string; force?: boolean }) =>
@@ -299,8 +336,11 @@ export type BatchItem = { dirSlug: string } & (
   | { outcome: "failed"; error: AppError }
 );
 
-export const skillInstallBatch = (args: { dirSlugs: string[]; agentIds: string[] }) =>
-  call<BatchItem[]>("skill_install_batch", { args });
+export const skillInstallBatch = (args: {
+  dirSlugs: string[];
+  agentIds: string[];
+  registryId?: string;
+}) => call<BatchItem[]>("skill_install_batch", { args });
 
 export const skillRepair = (args: { dirSlug: string; replaceOccupied?: boolean }) =>
   call<InstallReport>("skill_repair", { args });
@@ -359,5 +399,5 @@ export const skillShare = (args: {
   overwrite?: boolean;
 }) => call<ShareOutcome>("skill_share", { args });
 
-export const skillShareChanges = (args: { dirSlug: string }) =>
+export const skillShareChanges = (args: { dirSlug: string; registryId?: string }) =>
   call<Submitted>("skill_share_changes", { args });

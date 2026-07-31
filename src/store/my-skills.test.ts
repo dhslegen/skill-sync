@@ -17,6 +17,8 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   localModified: false,
   sourceOwner: "skills",
   sourceRepo: "skills",
+  registryId: "company",
+  sourceRemoved: false,
   bodyPresent: true,
   links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
   ...over,
@@ -244,11 +246,16 @@ describe("修复流程", () => {
 describe("更新判定与更新动作", () => {
   beforeEach(reset);
 
-  it("与商店卡片同口径:整库版本变了就提示可更新", () => {
-    expect(hasUpdate(view(), "aaa1111")).toBe(false);
-    expect(hasUpdate(view(), "bbb2222")).toBe(true);
+  it("与商店卡片同口径:整库版本变了就提示可更新,且只认同源的索引", () => {
+    const idx = (sha: string, registryId = "company") => ({ commitSha: sha, registryId });
+    expect(hasUpdate(view(), idx("aaa1111"))).toBe(false);
+    expect(hasUpdate(view(), idx("bbb2222"))).toBe(true);
     // 索引还没加载出来时不能凭空提示有更新
     expect(hasUpdate(view(), undefined)).toBe(false);
+    // 商店当前浏览的是别的源:它的版本号说明不了这个技能有没有更新
+    expect(hasUpdate(view(), idx("bbb2222", "custom-1"))).toBe(false);
+    // 来源已移除:更新没有去处,绝不能亮"有新版本"
+    expect(hasUpdate(view({ sourceRemoved: true }), idx("bbb2222"))).toBe(false);
   });
 
   it("更新沿用上次记账的工具,不再弹 agent 选择", async () => {

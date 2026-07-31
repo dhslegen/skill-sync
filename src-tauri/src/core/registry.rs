@@ -88,6 +88,35 @@ pub struct ResolvedRegistry {
 }
 
 impl ResolvedRegistry {
+    /// 该源的登录配置(M3 任务 2)。
+    ///
+    /// - 内建源:OAuth PKCE,需要编译期注入的 Client ID,缺了报 `AUTH_NOT_CONFIGURED`。
+    /// - 自定义源:PAT 通道,`client_id` 留空——PAT 凭证 `expires_at=0`,
+    ///   `ensure_access_token` 永不走 OAuth 续期端点,空 client_id 不会被用到;
+    ///   **内建的 Client ID 绝不塞给自定义源**(那是别家 Gitea,发过去只会泄露内网配置)。
+    pub fn auth_config(
+        &self,
+        builtin_client_id: Option<&str>,
+    ) -> Result<crate::core::auth::OAuthConfig, AppError> {
+        let client_id = if self.builtin {
+            builtin_client_id
+                .filter(|c| !c.is_empty())
+                .ok_or_else(|| {
+                    AppError::new(
+                        "AUTH_NOT_CONFIGURED",
+                        "这个版本没有配置公司技能库,请向 IT 索取正式安装包",
+                    )
+                })?
+                .to_string()
+        } else {
+            String::new()
+        };
+        Ok(crate::core::auth::OAuthConfig {
+            base_url: self.base_url.clone(),
+            client_id,
+        })
+    }
+
     /// Gitea 专用链路(商店/获取/分享/scheduler)的类型闸门。
     /// GitHub client 是 M3 任务 4:接通后此闸门摘除。
     pub fn require_gitea(&self) -> Result<&Self, AppError> {
@@ -498,6 +527,27 @@ mod tests {
         // GitHub client 归任务 4:在那之前访问被拦,且是人话
         let err = resolved.require_gitea().unwrap_err();
         assert_eq!(err.code, "REPO_KIND_UNSUPPORTED");
+    }
+
+    #[test]
+    fn auth_config_for_builtin_requires_the_injected_client_id() {
+        let resolved = resolve(&fake_builtin(), &[], BUILTIN_REGISTRY_ID).unwrap();
+        let cfg = resolved.auth_config(Some("client-abc")).unwrap();
+        assert_eq!(cfg.base_url, "http://gitea.internal:3000");
+        assert_eq!(cfg.client_id, "client-abc");
+        for missing in [None, Some("")] {
+            let err = resolved.auth_config(missing).unwrap_err();
+            assert_eq!(err.code, "AUTH_NOT_CONFIGURED");
+        }
+    }
+
+    #[test]
+    fn auth_config_for_custom_source_never_borrows_the_builtin_client_id() {
+        let resolved = resolve(&fake_builtin(), &[custom_cfg()], "custom-1").unwrap();
+        // 就算调用方把内建 Client ID 递进来,自定义源也不接:那是别家 Gitea
+        let cfg = resolved.auth_config(Some("client-abc")).unwrap();
+        assert_eq!(cfg.base_url, "http://tools.example:8080");
+        assert_eq!(cfg.client_id, "");
     }
 
     #[test]

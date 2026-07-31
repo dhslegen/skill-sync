@@ -1,5 +1,5 @@
 import { WifiOff } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 
 import { Icon } from "@/components/Icon";
 import { SkillCard } from "@/components/SkillCard";
@@ -8,6 +8,7 @@ import { cn } from "@/lib/cn";
 import { relativeTimeFromIso, relativeTimeFromUnix } from "@/lib/format";
 import { filterSkills, type StoreFilter } from "@/lib/search";
 import { useInstall } from "@/store/install";
+import { useRegistries } from "@/store/registries";
 import { useStoreIndex } from "@/store/store-index";
 
 /** 卡片按钮状态:没装→安装;装了但版本落后→更新;否则→已启用。 */
@@ -30,6 +31,13 @@ export function StorePage() {
   const records = useInstall((s) => s.installed);
   // 已安装集合来自 installed_list(core 的 state.json),不再是恒空的占位
   const installed = useMemo(() => new Set(records.keys()), [records]);
+  const registries = useRegistries((s) => s.list);
+  const loadRegistries = useRegistries((s) => s.load);
+
+  // 源列表懒加载一次:只有一个源时切换器不渲染,商店与 M1 一模一样
+  useEffect(() => {
+    if (!registries) void loadRegistries();
+  }, [registries, loadRegistries]);
 
   const visible = useMemo(
     () => (index ? filterSkills(index.skills, query, filter, installed) : []),
@@ -74,6 +82,8 @@ export function StorePage() {
           </button>
         </div>
       )}
+
+      <SourcePicker />
 
       <div className="my-2.5 mb-4 flex items-center gap-1.5">
         {FILTERS.map((f) => (
@@ -137,5 +147,40 @@ export function StorePage() {
         </p>
       )}
     </>
+  );
+}
+
+/** 源切换器(M3 多源)。只有一个源时不渲染——摆一个没得选的选择器是噪音。 */
+function SourcePicker() {
+  const registries = useRegistries((s) => s.list);
+  const activeRegistry = useStoreIndex((s) => s.activeRegistry);
+  const setRegistry = useStoreIndex((s) => s.setRegistry);
+
+  if (!registries || registries.length <= 1) return null;
+
+  return (
+    <div
+      className="mt-2.5 flex items-center gap-1.5"
+      role="group"
+      aria-label={t("store.sourcePicker")}
+    >
+      <span className="text-[11.5px] text-text-3">{t("store.sourcePicker")}</span>
+      {registries.map((r) => (
+        <button
+          key={r.id}
+          type="button"
+          aria-pressed={activeRegistry === r.id}
+          onClick={() => void setRegistry(r.id)}
+          className={cn(
+            "rounded-full border px-2.5 py-[3px] text-[12px]",
+            activeRegistry === r.id
+              ? "border-border-strong bg-surface-3 font-medium text-text"
+              : "border-border bg-surface-1 text-text-2 hover:border-border-strong hover:text-text",
+          )}
+        >
+          {r.builtin ? t("registries.builtinName") : r.name}
+        </button>
+      ))}
+    </div>
   );
 }

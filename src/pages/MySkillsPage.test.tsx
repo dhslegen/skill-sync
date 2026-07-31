@@ -22,6 +22,8 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   localModified: false,
   sourceOwner: "skills",
   sourceRepo: "skills",
+  registryId: "company",
+  sourceRemoved: false,
   bodyPresent: true,
   links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
   ...over,
@@ -141,6 +143,19 @@ describe("我的技能页", () => {
 
     await screen.findByText("周报生成");
     expect(screen.queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
+  });
+
+  it("来源已移除:亮出徽标,且更新与分享改动都不再提供", async () => {
+    // 索引有新版本、本体也有改动——正常情况下两个按钮都该在,
+    // 但来源没了,更新与回推都没有去处,摆出来就是引诱用户撞错误
+    seedIndex("bbb2222");
+    seedIpc([view({ sourceRemoved: true, localModified: true })]);
+    render(<MySkillsPage />);
+
+    await screen.findByText("周报生成");
+    expect(screen.getByText("来源已移除")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "分享改动" })).not.toBeInTheDocument();
   });
 
   it("库里有新版本时出现更新按钮;点击沿用记账的工具直接更新", async () => {

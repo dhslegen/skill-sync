@@ -35,6 +35,8 @@ interface InstallState {
   phase: InstallPhase;
   /** 正在安装哪个技能(技能库中的目录名)。 */
   dirSlug: string | null;
+  /** 装的是哪个源的技能(M3 多源):商店传当前浏览的源,更新传记账的来源。 */
+  registryId: string | null;
   agents: DetectedAgent[];
   /** 勾选的 agent name。 */
   selected: Set<string>;
@@ -50,10 +52,10 @@ interface InstallState {
   installed: Map<string, { commitSha: string; localModified: boolean }>;
 
   refreshInstalled: () => Promise<void>;
-  /** 点"安装"→ 展开 agent 勾选。 */
-  begin: (dirSlug: string) => Promise<void>;
-  /** 「我的技能」页的更新:沿用上次记账的工具,不再问一遍。冲突照走 ConflictDialog。 */
-  beginUpdate: (dirSlug: string, agentIds: string[]) => Promise<void>;
+  /** 点"安装"→ 展开 agent 勾选。`registryId` 缺省 = 内建源。 */
+  begin: (dirSlug: string, registryId?: string) => Promise<void>;
+  /** 「我的技能」页的更新:沿用上次记账的工具与**来源**,不再问一遍。冲突照走 ConflictDialog。 */
+  beginUpdate: (dirSlug: string, agentIds: string[], registryId?: string) => Promise<void>;
   toggleAgent: (name: string) => void;
   /** 确认安装。`resolution` 只在从冲突弹窗回来时带。 */
   run: (resolution?: Resolution) => Promise<void>;
@@ -84,6 +86,7 @@ let taskSeq = 0;
 export const useInstall = create<InstallState>((set, get) => ({
   phase: "idle",
   dirSlug: null,
+  registryId: null,
   agents: [],
   selected: new Set(),
   stage: null,
@@ -107,10 +110,11 @@ export const useInstall = create<InstallState>((set, get) => ({
     }
   },
 
-  begin: async (dirSlug) => {
+  begin: async (dirSlug, registryId) => {
     set({
       phase: "choosing",
       dirSlug,
+      registryId: registryId ?? null,
       stage: null,
       report: null,
       error: null,
@@ -133,10 +137,11 @@ export const useInstall = create<InstallState>((set, get) => ({
     }
   },
 
-  beginUpdate: async (dirSlug, agentIds) => {
+  beginUpdate: async (dirSlug, agentIds, registryId) => {
     set({
       phase: "running",
       dirSlug,
+      registryId: registryId ?? null,
       agents: [],
       selected: new Set(agentIds),
       stage: null,
@@ -176,6 +181,7 @@ export const useInstall = create<InstallState>((set, get) => ({
         agentIds: [...selected],
         taskId,
         resolution,
+        registryId: get().registryId ?? undefined,
       });
       if (result.outcome === "needsDecision") {
         // core 没动磁盘,等用户拍板
@@ -203,7 +209,10 @@ export const useInstall = create<InstallState>((set, get) => ({
     const dirSlug = get().dirSlug;
     if (!dirSlug) return;
     try {
-      const submitted = await skillShareChanges({ dirSlug });
+      const submitted = await skillShareChanges({
+        dirSlug,
+        registryId: get().registryId ?? undefined,
+      });
       set({ shareResult: { mode: submitted.mode } });
       // 直推成功后 core 已把 contentHash 记平,卡片的「已改动」状态要跟上
       await get().refreshInstalled();
@@ -217,6 +226,7 @@ export const useInstall = create<InstallState>((set, get) => ({
     set({
       phase: "idle",
       dirSlug: null,
+      registryId: null,
       stage: null,
       report: null,
       precheck: null,

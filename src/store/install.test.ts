@@ -273,6 +273,32 @@ describe("获取流程状态机", () => {
     expect(useInstall.getState().phase).toBe("done");
   });
 
+  it("从哪个源打开就装回哪个源:registryId 全程带着", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "installed_list") return [];
+      return { outcome: "installed", report: report(), localKept: false, lock: "written" };
+    });
+
+    await useInstall.getState().begin("dept-skill", "custom-1");
+    await useInstall.getState().run();
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_install");
+    expect(call?.[1].args.registryId).toBe("custom-1");
+  });
+
+  it("「我的技能」的更新按记账的来源走,不跟着商店当前浏览的源", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "installed_list") return [];
+      return { outcome: "installed", report: report(), localKept: false, lock: "written" };
+    });
+
+    await useInstall.getState().beginUpdate("dept-skill", ["claude-code"], "custom-1");
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_install");
+    expect(call?.[1].args.registryId).toBe("custom-1");
+  });
+
   it("取消回到初始态,不留残余", async () => {
     invoke.mockImplementation(async (cmd) => (cmd === "agents_detected" ? AGENTS : null));
     await useInstall.getState().begin("weekly-report");

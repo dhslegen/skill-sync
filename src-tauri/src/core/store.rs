@@ -176,6 +176,16 @@ pub fn cache_path(dir: &Path, registry_id: &str) -> PathBuf {
 
 /// 读缓存。**任何异常都返回 `None`**:文件缺失、权限不足、JSON 损坏、版本不认识,
 /// 一律当作"没有缓存",由调用方重新下载。这是本模块与 state.rs 最重要的分歧点。
+/// 丢弃某个源的索引缓存(移除自定义源时用)。不存在不算错;删不掉只记日志
+/// ——缓存是可再生数据,不值得为它拦断移除流程。
+pub fn drop_cache(path: &Path) {
+    if let Err(err) = std::fs::remove_file(path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(path = %path.display(), error = %err, "索引缓存清理失败");
+        }
+    }
+}
+
 pub fn load_cache(path: &Path) -> Option<StoreIndex> {
     let text = std::fs::read_to_string(path).ok()?;
     let index: StoreIndex = serde_json::from_str(&text).ok()?;

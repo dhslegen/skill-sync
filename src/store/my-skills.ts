@@ -150,7 +150,8 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   shareChanges: async (dirSlug) => {
     set({ shareBusy: dirSlug, shareDone: null, shareError: null });
     try {
-      const submitted = await skillShareChanges({ dirSlug });
+      const registryId = get().list?.find((s) => s.dirSlug === dirSlug)?.registryId;
+      const submitted = await skillShareChanges({ dirSlug, registryId });
       set({ shareDone: { dirSlug, mode: submitted.mode } });
       // 直推成功后 core 已更新记账,「已改动」徽标随刷新消失;
       // 走了评审则记账没动,徽标留着——改动确实还没进库
@@ -180,7 +181,19 @@ async function runRepair(
   }
 }
 
-/** 与商店页同口径:整库 head 变了就提示可更新(SKILL.md 级别的精确比对是 M2 的事)。 */
-export function hasUpdate(skill: InstalledSkillView, indexSha: string | undefined): boolean {
-  return Boolean(indexSha) && skill.commitSha !== indexSha;
+/**
+ * 与商店页同口径:整库 head 变了就提示可更新。多源(M3)后加两道门:
+ * 索引必须是**同一个源**的(商店切到别的源时,它的版本号说明不了这个技能),
+ * 来源已移除的技能没有更新去处,永不亮"有新版本"。
+ */
+export function hasUpdate(
+  skill: InstalledSkillView,
+  index: { commitSha: string; registryId: string } | null | undefined,
+): boolean {
+  return (
+    Boolean(index) &&
+    !skill.sourceRemoved &&
+    skill.registryId === index!.registryId &&
+    skill.commitSha !== index!.commitSha
+  );
 }
