@@ -35,11 +35,17 @@ pnpm build          # tauri build(无签名变量时产出未签名包,仅内部
 pnpm test           # 前端 vitest
 cargo test --workspace   # Rust 单测(在 src-tauri/ 下)
 pnpm lint           # eslint
+pnpm build:web      # tsc + vite build —— **提交前必跑**,见下
 cargo clippy -- -D warnings
 pnpm verify:agents     # 与上游 vercel-labs/skills 差分校验 agents.json 并重生成 fixture(需联网)
 pnpm verify:discovery  # 同上,校验技能发现规则
 pnpm verify:lock       # 同上,录制 .skill-lock.json(v3)的真实读写行为
 ```
+
+**提交前的四道闸**:`pnpm test` + `pnpm lint` + **`pnpm build:web`** + `cargo test --workspace`
++ `cargo clippy -- -D warnings`。`build:web` 那道最容易漏——vitest **不做类型检查**,
+eslint 也不管,只有 `tsc` 会拦。M2 任务 6 就因为只跑了 test+lint,把一处 `.at(-1)`
+(超出 tsconfig 的 ES2020 lib)提交进去,双平台 CI 一起红。
 
 ## 目录结构
 ```

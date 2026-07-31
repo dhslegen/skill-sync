@@ -407,7 +407,7 @@ describe("逐条重试建链(安装当时没建成的)", () => {
     await useInstall.getState().confirmRetry();
 
     const calls = invoke.mock.calls.filter(([cmd]) => cmd === "skill_link_agents");
-    expect(calls.at(-1)?.[1].args.replaceOccupied).toBe(true);
+    expect(calls[calls.length - 1]?.[1].args.replaceOccupied).toBe(true);
     expect(useInstall.getState().retryConfirmDir).toBeNull();
     expect(failedLinks(useInstall.getState().report)).toBe(0);
   });
