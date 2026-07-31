@@ -10,6 +10,7 @@ use crate::core::auth::{self, KeyringStore, OAuthConfig};
 use crate::core::builtin;
 use crate::core::gitea::{GiteaClient, RepoRef};
 use crate::core::installer::{self, InstallReport, Installer};
+use crate::core::registry::{self, BUILTIN_REGISTRY_ID};
 use crate::core::remove;
 use crate::core::scheduler;
 use crate::core::share;
@@ -223,8 +224,15 @@ pub fn spawn_app_update_probe(app: tauri::AppHandle) {
 }
 
 /// 组装并启动定时更新检查。内建库没配置时返回 `None`(不起后台任务)。
+/// 仍只查内建源:逐源检查归 M3 任务 2,这里刻意不读 config.registries。
 pub fn spawn_scheduler(app: tauri::AppHandle) -> Option<scheduler::Scheduler> {
-    let (base_url, repo) = builtin_store_target().ok()?;
+    let resolved = registry::resolve(
+        &registry::BuiltinSource::from_build(),
+        &[],
+        BUILTIN_REGISTRY_ID,
+    )
+    .ok()?;
+    let (base_url, repo) = (resolved.base_url, resolved.repo);
 
     let cadence = || {
         // 每次决策都重读 config:设置页改完频率,下一次决策立刻按新值走
@@ -302,29 +310,92 @@ pub struct OpenUrlArgs {
     pub url: String,
 }
 
-/// 在系统浏览器里打开技能库页面(评审链接等)。白名单:仅放行与内建技能库同源的地址。
+/// 在系统浏览器里打开技能库页面(评审链接等)。
+/// 白名单:与任一已配置源(内建 + 自定义)同源才放行,判定在 `registry::url_allowed`。
 #[tauri::command]
 pub fn open_library_url(args: OpenUrlArgs) -> Result<(), AppError> {
-    let Some(base_url) = builtin::BUILTIN_GITEA_URL else {
-        return Err(AppError::new(
-            "AUTH_NOT_CONFIGURED",
-            "这个版本没有配置公司技能库,请向 IT 索取正式安装包",
-        ));
-    };
-    if !crate::core::gitea::is_same_origin(base_url, &args.url) {
+    let registries = app_store()?.load_config()?.value.registries;
+    if !registry::url_allowed(
+        &registry::BuiltinSource::from_build(),
+        &registries,
+        &args.url,
+    ) {
         return Err(AppError::new(
             "REPO_UNTRUSTED_URL",
-            "这个链接不属于公司技能库,已阻止打开",
+            "这个链接不属于任何已配置的技能库,已阻止打开",
         )
         .with_detail(args.url));
     }
     session::BrowserOpener::open(&SystemBrowser, &args.url)
 }
 
-// ============================================================ 登录
+// ============================================================ 仓库源管理(M3 任务 1)
 
-/// 内建技能库的 registry id。M1 只有这一个源,M3 起支持多源时按 id 区分凭证。
-const BUILTIN_REGISTRY_ID: &str = "company";
+#[tauri::command]
+pub fn registry_list() -> Result<Vec<registry::RegistryView>, AppError> {
+    let registries = app_store()?.load_config()?.value.registries;
+    Ok(registry::list(
+        &registry::BuiltinSource::from_build(),
+        &registries,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryAddArgs {
+    pub name: String,
+    /// `gitea` | `github`(github 源的访问在任务 4 接通前会被拦)。
+    pub kind: String,
+    pub base_url: String,
+    pub owner: String,
+    pub repo: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// 新增自定义源,返回更新后的完整列表(前端直接整份换,免一次往返)。
+#[tauri::command]
+pub fn registry_add(args: RegistryAddArgs) -> Result<Vec<registry::RegistryView>, AppError> {
+    let store = app_store()?;
+    let mut config = store.load_config()?.value;
+    registry::add(
+        &mut config.registries,
+        &registry::AddRegistryRequest {
+            name: &args.name,
+            kind: &args.kind,
+            base_url: &args.base_url,
+            owner: &args.owner,
+            repo: &args.repo,
+            branch: args.branch.as_deref(),
+        },
+    )?;
+    store.save_config(&config)?;
+    Ok(registry::list(
+        &registry::BuiltinSource::from_build(),
+        &config.registries,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryRemoveArgs {
+    pub registry_id: String,
+}
+
+/// 移除自定义源(内建源在 core 层被拒)。已装技能保留,来源标记归任务 2。
+#[tauri::command]
+pub fn registry_remove(args: RegistryRemoveArgs) -> Result<Vec<registry::RegistryView>, AppError> {
+    let store = app_store()?;
+    let mut config = store.load_config()?.value;
+    registry::remove(&mut config.registries, &args.registry_id)?;
+    store.save_config(&config)?;
+    Ok(registry::list(
+        &registry::BuiltinSource::from_build(),
+        &config.registries,
+    ))
+}
+
+// ============================================================ 登录
 
 /// 用 tauri-plugin-opener 打开系统浏览器。
 struct SystemBrowser;
@@ -421,44 +492,20 @@ pub fn auth_logout(args: RegistryArg) -> Result<(), AppError> {
 
 // ============================================================ 商店
 
-/// 解析商店要访问的技能库坐标。
+/// 解析某个源的技能库坐标(M3 任务 1 起经 `core/registry` 统一解析)。
 ///
-/// **刻意不看 OAuth 配置**:技能库公开可匿名读(已实测),商店浏览与详情预览先于登录。
-/// 若拿 [`builtin::builtin_configured`] 当门,只缺 Client ID 的构建就会连商店都打不开
-/// ——那等于把"先逛后登录"这条产品前提废掉。抽成接受参数的纯函数以便单测。
-fn store_target(
-    gitea_url: Option<&str>,
-    repo: Option<(&str, &str)>,
-    branch: &str,
-) -> Result<(String, RepoRef), AppError> {
-    let Some(base_url) = gitea_url.filter(|u| !u.is_empty()) else {
-        return Err(AppError::new(
-            "REPO_NOT_CONFIGURED",
-            "这个版本没有配置公司技能库,请向 IT 索取正式安装包",
-        ));
-    };
-    let Some((owner, repo)) = repo else {
-        return Err(AppError::new(
-            "REPO_NOT_CONFIGURED",
-            "这个版本没有指定公司技能库,请向 IT 索取正式安装包",
-        ));
-    };
-    Ok((
-        base_url.to_string(),
-        RepoRef {
-            owner: owner.to_string(),
-            repo: repo.to_string(),
-            branch: branch.to_string(),
-        },
-    ))
-}
-
-fn builtin_store_target() -> Result<(String, RepoRef), AppError> {
-    store_target(
-        builtin::BUILTIN_GITEA_URL,
-        builtin::builtin_repo(),
-        builtin::builtin_branch(),
-    )
+/// **刻意不看 OAuth 配置**:技能库公开可匿名读(已实测),商店浏览与详情预览先于登录
+/// ——`registry::resolve` 的签名里没有 client_id,这条产品前提有测试钉在 registry.rs。
+/// kind=github 的源在 GitHub client(任务 4)接通前统一在此被拦。
+fn registry_target(registry_id: &str) -> Result<(String, RepoRef), AppError> {
+    let registries = app_store()?.load_config()?.value.registries;
+    let resolved = registry::resolve(
+        &registry::BuiltinSource::from_build(),
+        &registries,
+        registry_id,
+    )?;
+    resolved.require_gitea()?;
+    Ok((resolved.base_url, resolved.repo))
 }
 
 /// 商店索引的缓存落点。与 config/state 同目录(`~/.skillsync`)。
@@ -495,7 +542,7 @@ pub struct StoreIndexArgs {
 #[tauri::command]
 pub async fn store_index(args: StoreIndexArgs) -> Result<StoreIndexView, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (base_url, repo) = builtin_store_target()?;
+    let (base_url, repo) = registry_target(registry_id)?;
     let cache = index_cache_file(registry_id)?;
     let (index, outcome) = store::refresh_index(
         &anonymous_client(base_url)?,
@@ -521,7 +568,7 @@ pub struct StoreDetailArgs {
 #[tauri::command]
 pub async fn store_skill_detail(args: StoreDetailArgs) -> Result<SkillDetail, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (base_url, repo) = builtin_store_target()?;
+    let (base_url, repo) = registry_target(registry_id)?;
     let cache = index_cache_file(registry_id)?;
 
     // 详情走缓存:打开面板不该再等一次网络往返。
@@ -575,7 +622,7 @@ pub async fn skill_install(
     args: InstallArgs,
 ) -> Result<acquire::AcquireOutcome, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (base_url, repo) = builtin_store_target()?;
+    let (base_url, repo) = registry_target(registry_id)?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
 
@@ -679,7 +726,7 @@ pub async fn skill_install_batch(
     args: InstallBatchArgs,
 ) -> Result<Vec<acquire::BatchItem>, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (base_url, repo) = builtin_store_target()?;
+    let (base_url, repo) = registry_target(registry_id)?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
 
@@ -735,7 +782,7 @@ pub struct SkillShareArgs {
 #[tauri::command]
 pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (_, repo) = builtin_store_target()?;
+    let (_, repo) = registry_target(registry_id)?;
     let client = authed_client(registry_id).await?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
@@ -775,7 +822,7 @@ pub async fn skill_share_changes(args: ShareChangesArgs) -> Result<share::Submit
     let client = authed_client(registry_id).await?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
-    let (_, repo) = builtin_store_target()?;
+    let (_, repo) = registry_target(registry_id)?;
     share::share_installed(
         &client,
         &registry,
@@ -913,34 +960,6 @@ mod tests {
         assert_eq!(now.as_bytes()[10], b'T', "{now}");
     }
 
-    #[test]
-    fn store_target_does_not_depend_on_oauth_configuration() {
-        // 本函数的签名里根本没有 client_id 这个参数——这就是"商店浏览不依赖登录配置"
-        // 这条产品前提的机器可读证据。改成走 builtin_configured() 会让本测试无从表达。
-        let (url, repo) = store_target(
-            Some("http://gitea.internal:3000"),
-            Some(("skills", "skills")),
-            "main",
-        )
-        .unwrap();
-        assert_eq!(url, "http://gitea.internal:3000");
-        assert_eq!(repo.owner, "skills");
-        assert_eq!(repo.repo, "skills");
-        assert_eq!(repo.branch, "main");
-    }
-
-    #[test]
-    fn missing_builtin_config_gives_an_actionable_message() {
-        for (url, repo) in [
-            (None, Some(("skills", "skills"))),
-            (Some(""), Some(("skills", "skills"))),
-            (Some("http://gitea.internal:3000"), None),
-        ] {
-            let err = store_target(url, repo, "main").unwrap_err();
-            assert_eq!(err.code, "REPO_NOT_CONFIGURED");
-            // 文案规范:必须给下一步动作,且不含 git 术语
-            assert!(err.message.contains("IT"), "{}", err.message);
-            assert!(!err.message.contains("仓库"), "{}", err.message);
-        }
-    }
+    // store_target 的两条测试(不依赖 OAuth 配置 / 未配置的人话报错)随解析层
+    // 一起迁去了 core/registry.rs——resolve 就是它的继任者,守的是同一件事。
 }
