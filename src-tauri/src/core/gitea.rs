@@ -21,34 +21,49 @@
 //! 纯只读用户走这条路会 403。因此本模块同时提供 [`GiteaClient::fork_repo`],
 //! 由任务 11 按 `permissions.push` 选择路径:可写→直推或开分支,只读→fork 后提交审核。
 //!
-//! # 系统代理:一律直连(任务 13 拍板)
+//! # 系统代理:按源分两档(M1 任务 13 拍板"一律直连",M3 任务 3 修订)
 //!
 //! 企业机器普遍配 `http_proxy` 访问外网;内网 Gitea 若不在 `NO_PROXY`,reqwest 的
 //! 默认行为会把请求转给代理——代理连不到内网,用户在登录第一步就拿到看不懂的失败
 //! (开发机实测:得到的是代理的 5xx,不是"连接被拒")。
 //!
-//! M1 只有内建这一个源,而它一定在内网:[`app_http_client`] 因此**完全禁用代理**,
-//! 直连即正确语义。极端环境(全流量强制走代理、无透明例外)下直连会失败,
-//! 部署文档要求 IT 放行该域名;M3 支持自定义外网源时,再按 registry 决定是否走代理。
+//! - **内建源**一定在内网:[`app_http_client`] 完全禁用代理,直连即正确语义。
+//!   极端环境(全流量强制走代理、无透明例外)下直连会失败,部署文档要求 IT 放行该域名。
+//! - **外部源**(自定义 Gitea / GitHub,M3 起)在公司代理网络下恰恰相反——不走代理
+//!   就连不上外网:[`app_http_client_proxied`] 跟随系统代理(reqwest 默认行为)。
+//!   用户拍板(2026-07-31):不加每源"直连/代理"开关,保持设置页简单。
+//!
+//! 选择在 `commands::http_client_for` 一处:内建 id → 直连,其余 → 跟随系统代理。
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
-/// 全 app 统一的 HTTP client:带 UA、**不走系统代理**(理由见模块头)。
+/// 内建源的 HTTP client:带 UA、**不走系统代理**(理由见模块头)。
 ///
-/// 所有对技能库的请求都应从这里构造 client,别在各处散落 `Client::builder()`
-/// ——那会让代理策略悄悄回到 reqwest 默认值。
+/// 所有对技能库的请求都应从这里或 [`app_http_client_proxied`] 构造 client,
+/// 别在各处散落 `Client::builder()`——那会让代理策略悄悄回到 reqwest 默认值。
 pub fn app_http_client() -> Result<reqwest::Client, AppError> {
-    reqwest::Client::builder()
-        .user_agent(concat!("SkillSync/", env!("CARGO_PKG_VERSION")))
-        .no_proxy()
-        .build()
-        .map_err(|e| {
-            AppError::new("NET_CLIENT_INIT", "网络组件初始化失败,请重启应用")
-                .with_detail(e.to_string())
-        })
+    build_client(true)
+}
+
+/// 外部源(自定义 Gitea / GitHub)的 HTTP client:带同一 UA、**跟随系统代理**。
+/// 公司代理网络下外网只有经代理才通(M3 任务 3,模块头有完整理由)。
+pub fn app_http_client_proxied() -> Result<reqwest::Client, AppError> {
+    build_client(false)
+}
+
+fn build_client(no_proxy: bool) -> Result<reqwest::Client, AppError> {
+    let mut builder =
+        reqwest::Client::builder().user_agent(concat!("SkillSync/", env!("CARGO_PKG_VERSION")));
+    if no_proxy {
+        builder = builder.no_proxy();
+    }
+    builder.build().map_err(|e| {
+        AppError::new("NET_CLIENT_INIT", "网络组件初始化失败,请重启应用")
+            .with_detail(e.to_string())
+    })
 }
 
 /// 判断一个链接是否与技能库同源(scheme + host + port 全等)。

@@ -457,9 +457,14 @@ fn auth_config(registry_id: &str) -> Result<OAuthConfig, AppError> {
     resolved.auth_config(builtin::OAUTH_CLIENT_ID)
 }
 
-fn http_client() -> Result<reqwest::Client, AppError> {
-    // 统一从 gitea 侧构造:UA 与"不走系统代理"的策略只在一处定义
-    crate::core::gitea::app_http_client()
+/// 按源选 HTTP client(M3 任务 3):内建源直连内网;外部源跟随系统代理,
+/// 公司代理网络下外网只有经代理才通。两档都带统一 UA,策略只在 gitea.rs 一处定义。
+fn http_client_for(registry_id: &str) -> Result<reqwest::Client, AppError> {
+    if registry_id == BUILTIN_REGISTRY_ID {
+        crate::core::gitea::app_http_client()
+    } else {
+        crate::core::gitea::app_http_client_proxied()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -487,7 +492,7 @@ pub async fn auth_login_oauth(args: RegistryArg) -> Result<SessionUser, AppError
         ));
     }
     session::login_oauth(
-        &http_client()?,
+        &http_client_for(args.id())?,
         &resolved.auth_config(builtin::OAUTH_CLIENT_ID)?,
         &KeyringStore,
         &SystemBrowser,
@@ -508,7 +513,7 @@ pub struct LoginTokenArgs {
 pub async fn auth_login_token(args: LoginTokenArgs) -> Result<SessionUser, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
     session::login_with_token(
-        &http_client()?,
+        &http_client_for(registry_id)?,
         &auth_config(registry_id)?,
         &KeyringStore,
         registry_id,
@@ -520,7 +525,7 @@ pub async fn auth_login_token(args: LoginTokenArgs) -> Result<SessionUser, AppEr
 #[tauri::command]
 pub async fn auth_status(args: RegistryArg) -> Result<SessionStatus, AppError> {
     session::status(
-        &http_client()?,
+        &http_client_for(args.id())?,
         &auth_config(args.id())?,
         &KeyringStore,
         args.id(),
@@ -551,19 +556,18 @@ fn index_cache_file(registry_id: &str) -> Result<std::path::PathBuf, AppError> {
     Ok(store::cache_path(app_store()?.dir(), registry_id))
 }
 
-/// 匿名 client。内建源的读一律走它:公开可读(M1 实测),带上一个可能已过期的
-/// 令牌反而会把本来能成的匿名请求变成 401。
-fn anonymous_client(base_url: String) -> Result<GiteaClient, AppError> {
-    Ok(GiteaClient::with_http(base_url, None, http_client()?))
-}
-
-/// 读链路的 client(M3 任务 2):内建源匿名(见上);自定义源可能是私有库,
-/// 有凭证就带上,没有或取不出来就匿名——读不到再由请求自己报 401/404。
+/// 读链路的 client(M3 任务 2)。内建源一律**匿名**:公开可读(M1 实测),
+/// 带上一个可能已过期的令牌反而会把本来能成的匿名请求变成 401。
+/// 自定义源可能是私有库:有凭证就带上,没有或取不出来就匿名——读不到再由请求自己报 401/404。
 async fn store_client(registry_id: &str, base_url: String) -> Result<GiteaClient, AppError> {
     if registry_id == BUILTIN_REGISTRY_ID {
-        return anonymous_client(base_url);
+        return Ok(GiteaClient::with_http(
+            base_url,
+            None,
+            http_client_for(registry_id)?,
+        ));
     }
-    let http = http_client()?;
+    let http = http_client_for(registry_id)?;
     let cfg = auth_config(registry_id)?;
     let token = match auth::ensure_access_token(&http, &cfg, &KeyringStore, registry_id).await {
         Ok(t) => t,
@@ -578,7 +582,7 @@ async fn store_client(registry_id: &str, base_url: String) -> Result<GiteaClient
 
 /// 分享是写操作,必须带登录凭证。没登录给一个前端能识别的错误码,引导去登录。
 async fn authed_client(registry_id: &str) -> Result<GiteaClient, AppError> {
-    let http = http_client()?;
+    let http = http_client_for(registry_id)?;
     let cfg = auth_config(registry_id)?;
     let token = auth::ensure_access_token(&http, &cfg, &KeyringStore, registry_id)
         .await?

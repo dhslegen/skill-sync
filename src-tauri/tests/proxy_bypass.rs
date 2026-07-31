@@ -66,6 +66,29 @@ async fn the_app_client_never_hands_intranet_requests_to_a_proxy() {
         "app 的请求被交给了系统代理"
     );
 
+    // M3 任务 3:外部源的 client **跟随系统代理**——同一环境、同一目标,
+    // 它必须能经代理拿到应答,并且带着 app 统一的 UA(不是 reqwest 裸默认)。
+    let proxied = skillsync_lib::core::gitea::app_http_client_proxied()
+        .expect("构造外部源 http client 失败");
+    let via_app_proxy = proxied
+        .get(format!("{target}/api/v1/version"))
+        .send()
+        .await
+        .expect("外部源 client 应当把请求交给系统代理")
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(via_app_proxy, "FROM_PROXY", "外部源 client 没走系统代理");
+    let requests = proxy.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    let ua = requests[1]
+        .headers
+        .get("user-agent")
+        .expect("外部源 client 丢了统一 UA")
+        .to_str()
+        .unwrap();
+    assert!(ua.starts_with("SkillSync/"), "UA 应是 app 统一标识,而不是 {ua}");
+
     std::env::remove_var("HTTP_PROXY");
     std::env::remove_var("http_proxy");
 }
