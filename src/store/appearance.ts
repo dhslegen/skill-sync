@@ -1,12 +1,15 @@
 // 外观:主题三档 + 强调色三色。全套走 CSS 变量(global.css 的 data-theme / data-accent),
 // 这里只负责决定"当前该是哪一档"并同步到 <html>。
 //
-// 假设(文档未覆盖):偏好先存 localStorage。设置页要把它落进 config.json 才算跨机器,
-// 那是设置页所在任务的事;M1 任务 8 不动 config 的 schema。
+// M2 任务 1 起偏好的最终归宿是 config.json(同步方向见 store/prefs.ts:config 赢);
+// 这里的 localStorage 只是本机缓存——首帧之前就能同步读到,不闪默认色。
 import { create } from "zustand";
 
-export type ThemeMode = "light" | "dark" | "system";
-export type Accent = "clay" | "teal" | "ink";
+import type { Accent, ThemeMode } from "@/lib/ipc";
+
+// 取值集合定义在 IPC 契约层(与 core::state::UiPrefs 对应),这里转发出去,
+// 既有的 `import { ThemeMode } from "@/store/appearance"` 不必跟着改。
+export type { Accent, ThemeMode };
 
 const THEME_KEY = "skillsync.theme";
 const ACCENT_KEY = "skillsync.accent";
@@ -14,6 +17,20 @@ const DARK_QUERY = "(prefers-color-scheme: dark)";
 
 const THEME_MODES: ThemeMode[] = ["light", "dark", "system"];
 const ACCENTS: Accent[] = ["clay", "teal", "ink"];
+
+/** 三个强调色的色值(C-UI 拍板),Toolbar 圆点与设置页共用同一份。 */
+export const ACCENT_SWATCH: Record<Accent, string> = {
+  clay: "#c2410c",
+  teal: "#0d7a68",
+  ink: "#1e5a8a",
+};
+
+/** 强调色的展示名 i18n 键。内部标识(clay/teal/ink)不能露给用户,aria-label 也算。 */
+export const ACCENT_LABEL_KEY = {
+  clay: "settings.accentClay",
+  teal: "settings.accentTeal",
+  ink: "settings.accentInk",
+} as const satisfies Record<Accent, string>;
 
 function readStored<T extends string>(key: string, allowed: T[], fallback: T): T {
   try {

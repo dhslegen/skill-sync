@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { resetPrefsForTests } from "./prefs";
 import { useWizard } from "./wizard";
 
 const invoke = vi.fn();
@@ -17,6 +18,7 @@ const AGENTS = {
 function reset() {
   invoke.mockReset();
   localStorage.clear();
+  resetPrefsForTests();
   useWizard.setState({
     open: false,
     step: "agents",
@@ -43,22 +45,45 @@ describe("首次启动向导状态机", () => {
     expect(s.agents).toHaveLength(2);
   });
 
-  it("有完成标记:不打开、不发任何请求", async () => {
+  it("本机缓存有完成标记(config 不可用):不打开、不发向导相关请求", async () => {
+    // config 读取失败 → 退回 localStorage 判定,与 M1 行为一致
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "ui_prefs_get") throw new Error("not in tauri");
+      return null;
+    });
     localStorage.setItem("skillsync.wizardDone", "1");
 
     await useWizard.getState().maybeOpen();
 
     expect(useWizard.getState().open).toBe(false);
-    expect(invoke).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalledWith("agents_detected");
   });
 
-  it("完成写标记,下次启动不再出现", async () => {
+  it("config 说已完成:即便本机没有缓存标记也不打开(config 赢)", async () => {
+    invoke.mockImplementation(async (cmd) =>
+      cmd === "ui_prefs_get" ? { theme: "light", accent: "clay", wizardDone: true } : null,
+    );
+
+    await useWizard.getState().maybeOpen();
+
+    expect(useWizard.getState().open).toBe(false);
+    expect(invoke).not.toHaveBeenCalledWith("agents_detected");
+  });
+
+  it("完成写标记(缓存+config 双写),下次启动不再出现", async () => {
     invoke.mockImplementation(async (cmd) => (cmd === "agents_detected" ? AGENTS : null));
     await useWizard.getState().maybeOpen();
 
     useWizard.getState().finish();
 
     expect(useWizard.getState().open).toBe(false);
+    expect(localStorage.getItem("skillsync.wizardDone")).toBe("1");
+    expect(invoke).toHaveBeenCalledWith(
+      "ui_prefs_set",
+      expect.objectContaining({
+        args: expect.objectContaining({ prefs: expect.objectContaining({ wizardDone: true }) }),
+      }),
+    );
     await useWizard.getState().maybeOpen();
     expect(useWizard.getState().open).toBe(false);
   });

@@ -54,6 +54,8 @@ src/
   pages/StorePage.tsx    # ✅ 商店页
   pages/MySkillsPage.tsx # ✅ 我的技能页(行式列表 + 徽标 + 更新/修复/移除/分享改动)
   pages/SharePage.tsx    # ✅ 分享页(候选列表 + 来源标签 + 行内表单)
+  pages/SettingsPage.tsx # ✅ 设置页(M2 任务 1:账号/外观;技能库/agent/更新分区随任务 2)
+  store/prefs.ts         # ✅ 偏好落盘协调:config.ui 为准,localStorage 降为首帧缓存
   components/Wizard.tsx  # ✅ 首次启动向导(三步:认识工具/登录可跳过/精选一键装)
   hooks/             # ✅ useDesktopChrome(快捷键 + 右键拦截)
 src-tauri/src/
@@ -223,9 +225,18 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 **M1 任务 1–13 全部完成并提交**。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
 本机测试 **Rust 286 通过 + 前端 213 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
 (Windows 上少跑的 8 个是 `cfg(unix)` 用例,已逐一核对)。本机 `pnpm tauri build`
-真实出过包(dmg 6.0MB)。**下一里程碑 M2**(设计方案 2.7:定时自动更新 + 冲突保护 +
-托盘通知 + App 自更新链路),开工前需按交接包 3.5 的粒度先做任务分解;
+真实出过包(dmg 6.0MB)。**M2 进行中**(分解见 docs/M2-任务分解.md,本地文档,6 任务;
+用户已拍板:①按此分解执行;②关窗缩到托盘,「退出」只在托盘菜单)。
 交接材料见 docs/新会话交接提示词.md。
+
+| M2 任务 | 状态 | 关键产物 |
+|---|---|---|
+| 1 设置页 A | ✅ | config 新增可选 ui 字段(serde default,schemaVersion 仍 1)+ store/prefs.ts 同步(config 赢/一次性迁移/失败不硬推)+ 设置页账号区(退出登录接通)与外观区;6+11 新测试,7 处注入验证 |
+| 2 设置页 B | ⬜ | autoUpdate 配置 + agent 开关 + 评审链接可点 |
+| 3 scheduler | ⬜ | 定时检查(唯一入口 acquire_batch)+ tracing 日志 |
+| 4 托盘+通知 | ⬜ | 关窗缩托盘(已拍板)+ 更新结果通知 |
+| 5 App 自更新 | ⬜ | tauri-plugin-updater + minisign(未签名先打通) |
+| 6 收尾打磨 | ⬜ | 占位替换重试 + Windows 外观(可选) |
 
 | 任务 | 状态 | 关键产物 |
 |---|---|---|
@@ -276,8 +287,11 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 - **批量安装已接**(任务 12):`acquire::acquire_batch` 一次下载装多个,冲突(改过/外来)
   一律跳过并说明,不弹三选——向导面向全新环境,静默覆盖比装不上危险得多。
   安装时的占位失败逐条「替换」重试仍未做(见上一条)。
-- **向导完成标记存 localStorage**(`skillsync.wizardDone`,任务 12 的假设):
-  与主题偏好同一档;设置页把偏好落 config.json 时一并考虑。
+- **偏好与向导标记已落 config.json**(M2 任务 1):config 的可选 `ui` 字段
+  (theme/accent/wizardDone,serde default 兼容,schemaVersion 仍 1)。同步方向唯一:
+  **config 有值则 config 赢**;localStorage(`skillsync.theme`/`accent`/`wizardDone`)降为
+  首帧防闪与 IPC 不可用时的兜底缓存。入口 `store/prefs.ts`:未同步成功绝不反推 config
+  (不拿猜的值覆盖真数据);向导 maybeOpen 现在会先发一次 `ui_prefs_get`。
 - **curated.json 约定**(fixture 即此约定):技能库根目录,`{"curated": ["<frontmatter name>", …]}`,
   按显示名记;对不上的条目在 view 层直接丢弃。真实公司库(2026-07-30 快照)还没有这个文件,
   向导第三步会引导去商店——需要技能库管理员补一份才有"一键全装"。
@@ -311,11 +325,8 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 - **Windows 平台外观细节未做**:任务 13 只启用了 macOS 的 Overlay 标题栏(红绿灯浮在
   44px 拖拽区);Windows 保持系统默认装饰,原生窗口控制(tauri-plugin-decorum)、
   vibrancy、实色化属 M2 打磨项,不影响 DoD。
-- **外观偏好目前存 localStorage**(任务 8 的假设):`skillsync.theme` / `skillsync.accent`。
-  设置页要落进 `config.json` 才算跨机器,那是设置页所在任务的事——本任务不动 config 的 schema。
 - **进度事件只报阶段,不报字节**:压缩包是一次性下完的,没有可信的字节级进度可报。
   阶段(取内容/检查/写入/关联/记账)是当前最诚实的粒度。
-- **退出登录还没有界面入口**:`useSession.signOut` 与文案 `account.signOut` 都已就绪但无人调用
-  ——UI-Demo 把「退出登录」放在设置页的账号区,所以它随设置页一起落地(侧边栏那行只做登录入口)。
+- ~~退出登录还没有界面入口~~:已随 M2 任务 1 的设置页账号区落地。
 - 本机 Rust 环境需走镜像:`RUSTUP_DIST_SERVER` 用清华、crates.io 用 rsproxy(已配在 `~/.cargo/config.toml`);
   `~/.cargo/bin` 不在非交互 shell 的 PATH 中,跑 cargo 前需 `export PATH="$HOME/.cargo/bin:$PATH"`。

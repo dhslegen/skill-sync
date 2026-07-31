@@ -46,6 +46,41 @@ pub struct Config {
     pub registries: Vec<RegistryConfig>,
     #[serde(default)]
     pub auto_update: AutoUpdate,
+    /// 界面偏好。`None` = 从未设置过(前端据此做 localStorage 一次性迁移),
+    /// 与 `Some(默认值)` 是两种不同状态,所以不能用 `#[serde(default)]` 折掉。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<UiPrefs>,
+}
+
+/// 界面偏好(M2 任务 1 起落盘,此前在前端 localStorage)。
+///
+/// 取值集合与前端 `store/appearance.ts` 的类型一一对应,写入前经 [`UiPrefs::validate`]
+/// 把关——config.json 是跨版本的长命文件,进来什么就得认什么,垃圾值只能挡在门外。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiPrefs {
+    /// `light` / `dark` / `system`
+    pub theme: String,
+    /// `clay` / `teal` / `ink`
+    pub accent: String,
+    /// 首次启动向导是否已完成(「每台机器一次」的标记,随偏好同档落盘)。
+    #[serde(default)]
+    pub wizard_done: bool,
+}
+
+impl UiPrefs {
+    pub fn validate(&self) -> Result<(), AppError> {
+        let theme_ok = matches!(self.theme.as_str(), "light" | "dark" | "system");
+        let accent_ok = matches!(self.accent.as_str(), "clay" | "teal" | "ink");
+        if theme_ok && accent_ok {
+            return Ok(());
+        }
+        Err(
+            AppError::new("STATE_INVALID_PREFS", "外观设置的取值不合法,请重新选择").with_detail(
+                format!("theme={:?} accent={:?}", self.theme, self.accent),
+            ),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +137,7 @@ impl Default for Config {
             schema_version: SCHEMA_VERSION,
             registries: Vec::new(),
             auto_update: AutoUpdate::default(),
+            ui: None,
         }
     }
 }
@@ -215,6 +251,22 @@ impl Store {
 
     pub fn load_state(&self) -> Result<Loaded<State>, AppError> {
         load(&self.dir.join(STATE_FILE))
+    }
+
+    pub fn load_ui_prefs(&self) -> Result<Option<UiPrefs>, AppError> {
+        Ok(self.load_config()?.value.ui)
+    }
+
+    /// 界面偏好写回 config.json。load-modify-save:只动 `ui` 一个字段,
+    /// registries/autoUpdate 原样保留。
+    ///
+    /// 只读闸门不在这里重复设卡:文件来自更新版本时 `load_config` 给的是默认值,
+    /// 但 `save`(基于磁盘重读的那道现有守卫)会拒绝写入,新版数据一个字节不会被动。
+    pub fn save_ui_prefs(&self, prefs: &UiPrefs) -> Result<(), AppError> {
+        prefs.validate()?;
+        let mut config = self.load_config()?.value;
+        config.ui = Some(prefs.clone());
+        self.save_config(&config)
     }
 
     pub fn save_state(&self, value: &State) -> Result<(), AppError> {
@@ -487,6 +539,118 @@ mod tests {
 
         assert_eq!(err.code, "STATE_WRITE_FAILED");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    /// theme 与 accent 特意取"档位序号不同"的组合(深色 + 默认强调色),
+    /// 避免两个概念在 fixture 里取同值,把字段串位测没了(CLAUDE.md 空转模式 3)。
+    fn sample_prefs() -> UiPrefs {
+        UiPrefs {
+            theme: "dark".into(),
+            accent: "clay".into(),
+            wizard_done: true,
+        }
+    }
+
+    #[test]
+    fn ui_prefs_survive_a_round_trip() {
+        let (_tmp, s) = store();
+
+        s.save_ui_prefs(&sample_prefs()).unwrap();
+        let back = s.load_ui_prefs().unwrap().expect("保存过就该读得到");
+
+        assert_eq!(back.theme, "dark");
+        assert_eq!(back.accent, "clay");
+        assert!(back.wizard_done);
+    }
+
+    #[test]
+    fn a_config_from_before_ui_prefs_reads_as_none_on_schema_v1() {
+        let (_tmp, s) = store();
+        std::fs::create_dir_all(s.dir()).unwrap();
+        std::fs::write(
+            s.dir().join("config.json"),
+            r#"{"schemaVersion":1,"registries":[],"autoUpdate":{"skills":{"enabled":false,"intervalHours":8},"app":true}}"#,
+        )
+        .unwrap();
+
+        let loaded = s.load_config().unwrap();
+
+        assert!(matches!(loaded.access, Access::ReadWrite), "serde default 兼容,不该升版本或降只读");
+        assert_eq!(loaded.value.schema_version, SCHEMA_VERSION);
+        assert!(loaded.value.ui.is_none());
+        // 顺带确认旧字段没被 default 吃掉
+        assert!(!loaded.value.auto_update.skills.enabled);
+        assert_eq!(loaded.value.auto_update.skills.interval_hours, 8);
+    }
+
+    #[test]
+    fn a_default_config_serializes_without_a_ui_key() {
+        // 断言键的完整集合而不是"没有 ui"——字段名拼错时"不存在"式断言照样绿(空转模式 2)。
+        let json = serde_json::to_value(Config::default()).unwrap();
+        let keys: Vec<&str> = json.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        assert_eq!(keys, ["schemaVersion", "registries", "autoUpdate"]);
+    }
+
+    #[test]
+    fn invalid_pref_values_are_rejected_and_the_file_is_untouched() {
+        let (_tmp, s) = store();
+        s.save_ui_prefs(&sample_prefs()).unwrap();
+        let before = std::fs::read_to_string(s.dir().join("config.json")).unwrap();
+
+        for bad in [
+            UiPrefs { theme: "purple".into(), ..sample_prefs() },
+            UiPrefs { accent: "rainbow".into(), ..sample_prefs() },
+        ] {
+            let err = s.save_ui_prefs(&bad).unwrap_err();
+            assert_eq!(err.code, "STATE_INVALID_PREFS");
+        }
+        assert_eq!(
+            std::fs::read_to_string(s.dir().join("config.json")).unwrap(),
+            before,
+            "被拒的写入不该碰文件"
+        );
+    }
+
+    #[test]
+    fn saving_ui_prefs_preserves_the_rest_of_the_config() {
+        let (_tmp, s) = store();
+        let mut config = Config::default();
+        config.registries.push(RegistryConfig {
+            id: "company".into(),
+            name: "公司技能库".into(),
+            kind: "gitea".into(),
+            base_url: "https://gitea.internal.example".into(),
+            builtin: true,
+            repos: vec![RepoConfig {
+                owner: "skills".into(),
+                repo: "skills".into(),
+                branch: "main".into(),
+            }],
+        });
+        config.auto_update.skills.interval_hours = 24;
+        s.save_config(&config).unwrap();
+
+        s.save_ui_prefs(&sample_prefs()).unwrap();
+        let back = s.load_config().unwrap().value;
+
+        assert_eq!(back.registries.len(), 1, "save_ui_prefs 整份覆盖了 config");
+        assert_eq!(back.registries[0].id, "company");
+        assert_eq!(back.auto_update.skills.interval_hours, 24);
+        assert_eq!(back.ui, Some(sample_prefs()));
+    }
+
+    #[test]
+    fn ui_prefs_respect_the_read_only_gate() {
+        let (_tmp, s) = store();
+        std::fs::create_dir_all(s.dir()).unwrap();
+        let path = s.dir().join("config.json");
+        let future = r#"{"schemaVersion":99,"未来字段":true}"#;
+        std::fs::write(&path, future).unwrap();
+
+        let err = s.save_ui_prefs(&sample_prefs()).unwrap_err();
+
+        assert_eq!(err.code, "STATE_READ_ONLY");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), future, "新版文件必须一字节不动");
     }
 
     #[test]

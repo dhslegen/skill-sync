@@ -4,7 +4,13 @@ import { Icon } from "@/components/Icon";
 import { SearchBox } from "@/components/SearchBox";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
-import { resolveTheme, useAppearance, type Accent } from "@/store/appearance";
+import {
+  ACCENT_LABEL_KEY,
+  ACCENT_SWATCH,
+  resolveTheme,
+  useAppearance,
+  type Accent,
+} from "@/store/appearance";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi, type PageId } from "@/store/ui";
 
@@ -13,12 +19,6 @@ const TITLES: Record<PageId, MessageKey> = {
   mine: "nav.mine",
   share: "nav.share",
   settings: "nav.settings",
-};
-
-const ACCENT_SWATCH: Record<Accent, string> = {
-  clay: "#c2410c",
-  teal: "#0d7a68",
-  ink: "#1e5a8a",
 };
 
 /**
@@ -50,7 +50,7 @@ export function Toolbar() {
           <button
             key={key}
             type="button"
-            aria-label={key}
+            aria-label={t(ACCENT_LABEL_KEY[key])}
             aria-pressed={accent === key}
             onClick={() => setAccent(key)}
             style={{ background: ACCENT_SWATCH[key] }}

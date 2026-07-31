@@ -88,6 +88,19 @@ export interface SkillDetail {
   committedAt: string;
 }
 
+export type ThemeMode = "light" | "dark" | "system";
+export type Accent = "clay" | "teal" | "ink";
+
+/** 与 core::state::UiPrefs 的 serde 契约一一对应。`null` = config 里从未设置过。 */
+export interface UiPrefs {
+  theme: ThemeMode;
+  accent: Accent;
+  wizardDone: boolean;
+}
+
+export const uiPrefsGet = () => call<UiPrefs | null>("ui_prefs_get");
+export const uiPrefsSet = (prefs: UiPrefs) => call<void>("ui_prefs_set", { args: { prefs } });
+
 export interface SessionUser {
   login: string;
   displayName: string;

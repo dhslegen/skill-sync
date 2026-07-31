@@ -9,6 +9,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::agents_detected,
+            commands::ui_prefs_get,
+            commands::ui_prefs_set,
             commands::auth_login_oauth,
             commands::auth_login_token,
             commands::auth_status,

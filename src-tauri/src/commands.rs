@@ -54,6 +54,24 @@ pub fn agents_detected() -> Result<DetectedAgents, AppError> {
     })
 }
 
+// ============================================================ 界面偏好
+
+#[tauri::command]
+pub fn ui_prefs_get() -> Result<Option<state::UiPrefs>, AppError> {
+    app_store()?.load_ui_prefs()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiPrefsArgs {
+    pub prefs: state::UiPrefs,
+}
+
+#[tauri::command]
+pub fn ui_prefs_set(args: UiPrefsArgs) -> Result<(), AppError> {
+    app_store()?.save_ui_prefs(&args.prefs)
+}
+
 // ============================================================ 登录
 
 /// 内建技能库的 registry id。M1 只有这一个源,M3 起支持多源时按 id 区分凭证。

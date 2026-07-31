@@ -10,9 +10,9 @@ import { Sidebar } from "@/components/Sidebar";
 import { Toolbar } from "@/components/Toolbar";
 import { Wizard } from "@/components/Wizard";
 import { useDesktopChrome } from "@/hooks/useDesktopChrome";
-import { t } from "@/i18n";
 import { call } from "@/lib/ipc";
 import { MySkillsPage } from "@/pages/MySkillsPage";
+import { SettingsPage } from "@/pages/SettingsPage";
 import { SharePage } from "@/pages/SharePage";
 import { StorePage } from "@/pages/StorePage";
 import { useInstall } from "@/store/install";
@@ -61,7 +61,7 @@ export default function App() {
             ) : page === "share" ? (
               <SharePage />
             ) : (
-              <p className="py-6 text-[12.5px] text-text-3">{t("page.comingSoon")}</p>
+              <SettingsPage />
             )}
           </div>
         </div>

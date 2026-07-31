@@ -3,8 +3,8 @@
 // 目标是"3 分钟从安装到用上第一个技能",所以每一步都不设卡点:
 // 没检测到工具能继续、不登录能继续、没有精选清单就引导去商店。
 //
-// 假设(文档未覆盖):完成标记存 localStorage(`skillsync.wizardDone`)。
-// 向导是"每台机器一次"的引导,与主题偏好同一档;设置页落 config.json 时再一并考虑。
+// 完成标记自 M2 任务 1 起落 config.json(store/prefs.ts),config 有值以 config 为准;
+// config 不可用时退回 localStorage 缓存——与 M1 行为一致,不因故障把向导再弹一遍。
 import { create } from "zustand";
 
 import { t } from "@/i18n";
@@ -17,8 +17,7 @@ import {
   type DetectedAgent,
 } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
-
-const DONE_KEY = "skillsync.wizardDone";
+import { markWizardDone, syncUiPrefs, WIZARD_DONE_KEY } from "@/store/prefs";
 
 export type WizardStep = "agents" | "signIn" | "curated";
 
@@ -62,7 +61,10 @@ export const useWizard = create<WizardState>((set, get) => ({
   error: null,
 
   maybeOpen: async () => {
-    if (localStorage.getItem(DONE_KEY)) return;
+    // config 有值以 config 为准(跨机器同步的是它);拿不到时退回本机缓存
+    const prefs = await syncUiPrefs();
+    const done = prefs ? prefs.wizardDone : localStorage.getItem(WIZARD_DONE_KEY) !== null;
+    if (done) return;
     set({ open: true, step: "agents" });
     try {
       const detected = await agentsDetected();
@@ -109,7 +111,7 @@ export const useWizard = create<WizardState>((set, get) => ({
   },
 
   finish: () => {
-    localStorage.setItem(DONE_KEY, "1");
+    markWizardDone();
     set({ open: false });
   },
 }));
