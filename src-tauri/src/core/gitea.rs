@@ -81,6 +81,13 @@ pub struct RepoInfo {
 }
 
 /// 分支当前指向的提交。商店索引靠它判断"远端有没有变",避免每次都下载压缩包。
+/// git tree 里的一个文件:仓库相对路径 + blob sha。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TreeFile {
+    pub path: String,
+    pub sha: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BranchHead {
@@ -362,6 +369,58 @@ impl GiteaClient {
         Ok(parsed.commit)
     }
 
+    /// 列出某个提交下的全部文件及其 blob sha(git trees API,一次递归拿全)。
+    ///
+    /// 更新分享时用:`contents` API 的 update 操作要求携带旧文件的 blob sha,
+    /// 逐文件 GET 一次太慢,trees 一趟就够。
+    pub async fn tree_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        commit_sha: &str,
+    ) -> Result<Vec<TreeFile>, AppError> {
+        #[derive(Deserialize)]
+        struct Tree {
+            #[serde(default)]
+            tree: Vec<TreeNode>,
+            #[serde(default)]
+            truncated: bool,
+        }
+        #[derive(Deserialize)]
+        struct TreeNode {
+            path: String,
+            sha: String,
+            #[serde(rename = "type")]
+            kind: String,
+        }
+        let resp = self
+            .send(self.request(
+                reqwest::Method::GET,
+                self.api(&format!(
+                    "/repos/{owner}/{repo}/git/trees/{commit_sha}?recursive=true&per_page=100000"
+                )),
+            ))
+            .await?;
+        let tree: Tree = parse_json(resp).await?;
+        if tree.truncated {
+            // 树被截断意味着 sha 清单不完整,拿着残缺清单去 update 会把 create/update 判错
+            return Err(AppError::new(
+                "REPO_TOO_LARGE",
+                "技能库内容过多,暂时无法完成这次操作",
+            )
+            .with_detail("git tree truncated"));
+        }
+        Ok(tree
+            .tree
+            .into_iter()
+            .filter(|n| n.kind == "blob")
+            .map(|n| TreeFile {
+                path: n.path,
+                sha: n.sha,
+            })
+            .collect())
+    }
+
     /// 复刻一份仓库到自己名下。
     ///
     /// 只读用户想贡献内容时唯一可走的路:实测只读用户在原库里连分支都建不了(403),但可以 fork。
@@ -429,6 +488,19 @@ impl GiteaClient {
         parse_json(resp).await
     }
 
+    /// 关闭一个评审。界面暂无入口,live 测试清理与将来的"撤回提交审核"共用。
+    pub async fn close_pull(&self, owner: &str, repo: &str, number: u64) -> Result<(), AppError> {
+        self.send(
+            self.request(
+                reqwest::Method::PATCH,
+                self.api(&format!("/repos/{owner}/{repo}/pulls/{number}")),
+            )
+            .json(&serde_json::json!({ "state": "closed" })),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn http_send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response, AppError> {
         req.send().await.map_err(|e| {
             if e.is_timeout() || e.is_connect() {
@@ -476,11 +548,17 @@ async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, AppE
         401 => AppError::new("AUTH_INVALID", "登录已失效,请重新登录"),
         403 => AppError::new("REPO_FORBIDDEN", "你没有该技能库的操作权限"),
         404 => AppError::new("REPO_NOT_FOUND", "找不到对应的技能库或文件"),
-        // Gitea 在文件 sha 不匹配时返回 422,意味着预检之后有人改动了同一个文件
-        422 if parsed.message.contains("sha does not match") => AppError::new(
-            "CONFLICT_STALE",
-            "这个技能在你操作期间被其他人改过了,请重新确认后再提交",
-        ),
+        // Gitea 在文件 sha 不匹配时返回 422,意味着预检之后有人改动了同一个文件;
+        // "已存在"同理——预检说不存在、提交时却在了,也是预检之后被人抢了先。
+        // 两者都该回到预检重新确认,不该当成"技能库拒绝"让用户干瞪眼。
+        422 if parsed.message.contains("sha does not match")
+            || parsed.message.contains("already exists") =>
+        {
+            AppError::new(
+                "CONFLICT_STALE",
+                "这个技能在你操作期间被其他人改过了,请重新确认后再提交",
+            )
+        }
         422 => AppError::new("REPO_REJECTED", "技能库拒绝了这次改动"),
         s if s >= 500 => AppError::new("NET_SERVER", "技能库服务暂时不可用,请稍后重试"),
         _ => AppError::new("NET_REQUEST", "请求未能完成,请稍后重试"),

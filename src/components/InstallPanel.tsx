@@ -132,7 +132,7 @@ function Running() {
 }
 
 function DoneFooter() {
-  const { report, localKept, agents: detected } = useInstall();
+  const { report, localKept, shareResult, agents: detected } = useInstall();
   const failed = failedLinks(report);
   const agents = linkedAgents(report, detected);
 
@@ -144,8 +144,24 @@ function DoneFooter() {
           ? t("install.done", { agents: agents.join(t("punct.listSeparator")) })
           : t("install.doneCanonicalOnly")}
       </div>
-      {localKept && (
-        <p className="mt-1.5 text-[11.5px] text-text-3">{t("install.keptLocal")}</p>
+      {/* 「保留并分享」的结果盖过普通的"已保留":它把下一步也交代了 */}
+      {shareResult ? (
+        <p
+          className={[
+            "mt-1.5 text-[11.5px]",
+            "error" in shareResult ? "text-[#c0392b] dark:text-[#e0705f]" : "text-text-3",
+          ].join(" ")}
+        >
+          {"error" in shareResult
+            ? `${t("install.shareAfterKeepFailed")}${t("punct.labelSeparator")}${shareResult.error.message}`
+            : shareResult.mode === "pushed"
+              ? t("install.sharedAfterKeep")
+              : t("install.sharedAfterKeepReview")}
+        </p>
+      ) : (
+        localKept && (
+          <p className="mt-1.5 text-[11.5px] text-text-3">{t("install.keptLocal")}</p>
+        )
       )}
       {failed > 0 && (
         <div className="mt-2 rounded-card border border-border bg-surface-2 px-3 py-2">

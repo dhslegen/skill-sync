@@ -16,8 +16,21 @@ import { useUi } from "@/store/ui";
  * 摆一个点了没反应的按钮和空状态撒谎是同一类问题。汇总条只报数量。
  */
 export function MySkillsPage() {
-  const { list, loading, loadError, load, agentNames, askRemove, repair, repairBusy, repairError } =
-    useMySkills();
+  const {
+    list,
+    loading,
+    loadError,
+    load,
+    agentNames,
+    askRemove,
+    repair,
+    repairBusy,
+    repairError,
+    shareChanges,
+    shareBusy,
+    shareDone,
+    shareError,
+  } = useMySkills();
   const index = useStoreIndex((s) => s.index);
   const installPhase = useInstall((s) => s.phase);
   const activeSlug = useInstall((s) => s.dirSlug);
@@ -88,6 +101,20 @@ export function MySkillsPage() {
           {repairError.message}
         </p>
       )}
+      {shareError && (
+        <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+          {t("mine.shareChangesFailed")}
+          {t("punct.labelSeparator")}
+          {shareError.message}
+        </p>
+      )}
+      {shareDone && (
+        <p className="pb-2 text-[12px] text-text-2">
+          {shareDone.mode === "pushed"
+            ? t("mine.shareChangesDone")
+            : t("mine.shareChangesReview")}
+        </p>
+      )}
       <div className="overflow-hidden rounded-card border border-border bg-surface-1">
         {list.map((skill) => (
           <Row
@@ -98,8 +125,10 @@ export function MySkillsPage() {
             updateAvailable={hasUpdate(skill, index?.commitSha)}
             updating={activeSlug === skill.dirSlug && installPhase === "running"}
             repairing={repairBusy === skill.dirSlug}
+            sharing={shareBusy === skill.dirSlug}
             onUpdate={() => void useInstall.getState().beginUpdate(skill.dirSlug, skill.agents)}
             onRepair={() => void repair(skill.dirSlug)}
+            onShareChanges={() => void shareChanges(skill.dirSlug)}
             onRemove={() => askRemove(skill.dirSlug)}
           />
         ))}
@@ -122,8 +151,10 @@ function Row({
   updateAvailable,
   updating,
   repairing,
+  sharing,
   onUpdate,
   onRepair,
+  onShareChanges,
   onRemove,
 }: {
   skill: InstalledSkillView;
@@ -132,8 +163,10 @@ function Row({
   updateAvailable: boolean;
   updating: boolean;
   repairing: boolean;
+  sharing: boolean;
   onUpdate: () => void;
   onRepair: () => void;
+  onShareChanges: () => void;
   onRemove: () => void;
 }) {
   const issues = skill.links.filter((l) => l.health !== "healthy");
@@ -181,6 +214,17 @@ function Row({
       </div>
 
       <div className="flex flex-none items-center gap-1.5">
+        {skill.localModified && skill.bodyPresent && (
+          // 冲突弹窗承诺过的那条路:改动可以推回公司技能库
+          <button
+            type="button"
+            disabled={sharing}
+            onClick={onShareChanges}
+            className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50"
+          >
+            {sharing ? t("mine.sharingChanges") : t("mine.shareChanges")}
+          </button>
+        )}
         {issues.length > 0 && skill.bodyPresent && (
           // 本体不在时链接修不了(link_only 会拒绝),这时该走的是「更新」重新获取
           <button

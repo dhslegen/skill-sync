@@ -15,8 +15,10 @@ import {
   isAppError,
   skillRemove,
   skillRepair,
+  skillShareChanges,
   type AppError,
   type InstalledSkillView,
+  type ShareMode,
 } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 
@@ -39,6 +41,11 @@ interface MySkillsState {
   repairBusy: string | null;
   repairError: AppError | null;
 
+  /** 「分享改动」:正在推的技能 / 刚推完的结果 / 错误。 */
+  shareBusy: string | null;
+  shareDone: { dirSlug: string; mode: ShareMode } | null;
+  shareError: AppError | null;
+
   load: () => Promise<void>;
   askRemove: (dirSlug: string) => void;
   cancelRemove: () => void;
@@ -52,6 +59,9 @@ interface MySkillsState {
   repair: (dirSlug: string) => Promise<void>;
   cancelRepair: () => void;
   confirmRepair: () => Promise<void>;
+
+  /** 把改过的已装技能推回来源仓库(冲突弹窗承诺的"分享改动"通道)。 */
+  shareChanges: (dirSlug: string) => Promise<void>;
 }
 
 function toAppError(raw: unknown): AppError {
@@ -71,6 +81,9 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   repairConfirmTarget: null,
   repairBusy: null,
   repairError: null,
+  shareBusy: null,
+  shareDone: null,
+  shareError: null,
 
   load: async () => {
     set({ loading: true, loadError: null });
@@ -132,6 +145,21 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     if (!target) return;
     set({ repairConfirmTarget: null });
     await runRepair(target, true, set, get);
+  },
+
+  shareChanges: async (dirSlug) => {
+    set({ shareBusy: dirSlug, shareDone: null, shareError: null });
+    try {
+      const submitted = await skillShareChanges({ dirSlug });
+      set({ shareDone: { dirSlug, mode: submitted.mode } });
+      // 直推成功后 core 已更新记账,「已改动」徽标随刷新消失;
+      // 走了评审则记账没动,徽标留着——改动确实还没进库
+      await get().load();
+    } catch (raw) {
+      set({ shareError: toAppError(raw) });
+    } finally {
+      set({ shareBusy: null });
+    }
   },
 }));
 

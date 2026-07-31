@@ -18,12 +18,14 @@ import {
   isAppError,
   listenProgress,
   skillInstall,
+  skillShareChanges,
   type AppError,
   type DetectedAgent,
   type InstallReport,
   type InstallStage,
   type Precheck,
   type Resolution,
+  type ShareMode,
 } from "@/lib/ipc";
 
 export type InstallPhase = "idle" | "choosing" | "running" | "conflict" | "done" | "error";
@@ -39,6 +41,8 @@ interface InstallState {
   report: InstallReport | null;
   /** 本次保留了用户的本地改动。 */
   localKept: boolean;
+  /** 「保留并分享」的分享结果。null = 没走这条路。 */
+  shareResult: { mode: ShareMode } | { error: AppError } | null;
   precheck: Precheck | null;
   error: AppError | null;
   /** 已安装技能:商店卡片的状态机数据源。 */
@@ -52,6 +56,8 @@ interface InstallState {
   toggleAgent: (name: string) => void;
   /** 确认安装。`resolution` 只在从冲突弹窗回来时带。 */
   run: (resolution?: Resolution) => Promise<void>;
+  /** 冲突弹窗的默认选项(用户拍板):保留本地改动,随后把改动分享回公司技能库。 */
+  keepLocalAndShare: () => Promise<void>;
   cancel: () => void;
 }
 
@@ -72,6 +78,7 @@ export const useInstall = create<InstallState>((set, get) => ({
   stage: null,
   report: null,
   localKept: false,
+  shareResult: null,
   precheck: null,
   error: null,
   installed: new Map(),
@@ -98,6 +105,7 @@ export const useInstall = create<InstallState>((set, get) => ({
       error: null,
       precheck: null,
       localKept: false,
+      shareResult: null,
     });
     try {
       const detected = await agentsDetected();
@@ -122,6 +130,7 @@ export const useInstall = create<InstallState>((set, get) => ({
       error: null,
       precheck: null,
       localKept: false,
+      shareResult: null,
     });
     await get().run();
   },
@@ -173,6 +182,23 @@ export const useInstall = create<InstallState>((set, get) => ({
     }
   },
 
+  keepLocalAndShare: async () => {
+    await get().run("keepLocal");
+    // 保留那一步没走完(又冲突/出错)就不分享:分享的前提是本地已经站稳
+    if (get().phase !== "done") return;
+    const dirSlug = get().dirSlug;
+    if (!dirSlug) return;
+    try {
+      const submitted = await skillShareChanges({ dirSlug });
+      set({ shareResult: { mode: submitted.mode } });
+      // 直推成功后 core 已把 contentHash 记平,卡片的「已改动」状态要跟上
+      await get().refreshInstalled();
+    } catch (raw) {
+      // 保留已经成功,分享失败只是"下一步没走成"——不能把整个结果画成失败
+      set({ shareResult: { error: toAppError(raw) } });
+    }
+  },
+
   cancel: () =>
     set({
       phase: "idle",
@@ -182,6 +208,7 @@ export const useInstall = create<InstallState>((set, get) => ({
       precheck: null,
       error: null,
       localKept: false,
+      shareResult: null,
     }),
 }));
 

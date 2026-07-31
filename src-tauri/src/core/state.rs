@@ -177,6 +177,12 @@ pub struct SharedSkill {
     pub origin: String,
     pub target: SkillSource,
     pub last_pushed_sha: String,
+    /// 上次分享时本地目录的内容 hash。与当前实际值不符 = 有未分享的改动。
+    ///
+    /// 旧版 state 没有这个字段(serde default 补空串):空串永远不等于实际 hash,
+    /// 效果是"显示可再推"——宁可多推一次,也不把用户的改动藏起来。
+    #[serde(default)]
+    pub content_hash: String,
 }
 
 // ============================================================ 读写

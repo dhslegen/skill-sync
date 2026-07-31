@@ -18,7 +18,10 @@ pub fn run() {
             commands::skill_install,
             commands::installed_list,
             commands::skill_remove,
-            commands::skill_repair
+            commands::skill_repair,
+            commands::share_candidates,
+            commands::skill_share,
+            commands::skill_share_changes
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

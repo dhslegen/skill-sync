@@ -45,12 +45,14 @@ src/
   styles/global.css  # ✅ 设计 token、dark: 变体绑定 data-theme、.md/.skill-tint 等少量非 utility 样式
   lib/               # ✅ ipc(唯一 invoke 通道 + core 返回类型)、format、search、tint、cn
   store/             # ✅ Zustand:appearance(主题/强调色)、store-index(商店)、install(获取流程)、
-                     #    session(登录)、ui(页/面板/IME)、my-skills(我的技能列表/移除/修复)
+                     #    session(登录)、ui(页/面板/IME)、my-skills(我的技能列表/移除/修复/分享改动)、
+                     #    share(分享候选/表单/占用三选)
   components/        # ✅ Sidebar/Toolbar/SearchBox/SkillCard/InstallButton/DetailPanel/
-                     #    CommandPalette/Markdown/Icon/InstallPanel/ConflictDialog/
-                     #    RemoveDialog(移除双确认)/RepairDialog(占位替换确认)
+                     #    CommandPalette/Markdown/Icon/InstallPanel/ConflictDialog(三选:保留并分享为默认)/
+                     #    RemoveDialog(移除双确认)/RepairDialog(占位替换确认)/ShareTakenDialog(占用三选)
   pages/StorePage.tsx    # ✅ 商店页
-  pages/MySkillsPage.tsx # ✅ 我的技能页(行式列表 + 徽标 + 更新/修复/移除)
+  pages/MySkillsPage.tsx # ✅ 我的技能页(行式列表 + 徽标 + 更新/修复/移除/分享改动)
+  pages/SharePage.tsx    # ✅ 分享页(候选列表 + 来源标签 + 行内表单)
   hooks/             # ✅ useDesktopChrome(快捷键 + 右键拦截)
 src-tauri/src/
   core/builtin.rs    # ✅ 编译期注入的常量(地址/ClientID/仓库坐标)
@@ -66,6 +68,8 @@ src-tauri/src/
   core/store.rs      # ✅ 商店索引:压缩包→技能发现→可离线复用的缓存 + 前端 DTO
   core/acquire.rs    # ✅ 获取编排:下载→预检(contentHash 守卫)→落盘→建链→记账+双写;repair_links
   core/remove.rs     # ✅ 移除编排:改过预检(NeedsDecision)→解链→删本体→清账+lock 移除
+  core/share.rs      # ✅ 分享编排:排除法扫描→预检三分支→收编→按权限矩阵提交→shared 记账;
+                     #    share_installed(把已装技能的改动推回来源)
   core/registry.rs   # ⬜ 仓库源管理(内建 Gitea + 自定义)
   core/github.rs     # ⬜ GitHub client(M3 前留空壳)
   commands.rs        # Tauri IPC command 定义(薄壳,逻辑在 core)
@@ -206,7 +210,7 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 ## 当前进度(2026-07-30)
 
 M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
-本机测试 **Rust 250 通过 + 前端 161 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
+本机测试 **Rust 274 通过 + 前端 196 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
 (Windows 上少跑的 8 个是 `cfg(unix)` 用例,已逐一核对)。
 
 | 任务 | 状态 | 关键产物 |
@@ -221,15 +225,24 @@ M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill
 | 8 商店页 | ✅ | core/store.rs 索引缓存(离线可浏览)+ 外壳/商店页/详情面板/命令面板;9+12 处注入验证 |
 | 9 获取流程 | ✅ | core/acquire.rs 编排 + contentHash 守卫接上;agent 多选/进度/结果/冲突弹窗;16+10 处注入验证 |
 | 10 我的技能 | ✅ | core/remove.rs + repair_links + link_health;行式列表/徽标/更新/修复/移除双确认;8+15 处注入验证 |
-| 11–13 | ⬜ | **下一个任务:11 分享** / 向导 / 打包 |
+| 11 分享 | ✅ | core/share.rs 全链路 + live e2e(三分支/竞态/只读 fork 对真 Gitea);冲突弹窗三选(保留并分享为默认);8+9 处注入验证 |
+| 12–13 | ⬜ | **下一个任务:12 首次启动向导** / 打包 |
 
 ### 已知待处理
 - **`Installer::install` 依然会无条件清空重建 canonical**——守卫在 `core/acquire.rs`,不在它自己身上。
   任何**新的**调用方(自动更新 scheduler、向导批量安装)都必须走 `acquire::acquire`,
   或自行先跑 `acquire::precheck` 拿到用户结论。直接调 `install()` 就是在静默抹用户改动。
-- **「把本地改动分享上去」当下只做到「保留本地改动」**:分享流程属任务 11,现在没有可推的通道。
-  `Resolution` 因此只有 `KeepLocal` / `Overwrite` 两档,弹窗文案也只承诺"保留、之后可分享"。
-  任务 11 落地后要回来把这条路接上(判据现成:`contentHash` 不符 = 有未分享的改动)。
+- **「把本地改动分享上去」已接通**(任务 11):冲突弹窗三选,「保留并分享」为默认
+  (用户拍板)。core 的 `Resolution` 仍只有两档——"分享"是前端编排:先 `run("keepLocal")`
+  落稳,成功后再调 `skill_share_changes`;分享失败不影响"保留成功"的结果呈现。
+  回推走了评审(分支保护/只读)时 **installed 记账一个字不动**:改动没进 main,
+  清了 contentHash 等于把「已改动」标记藏起来。
+- **分享页的「新建技能」向导没做**(Demo 里有):交接包任务 11 范围不含它,
+  不摆点了没反应的按钮;等价 `skills init` 的脚手架随任务 12 向导一起考虑。
+- **评审链接只展示不可点**:webview 里 `<a>` 出不去,打开系统浏览器需要 opener command,
+  属后续小任务(auth 的 SystemBrowser 已有现成通道可复用)。
+- **frontmatter 补齐会重建头部**:只在 SKILL.md 不合规时发生,重写后只保证
+  name/description 与正文;坏头部里残存的其他字段(license 等)不保证保留(见 share.rs 模块头)。
 - **agent 目录占位:事后可修,安装当下仍只报不处理**。任务 10 给了「我的技能」页的
   修复通道(`acquire::repair_links` + 替换确认弹窗):断链/丢失/被改指直接重建,
   实体目录占位需确认后替换。但**安装那一刻**的占位失败仍是 `OnOccupied::Fail` 只报不重试,

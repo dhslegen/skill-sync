@@ -15,7 +15,7 @@ import { useStoreIndex } from "@/store/store-index";
  * 摆一个点了什么都不发生的按钮,和空状态撒谎是同一类问题。
  */
 export function ConflictDialog() {
-  const { phase, precheck, dirSlug, run, cancel } = useInstall();
+  const { phase, precheck, dirSlug, run, keepLocalAndShare, cancel } = useInstall();
   // 弹窗里要出现的是用户认得的名字(周报生成),不是内部目录名(weekly-report)。
   // core 里流转的一直是目录名,到界面这一层必须换回展示名。
   const displayName = useStoreIndex(
@@ -67,9 +67,15 @@ export function ConflictDialog() {
         <div className="mt-4 flex flex-col gap-2">
           {modified ? (
             <>
+              {/* 默认项(用户拍板):保留本地并把改动分享上去——任务 11 起通道真实存在 */}
               <Choice
                 ref={keepRef}
                 primary
+                label={t("conflict.keepShare")}
+                hint={t("conflict.keepShareHint")}
+                onClick={() => void keepLocalAndShare()}
+              />
+              <Choice
                 label={t("conflict.keepLocal")}
                 hint={t("conflict.keepLocalHint")}
                 onClick={() => void run("keepLocal")}

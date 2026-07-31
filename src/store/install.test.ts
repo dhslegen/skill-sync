@@ -35,6 +35,7 @@ function reset() {
     stage: null,
     report: null,
     localKept: false,
+    shareResult: null,
     precheck: null,
     error: null,
     installed: new Map(),
@@ -115,6 +116,67 @@ describe("获取流程状态机", () => {
     expect(second?.[1].args.resolution).toBe("keepLocal");
     expect(useInstall.getState().phase).toBe("done");
     expect(useInstall.getState().localKept).toBe(true);
+  });
+
+  it("保留并分享:先 keepLocal 落稳,再把改动推回去", async () => {
+    let installCalls = 0;
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "installed_list") return [];
+      if (cmd === "skill_share_changes")
+        return { mode: "pushed", commitSha: "new", reviewUrl: null };
+      installCalls += 1;
+      return installCalls === 1
+        ? { outcome: "needsDecision", precheck: { status: "locallyModified", installedSha: "aaa" } }
+        : { outcome: "installed", report: report(), localKept: true, lock: "written" };
+    });
+
+    await useInstall.getState().begin("weekly-report");
+    await useInstall.getState().run();
+    await useInstall.getState().keepLocalAndShare();
+
+    // keepLocal 的重试带了 resolution
+    const second = invoke.mock.calls.filter(([cmd]) => cmd === "skill_install")[1];
+    expect(second?.[1].args.resolution).toBe("keepLocal");
+    // 分享确实发生,且发生在保留之后
+    const shared = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
+    expect(shared?.[1].args.dirSlug).toBe("weekly-report");
+    expect(useInstall.getState().shareResult).toEqual({ mode: "pushed" });
+    expect(useInstall.getState().phase).toBe("done");
+  });
+
+  it("保留那一步没成,绝不接着分享", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "skill_share_changes") return { mode: "pushed", commitSha: "n", reviewUrl: null };
+      throw { code: "NET_UNREACHABLE", message: "连不上公司技能库,请确认已接入公司内网或 VPN" };
+    });
+
+    await useInstall.getState().begin("weekly-report");
+    await useInstall.getState().keepLocalAndShare();
+
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_share_changes")).toBe(false);
+    expect(useInstall.getState().shareResult).toBeNull();
+  });
+
+  it("保留成功、分享失败:结果不能画成整体失败", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "installed_list") return [];
+      if (cmd === "skill_share_changes")
+        throw { code: "AUTH_REQUIRED", message: "分享前请先登录公司技能库" };
+      return { outcome: "installed", report: report(), localKept: true, lock: "written" };
+    });
+
+    await useInstall.getState().begin("weekly-report");
+    await useInstall.getState().keepLocalAndShare();
+
+    const s = useInstall.getState();
+    expect(s.phase).toBe("done");
+    expect(s.localKept).toBe(true);
+    expect(s.shareResult && "error" in s.shareResult && s.shareResult.error.message).toContain(
+      "登录",
+    );
   });
 
   it("装完刷新已安装列表,卡片状态才跟得上", async () => {

@@ -155,12 +155,42 @@ async fn stale_sha_maps_to_conflict_so_ui_can_recheck() {
 }
 
 #[tokio::test]
-async fn other_unprocessable_errors_are_not_mistaken_for_conflict() {
+async fn already_exists_is_also_a_stale_precheck() {
+    // 任务 11 起语义变更:发 create 却撞上 "already exists",只可能是
+    // 预检(说不存在)与提交之间有人抢了先——与 sha 不匹配同属竞态,
+    // 都该回到预检重新确认。原先它落在 REPO_REJECTED,用户只能干瞪眼。
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/v1/repos/ai-skills/team-skills/contents"))
         .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
             "message": "repository file already exists [path: skills/a/SKILL.md]",
+            "url": "http://127.0.0.1:3300/api/swagger"
+        })))
+        .mount(&server)
+        .await;
+
+    let req = ChangeFilesRequest {
+        branch: "main".into(),
+        new_branch: None,
+        message: "分享".into(),
+        files: vec![FileChange::create("skills/a/SKILL.md", b"x")],
+    };
+    let err = client(&server)
+        .change_files("ai-skills", "team-skills", &req)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "CONFLICT_STALE");
+}
+
+#[tokio::test]
+async fn other_unprocessable_errors_are_not_mistaken_for_conflict() {
+    // 竞态映射只认 "sha does not match" 与 "already exists" 两种消息;
+    // 其余 422(如内容校验不过)不能伪装成"回去重试就好"。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/repos/ai-skills/team-skills/contents"))
+        .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+            "message": "branch does not exist [name: nope]",
             "url": "http://127.0.0.1:3300/api/swagger"
         })))
         .mount(&server)

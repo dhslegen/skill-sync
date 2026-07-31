@@ -227,3 +227,53 @@ export const skillRemove = (args: { dirSlug: string; force?: boolean }) =>
 
 export const skillRepair = (args: { dirSlug: string; replaceOccupied?: boolean }) =>
   call<InstallReport>("skill_repair", { args });
+
+export type CandidateOrigin = { kind: "local" } | { kind: "npxSkills"; source: string };
+
+export interface ShareCandidate {
+  dirName: string;
+  path: string;
+  inCanonical: boolean;
+  origin: CandidateOrigin;
+  name: string | null;
+  description: string | null;
+  /** SKILL.md 不合规的原因(人话);有值 = 分享前要走补齐表单。 */
+  problem: string | null;
+  shared: { upToDate: boolean; shareName: string } | null;
+  dirNameUsable: boolean;
+}
+
+export type SharePrecheck = { status: "fresh" } | { status: "mine" } | { status: "taken" };
+
+export type ShareMode = "pushed" | "reviewRequested";
+
+export type ShareOutcome =
+  | { outcome: "needsDecision"; precheck: SharePrecheck }
+  | {
+      outcome: "shared";
+      mode: ShareMode;
+      commitSha: string;
+      reviewUrl: string | null;
+      adopted: boolean;
+      shareName: string;
+    };
+
+export interface Submitted {
+  mode: ShareMode;
+  commitSha: string;
+  reviewUrl: string | null;
+}
+
+export const shareCandidates = () => call<ShareCandidate[]>("share_candidates");
+
+export const skillShare = (args: {
+  sourcePath: string;
+  shareName: string;
+  displayName?: string;
+  description?: string;
+  origin: string;
+  overwrite?: boolean;
+}) => call<ShareOutcome>("skill_share", { args });
+
+export const skillShareChanges = (args: { dirSlug: string }) =>
+  call<Submitted>("skill_share_changes", { args });

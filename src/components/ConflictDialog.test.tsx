@@ -27,43 +27,53 @@ describe("冲突对话框", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
-  it("用户改过本体:两个选项都在,且说清各自后果", () => {
+  it("用户改过本体:三个选项都在,且说清各自后果", () => {
     conflict({ status: "locallyModified", installedSha: "aaa1111" });
     render(<ConflictDialog />);
 
     expect(screen.getByRole("alertdialog")).toBeInTheDocument();
     expect(screen.getByText("你修改过这个技能")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /保留我的改动/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /保留并分享我的改动/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /只保留,暂不分享/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /用团队库的版本覆盖/ })).toBeInTheDocument();
     // 破坏性那一项必须写明"找不回来"
     expect(screen.getByText(/无法找回/)).toBeInTheDocument();
   });
 
-  it("默认焦点落在「保留我的改动」上 —— 回车不会误覆盖", () => {
+  it("默认焦点落在「保留并分享」上 —— 用户拍板的默认项,且回车不会误覆盖", () => {
     conflict({ status: "locallyModified", installedSha: "aaa1111" });
     render(<ConflictDialog />);
-    expect(screen.getByRole("button", { name: /保留我的改动/ })).toHaveFocus();
+    expect(screen.getByRole("button", { name: /保留并分享我的改动/ })).toHaveFocus();
   });
 
-  it("文案只承诺当下真会发生的事,不写「分享上去」", () => {
-    // 分享流程属后续任务。摆一个点了什么都不发生的按钮,和空状态撒谎是同一类问题。
+  it("「只保留」选项指路到之后可以分享的入口", () => {
+    // 任务 11 之前这里写的是"分享功能开放后"——通道落地了,文案也要跟着指路,
+    // 不能让用户保留了改动却不知道下一步去哪。
     conflict({ status: "locallyModified", installedSha: "aaa1111" });
     render(<ConflictDialog />);
-    const keep = screen.getByRole("button", { name: /保留我的改动/ });
-    expect(keep.textContent).toContain("保留");
-    expect(keep.textContent).not.toMatch(/^分享/);
-    // 但要告诉用户改动之后能分享,别让他以为白留了
-    expect(screen.getByText(/分享功能开放后/)).toBeInTheDocument();
+    expect(screen.getByText(/「我的技能」/)).toBeInTheDocument();
   });
 
-  it("选保留 → 带 keepLocal 重试", async () => {
+  it("选「只保留」→ 带 keepLocal 重试,不发分享", async () => {
     const run = vi.fn();
+    const keepLocalAndShare = vi.fn();
     conflict({ status: "locallyModified", installedSha: "aaa1111" });
-    useInstall.setState({ run });
+    useInstall.setState({ run, keepLocalAndShare });
     render(<ConflictDialog />);
 
-    await userEvent.click(screen.getByRole("button", { name: /保留我的改动/ }));
+    await userEvent.click(screen.getByRole("button", { name: /只保留,暂不分享/ }));
     expect(run).toHaveBeenCalledWith("keepLocal");
+    expect(keepLocalAndShare).not.toHaveBeenCalled();
+  });
+
+  it("选「保留并分享」→ 走 keepLocalAndShare", async () => {
+    const keepLocalAndShare = vi.fn();
+    conflict({ status: "locallyModified", installedSha: "aaa1111" });
+    useInstall.setState({ keepLocalAndShare });
+    render(<ConflictDialog />);
+
+    await userEvent.click(screen.getByRole("button", { name: /保留并分享我的改动/ }));
+    expect(keepLocalAndShare).toHaveBeenCalled();
   });
 
   it("选覆盖 → 带 overwrite 重试", async () => {

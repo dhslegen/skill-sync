@@ -11,6 +11,7 @@ use crate::core::builtin;
 use crate::core::gitea::{GiteaClient, RepoRef};
 use crate::core::installer::{self, InstallReport, Installer};
 use crate::core::remove;
+use crate::core::share;
 use crate::core::session::{self, BrowserOpener, SessionStatus, SessionUser};
 use crate::core::state;
 use crate::core::store::{self, SkillDetail, StoreIndexView};
@@ -209,6 +210,16 @@ fn anonymous_client(base_url: String) -> Result<GiteaClient, AppError> {
     Ok(GiteaClient::with_http(base_url, None, http_client()?))
 }
 
+/// 分享是写操作,必须带登录凭证。没登录给一个前端能识别的错误码,引导去登录。
+async fn authed_client(registry_id: &str) -> Result<GiteaClient, AppError> {
+    let http = http_client()?;
+    let cfg = oauth_config()?;
+    let token = auth::ensure_access_token(&http, &cfg, &KeyringStore, registry_id)
+        .await?
+        .ok_or_else(|| AppError::new("AUTH_REQUIRED", "分享前请先登录公司技能库"))?;
+    Ok(GiteaClient::with_http(cfg.base_url.clone(), Some(token), http))
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoreIndexArgs {
@@ -388,6 +399,96 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
     .map_err(|e| {
         AppError::new("FS_TASK", "读取已安装列表失败,请重试").with_detail(e.to_string())
     })?
+}
+
+// ============================================================ 分享
+
+#[tauri::command]
+pub async fn share_candidates() -> Result<Vec<share::ShareCandidate>, AppError> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let store = app_store()?;
+        let registry = AgentRegistry::builtin();
+        let state = store.load_state()?.value;
+        share::scan_candidates(&registry, &SystemEnv, &state)
+    })
+    .await
+    .map_err(|e| AppError::new("FS_TASK", "扫描本地技能失败,请重试").with_detail(e.to_string()))?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillShareArgs {
+    #[serde(default)]
+    pub registry_id: Option<String>,
+    /// 候选的本地绝对路径(share_candidates 返回的 `path`,原样带回)。
+    pub source_path: String,
+    /// 远端目录名(ASCII kebab,表单定)。
+    pub share_name: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// `local` | `npx-skills`。
+    pub origin: String,
+    /// 同名冲突时用户确认覆盖。
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[tauri::command]
+pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    let (_, repo) = builtin_store_target()?;
+    let client = authed_client(registry_id).await?;
+    let store = app_store()?;
+    let registry = AgentRegistry::builtin();
+
+    share::share(
+        &client,
+        &registry,
+        &SystemEnv,
+        &store,
+        share::ShareRequest {
+            registry_id,
+            repo: &repo,
+            source_path: std::path::Path::new(&args.source_path),
+            share_name: &args.share_name,
+            display_name: args.display_name.as_deref(),
+            description: args.description.as_deref(),
+            origin: &args.origin,
+            overwrite: args.overwrite,
+        },
+        &now_iso8601(),
+    )
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareChangesArgs {
+    #[serde(default)]
+    pub registry_id: Option<String>,
+    pub dir_slug: String,
+}
+
+/// 把本 app 安装、用户改过的技能推回来源仓库(冲突弹窗承诺的那条路)。
+#[tauri::command]
+pub async fn skill_share_changes(args: ShareChangesArgs) -> Result<share::Submitted, AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    let client = authed_client(registry_id).await?;
+    let store = app_store()?;
+    let registry = AgentRegistry::builtin();
+    let (_, repo) = builtin_store_target()?;
+    share::share_installed(
+        &client,
+        &registry,
+        &SystemEnv,
+        &store,
+        &args.dir_slug,
+        &repo.branch,
+        &now_iso8601(),
+    )
+    .await
 }
 
 #[derive(Debug, Deserialize)]

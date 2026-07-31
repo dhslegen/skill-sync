@@ -84,6 +84,9 @@ function reset() {
     repairConfirmTarget: null,
     repairBusy: null,
     repairError: null,
+    shareBusy: null,
+    shareDone: null,
+    shareError: null,
   });
   useInstall.setState({ phase: "idle", dirSlug: null });
   useStoreIndex.setState({ index: null });
@@ -222,6 +225,46 @@ describe("我的技能页", () => {
     render(<MySkillsPage />);
     await screen.findByText("weekly-report");
     expect(screen.queryByRole("button", { name: "修复" })).not.toBeInTheDocument();
+  });
+
+  it("改过的技能给「分享改动」按钮;点击把改动推回来源", async () => {
+    seedIpc([view({ localModified: true })]);
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return [view({ localModified: true })];
+      if (cmd === "skill_share_changes")
+        return { mode: "pushed", commitSha: "new", reviewUrl: null };
+      return { agents: [], canonicalDir: "" };
+    });
+    render(<MySkillsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "分享改动" }));
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
+    expect(call?.[1].args.dirSlug).toBe("weekly-report");
+    expect(await screen.findByText(/改动已分享/)).toBeInTheDocument();
+  });
+
+  it("没改过的技能没有「分享改动」按钮", async () => {
+    seedIpc([view()]);
+    render(<MySkillsPage />);
+    await screen.findByText("weekly-report");
+    expect(screen.queryByRole("button", { name: "分享改动" })).not.toBeInTheDocument();
+  });
+
+  it("改动走了评审:提示审核中,「已改动」徽标不消失", async () => {
+    seedIpc([view({ localModified: true })]);
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return [view({ localModified: true })];
+      if (cmd === "skill_share_changes")
+        return { mode: "reviewRequested", commitSha: "new", reviewUrl: "http://x/pulls/3" };
+      return { agents: [], canonicalDir: "" };
+    });
+    render(<MySkillsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "分享改动" }));
+
+    expect(await screen.findByText(/已提交审核/)).toBeInTheDocument();
+    expect(screen.getByText("已改动")).toBeInTheDocument();
   });
 
   it("点移除进入确认流程,磁盘未被碰过", async () => {

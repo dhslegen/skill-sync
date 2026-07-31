@@ -489,6 +489,28 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Re
 const EXCLUDE_FILES: &[&str] = &["metadata.json"];
 const EXCLUDE_DIRS: &[&str] = &[".git", "__pycache__", "__pypackages__"];
 
+/// 列出目录下全部文件的相对路径(排序后),排除清单与 [`dir_content_hash`] / [`copy_dir`] 同一套。
+///
+/// 分享读取 payload 用它:上传的文件集合必须与 hash 的口径一致,否则
+/// "分享成功后 contentHash 记账"与"实际推上去的内容"会指两个东西。
+pub fn list_files(dir: &Path) -> Result<Vec<PathBuf>, AppError> {
+    let mut files = Vec::new();
+    collect_files(dir, dir, &mut files).map_err(|e| {
+        AppError::new("FS_READ_FAILED", "无法读取技能目录内容,请重试")
+            .with_detail(format!("list {}: {e}", dir.display()))
+    })?;
+    files.sort();
+    Ok(files)
+}
+
+/// 把目录复制到新位置(公开入口,分享收编用)。语义见 [`copy_dir`]。
+pub fn copy_tree(src: &Path, dst: &Path) -> Result<(), AppError> {
+    copy_dir(src, dst).map_err(|e| {
+        AppError::new("FS_COPY_FAILED", "复制技能内容失败,请重试")
+            .with_detail(format!("copy {} -> {}: {e}", src.display(), dst.display()))
+    })
+}
+
 /// 递归复制目录。
 ///
 /// 与上游 `copyDirectory` 对齐的三处语义:
