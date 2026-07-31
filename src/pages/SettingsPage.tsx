@@ -5,7 +5,7 @@ import { LogIn } from "lucide-react";
 import { Icon } from "@/components/Icon";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
-import type { Accent, ThemeMode } from "@/lib/ipc";
+import type { Accent, CheckReport, ThemeMode } from "@/lib/ipc";
 import { skillGlyph } from "@/lib/tint";
 import { ACCENT_LABEL_KEY, ACCENT_SWATCH, useAppearance } from "@/store/appearance";
 import { useSession } from "@/store/session";
@@ -240,7 +240,49 @@ function UpdatesSection() {
           />
         </div>
       </Row>
+      <CheckNowRow />
     </Section>
+  );
+}
+
+/** 报告 → 一句人话。目录名是内部标识,这里只报数量,明细去「我的技能」看。 */
+function reportSummary(report: CheckReport): string {
+  switch (report.status) {
+    case "nothingInstalled":
+      return t("settings.checkReportNothing");
+    case "upToDate":
+      return t("settings.checkReportUpToDate");
+    case "checked":
+      return t("settings.checkReportSummary", {
+        updated: report.updated.length,
+        skipped: report.skipped.length,
+        failed: report.failed.length,
+      });
+  }
+}
+
+function CheckNowRow() {
+  const checkNow = useSettings((s) => s.checkNow);
+  const checking = useSettings((s) => s.checking);
+  const lastReport = useSettings((s) => s.lastReport);
+
+  return (
+    <Row>
+      <RowText
+        label={t("settings.checkNow")}
+        desc={lastReport ? reportSummary(lastReport) : t("settings.checkNowHint")}
+      />
+      <div className="ml-auto">
+        <button
+          type="button"
+          disabled={checking}
+          onClick={() => void checkNow()}
+          className="h-7 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-60"
+        >
+          {checking ? t("settings.checking") : t("settings.checkNow")}
+        </button>
+      </div>
+    </Row>
   );
 }
 

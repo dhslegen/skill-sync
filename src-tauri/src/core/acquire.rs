@@ -358,7 +358,17 @@ pub struct BatchItem {
     pub outcome: BatchOutcome,
 }
 
-/// 一次下载装多个技能(首次启动向导的"一键全装")。
+/// 批量安装/更新时,每个技能的链接目标从哪来。
+#[derive(Debug, Clone, Copy)]
+pub enum BatchAgents<'a> {
+    /// 统一列表(首次启动向导:全新环境,所有技能关联同一批工具)。
+    Uniform(&'a [String]),
+    /// 各技能用**自己账上的** agents(定时更新:自动流程绝不改写用户的关联)。
+    /// 不在账上的技能一律跳过——这一档只服务"更新已装的",不服务"装新的"。
+    FromAccount,
+}
+
+/// 一次下载装多个技能(首次启动向导的"一键全装",与 scheduler 的批量更新)。
 ///
 /// 与逐个 [`acquire`] 的关键差异:**冲突不弹窗,一律跳过**。向导面向刚装上 app 的
 /// 用户,真撞上"改过/被占用"说明那不是全新环境——跳过并说明,比在向导里
@@ -372,7 +382,7 @@ pub async fn acquire_batch(
     registry_id: &str,
     repo: &RepoRef,
     dir_slugs: &[String],
-    agent_names: &[String],
+    agents: BatchAgents<'_>,
     now: &str,
     fetched_at: i64,
 ) -> Result<Vec<BatchItem>, AppError> {
@@ -397,7 +407,7 @@ pub async fn acquire_batch(
             &archive,
             &head.sha,
             dir_slug,
-            agent_names,
+            agents,
             now,
         );
         out.push(BatchItem {
@@ -420,7 +430,7 @@ fn install_one_from_archive(
     archive: &RepoArchive,
     head_sha: &str,
     dir_slug: &str,
-    agent_names: &[String],
+    agents: BatchAgents<'_>,
     now: &str,
 ) -> BatchOutcome {
     let Some(skill) = index.skills.iter().find(|s| s.dir_slug == dir_slug) else {
@@ -432,6 +442,22 @@ fn install_one_from_archive(
     // 每轮重新读 state:上一轮的记账已经写回,拿旧快照会互相覆盖
     let run = || -> Result<BatchOutcome, AppError> {
         let loaded = store.load_state()?;
+
+        // 链接目标:向导给统一列表;定时更新用账上的,绝不改写用户的关联
+        let agent_names: Vec<String> = match agents {
+            BatchAgents::Uniform(list) => list.to_vec(),
+            BatchAgents::FromAccount => {
+                let Some(record) = loaded.value.installed.iter().find(|s| s.name == *dir_slug)
+                else {
+                    return Ok(BatchOutcome::Skipped {
+                        reason: "未安装,已跳过".into(),
+                    });
+                };
+                record.agents.clone()
+            }
+        };
+        let agent_names = agent_names.as_slice();
+
         match precheck(installer, env, &loaded.value, dir_slug, head_sha)? {
             Precheck::LocallyModified { .. } => {
                 return Ok(BatchOutcome::Skipped {

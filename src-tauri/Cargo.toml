@@ -48,7 +48,12 @@ url = "2.5.8"
 # 且重启即失效。故按平台显式指定原生后端。
 keyring = { version = "4.1.5", default-features = false, features = ["v1"] }
 getrandom = "0.4.3"
-tokio = { version = "1.53.1", features = ["rt"] }
+# scheduler(M2 任务 3)需要 time(定时睡眠)与 sync(命令通道)
+tokio = { version = "1.53.1", features = ["rt", "time", "sync", "macros"] }
+# 日志:滚动文件落 ~/.skillsync/logs/,scheduler 后台运行的唯一可追溯通道
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tracing-appender = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "4.1.5", default-features = false, features = [
@@ -80,7 +85,7 @@ keyring = { version = "4.1.5", default-features = false, features = [
 
 [dev-dependencies]
 tempfile = "3.24.0"
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "test-util"] }
 toml = "1.1.4"
 wiremock = "0.6.5"
 

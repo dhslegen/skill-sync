@@ -7,7 +7,8 @@
 - 样式 Tailwind v4(`@theme` token,已接入);包管理 pnpm;Rust 侧 workspace: src-tauri/
 - Rust 侧已接入:reqwest(rustls)、serde、keyring(按平台指定原生后端)、saphyr(YAML)、zip、sha2、getrandom、url
 - 前端已接入(任务 8):Zustand、cmdk(命令面板)、lucide-react、react-markdown、clsx + tailwind-merge(`lib/cn.ts`)
-- **已选型但尚未引入**(到对应任务再装,勿以为已可用):日志 tracing + 滚动文件
+- Rust 侧已接入(M2 任务 3):tokio(time/sync)、tracing + tracing-appender
+  (滚动文件日志落 `~/.skillsync/logs/`,按天切割保留 7 份,init 失败不拦启动)
 - **关于 shadcn/ui**(C-UI 拍板):任务 8 只引入了它的**基础设施**(`cn()` 工具 + CSS 变量换肤),
   组件目录没建。原因是 UI-Demo 已把 card/chip/24px 按钮的形态定死,用 shadcn 默认样式再逐个剥
   (删 `shadow-sm`、压 h-10→h-8、收 Card padding)比直接照 Demo 写更费事。
@@ -75,6 +76,7 @@ src-tauri/src/
   core/remove.rs     # ✅ 移除编排:改过预检(NeedsDecision)→解链→删本体→清账+lock 移除
   core/share.rs      # ✅ 分享编排:排除法扫描→预检三分支→收编→按权限矩阵提交→shared 记账;
                      #    share_installed(把已装技能的改动推回来源)
+  core/scheduler.rs  # ✅ 定时更新检查:run_check(head 比对→FromAccount 批量)+ 可测的调度循环
   core/registry.rs   # ⬜ 仓库源管理(内建 Gitea + 自定义)
   core/github.rs     # ⬜ GitHub client(M3 前留空壳)
   commands.rs        # Tauri IPC command 定义(薄壳,逻辑在 core)
@@ -85,7 +87,6 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
                      #    只有 terminology.md 是受版本控制的;换机器需另行拷贝这些文档
 ```
 
-> `core/scheduler.rs`(定时更新检查)属 M2,尚未创建。
 
 ## UI 规范(已拍板,详见 docs/UI设计规范.md,违反第 2 节即打回)
 - **视觉基准 = docs/SkillSync-UI-Demo.html**,最终实现观感必须与它一致;信息密度对齐该 Demo,不得放宽
@@ -233,7 +234,7 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 |---|---|---|
 | 1 设置页 A | ✅ | config 新增可选 ui 字段(serde default,schemaVersion 仍 1)+ store/prefs.ts 同步(config 赢/一次性迁移/失败不硬推)+ 设置页账号区(退出登录接通)与外观区;6+11 新测试,7 处注入验证 |
 | 2 设置页 B | ✅ | AI 工具开关(config.disabledAgents,只影响默认勾选)+ 更新三档(手动/4h/每天,「手动」保留频率)+ open_library_url(同源白名单)接通评审链接;9+16 新测试,5 处注入验证 |
-| 3 scheduler | ⬜ | 定时检查(唯一入口 acquire_batch)+ tracing 日志 |
+| 3 scheduler | ✅ | run_check(head 未变不下载)+ `BatchAgents::FromAccount`(更新用账上 agents,自动流程不改写关联)+ 注入闭包的调度循环(paused clock 测频率/重排/关断)+ tracing 滚动日志;9+4 新测试,5 处注入验证 |
 | 4 托盘+通知 | ⬜ | 关窗缩托盘(已拍板)+ 更新结果通知 |
 | 5 App 自更新 | ⬜ | tauri-plugin-updater + minisign(未签名先打通) |
 | 6 收尾打磨 | ⬜ | 占位替换重试 + Windows 外观(可选) |

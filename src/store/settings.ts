@@ -11,8 +11,11 @@ import {
   autoUpdateGet,
   autoUpdateSet,
   isAppError,
+  listenSchedulerReport,
+  updateCheckNow,
   type AppError,
   type AutoUpdate,
+  type CheckReport,
   type DetectedAgent,
 } from "@/lib/ipc";
 
@@ -26,17 +29,26 @@ interface SettingsState {
   agents: DetectedAgent[] | null;
   autoUpdate: AutoUpdate | null;
   error: AppError | null;
+  /** 最近一轮定时/手动检查的结果(scheduler://report)。 */
+  lastReport: CheckReport | null;
+  /** 「立即检查」按下后、结果事件回来前为 true。 */
+  checking: boolean;
   load: () => Promise<void>;
   toggleAgent: (name: string) => Promise<void>;
   /** 三档之一:手动(enabled=false,频率保留)/ 每 4 小时 / 每天。 */
   setSkillsUpdate: (next: { enabled: boolean; intervalHours?: number }) => Promise<void>;
   setAppUpdate: (app: boolean) => Promise<void>;
+  checkNow: () => Promise<void>;
+  /** 启动时挂一次:检查结果落进 store(设置页与后续的通知都从这拿)。 */
+  attachReportListener: () => Promise<() => void>;
 }
 
 export const useSettings = create<SettingsState>((set, get) => ({
   agents: null,
   autoUpdate: null,
   error: null,
+  lastReport: null,
+  checking: false,
 
   load: async () => {
     try {
@@ -88,5 +100,21 @@ export const useSettings = create<SettingsState>((set, get) => ({
     } catch (raw) {
       set({ autoUpdate, error: toAppError(raw) });
     }
+  },
+
+  checkNow: async () => {
+    set({ checking: true, error: null });
+    try {
+      await updateCheckNow();
+      // 结果由 scheduler://report 事件送达,这里只负责把"转起来了"亮出来
+    } catch (raw) {
+      set({ checking: false, error: toAppError(raw) });
+    }
+  },
+
+  attachReportListener: () => {
+    return listenSchedulerReport((report) => {
+      set({ lastReport: report, checking: false });
+    });
   },
 }));

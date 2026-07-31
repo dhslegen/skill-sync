@@ -124,7 +124,7 @@ async fn run_batch(
         REGISTRY,
         &repo_ref(),
         &slugs,
-        &["claude-code".to_string()],
+        acquire::BatchAgents::Uniform(&["claude-code".to_string()]),
         NOW,
         1_753_900_000,
     )

@@ -5,7 +5,15 @@ import type { AutoUpdate } from "@/lib/ipc";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args: unknown) => invoke(cmd, args) }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
+
+/** 可触发的事件桩:按事件名收集回调,测试里手动派发。 */
+const listeners = new Map<string, (e: { payload: unknown }) => void>();
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (name: string, cb: (e: { payload: unknown }) => void) => {
+    listeners.set(name, cb);
+    return () => listeners.delete(name);
+  }),
+}));
 
 const AGENTS = {
   agents: [
@@ -28,7 +36,8 @@ function seed() {
 function reset() {
   invoke.mockReset();
   seed();
-  useSettings.setState({ agents: null, autoUpdate: null, error: null });
+  listeners.clear();
+  useSettings.setState({ agents: null, autoUpdate: null, error: null, lastReport: null, checking: false });
 }
 
 describe("设置 store", () => {
@@ -106,5 +115,39 @@ describe("设置 store", () => {
     expect(invoke).toHaveBeenCalledWith("auto_update_set", {
       args: { autoUpdate: { skills: { enabled: true, intervalHours: 4 }, app: false } },
     });
+  });
+
+  it("立即检查:发命令进入检查中,结果事件到达后落地并复位", async () => {
+    await useSettings.getState().attachReportListener();
+
+    await useSettings.getState().checkNow();
+    expect(invoke).toHaveBeenCalledWith("update_check_now", undefined);
+    expect(useSettings.getState().checking).toBe(true);
+
+    const report = {
+      status: "checked",
+      headSha: "sha-2",
+      updated: ["alpha"],
+      skipped: [{ dirSlug: "beta", reason: "已安装且有你的本地改动,未覆盖" }],
+      failed: [],
+    };
+    listeners.get("scheduler://report")?.({ payload: report });
+
+    const s = useSettings.getState();
+    expect(s.checking).toBe(false);
+    expect(s.lastReport).toEqual(report);
+  });
+
+  it("命令失败时复位检查中并亮错误", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "update_check_now")
+        throw { code: "AUTH_NOT_CONFIGURED", message: "这个版本没有配置公司技能库,请向 IT 索取正式安装包" };
+      return undefined;
+    });
+
+    await useSettings.getState().checkNow();
+
+    expect(useSettings.getState().checking).toBe(false);
+    expect(useSettings.getState().error?.message).toContain("IT");
   });
 });

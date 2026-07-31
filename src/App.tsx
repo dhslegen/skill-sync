@@ -16,6 +16,7 @@ import { SettingsPage } from "@/pages/SettingsPage";
 import { SharePage } from "@/pages/SharePage";
 import { StorePage } from "@/pages/StorePage";
 import { useInstall } from "@/store/install";
+import { useSettings } from "@/store/settings";
 import { useWizard } from "@/store/wizard";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
@@ -41,6 +42,11 @@ export default function App() {
     void call<AppInfo>("app_info").then(setInfo).catch(() => {});
     // 首次启动:没有完成标记才会真的打开
     void useWizard.getState().maybeOpen();
+    // 定时检查的结果常驻监听:设置页摘要与后续的系统通知都吃这份数据
+    const detach = useSettings.getState().attachReportListener();
+    return () => {
+      void detach.then((f) => f());
+    };
   }, []);
 
   return (

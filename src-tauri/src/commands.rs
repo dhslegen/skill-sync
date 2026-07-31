@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use crate::core::acquire;
 use crate::core::agents::{AgentRegistry, DetectedAgent, SystemEnv};
@@ -11,6 +11,7 @@ use crate::core::builtin;
 use crate::core::gitea::{GiteaClient, RepoRef};
 use crate::core::installer::{self, InstallReport, Installer};
 use crate::core::remove;
+use crate::core::scheduler;
 use crate::core::share;
 use crate::core::session::{self, BrowserOpener, SessionStatus, SessionUser};
 use crate::core::state;
@@ -88,8 +89,80 @@ pub struct AutoUpdateArgs {
 }
 
 #[tauri::command]
-pub fn auto_update_set(args: AutoUpdateArgs) -> Result<(), AppError> {
-    app_store()?.save_auto_update(&args.auto_update)
+pub fn auto_update_set(app: tauri::AppHandle, args: AutoUpdateArgs) -> Result<(), AppError> {
+    app_store()?.save_auto_update(&args.auto_update)?;
+    // 频率变更即时生效:通知调度循环重算下一次时刻(没起 scheduler 的开发构建下无事发生)
+    if let Some(s) = app.try_state::<scheduler::Scheduler>() {
+        s.reschedule();
+    }
+    Ok(())
+}
+
+/// 设置页「立即检查」。结果经 `scheduler://report` 事件回来,这里即发即忘。
+#[tauri::command]
+pub fn update_check_now(app: tauri::AppHandle) -> Result<(), AppError> {
+    let Some(s) = app.try_state::<scheduler::Scheduler>() else {
+        return Err(AppError::new(
+            "AUTH_NOT_CONFIGURED",
+            "这个版本没有配置公司技能库,请向 IT 索取正式安装包",
+        ));
+    };
+    s.check_now();
+    Ok(())
+}
+
+/// 组装并启动定时更新检查。内建库没配置时返回 `None`(不起后台任务)。
+pub fn spawn_scheduler(app: tauri::AppHandle) -> Option<scheduler::Scheduler> {
+    let (base_url, repo) = builtin_store_target().ok()?;
+
+    let cadence = || {
+        // 每次决策都重读 config:设置页改完频率,下一次决策立刻按新值走
+        let auto = app_store()
+            .and_then(|s| s.load_config())
+            .map(|l| l.value.auto_update)
+            .unwrap_or_default();
+        scheduler::Cadence {
+            enabled: auto.skills.enabled,
+            interval_hours: auto.skills.interval_hours,
+        }
+    };
+
+    let check = move || -> scheduler::BoxFuture {
+        let app = app.clone();
+        let base_url = base_url.clone();
+        let repo = repo.clone();
+        Box::pin(async move {
+            let run = async {
+                let client = anonymous_client(base_url)?;
+                let store = app_store()?;
+                let registry = AgentRegistry::builtin();
+                scheduler::run_check(
+                    &client,
+                    &registry,
+                    &SystemEnv,
+                    &store,
+                    BUILTIN_REGISTRY_ID,
+                    &repo,
+                    &now_iso8601(),
+                    auth::now_unix(),
+                )
+                .await
+            };
+            match run.await {
+                Ok(report) => {
+                    let _ = app.emit("scheduler://report", &report);
+                }
+                Err(err) => {
+                    // 连不上内网等环境性失败:记日志,不打扰用户(下一轮再试)
+                    tracing::warn!(code = %err.code, detail = ?err.detail, "定时检查未完成");
+                }
+            }
+        })
+    };
+
+    let (handle, fut) = scheduler::make(cadence, check);
+    tauri::async_runtime::spawn(fut);
+    Some(handle)
 }
 
 #[derive(Debug, Deserialize)]
@@ -498,7 +571,7 @@ pub async fn skill_install_batch(
         registry_id,
         &repo,
         &args.dir_slugs,
-        &args.agent_ids,
+        acquire::BatchAgents::Uniform(&args.agent_ids),
         &now_iso8601(),
         auth::now_unix(),
     )

@@ -162,4 +162,28 @@ describe("设置页 · 更新区", () => {
       args: { autoUpdate: { skills: { enabled: true, intervalHours: 4 }, app: false } },
     });
   });
+
+  it("「立即检查」触发一轮检查", async () => {
+    render(<SettingsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "立即检查" }));
+
+    expect(invoke).toHaveBeenCalledWith("update_check_now", undefined);
+  });
+
+  it("最近一轮结果用人话摘要显示,不露目录名", async () => {
+    useSettings.setState({
+      lastReport: {
+        status: "checked",
+        headSha: "sha-9",
+        updated: ["alpha", "beta"],
+        skipped: [{ dirSlug: "gamma", reason: "已安装且有你的本地改动,未覆盖" }],
+        failed: [],
+      },
+    });
+    render(<SettingsPage />);
+
+    expect(await screen.findByText("2 个已更新 · 1 个跳过 · 0 个失败")).toBeInTheDocument();
+    expect(screen.queryByText(/alpha|gamma/)).not.toBeInTheDocument();
+  });
 });

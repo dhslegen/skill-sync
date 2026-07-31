@@ -118,6 +118,28 @@ export const agentsSetDisabled = (disabled: string[]) =>
 /** 在系统浏览器打开技能库页面(评审链接)。非同源地址会被 core 拒绝。 */
 export const openLibraryUrl = (url: string) => call<void>("open_library_url", { args: { url } });
 
+/** 与 core::scheduler::CheckReport 的 serde 契约一一对应。 */
+export type CheckReport =
+  | { status: "nothingInstalled" }
+  | { status: "upToDate"; headSha: string }
+  | {
+      status: "checked";
+      headSha: string;
+      updated: string[];
+      skipped: { dirSlug: string; reason: string }[];
+      failed: { dirSlug: string; error: AppError }[];
+    };
+
+/** 触发一轮更新检查(即发即忘,结果经 `scheduler://report` 事件回来)。 */
+export const updateCheckNow = () => call<void>("update_check_now");
+
+/** 订阅定时检查结果。 */
+export function listenSchedulerReport(
+  onReport: (report: CheckReport) => void,
+): Promise<UnlistenFn> {
+  return listen<CheckReport>("scheduler://report", (e) => onReport(e.payload));
+}
+
 export interface SessionUser {
   login: string;
   displayName: string;

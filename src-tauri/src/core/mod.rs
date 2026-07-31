@@ -10,6 +10,7 @@ pub mod github;
 pub mod installer;
 pub mod registry;
 pub mod remove;
+pub mod scheduler;
 pub mod session;
 pub mod share;
 pub mod skill_lock;
