@@ -135,6 +135,28 @@ fn link(c: &Ctx, slug: &str) -> PathBuf {
     c.home.join(".claude").join("skills").join(slug)
 }
 
+/// 删掉一条关联,模拟"链接丢了"。
+///
+/// 必须两种都试:POSIX 上关联是 symlink,只有 `remove_file` 删得动;Windows 上是
+/// **junction**(目录重解析点),`remove_file` 会直接 `Access is denied`
+/// ——`repair_rebuilds_a_lost_link…` 就是因为只写了 `remove_file(..).unwrap()`,
+/// 在 Windows CI 上从 M1 任务 10 起连红了五个提交(macOS 一直绿,所以一直没人看见)。
+///
+/// 用 `remove_dir` 而不是 `remove_dir_all`:对 junction 前者只摘掉重解析点,
+/// 后者有把**技能本体**连锅端掉的风险——那正是这个测试接下来要断言还在的东西。
+///
+/// 结尾断言"真的没了":只写 `let _ = remove_file` 会让"其实没删掉"变成静默通过,
+/// 于是 repair 什么都不用做也能绿——测试就空转了。
+fn drop_link(path: &Path) {
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_dir(path);
+    assert!(
+        std::fs::symlink_metadata(path).is_err(),
+        "没能删掉关联,后面的断言就不算数了: {}",
+        path.display()
+    );
+}
+
 // ============================================================ 正常移除
 
 #[test]
@@ -339,7 +361,7 @@ fn repair_rebuilds_a_lost_link_and_reconciles_the_books() {
     let (c, env) = ctx();
     install_one(&c, &env, "weekly-report");
     let link_path = link(&c, "weekly-report");
-    std::fs::remove_file(&link_path).unwrap();
+    drop_link(&link_path);
 
     let installer = Installer::new(&c.registry, &env);
     let report =

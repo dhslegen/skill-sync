@@ -242,8 +242,14 @@ App 自更新(M2 任务 5)另有 `SKILLSYNC_UPDATE_URL`(latest.json 地址)/ `SK
 
 **M1 任务 1–13 与 M2 任务 1–6 全部完成并提交**。远端 `origin` = github.com/dhslegen/skill-sync
 (**私有**)。本机测试 **Rust 314 通过 + 前端 255 通过**、clippy 与 eslint 干净;
-本机 `pnpm dev` 启动冒烟通过(托盘构建成功、日志落盘)。M1 阶段双平台 CI 真实跑通、
-`pnpm tauri build` 出过 dmg;**M2 的改动尚未在 Windows runner 上验过**(见已知待处理)。
+本机 `pnpm dev` 启动冒烟通过(托盘构建成功、日志落盘),`pnpm tauri build` 出过 dmg。
+
+> ⚠️ **CI 的真实状态**:macOS job 一直绿;**Windows job 从 M1 任务 10 起连红了六个提交**,
+> 一直没被发现——M1 交接材料里"双平台 CI 已真实跑通"那句话在任务 9 之后就不成立了,
+> 而 M2 全程照抄了它。失败一直是同一个:`remove_flow.rs` 用 `remove_file` 删关联,
+> 而 Windows 上关联是 **junction**(目录重解析点),`remove_file` 直接 `Access is denied`。
+> 已修(`drop_link` 两种都试 + 断言真的删掉了)。**教训:进度里写 CI 状态前先 `gh run list`
+> 看一眼,别把上一份文档的结论当成事实抄下去。**
 M2 拍板项:①按 docs/M2-任务分解.md 执行;②关窗缩到托盘,「退出」只在托盘菜单。
 **下一里程碑 M3**(设计方案 2.7:GitHub 源 device flow + 多源 registry + skill-lock 双向
 兼容打磨;OAuth PKCE 与 PR 评审式分享已在 M1 提前做掉)。交接材料见 docs/新会话交接提示词.md。
@@ -344,10 +350,12 @@ M2 拍板项:①按 docs/M2-任务分解.md 执行;②关窗缩到托盘,「退�
   远低于 DoD 的 2s / 300ms。但那是本机 docker,真实内网要加网络往返与更大的压缩包。
   `tests/store_index.rs` 里的 300ms 断言跑在 wiremock 上、进 CI;`tests/store_live.rs` 需要
   `./fixtures/init.sh`,环境不在时自动跳过(会往 fixture 建 `store-perf-50` 分支,幂等复用)。
-- **M2 的改动待 Windows CI 复核**:M2 全程只在 macOS 上跑过(Rust 314 / 前端 255 / dev 冒烟)。
-  托盘、关窗缩托盘、`ExitRequested` 防退出、updater 插件初始化在 Windows 上的行为
-  与 macOS 分支不同(`tray_with_icon` 有 `cfg` 分支),需要 push 后看 ci.yml 的
-  Windows job 结果;GUI 行为仍要真机(见下面两条)。
+- **Windows CI 的连红已修,但仍需一次绿的确认**:根因是测试侧的 `remove_file` 删不掉
+  junction(详见上面进度里的告警框),不是产品代码问题——M2 新增的 4 个 `link_agents`
+  测试在 Windows 上是通过的,托盘的 `cfg(not(macos))` 分支也编译通过。
+  修完还没等到一次完整的绿,下个会话开工前先 `gh run list` 确认。
+- **Windows 上的 GUI 行为仍未验**:托盘、关窗缩托盘、`ExitRequested` 防退出在 Windows 上
+  走的是另一条 `cfg` 分支,CI 只证明编译得过,行为要真机(见下面两条)。
 - **App 自更新的端到端联调待外部条件**(M2 任务 5):代码侧与发布通道已就绪,
   但要真验一次"旧版本 → 检出 → 装上 → 重启后版本变了",需要①minisign 密钥对
   ②内网静态更新源落点 ③一次真实的双版本发布。步骤写在部署指南 §7.4。
