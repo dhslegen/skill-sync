@@ -160,6 +160,41 @@ pub async fn run_check(
     })
 }
 
+// ============================================================ 系统通知文案
+
+/// 一轮检查要不要通知、通知说什么。`None` = 不打扰。
+///
+/// 规则(M2 任务 4 的假设,文档只给了「3 个技能已更新」这一句样例):
+/// - 有实际动作(更新成功或失败)才通知;纯"已最新/全部跳过"的例行轮次每隔
+///   几小时就来一次,逐轮弹通知是骚扰——冲突的常驻提醒在「我的技能」页的
+///   徽标上,这里不重复。
+/// - body 只报数量,不露目录名(内部标识不是人话);明细引导去主窗看。
+///
+/// 文案是用户可见的第二通道(同 AppError 的 message),必须中文、禁 git 术语、
+/// 禁 emoji——有单测钉住。
+pub fn notification_copy(report: &CheckReport) -> Option<(String, String)> {
+    let CheckReport::Checked { updated, skipped, failed, .. } = report else {
+        return None;
+    };
+    if updated.is_empty() && failed.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    if !updated.is_empty() {
+        parts.push(format!("{} 个技能已更新", updated.len()));
+    }
+    if !failed.is_empty() {
+        parts.push(format!("{} 个更新失败", failed.len()));
+    }
+    if !skipped.is_empty() {
+        parts.push(format!("{} 个已跳过", skipped.len()));
+    }
+    let mut body = parts.join(",");
+    body.push_str("。详情见「我的技能」。");
+    Some(("技能更新".to_string(), body))
+}
+
 // ============================================================ 调度循环
 
 /// 循环读取的调度配置。每次睡醒或收到命令都重新取,频率变更即时生效。
@@ -263,6 +298,69 @@ mod tests {
             Box::pin(async move {
                 hits.fetch_add(1, Ordering::SeqCst);
             })
+        }
+    }
+
+    fn checked(updated: usize, skipped: usize, failed: usize) -> CheckReport {
+        CheckReport::Checked {
+            head_sha: "sha-9".into(),
+            updated: (0..updated).map(|i| format!("skill-{i}")).collect(),
+            skipped: (0..skipped)
+                .map(|i| SkippedSkill {
+                    dir_slug: format!("skip-{i}"),
+                    reason: "已安装且有你的本地改动,未覆盖".into(),
+                })
+                .collect(),
+            failed: (0..failed)
+                .map(|i| FailedSkill {
+                    dir_slug: format!("fail-{i}"),
+                    error: AppError::new("NET_UNREACHABLE", "连不上公司技能库"),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn routine_rounds_never_notify() {
+        assert!(notification_copy(&CheckReport::NothingInstalled).is_none());
+        assert!(notification_copy(&CheckReport::UpToDate { head_sha: "x".into() }).is_none());
+        // 全部跳过、没有实际动作:徽标已经在「我的技能」页常驻,逐轮弹通知是骚扰
+        assert!(notification_copy(&checked(0, 3, 0)).is_none());
+    }
+
+    #[test]
+    fn real_outcomes_notify_with_counts_only() {
+        let (title, body) = notification_copy(&checked(3, 1, 0)).unwrap();
+        assert_eq!(title, "技能更新");
+        assert_eq!(body, "3 个技能已更新,1 个已跳过。详情见「我的技能」。");
+
+        let (_, body) = notification_copy(&checked(0, 0, 2)).unwrap();
+        assert_eq!(body, "2 个更新失败。详情见「我的技能」。");
+
+        // 目录名是内部标识,绝不能出现在通知里
+        assert!(!body.contains("skill-"), "{body}");
+        assert!(!body.contains("fail-"), "{body}");
+    }
+
+    #[test]
+    fn notification_copy_is_chinese_and_free_of_git_jargon() {
+        for report in [checked(2, 1, 1), checked(1, 0, 0), checked(0, 0, 1)] {
+            let (title, body) = notification_copy(&report).unwrap();
+            let text = format!("{title} {body}");
+            for word in ["commit", "push", "pull", "repo", "branch", "PR", "merge"] {
+                assert!(
+                    !text.to_lowercase().contains(&word.to_lowercase()),
+                    "通知文案出现 git 术语 {word}: {text}"
+                );
+            }
+            assert!(
+                text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "通知文案必须是中文: {text}"
+            );
+            assert!(
+                text.chars().all(|c| (c as u32) < 0x1F000),
+                "通知文案禁 emoji: {text}"
+            );
         }
     }
 

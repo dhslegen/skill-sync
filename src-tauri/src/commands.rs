@@ -151,6 +151,15 @@ pub fn spawn_scheduler(app: tauri::AppHandle) -> Option<scheduler::Scheduler> {
             match run.await {
                 Ok(report) => {
                     let _ = app.emit("scheduler://report", &report);
+                    // 有实际动作才弹系统通知(M2 任务 4;判定与文案在 core,有单测钉住)
+                    if let Some((title, body)) = scheduler::notification_copy(&report) {
+                        use tauri_plugin_notification::NotificationExt;
+                        if let Err(err) =
+                            app.notification().builder().title(&title).body(&body).show()
+                        {
+                            tracing::warn!(error = %err, "系统通知发送失败");
+                        }
+                    }
                 }
                 Err(err) => {
                     // 连不上内网等环境性失败:记日志,不打扰用户(下一轮再试)

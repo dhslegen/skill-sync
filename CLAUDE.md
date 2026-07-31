@@ -7,8 +7,9 @@
 - 样式 Tailwind v4(`@theme` token,已接入);包管理 pnpm;Rust 侧 workspace: src-tauri/
 - Rust 侧已接入:reqwest(rustls)、serde、keyring(按平台指定原生后端)、saphyr(YAML)、zip、sha2、getrandom、url
 - 前端已接入(任务 8):Zustand、cmdk(命令面板)、lucide-react、react-markdown、clsx + tailwind-merge(`lib/cn.ts`)
-- Rust 侧已接入(M2 任务 3):tokio(time/sync)、tracing + tracing-appender
-  (滚动文件日志落 `~/.skillsync/logs/`,按天切割保留 7 份,init 失败不拦启动)
+- Rust 侧已接入(M2 任务 3-4):tokio(time/sync)、tracing + tracing-appender
+  (滚动文件日志落 `~/.skillsync/logs/`,按天切割保留 7 份,init 失败不拦启动;
+  已实测落盘)、tauri `tray-icon` feature、tauri-plugin-notification
 - **关于 shadcn/ui**(C-UI 拍板):任务 8 只引入了它的**基础设施**(`cn()` 工具 + CSS 变量换肤),
   组件目录没建。原因是 UI-Demo 已把 card/chip/24px 按钮的形态定死,用 shadcn 默认样式再逐个剥
   (删 `shadow-sm`、压 h-10→h-8、收 Card padding)比直接照 Demo 写更费事。
@@ -235,7 +236,7 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 | 1 设置页 A | ✅ | config 新增可选 ui 字段(serde default,schemaVersion 仍 1)+ store/prefs.ts 同步(config 赢/一次性迁移/失败不硬推)+ 设置页账号区(退出登录接通)与外观区;6+11 新测试,7 处注入验证 |
 | 2 设置页 B | ✅ | AI 工具开关(config.disabledAgents,只影响默认勾选)+ 更新三档(手动/4h/每天,「手动」保留频率)+ open_library_url(同源白名单)接通评审链接;9+16 新测试,5 处注入验证 |
 | 3 scheduler | ✅ | run_check(head 未变不下载)+ `BatchAgents::FromAccount`(更新用账上 agents,自动流程不改写关联)+ 注入闭包的调度循环(paused clock 测频率/重排/关断)+ tracing 滚动日志;9+4 新测试,5 处注入验证 |
-| 4 托盘+通知 | ⬜ | 关窗缩托盘(已拍板)+ 更新结果通知 |
+| 4 托盘+通知 | ✅ | 托盘菜单(打开/立即检查/退出)+ 关窗缩托盘(拍板;`ExitRequested` 只放行显式退出)+ 通知文案纯函数(例行轮次不打扰/只报数量/禁术语,单测钉住);3 新测试,2 处注入验证;托盘交互真机验收见已知待处理 |
 | 5 App 自更新 | ⬜ | tauri-plugin-updater + minisign(未签名先打通) |
 | 6 收尾打磨 | ⬜ | 占位替换重试 + Windows 外观(可选) |
 
@@ -323,6 +324,11 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
   远低于 DoD 的 2s / 300ms。但那是本机 docker,真实内网要加网络往返与更大的压缩包。
   `tests/store_index.rs` 里的 300ms 断言跑在 wiremock 上、进 CI;`tests/store_live.rs` 需要
   `./fixtures/init.sh`,环境不在时自动跳过(会往 fixture 建 `store-perf-50` 分支,幂等复用)。
+- **托盘/关窗/通知的交互行为待真机人工验收**(M2 任务 4,GUI 无法单测):
+  ①托盘图标与三个菜单项 ②关窗后进程常驻、托盘「打开」能回来 ③「退出」真退出
+  ④更新成功轮次弹系统通知(macOS 首次需授权)。已自动验证:dev 起动托盘构建不
+  panic、窗口进程存活、启动日志落盘。macOS 托盘 template image(单色随主题)未做,
+  归任务 6 打磨项。
 - **Windows 平台外观细节未做**:任务 13 只启用了 macOS 的 Overlay 标题栏(红绿灯浮在
   44px 拖拽区);Windows 保持系统默认装饰,原生窗口控制(tauri-plugin-decorum)、
   vibrancy、实色化属 M2 打磨项,不影响 DoD。
