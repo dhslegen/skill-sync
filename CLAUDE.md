@@ -104,6 +104,12 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
      要么断言键的完整集合,要么正面断言值。
   3. **fixture 让两个不同概念取了同值** → 它们的差别就测没了
      (`name: weekly-report` + 目录名 `weekly-report`,让"安装目录名取目录名而非 name"失去保护)。
+- **注入脚本恢复现场必须用"先备份、后回拷",禁用 `git checkout <file>`**:
+  工作区带着未提交的修复时,checkout 会连修复一起抹掉(任务 9 收尾时真实发生过一次,
+  靠上下文里留存的完整代码才恢复回来)。
+- Rust 侧也有术语守卫(`tests/terminology.rs`):把所有 `AppError::new` 的 message 抠出来,
+  过与 src/i18n/index.test.ts 同一份禁词表,并要求 message 必须是中文——它是用户可见文案的
+  第二条通道,前端守卫扫不到。
 - 前端测试用 vitest + jsdom(`vitest.config.ts`,**注意它优先于 vite.config.ts**,后者里的
   `test` 字段读不到)。IME 组合输入、快捷键让路、不渲染不可信 HTML 这几条都有专门用例。
 
@@ -197,7 +203,7 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 ## 当前进度(2026-07-30)
 
 M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill-sync(**私有**)。
-本机测试 **Rust 226 通过 + 前端 120 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
+本机测试 **Rust 234 通过 + 前端 120 通过**、clippy 与 eslint 干净;双平台 CI 已真实跑通
 (Windows 上少跑的 8 个是 `cfg(unix)` 用例,已逐一核对)。
 
 | 任务 | 状态 | 关键产物 |

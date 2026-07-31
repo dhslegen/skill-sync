@@ -184,6 +184,30 @@ impl<'a> Installer<'a> {
         fsops::safe_join(&base, &usable_dir_name(dir_slug)?)
     }
 
+    /// 落在 canonical 就能读到、**无需建链**的 agent。
+    ///
+    /// [`Self::link_targets`] 会有意跳过它们(universal agent,以及目录恰好等于 canonical 的),
+    /// 所以它们永远不会出现在 `links` 里——但技能对它们确实是生效的。
+    /// 记账时若只看 `links`,cursor / codex 这类会被漏成"没启用"。
+    pub fn canonical_visible_agents(&self, agent_names: &[String]) -> Result<Vec<String>, AppError> {
+        let canonical = self.canonical_base()?;
+        let mut out = Vec::new();
+        for name in agent_names {
+            let agent = self.registry.get(name).ok_or_else(|| {
+                AppError::new("FS_UNKNOWN_AGENT", "这个 AI 工具不在支持列表中")
+                    .with_detail(format!("unknown agent: {name}"))
+            })?;
+            let Some(dir) = self.registry.global_dir(agent, self.env) else {
+                // 压根不支持全局安装(eve / promptscript):技能对它不生效,不能算进去
+                continue;
+            };
+            if !agent.global_install_needs_link() || dir == canonical {
+                out.push(name.clone());
+            }
+        }
+        Ok(out)
+    }
+
     /// 计算需要建链的目标目录集合。
     ///
     /// 三重过滤:universal agent 落在 canonical 即可见,不建链;不支持全局安装的 agent 跳过;

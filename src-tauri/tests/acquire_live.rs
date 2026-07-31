@@ -144,6 +144,13 @@ async fn installs_a_real_skill_from_the_fixture_registry() {
     // 5) 进度按序报全
     assert_eq!(
         stages.into_inner().unwrap(),
-        vec![Stage::Fetching, Stage::Checking, Stage::Writing, Stage::Recording, Stage::Done]
+        vec![
+            Stage::Fetching,
+            Stage::Checking,
+            Stage::Writing,
+            Stage::Linking,
+            Stage::Recording,
+            Stage::Done
+        ]
     );
 }

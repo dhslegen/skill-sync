@@ -346,30 +346,38 @@ pub struct InstalledSkillView {
 }
 
 #[tauri::command]
-pub fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
-    let store = app_store()?;
-    let registry = AgentRegistry::builtin();
-    let installer = Installer::new(&registry, &SystemEnv);
-    let state = store.load_state()?.value;
+pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
+    // local_modified 要对每个技能逐文件读盘算 hash,技能一多就是一次不小的 IO。
+    // 同步 command 会在主线程上算,窗口会卡——挪到阻塞线程池,IPC 立即返还。
+    tauri::async_runtime::spawn_blocking(|| {
+        let store = app_store()?;
+        let registry = AgentRegistry::builtin();
+        let installer = Installer::new(&registry, &SystemEnv);
+        let state = store.load_state()?.value;
 
-    Ok(state
-        .installed
-        .iter()
-        .map(|s| InstalledSkillView {
-            dir_slug: s.name.clone(),
-            commit_sha: s.commit_sha.clone(),
-            agents: s.agents.clone(),
-            installed_at: s.installed_at.clone(),
-            updated_at: s.updated_at.clone(),
-            // 算不出 hash(目录没了、权限不足)时按"没改过"处理:
-            // 这个标记只用于提示,不该因为读不了目录就把整个列表拉挂。
-            local_modified: installer
-                .canonical_dir(&s.name)
-                .and_then(|dir| fsops::dir_content_hash(&dir))
-                .map(|actual| actual != s.content_hash)
-                .unwrap_or(false),
-        })
-        .collect())
+        Ok(state
+            .installed
+            .iter()
+            .map(|s| InstalledSkillView {
+                dir_slug: s.name.clone(),
+                commit_sha: s.commit_sha.clone(),
+                agents: s.agents.clone(),
+                installed_at: s.installed_at.clone(),
+                updated_at: s.updated_at.clone(),
+                // 算不出 hash(目录没了、权限不足)时按"没改过"处理:
+                // 这个标记只用于提示,不该因为读不了目录就把整个列表拉挂。
+                local_modified: installer
+                    .canonical_dir(&s.name)
+                    .and_then(|dir| fsops::dir_content_hash(&dir))
+                    .map(|actual| actual != s.content_hash)
+                    .unwrap_or(false),
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| {
+        AppError::new("FS_TASK", "读取已安装列表失败,请重试").with_detail(e.to_string())
+    })?
 }
 
 fn app_store() -> Result<state::Store, AppError> {

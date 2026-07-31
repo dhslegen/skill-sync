@@ -287,6 +287,18 @@ pub async fn acquire(
         return Ok(AcquireOutcome::NeedsDecision { precheck: checked });
     }
 
+    // 外来目录里没有"你的改动"可留:接受 KeepLocal 会把别人的内容当成我们装的记进 state
+    // (contentHash 从外来字节算、commitSha 记成远端版本),之后更新检查会永远显示"已是最新"。
+    // 界面本来就不给这个选项,但**新的调用方**(向导批量安装)很可能一律传 KeepLocal,
+    // 所以在 core 这层直接堵掉,不靠界面的形状保证。
+    if matches!(checked, Precheck::Foreign { .. }) && req.resolution == Some(Resolution::KeepLocal) {
+        return Err(AppError::new(
+            "CONFLICT_FOREIGN_DIR",
+            "这个位置上的技能不是本应用安装的,请先确认要不要替换它",
+        )
+        .with_detail("KeepLocal is not a valid resolution for a foreign directory"));
+    }
+
     // 保留本地:只补建链接,绝不碰本体。
     let keep_local = needs_decision && req.resolution == Some(Resolution::KeepLocal);
 
@@ -297,10 +309,16 @@ pub async fn acquire(
         progress(Stage::Writing);
         // agent 目录那侧的实体目录占位是另一回事:保持 Fail,由结果面板逐目录报出来,
         // 不在这里替用户决定要不要替换他自己建的目录。
-        installer.install(req.dir_slug, &payload, req.agent_names, OnOccupied::Fail)?
+        //
+        // install() 内部是"先写后链"一气呵成,编排层插不进中间那一刻。报 Linking 是因为
+        // 落盘之后紧接着就是建链——少报一个阶段会让进度条从写入直接跳到记账。
+        let report = installer.install(req.dir_slug, &payload, req.agent_names, OnOccupied::Fail)?;
+        progress(Stage::Linking);
+        report
     };
 
     progress(Stage::Recording);
+    let canonical_visible = installer.canonical_visible_agents(req.agent_names)?;
     let lock = record(
         store,
         env,
@@ -311,6 +329,7 @@ pub async fn acquire(
         &head.sha,
         now,
         keep_local,
+        canonical_visible,
     )?;
 
     progress(Stage::Done);
@@ -333,6 +352,7 @@ fn record(
     remote_sha: &str,
     now: &str,
     keep_local: bool,
+    canonical_visible: Vec<String>,
 ) -> Result<String, AppError> {
     let mut next = previous.clone();
     let existing = next.installed.iter().position(|s| s.name == report.dir_name);
@@ -347,7 +367,19 @@ fn record(
         .iter()
         .filter_map(|l| link_mode(l).map(|mode| LinkRecord { dir: l.dir.clone(), mode }))
         .collect();
-    let agents: Vec<String> = report.links.iter().flat_map(|l| l.agents.clone()).collect();
+    // `agents` 的含义是「技能**实际对哪些工具生效**」,必须与 `links` 讲同一件事:
+    //   成功建链的  +  落在 canonical 就能读到、无需建链的(universal)
+    // 早先直接把 report.links 里的 agents 全收下来,同时错两头——
+    // 建链失败的被记成已生效(界面会把它画成启用中),universal 的又被整个漏掉。
+    let mut agents: Vec<String> = report
+        .links
+        .iter()
+        .filter(|l| link_mode(l).is_some())
+        .flat_map(|l| l.agents.clone())
+        .collect();
+    agents.extend(canonical_visible);
+    agents.sort();
+    agents.dedup();
 
     match existing {
         // 保留本地改动:关于**内容**的字段一个都不动。

@@ -450,8 +450,91 @@ async fn progress_reports_every_stage_in_order() {
 
     assert_eq!(
         stages.into_inner().unwrap(),
-        vec![Stage::Fetching, Stage::Checking, Stage::Writing, Stage::Recording, Stage::Done]
+        vec![
+            Stage::Fetching,
+            Stage::Checking,
+            Stage::Writing,
+            Stage::Linking,
+            Stage::Recording,
+            Stage::Done
+        ]
     );
+}
+
+// ============================================================ 记账的 agents 字段
+
+#[tokio::test]
+async fn recorded_agents_are_the_ones_the_skill_actually_works_for() {
+    // cursor 的目录就是 canonical(universal):不建链、不出现在 links 里,
+    // 但技能对它确实生效 —— agents 里必须有它,否则界面会把它画成"没启用"。
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "正文").await;
+    let (c, env) = ctx();
+
+    run(
+        &server,
+        &c,
+        &env,
+        "weekly-report",
+        &["claude-code".to_string(), "cursor".to_string()],
+        None,
+    )
+    .await
+    .unwrap();
+
+    let state = c.store.load_state().unwrap().value;
+    let record = &state.installed[0];
+    assert_eq!(record.agents, ["claude-code", "cursor"]);
+    // links 只记真实建过的链:cursor 那侧没有链
+    assert_eq!(record.links.len(), 1);
+}
+
+#[tokio::test]
+async fn a_failed_link_is_never_recorded_as_active() {
+    // Claude Code 的落点被一个实体目录占着 → 建链失败(OnOccupied::Fail)。
+    // 失败的那个若被记成"已生效",界面会画成启用中,用户以为技能可用 —— 实际上读不到。
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "正文").await;
+    let (c, env) = ctx();
+
+    let occupied = c.home.join(".claude").join("skills").join("weekly-report");
+    std::fs::create_dir_all(&occupied).unwrap();
+    std::fs::write(occupied.join("SKILL.md"), "用户自己放的\n").unwrap();
+
+    let outcome = run(&server, &c, &env, "weekly-report", &["claude-code".to_string()], None)
+        .await
+        .unwrap();
+    // 安装本身不失败:本体照常落盘,失败只体现在这一条链上
+    assert!(matches!(outcome, acquire::AcquireOutcome::Installed { .. }));
+
+    let state = c.store.load_state().unwrap().value;
+    let record = &state.installed[0];
+    assert!(record.agents.is_empty(), "建链失败还被记成已生效: {:?}", record.agents);
+    assert!(record.links.is_empty(), "失败的链不该进记账 —— 卸载时会拿它去动用户自己的目录");
+}
+
+#[tokio::test]
+async fn keep_local_never_applies_to_a_foreign_directory() {
+    // 外来目录里没有"你的改动"可留。接受 KeepLocal 会把别人的内容当成我们装的记进 state,
+    // 之后更新检查永远显示"已是最新"。界面不给这个组合,但新的调用方(向导批量安装)
+    // 很可能一律传 KeepLocal —— 必须在 core 层堵死,不能靠界面的形状保证。
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "正文").await;
+    let (c, env) = ctx();
+
+    let dir = canonical(&c.home, "weekly-report");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "别人装的技能\n").unwrap();
+    let theirs = std::fs::read(dir.join("SKILL.md")).unwrap();
+
+    let err = run(&server, &c, &env, "weekly-report", &[], Some(Resolution::KeepLocal))
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code, "CONFLICT_FOREIGN_DIR");
+    assert_eq!(std::fs::read(dir.join("SKILL.md")).unwrap(), theirs, "外来目录被动过了");
+    // 账上也不能多出一条:那份内容不是我们装的
+    assert!(c.store.load_state().unwrap().value.installed.is_empty());
 }
 
 #[tokio::test]
