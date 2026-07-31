@@ -11,6 +11,28 @@ fn conf() -> serde_json::Value {
     serde_json::from_str(&raw).unwrap()
 }
 
+/// updater 插件**必须**在 conf 里有 `plugins.updater` 节,哪怕是空占位。
+///
+/// 这条是真机跑出来的:插件 setup 会反序列化 `plugins.updater`,缺这一节直接
+/// `PluginInitialization` panic——**应用根本起不来**,而所有单测都照常绿(它们不启动 Tauri)。
+/// 真值仍走编译期注入并在运行时用 `updater_builder()` 覆盖,所以这里的 pubkey/endpoints
+/// 必须是空占位:填了真值就等于把内网地址写进仓库(铁律 5)。
+#[test]
+fn updater_plugin_needs_an_empty_placeholder_config() {
+    let c = conf();
+    let updater = &c["plugins"]["updater"];
+    assert!(
+        updater.is_object(),
+        "缺 plugins.updater 节,应用启动时会 panic(插件初始化失败)"
+    );
+    assert_eq!(updater["pubkey"], "", "conf 里的 pubkey 必须是空占位,真值走编译期注入");
+    assert_eq!(
+        updater["endpoints"].as_array().map(Vec::len),
+        Some(0),
+        "conf 里不得出现真实更新源地址"
+    );
+}
+
 /// updater 产物开关(M2 任务 5)的两侧配对:
 /// - 主 conf **不开** createUpdaterArtifacts——否则没有签名私钥的日常构建直接失败;
 /// - 发布通道(build-release.sh 与 release.yml)**必须开**——否则发布包没有 .sig,

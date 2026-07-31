@@ -109,6 +109,13 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 - core 模块单测覆盖:installer 降级链、SKILL.md 解析边界、state 迁移、同名预检三分支
 - Gitea client 用 wiremock-rs 模拟;e2e 用 docker compose 起 gitea(见 fixtures/)
 - Windows 相关(junction、路径、CRLF)必须在 Windows CI runner 上跑,不得只测 macOS
+- **动 `tauri::Builder` 的插件/setup/窗口配置后,必做一次 `pnpm dev` 启动冒烟**
+  (M2 任务 6 的教训):cargo test 与 vitest **都不启动 Tauri runtime**,插件初始化、
+  托盘构建、窗口事件这些路径一行都没覆盖。任务 5 加 updater 插件时 Rust 309 +
+  前端 250 全绿、clippy 干净,但应用直接 panic 起不来——插件 setup 要反序列化
+  `tauri.conf.json` 的 `plugins.<name>` 节,缺该节即 `PluginInitialization` 失败。
+  冒烟方式:后台 `pnpm dev` → 等 `target/debug/skillsync` 进程存活 → 看
+  `~/.skillsync/logs/`。同时把这类配置的存在性用 `tests/bundle_config.rs` 钉住。
 - **写完测试必做注入验证**(本项目最有价值的一条实践):故意改坏实现,确认对应测试真的变红。
   M1 全程累计抓出十余处空转测试,几乎都属于下面四种写法——写测试时优先自查:
   1. **同一条规则查了两遍** → 其中一遍永远不触发,改坏也不红(store.rs 的 schemaVersion、
@@ -240,7 +247,7 @@ App 自更新(M2 任务 5)另有 `SKILLSYNC_UPDATE_URL`(latest.json 地址)/ `SK
 | 3 scheduler | ✅ | run_check(head 未变不下载)+ `BatchAgents::FromAccount`(更新用账上 agents,自动流程不改写关联)+ 注入闭包的调度循环(paused clock 测频率/重排/关断)+ tracing 滚动日志;9+4 新测试,5 处注入验证 |
 | 4 托盘+通知 | ✅ | 托盘菜单(打开/立即检查/退出)+ 关窗缩托盘(拍板;`ExitRequested` 只放行显式退出)+ 通知文案纯函数(例行轮次不打扰/只报数量/禁术语,单测钉住);3 新测试,2 处注入验证;托盘交互真机验收见已知待处理 |
 | 5 App 自更新 | ✅ | tauri-plugin-updater(endpoint/pubkey 编译期注入)+ 启动探测与通知 + 设置页检查/安装/重启 + 发布通道 overlay 开 createUpdaterArtifacts(主 conf 不开)+ 部署指南 §7;3+6 新测试,5 处注入验证;**真实更新源联调待外部条件** |
-| 6 收尾打磨 | ⬜ | 占位替换重试 + Windows 外观(可选) |
+| 6 收尾打磨 | ✅ | 安装占位失败逐条重试(`acquire::link_agents`,并集合并记账)+ macOS 托盘 template image + `plugins.updater` 占位配置(修真机起不来的 bug)+ 文档同步;6+5 新测试,6 处注入验证。Windows decorum **决定不做**(无真机,见已知待处理) |
 
 | 任务 | 状态 | 关键产物 |
 |---|---|---|
@@ -333,11 +340,15 @@ App 自更新(M2 任务 5)另有 `SKILLSYNC_UPDATE_URL`(latest.json 地址)/ `SK
 - **托盘/关窗/通知的交互行为待真机人工验收**(M2 任务 4,GUI 无法单测):
   ①托盘图标与三个菜单项 ②关窗后进程常驻、托盘「打开」能回来 ③「退出」真退出
   ④更新成功轮次弹系统通知(macOS 首次需授权)。已自动验证:dev 起动托盘构建不
-  panic、窗口进程存活、启动日志落盘。macOS 托盘 template image(单色随主题)未做,
-  归任务 6 打磨项。
-- **Windows 平台外观细节未做**:任务 13 只启用了 macOS 的 Overlay 标题栏(红绿灯浮在
-  44px 拖拽区);Windows 保持系统默认装饰,原生窗口控制(tauri-plugin-decorum)、
-  vibrancy、实色化属 M2 打磨项,不影响 DoD。
+  panic、窗口进程存活、启动日志落盘。macOS 托盘已用 **template image**
+  (`icons/tray-template.png`,单色 + 只吃 alpha,系统按菜单栏明暗自动反色);
+  图标加载失败只记日志不拦托盘。本机菜单栏状态项过多把它挤进了溢出区,
+  **图标外观没能目视确认**,留作真机验收的一项。
+- **Windows 平台外观细节仍未做,且 M2 决定不做**(任务 6 的判断):UI 规范 §75 要求用
+  tauri-plugin-decorum 做双平台 overlay 标题栏,但本机没有 Windows 真机,装上它等于
+  **把一个能用的 Windows 窗口装饰换成无法目视验证的自绘控件**——万一窗口控制画不出来,
+  用户连关窗都做不到,而关窗现在还接着"缩到托盘"。Windows 保持系统默认装饰(功能完好,
+  只是多一条系统标题栏)。等有 Windows 真机再做,连同 vibrancy/实色化一起。
 - **进度事件只报阶段,不报字节**:压缩包是一次性下完的,没有可信的字节级进度可报。
   阶段(取内容/检查/写入/关联/记账)是当前最诚实的粒度。
 - ~~退出登录还没有界面入口~~:已随 M2 任务 1 的设置页账号区落地。

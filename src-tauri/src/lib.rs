@@ -53,7 +53,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &check, &quit])?;
 
-    let mut tray = TrayIconBuilder::with_id("main")
+    let tray = TrayIconBuilder::with_id("main")
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -66,11 +66,37 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             "quit" => app.exit(0),
             _ => {}
         });
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
-    }
-    tray.build(app)?;
+    tray_with_icon(tray, app).build(app)?;
     Ok(())
+}
+
+/// macOS 菜单栏用 **template image**:单色 + 只吃 alpha 通道,系统按浅色/深色菜单栏
+/// 自动反色。彩色应用图标贴上去会在深色菜单栏里糊成一团,是 macOS 上一眼就露怯的细节。
+#[cfg(target_os = "macos")]
+fn tray_with_icon<R: tauri::Runtime>(
+    builder: tauri::tray::TrayIconBuilder<R>,
+    _app: &tauri::App<R>,
+) -> tauri::tray::TrayIconBuilder<R> {
+    match tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png")) {
+        Ok(icon) => builder.icon(icon).icon_as_template(true),
+        // 图标读不出来不该拦住托盘本身:没有图标的托盘仍能用,没有托盘就彻底没入口了
+        Err(err) => {
+            tracing::warn!(error = %err, "托盘图标加载失败,使用系统默认外观");
+            builder
+        }
+    }
+}
+
+/// 非 macOS 沿用应用图标:Windows 任务栏通知区就是彩色图标,没有 template 一说。
+#[cfg(not(target_os = "macos"))]
+fn tray_with_icon<R: tauri::Runtime>(
+    builder: tauri::tray::TrayIconBuilder<R>,
+    app: &tauri::App<R>,
+) -> tauri::tray::TrayIconBuilder<R> {
+    match app.default_window_icon() {
+        Some(icon) => builder.icon(icon.clone()),
+        None => builder,
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
