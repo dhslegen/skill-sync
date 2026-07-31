@@ -26,8 +26,19 @@ for var in SKILLSYNC_BUILTIN_GITEA_URL SKILLSYNC_OAUTH_CLIENT_ID SKILLSYNC_BUILT
     fail=1
   fi
 done
+
+# App 自更新链路(M2 任务 5):更新源地址 + minisign 公钥编译进包,
+# 私钥用于给产物出 .sig。缺任何一个,发布出去的包将永远收不到更新——同样绝不允许流出。
+for var in SKILLSYNC_UPDATE_URL SKILLSYNC_UPDATE_PUBKEY TAURI_SIGNING_PRIVATE_KEY; do
+  if [[ -z "${!var:-}" ]]; then
+    echo "❌ 缺少环境变量 $var —— 没有它发布出去的包永远收不到应用更新" >&2
+    fail=1
+  fi
+done
+
 if [[ $fail -ne 0 ]]; then
-  echo "发布构建终止。四个 SKILLSYNC_* 变量都设好后重试。" >&2
+  echo "发布构建终止。上述 SKILLSYNC_*/TAURI_SIGNING_* 变量都设好后重试。" >&2
+  echo "minisign 密钥对用 'pnpm tauri signer generate' 生成;私钥离线保管,丢失即永远无法推更新。" >&2
   exit 1
 fi
 
@@ -57,8 +68,10 @@ fi
 echo "==> pnpm install"
 pnpm install --frozen-lockfile
 
-echo "==> tauri build"
-pnpm tauri build
+echo "==> tauri build(附带 updater 产物:.sig 与压缩包)"
+# createUpdaterArtifacts 只在发布构建打开:主 tauri.conf.json 不放它,
+# 否则没有签名私钥的日常 pnpm tauri build 会直接失败。
+pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
 
 echo
 echo "构建完成。产物在 src-tauri/target/release/bundle/ 下:"

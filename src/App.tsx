@@ -42,10 +42,12 @@ export default function App() {
     void call<AppInfo>("app_info").then(setInfo).catch(() => {});
     // 首次启动:没有完成标记才会真的打开
     void useWizard.getState().maybeOpen();
-    // 定时检查的结果常驻监听:设置页摘要与后续的系统通知都吃这份数据
-    const detach = useSettings.getState().attachReportListener();
+    // 常驻监听:定时检查结果(设置页摘要)与启动探测发现的 App 新版本
+    const detachReport = useSettings.getState().attachReportListener();
+    const detachAppUpdate = useSettings.getState().attachAppUpdateListener();
     return () => {
-      void detach.then((f) => f());
+      void detachReport.then((f) => f());
+      void detachAppUpdate.then((f) => f());
     };
   }, []);
 

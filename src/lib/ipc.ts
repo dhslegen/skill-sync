@@ -133,6 +133,18 @@ export type CheckReport =
 /** 触发一轮更新检查(即发即忘,结果经 `scheduler://report` 事件回来)。 */
 export const updateCheckNow = () => call<void>("update_check_now");
 
+/** 与 core 的 AppUpdateStatus serde 契约一一对应。 */
+export type AppUpdateStatus = { status: "upToDate" } | { status: "available"; version: string };
+
+export const appUpdateCheck = () => call<AppUpdateStatus>("app_update_check");
+export const appUpdateInstall = () => call<void>("app_update_install");
+export const appRestart = () => call<void>("app_restart");
+
+/** 启动探测发现新版本(payload = 版本号)。 */
+export function listenAppUpdateAvailable(onVersion: (v: string) => void): Promise<UnlistenFn> {
+  return listen<string>("app-update://available", (e) => onVersion(e.payload));
+}
+
 /** 订阅定时检查结果。 */
 export function listenSchedulerReport(
   onReport: (report: CheckReport) => void,

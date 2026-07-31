@@ -11,6 +11,33 @@ fn conf() -> serde_json::Value {
     serde_json::from_str(&raw).unwrap()
 }
 
+/// updater 产物开关(M2 任务 5)的两侧配对:
+/// - 主 conf **不开** createUpdaterArtifacts——否则没有签名私钥的日常构建直接失败;
+/// - 发布通道(build-release.sh 与 release.yml)**必须开**——否则发布包没有 .sig,
+///   自更新链路整个哑火。
+/// 两侧一起断言,字段名拼错在任何一侧都逃不掉。
+#[test]
+fn updater_artifacts_are_release_only() {
+    let c = conf();
+    assert!(
+        c["bundle"].get("createUpdaterArtifacts").is_none(),
+        "createUpdaterArtifacts 不能进主 conf:日常构建没有签名私钥会直接失败"
+    );
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+    let overlay = r#"--config '{"bundle":{"createUpdaterArtifacts":true}}'"#;
+    let script = std::fs::read_to_string(root.join("scripts/build-release.sh")).unwrap();
+    assert!(script.contains(overlay), "build-release.sh 必须以 overlay 打开 updater 产物");
+    let workflow = std::fs::read_to_string(root.join(".github/workflows/release.yml")).unwrap();
+    assert!(workflow.contains(overlay), "release.yml 必须以 overlay 打开 updater 产物");
+
+    // 发布闸门:三个新变量在两条发布通道里都有校验
+    for name in ["SKILLSYNC_UPDATE_URL", "SKILLSYNC_UPDATE_PUBKEY", "TAURI_SIGNING_PRIVATE_KEY"] {
+        assert!(script.contains(name), "build-release.sh 缺 {name} 的校验");
+        assert!(workflow.contains(name), "release.yml 缺 {name} 的注入/校验");
+    }
+}
+
 #[test]
 fn windows_installer_must_not_require_admin() {
     // DoD:非研发配置的 Windows 机、普通用户、零命令行。

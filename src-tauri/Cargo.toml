@@ -21,6 +21,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 # preserve_order:.skill-lock.json 是外部契约,双写时必须原样保住键序与我们不认识的字段。
 # 缺了它 serde_json 用 BTreeMap,键会被重排成字母序——文件仍合法,但对 npx skills 是一次无谓的全量改写。

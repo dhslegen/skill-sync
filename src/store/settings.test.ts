@@ -37,7 +37,14 @@ function reset() {
   invoke.mockReset();
   seed();
   listeners.clear();
-  useSettings.setState({ agents: null, autoUpdate: null, error: null, lastReport: null, checking: false });
+  useSettings.setState({
+    agents: null,
+    autoUpdate: null,
+    error: null,
+    lastReport: null,
+    checking: false,
+    appUpdate: { phase: "idle" },
+  });
 }
 
 describe("设置 store", () => {
@@ -136,6 +143,63 @@ describe("设置 store", () => {
     const s = useSettings.getState();
     expect(s.checking).toBe(false);
     expect(s.lastReport).toEqual(report);
+  });
+
+  it("App 自更新:检查到新版本 → 安装 → 提示重启", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "app_update_check") return { status: "available", version: "0.3.0" };
+      return undefined;
+    });
+
+    await useSettings.getState().checkAppUpdate();
+    expect(useSettings.getState().appUpdate).toEqual({ phase: "available", version: "0.3.0" });
+
+    await useSettings.getState().installAppUpdate();
+    expect(invoke).toHaveBeenCalledWith("app_update_install", undefined);
+    // 安装完成不自动重启:用户可能正开着别的操作,由他自己决定什么时候切过去
+    expect(useSettings.getState().appUpdate).toEqual({ phase: "installed" });
+    expect(invoke).not.toHaveBeenCalledWith("app_restart", undefined);
+
+    await useSettings.getState().restartApp();
+    expect(invoke).toHaveBeenCalledWith("app_restart", undefined);
+  });
+
+  it("App 自更新:已是最新", async () => {
+    invoke.mockImplementation(async (cmd: string) =>
+      cmd === "app_update_check" ? { status: "upToDate" } : undefined,
+    );
+
+    await useSettings.getState().checkAppUpdate();
+
+    expect(useSettings.getState().appUpdate).toEqual({ phase: "upToDate" });
+  });
+
+  it("App 自更新:安装失败保持当前版本并亮错误", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "app_update_check") return { status: "available", version: "0.3.0" };
+      if (cmd === "app_update_install")
+        throw { code: "UPDATE_INSTALL_FAILED", message: "应用更新安装失败,已保持当前版本" };
+      return undefined;
+    });
+    await useSettings.getState().checkAppUpdate();
+
+    await useSettings.getState().installAppUpdate();
+
+    const s = useSettings.getState();
+    expect(s.appUpdate.phase).toBe("failed");
+    expect(s.appUpdate.phase === "failed" && s.appUpdate.error.message).toContain("保持当前版本");
+  });
+
+  it("启动探测发现新版本时同步到设置页,但不打断正在进行的安装", async () => {
+    await useSettings.getState().attachAppUpdateListener();
+
+    listeners.get("app-update://available")?.({ payload: "0.4.0" });
+    expect(useSettings.getState().appUpdate).toEqual({ phase: "available", version: "0.4.0" });
+
+    // 正在安装时事件不该把状态打回"可用"——那会让按钮从"正在安装"跳回"下载并安装"
+    useSettings.setState({ appUpdate: { phase: "installing", version: "0.4.0" } });
+    listeners.get("app-update://available")?.({ payload: "0.4.0" });
+    expect(useSettings.getState().appUpdate).toEqual({ phase: "installing", version: "0.4.0" });
   });
 
   it("命令失败时复位检查中并亮错误", async () => {

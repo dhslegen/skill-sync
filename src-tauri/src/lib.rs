@@ -81,6 +81,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // 定时更新检查(M2 任务 3)。内建库没配置(本地开发构建)就不起——
             // 起了也只会每轮报错刷日志。
@@ -88,6 +89,8 @@ pub fn run() {
                 app.manage(scheduler);
             }
             setup_tray(app)?;
+            // App 自更新的启动探测(M2 任务 5;更新源未配置或开关关闭时内部直接返回)
+            commands::spawn_app_update_probe(app.handle().clone());
             Ok(())
         })
         // 关窗 = 缩到托盘(已拍板):拦下关闭请求,只隐藏窗口。
@@ -107,6 +110,9 @@ pub fn run() {
             commands::agents_set_disabled,
             commands::open_library_url,
             commands::update_check_now,
+            commands::app_update_check,
+            commands::app_update_install,
+            commands::app_restart,
             commands::auth_login_oauth,
             commands::auth_login_token,
             commands::auth_status,

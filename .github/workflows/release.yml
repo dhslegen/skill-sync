@@ -27,6 +27,9 @@ jobs:
           CID: ${{ secrets.SKILLSYNC_OAUTH_CLIENT_ID }}
           REPO: ${{ secrets.SKILLSYNC_BUILTIN_REPO }}
           BRANCH: ${{ secrets.SKILLSYNC_BUILTIN_BRANCH }}
+          UPDATE_URL: ${{ secrets.SKILLSYNC_UPDATE_URL }}
+          UPDATE_PUBKEY: ${{ secrets.SKILLSYNC_UPDATE_PUBKEY }}
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           fail=0
           for pair in "SKILLSYNC_BUILTIN_GITEA_URL=$URL" "SKILLSYNC_OAUTH_CLIENT_ID=$CID" \
@@ -34,6 +37,15 @@ jobs:
             name="${pair%%=*}"; value="${pair#*=}"
             if [ -z "$value" ]; then
               echo "::error::缺少 secret $name —— 构建出的包连不上公司技能库,拒绝发布"
+              fail=1
+            fi
+          done
+          # App 自更新(M2 任务 5):缺更新源/公钥/签名私钥,发布出去的包永远收不到更新
+          for pair in "SKILLSYNC_UPDATE_URL=$UPDATE_URL" "SKILLSYNC_UPDATE_PUBKEY=$UPDATE_PUBKEY" \
+                      "TAURI_SIGNING_PRIVATE_KEY=$SIGNING_KEY"; do
+            name="${pair%%=*}"; value="${pair#*=}"
+            if [ -z "$value" ]; then
+              echo "::error::缺少 secret $name —— 发布出去的包永远收不到应用更新,拒绝发布"
               fail=1
             fi
           done
@@ -73,6 +85,11 @@ jobs:
           SKILLSYNC_OAUTH_CLIENT_ID: ${{ secrets.SKILLSYNC_OAUTH_CLIENT_ID }}
           SKILLSYNC_BUILTIN_REPO: ${{ secrets.SKILLSYNC_BUILTIN_REPO }}
           SKILLSYNC_BUILTIN_BRANCH: ${{ secrets.SKILLSYNC_BUILTIN_BRANCH }}
+          # App 自更新:更新源与公钥编译进包;私钥给产物出 .sig(M2 任务 5)
+          SKILLSYNC_UPDATE_URL: ${{ secrets.SKILLSYNC_UPDATE_URL }}
+          SKILLSYNC_UPDATE_PUBKEY: ${{ secrets.SKILLSYNC_UPDATE_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # macOS 签名与公证(证书到位后配置这四个 secrets 即自动生效)
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -80,7 +97,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: pnpm tauri build
+        # createUpdaterArtifacts 只在发布构建打开(主 conf 不放,日常构建无签名私钥会失败)
+        run: pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
 
       - name: 收集产物 (macOS)
         if: runner.os == 'macOS'
@@ -89,6 +107,9 @@ jobs:
         run: |
           mkdir -p dist-release
           cp src-tauri/target/release/bundle/dmg/*.dmg dist-release/ 2>/dev/null || true
+          # updater 工件:压缩的 .app + minisign 签名(latest.json 指向它们)
+          cp src-tauri/target/release/bundle/macos/*.app.tar.gz dist-release/ 2>/dev/null || true
+          cp src-tauri/target/release/bundle/macos/*.app.tar.gz.sig dist-release/ 2>/dev/null || true
           if [ -z "$SIGNING_IDENTITY" ]; then
             for f in dist-release/*.dmg; do
               [ -e "$f" ] && mv "$f" "${f%.dmg}-unsigned.dmg"
@@ -103,6 +124,8 @@ jobs:
           mkdir -p dist-release
           cp src-tauri/target/release/bundle/nsis/*.exe dist-release/ 2>/dev/null || true
           cp src-tauri/target/release/bundle/msi/*.msi dist-release/ 2>/dev/null || true
+          # updater 工件:NSIS 安装包的 minisign 签名(latest.json 指向 exe + sig)
+          cp src-tauri/target/release/bundle/nsis/*.sig dist-release/ 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         with:

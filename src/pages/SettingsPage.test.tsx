@@ -30,7 +30,14 @@ function reset() {
   localStorage.clear();
   useAppearance.setState({ mode: "light", accent: "clay", prefersDark: false });
   useSession.setState({ status: "signedOut", user: null, error: null });
-  useSettings.setState({ agents: null, autoUpdate: null, error: null });
+  useSettings.setState({
+    agents: null,
+    autoUpdate: null,
+    error: null,
+    lastReport: null,
+    checking: false,
+    appUpdate: { phase: "idle" },
+  });
 }
 
 describe("设置页 · 账号区", () => {
@@ -169,6 +176,31 @@ describe("设置页 · 更新区", () => {
     await userEvent.click(await screen.findByRole("button", { name: "立即检查" }));
 
     expect(invoke).toHaveBeenCalledWith("update_check_now", undefined);
+  });
+
+  it("App 自更新:点检查 → 亮出新版本号 → 按钮变成下载并安装", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "auto_update_get") return { skills: { enabled: true, intervalHours: 4 }, app: true };
+      if (cmd === "app_update_check") return { status: "available", version: "0.3.0" };
+      return undefined;
+    });
+    render(<SettingsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "检查应用更新" }));
+
+    expect(await screen.findByText("新版本 0.3.0 可用")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "下载并安装" })).toBeInTheDocument();
+  });
+
+  it("App 自更新:装完提示重启,按钮变成立即重启", async () => {
+    useSettings.setState({ appUpdate: { phase: "installed" } });
+    render(<SettingsPage />);
+
+    expect(await screen.findByText("安装完成,重启后使用新版本")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "立即重启" }));
+
+    expect(invoke).toHaveBeenCalledWith("app_restart", undefined);
   });
 
   it("最近一轮结果用人话摘要显示,不露目录名", async () => {

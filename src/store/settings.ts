@@ -8,9 +8,13 @@ import { t } from "@/i18n";
 import {
   agentsDetected,
   agentsSetDisabled,
+  appRestart,
+  appUpdateCheck,
+  appUpdateInstall,
   autoUpdateGet,
   autoUpdateSet,
   isAppError,
+  listenAppUpdateAvailable,
   listenSchedulerReport,
   updateCheckNow,
   type AppError,
@@ -25,6 +29,16 @@ function toAppError(raw: unknown): AppError {
     : { code: "IPC_FAILED", message: t("error.generic"), detail: String(raw) };
 }
 
+/** App 自更新的界面状态机。 */
+export type AppUpdatePhase =
+  | { phase: "idle" }
+  | { phase: "checking" }
+  | { phase: "upToDate" }
+  | { phase: "available"; version: string }
+  | { phase: "installing"; version: string }
+  | { phase: "installed" }
+  | { phase: "failed"; error: AppError };
+
 interface SettingsState {
   agents: DetectedAgent[] | null;
   autoUpdate: AutoUpdate | null;
@@ -33,6 +47,7 @@ interface SettingsState {
   lastReport: CheckReport | null;
   /** 「立即检查」按下后、结果事件回来前为 true。 */
   checking: boolean;
+  appUpdate: AppUpdatePhase;
   load: () => Promise<void>;
   toggleAgent: (name: string) => Promise<void>;
   /** 三档之一:手动(enabled=false,频率保留)/ 每 4 小时 / 每天。 */
@@ -41,6 +56,11 @@ interface SettingsState {
   checkNow: () => Promise<void>;
   /** 启动时挂一次:检查结果落进 store(设置页与后续的通知都从这拿)。 */
   attachReportListener: () => Promise<() => void>;
+  checkAppUpdate: () => Promise<void>;
+  installAppUpdate: () => Promise<void>;
+  restartApp: () => Promise<void>;
+  /** 启动时挂一次:启动探测发现新版本时,设置页同步亮出来。 */
+  attachAppUpdateListener: () => Promise<() => void>;
 }
 
 export const useSettings = create<SettingsState>((set, get) => ({
@@ -49,6 +69,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
   error: null,
   lastReport: null,
   checking: false,
+  appUpdate: { phase: "idle" },
 
   load: async () => {
     try {
@@ -115,6 +136,51 @@ export const useSettings = create<SettingsState>((set, get) => ({
   attachReportListener: () => {
     return listenSchedulerReport((report) => {
       set({ lastReport: report, checking: false });
+    });
+  },
+
+  checkAppUpdate: async () => {
+    set({ appUpdate: { phase: "checking" } });
+    try {
+      const status = await appUpdateCheck();
+      set({
+        appUpdate:
+          status.status === "available"
+            ? { phase: "available", version: status.version }
+            : { phase: "upToDate" },
+      });
+    } catch (raw) {
+      set({ appUpdate: { phase: "failed", error: toAppError(raw) } });
+    }
+  },
+
+  installAppUpdate: async () => {
+    const { appUpdate } = get();
+    if (appUpdate.phase !== "available") return;
+    set({ appUpdate: { phase: "installing", version: appUpdate.version } });
+    try {
+      await appUpdateInstall();
+      set({ appUpdate: { phase: "installed" } });
+    } catch (raw) {
+      set({ appUpdate: { phase: "failed", error: toAppError(raw) } });
+    }
+  },
+
+  restartApp: async () => {
+    await appRestart().catch(() => {
+      // 重启失败极罕见(权限/被安全软件拦):留在"已安装"态,用户手动重启同样生效
+    });
+  },
+
+  attachAppUpdateListener: () => {
+    return listenAppUpdateAvailable((version) => {
+      // 用黑名单而不是白名单:除了"正在装/装完"这两个不能被打断的状态,
+      // 其余(含上一次检查失败)都该让位给"有新版本可用"——白名单会漏掉
+      // 以后新增的中间态,让事件悄悄失效。
+      const { phase } = get().appUpdate;
+      if (phase !== "installing" && phase !== "installed") {
+        set({ appUpdate: { phase: "available", version } });
+      }
     });
   },
 }));

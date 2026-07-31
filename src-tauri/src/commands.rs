@@ -111,6 +111,117 @@ pub fn update_check_now(app: tauri::AppHandle) -> Result<(), AppError> {
     Ok(())
 }
 
+// ============================================================ App 自更新(M2 任务 5)
+
+/// 构造 updater:地址与公钥都是编译期注入的,conf 里不放任何真实值。
+fn app_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, AppError> {
+    use tauri_plugin_updater::UpdaterExt;
+    let (endpoint, pubkey) = builtin::update_source()?;
+    let url = endpoint.parse().map_err(|e| {
+        AppError::new("UPDATE_NOT_CONFIGURED", "应用更新源地址不合法,请向 IT 反馈")
+            .with_detail(format!("{e}: {endpoint}"))
+    })?;
+    app.updater_builder()
+        .endpoints(vec![url])
+        .map_err(update_err)?
+        .pubkey(pubkey)
+        .build()
+        .map_err(update_err)
+}
+
+fn update_err(e: tauri_plugin_updater::Error) -> AppError {
+    AppError::new("NET_UPDATE", "检查应用更新失败,请确认已接入公司内网后重试")
+        .with_detail(e.to_string())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum AppUpdateStatus {
+    UpToDate,
+    Available { version: String },
+}
+
+#[tauri::command]
+pub async fn app_update_check(app: tauri::AppHandle) -> Result<AppUpdateStatus, AppError> {
+    match app_updater(&app)?.check().await.map_err(update_err)? {
+        Some(update) => Ok(AppUpdateStatus::Available {
+            version: update.version.clone(),
+        }),
+        None => Ok(AppUpdateStatus::UpToDate),
+    }
+}
+
+/// 下载并安装新版本。签名校验在插件内完成:校验不过整个安装终止,不会落半个字节。
+/// 安装完成**不自动重启**——用户可能正开着别的操作,由前端提示后调 `app_restart`。
+#[tauri::command]
+pub async fn app_update_install(app: tauri::AppHandle) -> Result<(), AppError> {
+    let Some(update) = app_updater(&app)?.check().await.map_err(update_err)? else {
+        return Err(AppError::new("UPDATE_GONE", "当前已是最新版本,无需安装"));
+    };
+    let channel = "app-update://progress";
+    update
+        .download_and_install(
+            |_chunk, _total| {},
+            || {
+                // 下载完成、开始安装(阶段级进度,与获取流程同一诚实粒度)
+            },
+        )
+        .await
+        .map_err(|e| {
+            AppError::new("UPDATE_INSTALL_FAILED", "应用更新安装失败,已保持当前版本")
+                .with_detail(e.to_string())
+        })?;
+    let _ = app.emit(channel, "installed");
+    tracing::info!(version = %update.version, "应用更新已安装,等待重启生效");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn app_restart(app: tauri::AppHandle) {
+    app.restart();
+}
+
+/// 启动时的一次性 App 更新检查(config.autoUpdate.app 开着且更新源已配置才跑)。
+/// 假设:每次启动至多提醒一次,不做"忽略此版本"记忆——那是 M3 打磨项。
+pub fn spawn_app_update_probe(app: tauri::AppHandle) {
+    if !builtin::update_configured() {
+        return;
+    }
+    let enabled = app_store()
+        .and_then(|s| s.load_config())
+        .map(|l| l.value.auto_update.app)
+        .unwrap_or(true);
+    if !enabled {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        // 错开 skill 检查的首轮(10s),也给网络起身时间
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        match app_update_check(app.clone()).await {
+            Ok(AppUpdateStatus::Available { version }) => {
+                let _ = app.emit("app-update://available", &version);
+                use tauri_plugin_notification::NotificationExt;
+                let body = format!("SkillSync {version} 已发布,可到「设置」页安装。");
+                if let Err(err) = app
+                    .notification()
+                    .builder()
+                    .title("应用更新")
+                    .body(&body)
+                    .show()
+                {
+                    tracing::warn!(error = %err, "应用更新通知发送失败");
+                }
+            }
+            Ok(AppUpdateStatus::UpToDate) => {
+                tracing::info!("启动检查:应用已是最新");
+            }
+            Err(err) => {
+                tracing::warn!(code = %err.code, "启动时应用更新检查未完成");
+            }
+        }
+    });
+}
+
 /// 组装并启动定时更新检查。内建库没配置时返回 `None`(不起后台任务)。
 pub fn spawn_scheduler(app: tauri::AppHandle) -> Option<scheduler::Scheduler> {
     let (base_url, repo) = builtin_store_target().ok()?;

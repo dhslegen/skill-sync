@@ -241,7 +241,63 @@ function UpdatesSection() {
         </div>
       </Row>
       <CheckNowRow />
+      <AppUpdateRow />
     </Section>
+  );
+}
+
+/** App 自更新行:检查 → 有新版 → 下载安装 → 提示重启。 */
+function AppUpdateRow() {
+  const appUpdate = useSettings((s) => s.appUpdate);
+  const checkAppUpdate = useSettings((s) => s.checkAppUpdate);
+  const installAppUpdate = useSettings((s) => s.installAppUpdate);
+  const restartApp = useSettings((s) => s.restartApp);
+
+  const desc = (() => {
+    switch (appUpdate.phase) {
+      case "upToDate":
+        return t("settings.appUpToDate");
+      case "available":
+      case "installing":
+        return t("settings.appAvailable", { version: appUpdate.version });
+      case "installed":
+        return t("settings.appInstalled");
+      case "failed":
+        return appUpdate.error.message;
+      default:
+        return t("settings.appUpdateHint");
+    }
+  })();
+
+  const button = (() => {
+    switch (appUpdate.phase) {
+      case "checking":
+        return { label: t("settings.checking"), action: undefined, disabled: true };
+      case "available":
+        return { label: t("settings.appInstall"), action: installAppUpdate, disabled: false };
+      case "installing":
+        return { label: t("settings.appInstalling"), action: undefined, disabled: true };
+      case "installed":
+        return { label: t("settings.appRestart"), action: restartApp, disabled: false };
+      default:
+        return { label: t("settings.appCheck"), action: checkAppUpdate, disabled: false };
+    }
+  })();
+
+  return (
+    <Row>
+      <RowText label={t("settings.appCheck")} desc={desc} />
+      <div className="ml-auto">
+        <button
+          type="button"
+          disabled={button.disabled}
+          onClick={() => button.action && void button.action()}
+          className="h-7 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-60"
+        >
+          {button.label}
+        </button>
+      </div>
+    </Row>
   );
 }
 

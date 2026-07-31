@@ -212,6 +212,8 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 
 ## 编译期注入的常量(源码中不得出现真实值)
 `SKILLSYNC_BUILTIN_GITEA_URL` / `SKILLSYNC_OAUTH_CLIENT_ID` / `SKILLSYNC_BUILTIN_REPO` / `SKILLSYNC_BUILTIN_BRANCH`
+App 自更新(M2 任务 5)另有 `SKILLSYNC_UPDATE_URL`(latest.json 地址)/ `SKILLSYNC_UPDATE_PUBKEY`
+(minisign 公钥),签名私钥走 `TAURI_SIGNING_PRIVATE_KEY`(只在构建机上,绝不进仓库)。
 
 ## 开发纪律
 - M1 按交接包 3.5 的任务 1→13 顺序推进,**已全部完成**;M2 开工前先按同粒度做任务分解
@@ -237,7 +239,7 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
 | 2 设置页 B | ✅ | AI 工具开关(config.disabledAgents,只影响默认勾选)+ 更新三档(手动/4h/每天,「手动」保留频率)+ open_library_url(同源白名单)接通评审链接;9+16 新测试,5 处注入验证 |
 | 3 scheduler | ✅ | run_check(head 未变不下载)+ `BatchAgents::FromAccount`(更新用账上 agents,自动流程不改写关联)+ 注入闭包的调度循环(paused clock 测频率/重排/关断)+ tracing 滚动日志;9+4 新测试,5 处注入验证 |
 | 4 托盘+通知 | ✅ | 托盘菜单(打开/立即检查/退出)+ 关窗缩托盘(拍板;`ExitRequested` 只放行显式退出)+ 通知文案纯函数(例行轮次不打扰/只报数量/禁术语,单测钉住);3 新测试,2 处注入验证;托盘交互真机验收见已知待处理 |
-| 5 App 自更新 | ⬜ | tauri-plugin-updater + minisign(未签名先打通) |
+| 5 App 自更新 | ✅ | tauri-plugin-updater(endpoint/pubkey 编译期注入)+ 启动探测与通知 + 设置页检查/安装/重启 + 发布通道 overlay 开 createUpdaterArtifacts(主 conf 不开)+ 部署指南 §7;3+6 新测试,5 处注入验证;**真实更新源联调待外部条件** |
 | 6 收尾打磨 | ⬜ | 占位替换重试 + Windows 外观(可选) |
 
 | 任务 | 状态 | 关键产物 |
@@ -324,6 +326,11 @@ docs/                # ⚠️ 设计方案/交接包/UI 规范/UI-Demo **不进�
   远低于 DoD 的 2s / 300ms。但那是本机 docker,真实内网要加网络往返与更大的压缩包。
   `tests/store_index.rs` 里的 300ms 断言跑在 wiremock 上、进 CI;`tests/store_live.rs` 需要
   `./fixtures/init.sh`,环境不在时自动跳过(会往 fixture 建 `store-perf-50` 分支,幂等复用)。
+- **App 自更新的端到端联调待外部条件**(M2 任务 5):代码侧与发布通道已就绪,
+  但要真验一次"旧版本 → 检出 → 装上 → 重启后版本变了",需要①minisign 密钥对
+  ②内网静态更新源落点 ③一次真实的双版本发布。步骤写在部署指南 §7.4。
+  已自动验证:未注入更新源时报 `UPDATE_NOT_CONFIGURED`、发布通道 overlay 与三个
+  新变量的闸门、前端状态机(装完不自动重启/安装中不被事件打断/失败不吞成成功)。
 - **托盘/关窗/通知的交互行为待真机人工验收**(M2 任务 4,GUI 无法单测):
   ①托盘图标与三个菜单项 ②关窗后进程常驻、托盘「打开」能回来 ③「退出」真退出
   ④更新成功轮次弹系统通知(macOS 首次需授权)。已自动验证:dev 起动托盘构建不
