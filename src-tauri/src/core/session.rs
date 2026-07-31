@@ -155,6 +155,134 @@ pub fn logout(store: &dyn CredentialStore, account: &str) -> Result<(), AppError
     store.delete(account)
 }
 
+// ============================================================ GitHub 源(M3 任务 5)
+//
+// 与 Gitea 三件事平行的一套:登录(device flow / PAT)、查状态、退出(退出共用
+// [`logout`],凭证本来就按 registryId 分开存)。不并进上面的函数——两家取用户
+// 信息的端点与响应形状完全不同,硬参数化只会让两边都难读。
+
+use crate::core::github::{self, GithubClient};
+
+impl From<github::GithubUser> for SessionUser {
+    fn from(u: github::GithubUser) -> Self {
+        let name = u.name.unwrap_or_default();
+        Self {
+            // 没填全名就退回登录名,界面上总要有个称呼(与 Gitea 同规则)
+            display_name: if name.trim().is_empty() {
+                u.login.clone()
+            } else {
+                name
+            },
+            login: u.login,
+            avatar_url: u.avatar_url,
+        }
+    }
+}
+
+/// device flow 的等待段:按 GitHub 给的间隔轮询,直到拿到令牌或明确失败。
+/// `slow_down` 按 RFC 8628 把间隔加 5 秒;超过 `expires_in` 报超时。
+pub async fn github_login_device(
+    http: &reqwest::Client,
+    base_url: &str,
+    client_id: &str,
+    store: &dyn CredentialStore,
+    account: &str,
+    codes: &github::DeviceCodes,
+) -> Result<SessionUser, AppError> {
+    let deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_secs(codes.expires_in);
+    let mut interval = codes.interval.max(1);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(AppError::new(
+                "AUTH_DEVICE_EXPIRED",
+                "这次登录等待太久已过期,请重新发起",
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+        match github::poll_device_token(http, base_url, client_id, &codes.device_code).await? {
+            github::DevicePoll::Pending => {}
+            github::DevicePoll::SlowDown => interval += 5,
+            github::DevicePoll::Token(token) => {
+                return github_finish_login(http, base_url, store, account, token).await
+            }
+        }
+    }
+}
+
+/// GitHub 的个人令牌登录(备用通道,与 Gitea 的 [`login_with_token`] 同语义)。
+pub async fn github_login_token(
+    http: &reqwest::Client,
+    base_url: &str,
+    store: &dyn CredentialStore,
+    account: &str,
+    token: &str,
+) -> Result<SessionUser, AppError> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(AppError::new("AUTH_EMPTY_TOKEN", "请填写登录凭证"));
+    }
+    github_finish_login(http, base_url, store, account, token.to_string()).await
+}
+
+/// 校验凭证可用后再落盘;校验不过就不写(与 Gitea 的 finish_login 同规则)。
+async fn github_finish_login(
+    http: &reqwest::Client,
+    base_url: &str,
+    store: &dyn CredentialStore,
+    account: &str,
+    token: String,
+) -> Result<SessionUser, AppError> {
+    let client = GithubClient::new(base_url, Some(token.clone()), http.clone());
+    let user = client.current_user().await.map_err(|e| {
+        if e.code == "AUTH_INVALID" {
+            AppError::new("AUTH_INVALID_TOKEN", "登录凭证无效,请检查后重新填写")
+                .with_detail(e.detail.unwrap_or(e.message))
+        } else {
+            e
+        }
+    })?;
+    store.save(
+        account,
+        &Credentials {
+            access_token: token,
+            refresh_token: String::new(),
+            expires_at: 0,
+        },
+    )?;
+    Ok(user.into())
+}
+
+/// GitHub 源的登录态。令牌被吊销时清掉凭证按未登录报,与 Gitea 的 [`status`] 同语义。
+pub async fn github_status(
+    http: &reqwest::Client,
+    base_url: &str,
+    store: &dyn CredentialStore,
+    account: &str,
+) -> Result<SessionStatus, AppError> {
+    let Some(creds) = store.load(account)? else {
+        return Ok(SessionStatus {
+            logged_in: false,
+            user: None,
+        });
+    };
+    let client = GithubClient::new(base_url, Some(creds.access_token), http.clone());
+    match client.current_user().await {
+        Ok(user) => Ok(SessionStatus {
+            logged_in: true,
+            user: Some(user.into()),
+        }),
+        Err(e) if e.code == "AUTH_INVALID" => {
+            store.delete(account)?;
+            Ok(SessionStatus {
+                logged_in: false,
+                user: None,
+            })
+        }
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,5 +592,190 @@ mod tests {
         let saved = store.load("company").unwrap().unwrap();
         assert_eq!(saved.access_token, "at");
         assert_eq!(saved.refresh_token, "rt");
+    }
+}
+
+#[cfg(test)]
+mod github_tests {
+    use super::*;
+    use crate::core::auth::MemoryStore;
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn user_json() -> &'static str {
+        r#"{"login":"wang","name":"王工","avatar_url":"http://x/a.png"}"#
+    }
+
+    fn codes(interval: u64, expires_in: u64) -> github::DeviceCodes {
+        github::DeviceCodes {
+            device_code: "dev-123".into(),
+            user_code: "ABCD-1234".into(),
+            verification_uri: "https://github.example/login/device".into(),
+            expires_in,
+            interval,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn device_flow_wins_through_pending_and_slow_down() {
+        let server = MockServer::start().await;
+        // 前两轮:等待授权;第三轮:要求放慢;第四轮:发令牌。
+        // GitHub 对轮询期错误回 200 + {"error": ...},不是非 2xx——形状按官方文档。
+        Mock::given(method("POST"))
+            .and(path("/login/oauth/access_token"))
+            .and(body_string_contains("device_code=dev-123"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"error":"authorization_pending"}"#),
+            )
+            .up_to_n_times(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/login/oauth/access_token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"error":"slow_down"}"#))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/login/oauth/access_token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"access_token":"gho_tok","token_type":"bearer"}"#),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/user"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(user_json()))
+            .mount(&server)
+            .await;
+
+        let store = MemoryStore::default();
+        let user = github_login_device(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "client-gh",
+            &store,
+            "custom-2",
+            &codes(1, 900),
+        )
+        .await
+        .expect("pending → slow_down → token 应最终成功");
+
+        assert_eq!(user.display_name, "王工");
+        let saved = store.load("custom-2").unwrap().expect("令牌应入凭证库");
+        assert_eq!(saved.access_token, "gho_tok");
+        // GitHub OAuth App 令牌默认长期有效:不设过期、无续期令牌
+        assert_eq!(saved.expires_at, 0);
+        assert!(saved.refresh_token.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn denied_and_expired_become_readable_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/login/oauth/access_token"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(r#"{"error":"access_denied"}"#),
+            )
+            .mount(&server)
+            .await;
+        let store = MemoryStore::default();
+        let err = github_login_device(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "client-gh",
+            &store,
+            "custom-2",
+            &codes(1, 900),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "AUTH_DEVICE_DENIED");
+        assert!(store.load("custom-2").unwrap().is_none(), "拒绝授权不得落任何凭证");
+
+        // expires_in=0:一次都不该去轮询,直接超时(deadline 在首轮 sleep 前就到了)
+        let err = github_login_device(
+            &reqwest::Client::new(),
+            "http://127.0.0.1:1", // 真发请求就会连接失败,报错码会不一样——这正是判别器
+            "client-gh",
+            &store,
+            "custom-2",
+            &codes(1, 0),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "AUTH_DEVICE_EXPIRED");
+    }
+
+    #[tokio::test]
+    async fn github_pat_login_validates_before_storing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/user"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_string(r#"{"message":"Bad credentials"}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let store = MemoryStore::default();
+        let err = github_login_token(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &store,
+            "custom-2",
+            "ghp_bad",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "AUTH_INVALID_TOKEN");
+        assert!(store.load("custom-2").unwrap().is_none(), "校验不过的凭证绝不落盘");
+
+        // 空凭证在本地就拦下,不发请求
+        let err = github_login_token(&reqwest::Client::new(), &server.uri(), &store, "custom-2", "  ")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "AUTH_EMPTY_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn github_status_clears_revoked_credentials() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/user"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_string(r#"{"message":"Bad credentials"}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let store = MemoryStore::default();
+        store
+            .save(
+                "custom-2",
+                &Credentials {
+                    access_token: "gho_revoked".into(),
+                    refresh_token: String::new(),
+                    expires_at: 0,
+                },
+            )
+            .unwrap();
+
+        let status = github_status(&reqwest::Client::new(), &server.uri(), &store, "custom-2")
+            .await
+            .unwrap();
+        assert!(!status.logged_in);
+        assert!(
+            store.load("custom-2").unwrap().is_none(),
+            "被吊销的凭证应当场清掉,而不是每次查询都再撞一次 401"
+        );
+
+        // 没有凭证:未登录,不发请求(没有 mock 命中断言,靠 wiremock 校验器兜底)
+        let status = github_status(&reqwest::Client::new(), &server.uri(), &store, "custom-9")
+            .await
+            .unwrap();
+        assert!(!status.logged_in);
     }
 }

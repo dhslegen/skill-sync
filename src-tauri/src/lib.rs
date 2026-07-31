@@ -136,6 +136,8 @@ pub fn run() {
             commands::agents_set_disabled,
             commands::open_library_url,
             commands::registry_list,
+            commands::auth_device_start,
+            commands::auth_device_wait,
             commands::registry_add,
             commands::registry_remove,
             commands::update_check_now,

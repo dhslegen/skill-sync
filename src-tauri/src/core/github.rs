@@ -173,6 +173,132 @@ async fn parse_json<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> 
     })
 }
 
+/// GitHub 的用户信息(`GET /user`)。
+#[derive(Debug, Clone, Deserialize)]
+pub struct GithubUser {
+    pub login: String,
+    /// 全名可以没填(GitHub 返回 null)。
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub avatar_url: String,
+}
+
+impl GithubClient {
+    /// 当前凭证对应的用户。用于登录校验与状态查询。
+    pub async fn current_user(&self) -> Result<GithubUser, AppError> {
+        let resp = self.send(format!("{}/user", self.api_base)).await?;
+        parse_json(resp).await
+    }
+}
+
+// ============================================================ device flow(M3 任务 5)
+//
+// RFC 8628 + GitHub 的具体端点(挂在 base_url,不是 api base):
+//   POST {base}/login/device/code            → 设备码 + 用户码
+//   POST {base}/login/oauth/access_token     → 轮询换令牌
+// 公共客户端无 secret;GitHub OAuth App 的令牌默认长期有效(refresh 为空、
+// expires_at=0),`ensure_access_token` 对这类凭证永不触发续期端点。
+// 假设:scope 取 `repo`——私有库读取与(任务 5b)分享回推都需要它,
+// 一次授权覆盖全部用途,避免功能逐个再弹授权。
+
+/// `login/device/code` 的响应。字段名对齐 GitHub(snake_case),
+/// 前端展示走 commands 层的 camelCase DTO,不共用这个类型。
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceCodes {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub expires_in: u64,
+    pub interval: u64,
+}
+
+/// 发起 device flow:拿用户码与轮询参数。
+pub async fn start_device_flow(
+    http: &reqwest::Client,
+    base_url: &str,
+    client_id: &str,
+) -> Result<DeviceCodes, AppError> {
+    let url = format!("{}/login/device/code", base_url.trim_end_matches('/'));
+    let resp = http
+        .post(url)
+        .header("accept", "application/json")
+        .form(&[("client_id", client_id), ("scope", "repo")])
+        .send()
+        .await
+        .map_err(|e| {
+            AppError::new("NET_UNREACHABLE", "连不上 GitHub,请检查网络或代理设置")
+                .with_detail(e.to_string())
+        })?;
+    let resp = check_status(resp).await?;
+    parse_json(resp).await
+}
+
+/// 一次轮询的结果。
+#[derive(Debug)]
+pub enum DevicePoll {
+    /// 用户还没在浏览器里完成授权,按原间隔继续。
+    Pending,
+    /// GitHub 要求放慢(间隔 +5 秒,RFC 8628 §3.5)。
+    SlowDown,
+    /// 拿到令牌。
+    Token(String),
+}
+
+/// 轮询一次令牌端点。`access_denied`/`expired_token` 直接成为人话错误。
+pub async fn poll_device_token(
+    http: &reqwest::Client,
+    base_url: &str,
+    client_id: &str,
+    device_code: &str,
+) -> Result<DevicePoll, AppError> {
+    #[derive(Deserialize)]
+    struct Poll {
+        #[serde(default)]
+        access_token: Option<String>,
+        #[serde(default)]
+        error: Option<String>,
+    }
+
+    let url = format!("{}/login/oauth/access_token", base_url.trim_end_matches('/'));
+    let resp = http
+        .post(url)
+        .header("accept", "application/json")
+        .form(&[
+            ("client_id", client_id),
+            ("device_code", device_code),
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+        ])
+        .send()
+        .await
+        .map_err(|e| {
+            AppError::new("NET_UNREACHABLE", "连不上 GitHub,请检查网络或代理设置")
+                .with_detail(e.to_string())
+        })?;
+    // GitHub 对轮询期的"错误"也回 200 + {"error": ...},不能只看状态码
+    let resp = check_status(resp).await?;
+    let poll: Poll = parse_json(resp).await?;
+    if let Some(token) = poll.access_token.filter(|t| !t.is_empty()) {
+        return Ok(DevicePoll::Token(token));
+    }
+    match poll.error.as_deref() {
+        Some("authorization_pending") => Ok(DevicePoll::Pending),
+        Some("slow_down") => Ok(DevicePoll::SlowDown),
+        Some("access_denied") => Err(AppError::new(
+            "AUTH_DEVICE_DENIED",
+            "你在授权页取消了这次登录",
+        )),
+        Some("expired_token") => Err(AppError::new(
+            "AUTH_DEVICE_EXPIRED",
+            "这次登录等待太久已过期,请重新发起",
+        )),
+        other => Err(
+            AppError::new("AUTH_DEVICE_FAILED", "登录未能完成,请重试")
+                .with_detail(format!("error={other:?}")),
+        ),
+    }
+}
+
 impl RepoSource for GithubClient {
     async fn branch_head(&self, r: &RepoRef) -> Result<BranchHead, AppError> {
         GithubClient::branch_head(self, r).await

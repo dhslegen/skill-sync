@@ -6,7 +6,7 @@ use tauri::{Emitter, Manager};
 
 use crate::core::acquire;
 use crate::core::agents::{AgentRegistry, DetectedAgent, SystemEnv};
-use crate::core::auth::{self, KeyringStore, OAuthConfig};
+use crate::core::auth::{self, CredentialStore, KeyringStore, OAuthConfig};
 use crate::core::builtin;
 use crate::core::gitea::{GiteaClient, RepoRef};
 use crate::core::github;
@@ -507,23 +507,135 @@ pub struct LoginTokenArgs {
 #[tauri::command]
 pub async fn auth_login_token(args: LoginTokenArgs) -> Result<SessionUser, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    session::login_with_token(
-        &http_client_for(registry_id)?,
-        &auth_config(registry_id)?,
-        &KeyringStore,
-        registry_id,
-        &args.token,
-    )
-    .await
+    let resolved = resolve_registry(registry_id)?;
+    match resolved.kind {
+        registry::RegistryKind::Gitea => {
+            session::login_with_token(
+                &http_client_for(registry_id)?,
+                &auth_config(registry_id)?,
+                &KeyringStore,
+                registry_id,
+                &args.token,
+            )
+            .await
+        }
+        registry::RegistryKind::Github => {
+            session::github_login_token(
+                &http_client_for(registry_id)?,
+                &resolved.base_url,
+                &KeyringStore,
+                registry_id,
+                &args.token,
+            )
+            .await
+        }
+    }
 }
 
 #[tauri::command]
 pub async fn auth_status(args: RegistryArg) -> Result<SessionStatus, AppError> {
-    session::status(
+    let resolved = resolve_registry(args.id())?;
+    match resolved.kind {
+        registry::RegistryKind::Gitea => {
+            session::status(
+                &http_client_for(args.id())?,
+                &auth_config(args.id())?,
+                &KeyringStore,
+                args.id(),
+            )
+            .await
+        }
+        registry::RegistryKind::Github => {
+            session::github_status(
+                &http_client_for(args.id())?,
+                &resolved.base_url,
+                &KeyringStore,
+                args.id(),
+            )
+            .await
+        }
+    }
+}
+
+// ============================================================ GitHub device flow(M3 任务 5)
+
+/// `auth_device_start` 的返回。`deviceCode` 由前端在 `auth_device_wait` 原样带回,
+/// 不落盘不进日志(短命中间凭证)。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceStartView {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub expires_in: u64,
+    pub interval: u64,
+}
+
+/// 发起 GitHub 一键登录:拿用户码并打开授权页。等待段在 `auth_device_wait`。
+#[tauri::command]
+pub async fn auth_device_start(args: RegistryArg) -> Result<DeviceStartView, AppError> {
+    let resolved = resolve_registry(args.id())?;
+    if resolved.kind != registry::RegistryKind::Github {
+        return Err(AppError::new(
+            "AUTH_DEVICE_UNSUPPORTED",
+            "这个技能库来源请使用原有的登录方式",
+        ));
+    }
+    let client_id = builtin::github_client_id()?;
+    let codes = github::start_device_flow(
         &http_client_for(args.id())?,
-        &auth_config(args.id())?,
+        &resolved.base_url,
+        client_id,
+    )
+    .await?;
+    // 先开授权页再返回:用户看到用户码时浏览器已经在等着输入了
+    session::BrowserOpener::open(&SystemBrowser, &codes.verification_uri)?;
+    Ok(DeviceStartView {
+        device_code: codes.device_code,
+        user_code: codes.user_code,
+        verification_uri: codes.verification_uri,
+        expires_in: codes.expires_in,
+        interval: codes.interval,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceWaitArgs {
+    #[serde(default)]
+    pub registry_id: Option<String>,
+    pub device_code: String,
+    pub expires_in: u64,
+    pub interval: u64,
+}
+
+/// device flow 的等待段:轮询到用户在浏览器完成授权(或明确失败)为止。
+/// 假设:前端取消只是不再等结果,轮询在 core 里跑到过期自然结束——GitHub 的
+/// 轮询端点无副作用;若用户随后仍完成了授权,凭证照常入钥匙串,下次查状态即已登录。
+#[tauri::command]
+pub async fn auth_device_wait(args: DeviceWaitArgs) -> Result<SessionUser, AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    let resolved = resolve_registry(registry_id)?;
+    if resolved.kind != registry::RegistryKind::Github {
+        return Err(AppError::new(
+            "AUTH_DEVICE_UNSUPPORTED",
+            "这个技能库来源请使用原有的登录方式",
+        ));
+    }
+    let codes = github::DeviceCodes {
+        device_code: args.device_code,
+        user_code: String::new(),
+        verification_uri: String::new(),
+        expires_in: args.expires_in,
+        interval: args.interval,
+    };
+    session::github_login_device(
+        &http_client_for(registry_id)?,
+        &resolved.base_url,
+        builtin::github_client_id()?,
         &KeyringStore,
-        args.id(),
+        registry_id,
+        &codes,
     )
     .await
 }
@@ -588,7 +700,16 @@ async fn read_source(registry_id: &str) -> Result<(SourceClient, RepoRef), AppEr
     let http = http_client_for(registry_id)?;
     let client = match resolved.kind {
         registry::RegistryKind::Github => {
-            SourceClient::Github(github::GithubClient::new(&resolved.base_url, None, http))
+            // 任务 5 起带上 device flow / PAT 存下的凭证(私有库可读);
+            // 取不出来降级匿名,与自定义 Gitea 源同语义
+            let token = match KeyringStore.load(registry_id) {
+                Ok(creds) => creds.map(|c| c.access_token),
+                Err(err) => {
+                    tracing::warn!(registry_id, code = %err.code, "读取凭证失败,按匿名访问");
+                    None
+                }
+            };
+            SourceClient::Github(github::GithubClient::new(&resolved.base_url, token, http))
         }
         registry::RegistryKind::Gitea if resolved.builtin => {
             SourceClient::Gitea(GiteaClient::with_http(resolved.base_url.clone(), None, http))

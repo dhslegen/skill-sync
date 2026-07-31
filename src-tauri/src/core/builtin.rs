@@ -21,6 +21,22 @@ pub const BUILTIN_REPO: Option<&str> = option_env!("SKILLSYNC_BUILTIN_REPO");
 /// 内建技能库的默认分支,未注入时按 `main`。
 pub const BUILTIN_BRANCH: Option<&str> = option_env!("SKILLSYNC_BUILTIN_BRANCH");
 
+/// GitHub OAuth App 的 Client ID(M3 任务 5,device flow 公共客户端,无 secret)。
+/// 未注入时 GitHub 源仍可匿名浏览与获取,只是登录不可用。
+pub const GITHUB_CLIENT_ID: Option<&str> = option_env!("SKILLSYNC_GITHUB_CLIENT_ID");
+
+/// GitHub 登录是否可用(Client ID 已注入)。
+pub fn github_client_id() -> Result<&'static str, crate::error::AppError> {
+    GITHUB_CLIENT_ID
+        .filter(|c| !c.is_empty())
+        .ok_or_else(|| {
+            crate::error::AppError::new(
+                "AUTH_NOT_CONFIGURED",
+                "这个版本没有配置 GitHub 登录,请向 IT 索取正式安装包",
+            )
+        })
+}
+
 /// App 自更新源:`latest.json` 的完整地址(内网静态源,M2 任务 5)。
 /// 与内网地址同一纪律:编译期注入,源码不得出现真实值。
 pub const UPDATE_URL: Option<&str> = option_env!("SKILLSYNC_UPDATE_URL");

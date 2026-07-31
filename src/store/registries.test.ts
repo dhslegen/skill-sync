@@ -28,7 +28,13 @@ const CUSTOM = {
 
 function reset() {
   invoke.mockReset();
-  useRegistries.setState({ list: null, error: null, busy: false, loggedIn: {} });
+  useRegistries.setState({
+    list: null,
+    error: null,
+    busy: false,
+    loggedIn: {},
+    devicePrompt: null,
+  });
 }
 
 describe("技能库来源 store", () => {
@@ -138,6 +144,60 @@ describe("技能库来源 store", () => {
     await useRegistries.getState().remove("company");
     expect(useRegistries.getState().list).toHaveLength(1);
     expect(useRegistries.getState().error?.code).toBe("REPO_BUILTIN_LOCKED");
+  });
+
+  it("deviceLogin:先亮用户码,授权完成后记录用户并收起提示", async () => {
+    let resolveWait!: (v: unknown) => void;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "auth_device_start")
+        return {
+          deviceCode: "dev-123",
+          userCode: "ABCD-1234",
+          verificationUri: "https://github.com/login/device",
+          expiresIn: 900,
+          interval: 5,
+        };
+      if (cmd === "auth_device_wait")
+        return new Promise((resolve) => {
+          resolveWait = resolve;
+        });
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    const done = useRegistries.getState().deviceLogin("custom-2");
+    await vi.waitFor(() => {
+      expect(useRegistries.getState().devicePrompt?.userCode).toBe("ABCD-1234");
+    });
+    // 等待期间把设备码原样带给 wait,轮询参数一个不丢
+    expect(invoke).toHaveBeenCalledWith("auth_device_wait", {
+      args: { registryId: "custom-2", deviceCode: "dev-123", expiresIn: 900, interval: 5 },
+    });
+
+    resolveWait({ login: "wang", displayName: "王工", avatarUrl: "" });
+    await done;
+    const s = useRegistries.getState();
+    expect(s.loggedIn["custom-2"]).toBe("王工");
+    expect(s.devicePrompt).toBeNull();
+  });
+
+  it("deviceLogin 失败(拒绝/过期)清掉提示并亮错误", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "auth_device_start")
+        return {
+          deviceCode: "dev-123",
+          userCode: "ABCD-1234",
+          verificationUri: "u",
+          expiresIn: 900,
+          interval: 5,
+        };
+      throw { code: "AUTH_DEVICE_DENIED", message: "你在授权页取消了这次登录" };
+    });
+
+    await useRegistries.getState().deviceLogin("custom-2");
+    const s = useRegistries.getState();
+    expect(s.devicePrompt).toBeNull();
+    expect(s.error?.code).toBe("AUTH_DEVICE_DENIED");
+    expect(s.loggedIn["custom-2"]).toBeUndefined();
   });
 
   it("tokenLogin 成功记下用户显示名;失败报错且不记", async () => {

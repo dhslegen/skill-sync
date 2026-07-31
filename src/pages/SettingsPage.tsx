@@ -158,8 +158,12 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
   const [token, setToken] = useState("");
   const remove = useRegistries((s) => s.remove);
   const tokenLogin = useRegistries((s) => s.tokenLogin);
+  const deviceLogin = useRegistries((s) => s.deviceLogin);
+  const dismissDevicePrompt = useRegistries((s) => s.dismissDevicePrompt);
   const busy = useRegistries((s) => s.busy);
   const loggedName = useRegistries((s) => s.loggedIn[registry.id]);
+  const devicePrompt = useRegistries((s) => s.devicePrompt);
+  const myDevicePrompt = devicePrompt?.registryId === registry.id ? devicePrompt : null;
 
   const name = registry.builtin ? t("registries.builtinName") : registry.name;
   const coords = registry.repo
@@ -188,12 +192,20 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
         </div>
         {!registry.builtin && mode === "idle" && (
           <div className="flex flex-none items-center gap-1.5">
-            {registry.kind !== "github" && (
-              // GitHub 源的凭证走 device flow(任务 5),PAT 输入框对它不成立
-              <button type="button" className={SMALL_BUTTON} onClick={() => setMode("credentials")}>
-                {t("registries.credentials")}
+            {registry.kind === "github" && (
+              // GitHub 的主通道:device flow 一键登录(任务 5);下面的凭证输入是备用
+              <button
+                type="button"
+                disabled={busy || myDevicePrompt !== null}
+                className={SMALL_BUTTON}
+                onClick={() => void deviceLogin(registry.id)}
+              >
+                {myDevicePrompt ? t("registries.deviceWaiting") : t("registries.deviceLogin")}
               </button>
             )}
+            <button type="button" className={SMALL_BUTTON} onClick={() => setMode("credentials")}>
+              {t("registries.credentials")}
+            </button>
             <button type="button" className={SMALL_BUTTON} onClick={() => setMode("confirmRemove")}>
               {t("registries.remove")}
             </button>
@@ -218,6 +230,17 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
           </div>
         )}
       </div>
+      {myDevicePrompt && (
+        <div className="flex items-center gap-2.5 px-3.5 pb-2.5">
+          <span className="rounded-ctl border border-border-strong bg-surface-3 px-2.5 py-1 font-mono text-[15px] font-semibold tracking-[0.12em] select-text">
+            {myDevicePrompt.userCode}
+          </span>
+          <span className="text-[11.5px] text-text-3">{t("registries.deviceCodeHint")}</span>
+          <button type="button" className={SMALL_BUTTON} onClick={dismissDevicePrompt}>
+            {t("registries.formCancel")}
+          </button>
+        </div>
+      )}
       {mode === "credentials" && (
         <div className="flex items-center gap-2 px-3.5 pb-2.5">
           <input

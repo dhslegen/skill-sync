@@ -201,9 +201,29 @@ export const authStatus = () => call<SessionStatus>("auth_status", { args: {} })
 export const authLoginOauth = () => call<SessionUser>("auth_login_oauth", { args: {} });
 export const authLogout = () => call<void>("auth_logout", { args: {} });
 
-/** 个人访问凭证登录。内建源是备用通道;自定义源是唯一通道(按 registryId 分开存)。 */
+/** 个人访问凭证登录。内建源是备用通道;自定义源按 registryId 分开存。 */
 export const authLoginToken = (args: { registryId?: string; token: string }) =>
   call<SessionUser>("auth_login_token", { args });
+
+/** GitHub 一键登录(device flow)第一步:拿用户码,core 已顺手打开授权页。 */
+export interface DeviceStart {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  expiresIn: number;
+  interval: number;
+}
+
+export const authDeviceStart = (registryId: string) =>
+  call<DeviceStart>("auth_device_start", { args: { registryId } });
+
+/** 第二步:等用户在浏览器完成授权(长任务,core 内轮询到成功/明确失败为止)。 */
+export const authDeviceWait = (args: {
+  registryId: string;
+  deviceCode: string;
+  expiresIn: number;
+  interval: number;
+}) => call<SessionUser>("auth_device_wait", { args });
 
 // ============================================================ 获取流程
 

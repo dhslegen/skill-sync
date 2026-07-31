@@ -6,6 +6,8 @@ import { create } from "zustand";
 
 import { t } from "@/i18n";
 import {
+  authDeviceStart,
+  authDeviceWait,
   authLoginToken,
   isAppError,
   registryAdd,
@@ -38,12 +40,19 @@ interface RegistriesState {
   /** 登录成功的自定义源:registryId → 用户显示名(仅展示,权威在钥匙串)。 */
   loggedIn: Record<string, string>;
 
+  /** 正在进行的 GitHub 一键登录:展示用户码,等浏览器侧完成。null = 没有进行中的。 */
+  devicePrompt: { registryId: string; userCode: string } | null;
+
   load: () => Promise<void>;
   /** 新增自定义源。成功返回 true(界面收起表单)。 */
   add: (form: RegistryAddForm) => Promise<boolean>;
   remove: (registryId: string) => Promise<void>;
   /** 自定义源的 PAT 登录。成功返回 true。 */
   tokenLogin: (registryId: string, token: string) => Promise<boolean>;
+  /** GitHub 一键登录(device flow):start 展示用户码 → 后台等授权 → 记录用户。 */
+  deviceLogin: (registryId: string) => Promise<void>;
+  /** 收起用户码提示。core 的轮询会自然过期,授权若已完成凭证照常入钥匙串。 */
+  dismissDevicePrompt: () => void;
 }
 
 export const useRegistries = create<RegistriesState>((set, get) => ({
@@ -51,6 +60,7 @@ export const useRegistries = create<RegistriesState>((set, get) => ({
   error: null,
   busy: false,
   loggedIn: {},
+  devicePrompt: null,
 
   load: async () => {
     try {
@@ -114,4 +124,33 @@ export const useRegistries = create<RegistriesState>((set, get) => ({
       return false;
     }
   },
+
+  deviceLogin: async (registryId) => {
+    set({ busy: true, error: null });
+    try {
+      const start = await authDeviceStart(registryId);
+      // 授权页已由 core 打开;把用户码亮出来,后台开始等
+      set({ devicePrompt: { registryId, userCode: start.userCode }, busy: false });
+      const user = await authDeviceWait({
+        registryId,
+        deviceCode: start.deviceCode,
+        expiresIn: start.expiresIn,
+        interval: start.interval,
+      });
+      set({
+        loggedIn: { ...get().loggedIn, [registryId]: user.displayName },
+        devicePrompt: null,
+      });
+    } catch (raw) {
+      // 用户可能已手动收起提示(取消):迟到的失败不再打扰
+      const dismissed = get().devicePrompt === null && !get().busy;
+      set({
+        error: dismissed ? get().error : toAppError(raw),
+        devicePrompt: null,
+        busy: false,
+      });
+    }
+  },
+
+  dismissDevicePrompt: () => set({ devicePrompt: null }),
 }));
