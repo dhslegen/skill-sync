@@ -229,7 +229,16 @@ M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill
 | 10 我的技能 | ✅ | core/remove.rs + repair_links + link_health;行式列表/徽标/更新/修复/移除双确认;8+15 处注入验证 |
 | 11 分享 | ✅ | core/share.rs 全链路 + live e2e(三分支/竞态/只读 fork 对真 Gitea);冲突弹窗三选(保留并分享为默认);8+9 处注入验证 |
 | 12 向导 | ✅ | curated.json 进索引 + acquire_batch(一次下载/冲突跳过);三步向导每步都可走通;7+5 处注入验证 |
-| 13 打包 | ⬜ | **下一个任务:13 打包与手动分发** |
+| 13 打包 | ✅ | bundle 配置守卫测试 + 免代理直连 + build-release.sh/release.yml + 部署分发指南;真机验收清单待外部条件 |
+
+### 任务 13 交付说明(需外部条件才能闭环的部分)
+- **能自动化的已全部落地**:bundle 配置(NSIS 免管理员 currentUser、CSP 收紧、双平台 targets、
+  版本号一致性)有守卫测试钉住(`tests/bundle_config.rs`);`scripts/build-release.sh` 与
+  `release.yml` 在缺内网配置时拒绝出包;本机 `pnpm tauri build` 真实出过 dmg。
+- **待外部条件**(清单同部署指南 §6):Apple Developer ID 证书 + 公证凭证;Windows 内部 CA
+  签名或 IT 软件中心白名单;干净双平台真机的 ≤5 分钟验收(含 Windows 普通权限 junction 实测,
+  这同时补上任务 6 欠的那一档)。
+- 部署文档:`docs/部署分发指南.md`(**受版本控制**,与 terminology.md 同为 docs/ 白名单)。
 
 ### 已知待处理
 - **`Installer::install` 依然会无条件清空重建 canonical**——守卫在 `core/acquire.rs`,不在它自己身上。
@@ -269,9 +278,11 @@ M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill
   - ❌ 未验:8 个 `cfg(unix)` 测试在 Windows 上不跑(自指防护、坏软链跳过、软链子目录解引用、
     被改指链接的卸载)。它们要构造场景就得先有 symlink 权限,而那正是 Windows 上假定没有的东西。
     若要在 Windows 上覆盖这几条,需另想构造方式(如用 junction 代替 symlink 搭场景)。
-- **系统代理会拦截内网请求**:企业机器普遍配了 `http_proxy`,内网 Gitea 若不在 `NO_PROXY` 中,
-  用户会在登录第一步遇到看不懂的失败。任务 13 需二选一:随包设免代理,或部署文档要求 IT 配置。
-  细节见 `core/gitea.rs` 模块头。
+- **系统代理已拍板:一律直连**(任务 13):`gitea::app_http_client` 对全部请求 `.no_proxy()`
+  ——M1 只有内建源且必在内网,直连即正确语义。极端的全代理网络需 IT 放行,见部署指南 §4。
+  M3 自定义外网源时再按 registry 决定代理策略。
+  测试注意:reqwest 对 loopback 目标**默认豁免代理**,拿 wiremock 当目标测代理行为
+  必然空转;`tests/proxy_bypass.rs` 用 `.invalid` 保留域名 + 对照组的写法绕开了这一点。
 - **商店卡片上没有作者、也没有安装量**(任务 8 的假设,见 `core/store.rs` 模块头):
   frontmatter 只有 name/description/metadata.internal,而逐技能的提交人归因要对每个目录各发
   一次 commits 请求,50 个技能撑不住首屏 <2s。UI-Demo 里那两栏因此留空——**不编造**。
@@ -285,8 +296,9 @@ M1 任务 1–9 已完成并提交。远端 `origin` = github.com/dhslegen/skill
   远低于 DoD 的 2s / 300ms。但那是本机 docker,真实内网要加网络往返与更大的压缩包。
   `tests/store_index.rs` 里的 300ms 断言跑在 wiremock 上、进 CI;`tests/store_live.rs` 需要
   `./fixtures/init.sh`,环境不在时自动跳过(会往 fixture 建 `store-perf-50` 分支,幂等复用)。
-- **Windows 平台外观细节未做**:原生窗口控制(tauri-plugin-decorum)、侧边栏 vibrancy、
-  Windows 实色化都留给任务 12/13;任务 8 只用 `data-tauri-drag-region` 让出 44px 顶栏。
+- **Windows 平台外观细节未做**:任务 13 只启用了 macOS 的 Overlay 标题栏(红绿灯浮在
+  44px 拖拽区);Windows 保持系统默认装饰,原生窗口控制(tauri-plugin-decorum)、
+  vibrancy、实色化属 M2 打磨项,不影响 DoD。
 - **外观偏好目前存 localStorage**(任务 8 的假设):`skillsync.theme` / `skillsync.accent`。
   设置页要落进 `config.json` 才算跨机器,那是设置页所在任务的事——本任务不动 config 的 schema。
 - **进度事件只报阶段,不报字节**:压缩包是一次性下完的,没有可信的字节级进度可报。

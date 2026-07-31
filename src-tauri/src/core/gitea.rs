@@ -21,20 +21,35 @@
 //! 纯只读用户走这条路会 403。因此本模块同时提供 [`GiteaClient::fork_repo`],
 //! 由任务 11 按 `permissions.push` 选择路径:可写→直推或开分支,只读→fork 后提交审核。
 //!
-//! # 待处理:系统代理会拦截内网请求
+//! # 系统代理:一律直连(任务 13 拍板)
 //!
-//! 客户端沿用 reqwest 的默认行为,读取系统代理设置。开发机实测:设了
-//! `http_proxy` 后,发往内网地址的请求会被转给代理,连不上时拿到的是代理返回的 5xx,
-//! 而不是"连接被拒"。企业机器上为访问外网普遍配了代理,若内网 Gitea 域名没进
-//! `NO_PROXY`,用户会在登录这一步遇到看不懂的失败。
+//! 企业机器普遍配 `http_proxy` 访问外网;内网 Gitea 若不在 `NO_PROXY`,reqwest 的
+//! 默认行为会把请求转给代理——代理连不到内网,用户在登录第一步就拿到看不懂的失败
+//! (开发机实测:得到的是代理的 5xx,不是"连接被拒")。
 //!
-//! 任务 13(打包分发)需要落实二选一:随包给内建 Gitea 域名设免代理,或在部署文档里
-//! 要求 IT 把该域名加进 `NO_PROXY`。诊断包也应带上当前生效的代理配置。
+//! M1 只有内建这一个源,而它一定在内网:[`app_http_client`] 因此**完全禁用代理**,
+//! 直连即正确语义。极端环境(全流量强制走代理、无透明例外)下直连会失败,
+//! 部署文档要求 IT 放行该域名;M3 支持自定义外网源时,再按 registry 决定是否走代理。
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
+
+/// 全 app 统一的 HTTP client:带 UA、**不走系统代理**(理由见模块头)。
+///
+/// 所有对技能库的请求都应从这里构造 client,别在各处散落 `Client::builder()`
+/// ——那会让代理策略悄悄回到 reqwest 默认值。
+pub fn app_http_client() -> Result<reqwest::Client, AppError> {
+    reqwest::Client::builder()
+        .user_agent(concat!("SkillSync/", env!("CARGO_PKG_VERSION")))
+        .no_proxy()
+        .build()
+        .map_err(|e| {
+            AppError::new("NET_CLIENT_INIT", "网络组件初始化失败,请重启应用")
+                .with_detail(e.to_string())
+        })
+}
 
 /// 仓库坐标。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -503,7 +518,7 @@ impl GiteaClient {
 
     async fn http_send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response, AppError> {
         req.send().await.map_err(|e| {
-            if e.is_timeout() || e.is_connect() {
+            if is_unreachable(&e) {
                 AppError::new(
                     "NET_UNREACHABLE",
                     "连不上公司技能库,请确认已接入公司内网或 VPN",
@@ -519,6 +534,29 @@ impl GiteaClient {
         let resp = self.http_send(req).await?;
         check_status(resp).await
     }
+}
+
+/// "根本没连上"的判定。这一类要提示"确认已接入内网或 VPN",不能含糊成"稍后重试"。
+///
+/// `is_connect()` **不涵盖 DNS 解析失败**(任务 13 的测试实测):员工不在内网时,
+/// 解析不了内网域名恰恰是最常见的失败形态。顺着 source 链找 io 层错误与
+/// hyper 的 dns 措辞把它们补进来。
+fn is_unreachable(e: &reqwest::Error) -> bool {
+    if e.is_timeout() || e.is_connect() {
+        return true;
+    }
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        if s.downcast_ref::<std::io::Error>().is_some() {
+            return true;
+        }
+        let text = s.to_string();
+        if text.contains("dns error") || text.contains("failed to lookup") {
+            return true;
+        }
+        src = s.source();
+    }
+    false
 }
 
 /// Gitea 的错误响应体。两种形状都出现过,`errors` 只在部分端点上有。

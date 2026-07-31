@@ -1,0 +1,111 @@
+# 发布构建:打 v* tag 触发,双平台出安装包(M1 任务 13)。
+#
+# 与 ci.yml 同一假设:语法兼容内网 Gitea Actions,迁移时只需调整 runs-on 与 secrets。
+#
+# 编译期内网配置从 secrets 注入(铁律 5:源码与仓库中不得出现真实内网地址)。
+# secrets 未配置时 workflow 直接失败——绝不发出"连不上公司技能库"的空壳包,
+# 这与 scripts/build-release.sh 的本地拦截是同一道闸的两个入口。
+#
+# macOS 签名/公证:证书类 secrets(APPLE_*)到位后自动生效;未配置时产出未签名包,
+# 标记为 unsigned 仅供内部测试机——不要把它发给普通同事。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 校验内网配置 secrets 齐备
+        env:
+          URL: ${{ secrets.SKILLSYNC_BUILTIN_GITEA_URL }}
+          CID: ${{ secrets.SKILLSYNC_OAUTH_CLIENT_ID }}
+          REPO: ${{ secrets.SKILLSYNC_BUILTIN_REPO }}
+          BRANCH: ${{ secrets.SKILLSYNC_BUILTIN_BRANCH }}
+        run: |
+          fail=0
+          for pair in "SKILLSYNC_BUILTIN_GITEA_URL=$URL" "SKILLSYNC_OAUTH_CLIENT_ID=$CID" \
+                      "SKILLSYNC_BUILTIN_REPO=$REPO" "SKILLSYNC_BUILTIN_BRANCH=$BRANCH"; do
+            name="${pair%%=*}"; value="${pair#*=}"
+            if [ -z "$value" ]; then
+              echo "::error::缺少 secret $name —— 构建出的包连不上公司技能库,拒绝发布"
+              fail=1
+            fi
+          done
+          exit $fail
+
+  build:
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建安装包
+        env:
+          SKILLSYNC_BUILTIN_GITEA_URL: ${{ secrets.SKILLSYNC_BUILTIN_GITEA_URL }}
+          SKILLSYNC_OAUTH_CLIENT_ID: ${{ secrets.SKILLSYNC_OAUTH_CLIENT_ID }}
+          SKILLSYNC_BUILTIN_REPO: ${{ secrets.SKILLSYNC_BUILTIN_REPO }}
+          SKILLSYNC_BUILTIN_BRANCH: ${{ secrets.SKILLSYNC_BUILTIN_BRANCH }}
+          # macOS 签名与公证(证书到位后配置这四个 secrets 即自动生效)
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm tauri build
+
+      - name: 收集产物 (macOS)
+        if: runner.os == 'macOS'
+        env:
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          mkdir -p dist-release
+          cp src-tauri/target/release/bundle/dmg/*.dmg dist-release/ 2>/dev/null || true
+          if [ -z "$SIGNING_IDENTITY" ]; then
+            for f in dist-release/*.dmg; do
+              [ -e "$f" ] && mv "$f" "${f%.dmg}-unsigned.dmg"
+            done
+            echo "::warning::macOS 产物未签名,仅供内部测试机;正式分发需配置 APPLE_* secrets"
+          fi
+
+      - name: 收集产物 (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist-release
+          cp src-tauri/target/release/bundle/nsis/*.exe dist-release/ 2>/dev/null || true
+          cp src-tauri/target/release/bundle/msi/*.msi dist-release/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skillsync-${{ runner.os }}
+          path: dist-release/*
+          if-no-files-found: error

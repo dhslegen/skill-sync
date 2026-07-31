@@ -87,13 +87,8 @@ fn oauth_config() -> Result<OAuthConfig, AppError> {
 }
 
 fn http_client() -> Result<reqwest::Client, AppError> {
-    reqwest::Client::builder()
-        .user_agent(concat!("SkillSync/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| {
-            AppError::new("NET_CLIENT_INIT", "网络组件初始化失败,请重启应用")
-                .with_detail(e.to_string())
-        })
+    // 统一从 gitea 侧构造:UA 与"不走系统代理"的策略只在一处定义
+    crate::core::gitea::app_http_client()
 }
 
 #[derive(Debug, Deserialize)]
