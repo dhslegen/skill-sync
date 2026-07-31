@@ -79,6 +79,42 @@ pub fn upsert(path: &Path, key: &str, entry: &LockEntry, now: &str) -> LockOutco
     write(path, &doc)
 }
 
+/// lock 里的一条上游记账(读侧,M3 任务 6「认领」用)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamEntry {
+    /// `skills` 对象里的键,即 canonical 目录名。
+    pub key: String,
+    pub source: String,
+    pub source_type: String,
+    pub source_url: String,
+    pub skill_path: String,
+    pub git_ref: String,
+    pub installed_at: Option<String>,
+}
+
+/// 读出 lock 里的全部条目。**任何看不懂都返回空**(文件缺失、坏 JSON、版本不认识)
+/// ——读侧与写侧同一立场:这是别人的数据,看不懂就当没有,绝不报错阻断流程。
+pub fn read_entries(path: &Path) -> Vec<UpstreamEntry> {
+    let Ok(doc) = load(path) else {
+        return Vec::new();
+    };
+    let Some(skills) = doc["skills"].as_object() else {
+        return Vec::new();
+    };
+    skills
+        .iter()
+        .map(|(key, v)| UpstreamEntry {
+            key: key.clone(),
+            source: v["source"].as_str().unwrap_or_default().to_string(),
+            source_type: v["sourceType"].as_str().unwrap_or_default().to_string(),
+            source_url: v["sourceUrl"].as_str().unwrap_or_default().to_string(),
+            skill_path: v["skillPath"].as_str().unwrap_or_default().to_string(),
+            git_ref: v["ref"].as_str().unwrap_or_default().to_string(),
+            installed_at: v["installedAt"].as_str().map(str::to_string),
+        })
+        .collect()
+}
+
 /// 移除一条记账。不存在则什么都不做(仍算成功,与上游 `removeSkillFromLock` 的语义一致)。
 pub fn remove(path: &Path, key: &str) -> LockOutcome {
     let mut doc = match load(path) {

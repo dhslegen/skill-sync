@@ -13,6 +13,7 @@ import {
   agentsDetected,
   installedList,
   isAppError,
+  skillClaim,
   skillRemove,
   skillRepair,
   skillShareChanges,
@@ -46,6 +47,10 @@ interface MySkillsState {
   shareDone: { dirSlug: string; mode: ShareMode } | null;
   shareError: AppError | null;
 
+  /** 「认领」(M3 任务 6):正在认领的技能 / 错误。 */
+  claimBusy: string | null;
+  claimError: AppError | null;
+
   load: () => Promise<void>;
   askRemove: (dirSlug: string) => void;
   cancelRemove: () => void;
@@ -62,6 +67,9 @@ interface MySkillsState {
 
   /** 把改过的已装技能推回来源仓库(冲突弹窗承诺的"分享改动"通道)。 */
   shareChanges: (dirSlug: string) => Promise<void>;
+
+  /** 认领上游(npx skills)装的技能,成功后刷新列表。 */
+  claim: (dirSlug: string) => Promise<void>;
 }
 
 function toAppError(raw: unknown): AppError {
@@ -84,6 +92,8 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   shareBusy: null,
   shareDone: null,
   shareError: null,
+  claimBusy: null,
+  claimError: null,
 
   load: async () => {
     set({ loading: true, loadError: null });
@@ -145,6 +155,20 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     if (!target) return;
     set({ repairConfirmTarget: null });
     await runRepair(target, true, set, get);
+  },
+
+  claim: async (dirSlug) => {
+    set({ claimBusy: dirSlug, claimError: null });
+    try {
+      await skillClaim({ dirSlug });
+      await get().load();
+      // 认领后它成了正式的已装技能,商店卡片状态也要跟上
+      await useInstall.getState().refreshInstalled();
+    } catch (raw) {
+      set({ claimError: toAppError(raw) });
+    } finally {
+      set({ claimBusy: null });
+    }
   },
 
   shareChanges: async (dirSlug) => {

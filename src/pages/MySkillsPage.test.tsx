@@ -24,6 +24,7 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   sourceRepo: "skills",
   registryId: "company",
   sourceRemoved: false,
+  unclaimed: false,
   bodyPresent: true,
   links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
   ...over,
@@ -143,6 +144,38 @@ describe("我的技能页", () => {
 
     await screen.findByText("周报生成");
     expect(screen.queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
+  });
+
+  it("上游装的未认领技能:标签 + 认领按钮,点击走 skill_claim", async () => {
+    const calls: string[] = [];
+    invoke.mockImplementation(async (cmd: string) => {
+      calls.push(cmd);
+      if (cmd === "installed_list")
+        return [
+          view({
+            dirSlug: "upstream-skill",
+            unclaimed: true,
+            sourceOwner: "vercel-labs",
+            sourceRepo: "skills",
+            agents: [],
+            links: [],
+          }),
+        ];
+      if (cmd === "skill_claim") return { dirSlug: "upstream-skill", adoptedLinks: 1, bound: false };
+      if (cmd === "agents_detected") return { agents: [], canonicalDir: "~/.agents/skills" };
+      return [];
+    });
+    seedIndex("aaa1111");
+    render(<MySkillsPage />);
+
+    await screen.findByText("npx skills 安装");
+    // 未认领:更新/移除/分享改动都不该出现
+    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+    const claimButton = screen.getByRole("button", { name: "认领" });
+    await userEvent.click(claimButton);
+    await vi.waitFor(() => {
+      expect(calls).toContain("skill_claim");
+    });
   });
 
   it("来源已移除:亮出徽标,且更新与分享改动都不再提供", async () => {

@@ -739,6 +739,165 @@ fn link_mode(report: &crate::core::installer::LinkReport) -> Option<String> {
     }
 }
 
+// ============================================================ 认领上游安装(M3 任务 6)
+//
+// `npx skills` 装的技能只在 lock 里有记账、不在 state.json——本 app 对它们
+// 只读不管。「认领」是用户显式动作:补 state 记账,让更新/修复/移除走本 app
+// 既有流程。铁律:**lock 一个字节不动**(认领只读它),未认领的条目更是碰都不碰。
+
+/// 「我的技能」里的未认领行。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnclaimedSkill {
+    pub dir_slug: String,
+    /// 上游记账的来源(如 `owner/repo`),仅展示。
+    pub source: String,
+}
+
+/// 扫出「上游装的、本体还在、我们没记账」的技能。
+/// 本体已不在的不列——摆一个认领了也用不了的行是撒谎。
+pub fn unclaimed_skills(
+    env: &dyn AgentEnv,
+    installer: &Installer,
+    st: &state::State,
+) -> Vec<UnclaimedSkill> {
+    let Some(lock) = skill_lock::lock_path(env) else {
+        return Vec::new();
+    };
+    skill_lock::read_entries(&lock)
+        .into_iter()
+        .filter(|e| !st.installed.iter().any(|s| s.name == e.key))
+        .filter(|e| {
+            installer
+                .canonical_dir(&e.key)
+                .map(|p| p.is_dir())
+                .unwrap_or(false)
+        })
+        .map(|e| UnclaimedSkill {
+            dir_slug: e.key,
+            source: e.source,
+        })
+        .collect()
+}
+
+/// 认领结果。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimReport {
+    pub dir_slug: String,
+    /// 收编入账的关联数。npx 建的链接不入账的话,移除时没人解,会留一地断链。
+    pub adopted_links: usize,
+    /// 是否绑定到了某个已配置的源。绑不上 = 仅本地管理(不提供更新与回推)。
+    pub bound: bool,
+}
+
+/// 认领一个上游装的技能。
+///
+/// 记账基线:`content_hash` 取**认领此刻**的目录内容(此后的改动才算"已改动");
+/// `commit_sha` 留空——基线版本未知,与远端头一比必然"有更新",第一次更新即对齐,
+/// 覆盖前照走既有预检(内容没动过才直接覆盖,动过必弹三选,绝不静默覆盖)。
+pub fn claim(
+    installer: &Installer,
+    registry: &AgentRegistry,
+    env: &dyn AgentEnv,
+    store: &Store,
+    registries: &[state::RegistryConfig],
+    dir_slug: &str,
+    now: &str,
+) -> Result<ClaimReport, AppError> {
+    let mut st = store.load_state()?.value;
+    if st.installed.iter().any(|s| s.name == dir_slug) {
+        return Err(AppError::new(
+            "CONFLICT_ALREADY_MANAGED",
+            "这个技能已在管理中,无需认领",
+        ));
+    }
+    let canonical = installer.canonical_dir(dir_slug)?;
+    if !canonical.is_dir() {
+        return Err(AppError::new(
+            "FS_NOT_CLAIMABLE",
+            "本地已没有这个技能的文件,无法认领",
+        ));
+    }
+    let lock = skill_lock::lock_path(env).ok_or_else(|| {
+        AppError::new("FS_NO_HOME", "找不到用户主目录,无法保存本地数据")
+    })?;
+    let entry = skill_lock::read_entries(&lock)
+        .into_iter()
+        .find(|e| e.key == dir_slug)
+        .ok_or_else(|| {
+            AppError::new(
+                "FS_NOT_CLAIMABLE",
+                "这个技能不是由 npx skills 安装的,可以在分享页把它收编进来",
+            )
+        })?;
+
+    let (registry_id, owner, repo) = bind_source(&entry, registries);
+    let content_hash = fsops::dir_content_hash(&canonical)?;
+
+    // 收编 npx 建的链接。只认「确实指向这个 canonical 的链接」;实体目录(npx 的
+    // 降级复制)与用户自己的目录无从区分,不敢认——那正是"凭猜测动用户文件"。
+    let all_names: Vec<String> = registry.agents().iter().map(|a| a.name.clone()).collect();
+    let mut links = Vec::new();
+    let mut agent_names = std::collections::BTreeSet::new();
+    for target in installer.link_targets(&all_names)? {
+        let link = target.dir.join(dir_slug);
+        if let fsops::LinkState::Linked(kind) = fsops::link_state(&link, &canonical) {
+            links.push(LinkRecord {
+                dir: target.dir.to_string_lossy().into_owned(),
+                mode: kind.as_str().to_string(),
+            });
+            agent_names.extend(target.agents.iter().cloned());
+        }
+    }
+
+    let report = ClaimReport {
+        dir_slug: dir_slug.to_string(),
+        adopted_links: links.len(),
+        bound: !registry_id.is_empty(),
+    };
+    st.installed.push(InstalledSkill {
+        name: dir_slug.to_string(),
+        source: SkillSource {
+            registry_id,
+            owner,
+            repo,
+            path: entry.skill_path.clone(),
+            git_ref: entry.git_ref.clone(),
+        },
+        commit_sha: String::new(),
+        content_hash,
+        agents: agent_names.into_iter().collect(),
+        links,
+        // 上游记的安装时间照抄(它更接近事实),没有才用现在
+        installed_at: entry.installed_at.clone().unwrap_or_else(|| now.to_string()),
+        updated_at: now.to_string(),
+    });
+    store.save_state(&st)?;
+    Ok(report)
+}
+
+/// 上游来源 ↔ 已配置源的绑定。GitHub 条目按 `sourceUrl` 与源地址同源比对;
+/// 绑不上就只留展示用的 owner/repo,registry_id 空(更新与回推没有去处)。
+fn bind_source(
+    entry: &skill_lock::UpstreamEntry,
+    registries: &[state::RegistryConfig],
+) -> (String, String, String) {
+    let (owner, repo) = entry
+        .source
+        .split_once('/')
+        .map(|(o, r)| (o.to_string(), r.to_string()))
+        .unwrap_or_else(|| (entry.source.clone(), String::new()));
+    if entry.source_type == "github" {
+        if let Some(m) = registries.iter().find(|r| {
+            r.kind == "github" && crate::core::gitea::is_same_origin(&r.base_url, &entry.source_url)
+        }) {
+            return (m.id.clone(), owner, repo);
+        }
+    }
+    (String::new(), owner, repo)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

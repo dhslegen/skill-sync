@@ -30,6 +30,9 @@ export function MySkillsPage() {
     shareBusy,
     shareDone,
     shareError,
+    claim,
+    claimBusy,
+    claimError,
   } = useMySkills();
   const index = useStoreIndex((s) => s.index);
   const installPhase = useInstall((s) => s.phase);
@@ -108,6 +111,13 @@ export function MySkillsPage() {
           {shareError.message}
         </p>
       )}
+      {claimError && (
+        <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+          {t("mine.claimFailed")}
+          {t("punct.labelSeparator")}
+          {claimError.message}
+        </p>
+      )}
       {shareDone && (
         <p className="pb-2 text-[12px] text-text-2">
           {shareDone.mode === "pushed"
@@ -116,7 +126,16 @@ export function MySkillsPage() {
         </p>
       )}
       <div className="overflow-hidden rounded-card border border-border bg-surface-1">
-        {list.map((skill) => (
+        {list.map((skill) =>
+          skill.unclaimed ? (
+            <UnclaimedRow
+              key={skill.dirSlug}
+              skill={skill}
+              name={nameOf(skill.dirSlug)}
+              claiming={claimBusy === skill.dirSlug}
+              onClaim={() => void claim(skill.dirSlug)}
+            />
+          ) : (
           <Row
             key={skill.dirSlug}
             skill={skill}
@@ -135,7 +154,52 @@ export function MySkillsPage() {
             onShareChanges={() => void shareChanges(skill.dirSlug)}
             onRemove={() => askRemove(skill.dirSlug)}
           />
-        ))}
+          ),
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 上游(npx skills)装的未认领行:只有「认领」可做,其余动作认领后开放。 */
+function UnclaimedRow({
+  skill,
+  name,
+  claiming,
+  onClaim,
+}: {
+  skill: InstalledSkillView;
+  name: string;
+  claiming: boolean;
+  onClaim: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 border-t border-border px-3.5 py-2.5 first:border-t-0">
+      <SkillIcon name={name} className="size-[26px] rounded-[6px] text-[12px]" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-[13px] font-[550]">{name}</span>
+          <Badge tone="warn" title={t("mine.badgeUnclaimedHint")}>
+            {t("mine.badgeUnclaimed")}
+          </Badge>
+        </div>
+        <div className="mt-0.5 truncate text-[11.5px] text-text-3">
+          {t("mine.source", {
+            library: skill.sourceRepo
+              ? `${skill.sourceOwner}/${skill.sourceRepo}`
+              : skill.sourceOwner,
+          })}
+        </div>
+      </div>
+      <div className="flex flex-none items-center">
+        <button
+          type="button"
+          disabled={claiming}
+          onClick={onClaim}
+          className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+        >
+          {claiming ? t("mine.claiming") : t("mine.claim")}
+        </button>
       </div>
     </div>
   );

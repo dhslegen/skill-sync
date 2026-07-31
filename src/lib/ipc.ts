@@ -307,10 +307,22 @@ export interface InstalledSkillView {
   registryId: string;
   /** 来源已解析不出来(自定义源被移除等):可用可移除,但更新与回推没了去处。 */
   sourceRemoved: boolean;
+  /** 上游(npx skills)装的、尚未认领:只有「认领」这一个动作可做。 */
+  unclaimed: boolean;
   /** 技能本体是否还在。false = 残缺,界面要正面说出来。 */
   bodyPresent: boolean;
   links: LinkHealthReport[];
 }
+
+export interface ClaimReport {
+  dirSlug: string;
+  adoptedLinks: number;
+  bound: boolean;
+}
+
+/** 认领上游(npx skills)装的技能:纳入本 app 管理,lock 一个字节不动。 */
+export const skillClaim = (args: { dirSlug: string }) =>
+  call<ClaimReport>("skill_claim", { args });
 
 export type UnlinkResult =
   | { status: "unlinked" }

@@ -883,6 +883,8 @@ pub struct InstalledSkillView {
     /// 来源已解析不出来(自定义源被移除,或该构建没配内建源):
     /// 技能照常可用可移除,但更新与回推没了去处,界面要正面说出来。
     pub source_removed: bool,
+    /// 上游(npx skills)装的、尚未认领:只有「认领」这一个动作可做(M3 任务 6)。
+    pub unclaimed: bool,
     /// 技能本体是否还在 canonical 目录里。不在 = 残缺,界面要正面说出来。
     pub body_present: bool,
     /// 各关联目录的健康态(universal agent 不建链,不在此列)。
@@ -901,7 +903,7 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
         let registries_cfg = store.load_config()?.value.registries;
         let builtin_src = registry::BuiltinSource::from_build();
 
-        state
+        let mut views: Vec<InstalledSkillView> = state
             .installed
             .iter()
             .map(|s| {
@@ -924,11 +926,37 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                         &s.source.registry_id,
                     )
                     .is_err(),
+                    unclaimed: false,
                     body_present: canonical.is_dir(),
                     links: installer.link_health(&s.name, &recorded)?,
                 })
             })
-            .collect()
+            .collect::<Result<_, AppError>>()?;
+
+        // 上游装的未认领技能挂在列表尾部:只有「认领」可做,其余字段按"未知"如实留空
+        for u in acquire::unclaimed_skills(&SystemEnv, &installer, &state) {
+            let (owner, repo) = u
+                .source
+                .split_once('/')
+                .map(|(o, r)| (o.to_string(), r.to_string()))
+                .unwrap_or((u.source.clone(), String::new()));
+            views.push(InstalledSkillView {
+                dir_slug: u.dir_slug,
+                commit_sha: String::new(),
+                agents: Vec::new(),
+                installed_at: String::new(),
+                updated_at: String::new(),
+                local_modified: false,
+                source_owner: owner,
+                source_repo: repo,
+                registry_id: String::new(),
+                source_removed: false,
+                unclaimed: true,
+                body_present: true,
+                links: Vec::new(),
+            });
+        }
+        Ok(views)
     })
     .await
     .map_err(|e| {
@@ -1110,6 +1138,35 @@ pub async fn skill_link_agents(args: SkillLinkAgentsArgs) -> Result<InstallRepor
     })
     .await
     .map_err(|e| AppError::new("FS_TASK", "重试未能完成,请重试").with_detail(e.to_string()))?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillClaimArgs {
+    pub dir_slug: String,
+}
+
+/// 认领上游(npx skills)装的技能(M3 任务 6):补 state 记账并收编既有链接,
+/// 此后更新/修复/移除走本 app 既有流程。lock 一个字节不动。
+#[tauri::command]
+pub async fn skill_claim(args: SkillClaimArgs) -> Result<acquire::ClaimReport, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app_store()?;
+        let registry = AgentRegistry::builtin();
+        let installer = Installer::new(&registry, &SystemEnv);
+        let registries = store.load_config()?.value.registries;
+        acquire::claim(
+            &installer,
+            &registry,
+            &SystemEnv,
+            &store,
+            &registries,
+            &args.dir_slug,
+            &now_iso8601(),
+        )
+    })
+    .await
+    .map_err(|e| AppError::new("FS_TASK", "认领操作未能完成,请重试").with_detail(e.to_string()))?
 }
 
 #[derive(Debug, Deserialize)]
