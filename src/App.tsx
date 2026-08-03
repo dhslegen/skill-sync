@@ -52,8 +52,10 @@ export default function App() {
     };
   }, []);
 
+  // 行高必须显式钉在 100%:只定义列时,隐式行会按内容撑高、悄悄超出 h-full,
+  // 而 body 是 overflow:hidden——内容直接被裁掉,滚动条永远出不来
   return (
-    <div className="grid h-full grid-cols-[208px_1fr]">
+    <div className="grid h-full grid-cols-[208px_1fr] grid-rows-[100%]">
       {/* macOS 红绿灯占位。原生窗口控制属打包任务,这里只把 44px 让出来 */}
       <div className="pointer-events-none fixed inset-x-0 top-0 z-40 h-11" data-tauri-drag-region />
 
