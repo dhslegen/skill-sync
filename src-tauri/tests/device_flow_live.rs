@@ -23,7 +23,9 @@ async fn device_flow_against_real_github() {
         return;
     };
 
-    let http = reqwest::Client::new();
+    // 与 app 同款客户端(带 User-Agent、外部源跟随系统代理)。裸 reqwest::Client
+    // 没有 UA,GitHub 对无 UA 的 API 请求一律 403——2026-08-03 联调时真实撞上。
+    let http = skillsync_lib::core::gitea::app_http_client_proxied().expect("构造 http client");
     let codes = github::start_device_flow(&http, "https://github.com", &client_id)
         .await
         .expect("发起 device flow 失败");

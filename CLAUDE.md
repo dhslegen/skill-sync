@@ -358,8 +358,11 @@ M3 后补(2026-08-03):`skill_local_detail`/`skill_reveal`(本地详情面板 + �
   (createCommitOnBranch vs contents)+ fork 时序。DoD 要求先对真实 GitHub 录写行为
   再定端点——**待外部条件**:可写测试仓 + 凭证。开工点:share.rs 模块头 + gitea.rs
   RepoSource 注释("写链路刻意不进 trait")。
-- **GitHub device flow 的真实联调**(代码侧已完成,任务 5a):需要用户在 github.com
-  注册 OAuth App(勾选 Enable Device Flow)后注入 `SKILLSYNC_GITHUB_CLIENT_ID`。
+- ~~GitHub device flow 的真实联调~~ **已完成**(2026-08-03):用户注册 OAuth App 后,
+  `tests/device_flow_live.rs` 对真实 GitHub 走完 发码→浏览器授权→轮询换令牌→
+  current_user(身份 dhslegen);过期分支(AUTH_DEVICE_EXPIRED)也真实验证过。
+  坑:GitHub API 对无 User-Agent 的请求一律 403——live 测试必须用
+  `app_http_client_proxied()`,不能用裸 reqwest Client(已修并注释)。
 - **分享页的「新建技能」向导没做**(Demo 里有):等价 `skills init` 的脚手架,
   用户拍板(2026-07-31)留 M4。
 - **Windows 外观打磨决定不做**(M2 任务 6 的判断):UI 规范 §75 要 tauri-plugin-decorum,
