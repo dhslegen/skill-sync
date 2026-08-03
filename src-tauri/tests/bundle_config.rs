@@ -135,3 +135,31 @@ fn version_is_consistent_across_manifests() {
     assert_eq!(cargo["package"]["version"].as_str().unwrap(), conf_ver);
     assert_eq!(pkg["version"].as_str().unwrap(), conf_ver);
 }
+
+/// `build.rs` 的 `rerun-if-env-changed` 清单必须覆盖 `builtin.rs` 里的每一个
+/// `option_env!` 变量。
+///
+/// 漏一个的后果是**静默的**:只改那个变量时 cargo 不认为需要重编译,
+/// `option_env!` 仍展开成上一次构建的值,二进制里留着旧地址/旧仓库坐标——
+/// 表现为"配置明明改了却不生效"。历史上 REPO/BRANCH 与两个 UPDATE_* 就漏在外面。
+#[test]
+fn build_rs_watches_every_compile_time_constant() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let builtin = std::fs::read_to_string(dir.join("src/core/builtin.rs")).unwrap();
+    let build_rs = std::fs::read_to_string(dir.join("build.rs")).unwrap();
+
+    let used: Vec<String> = builtin
+        .match_indices("option_env!(\"")
+        .map(|(i, pat)| {
+            let rest = &builtin[i + pat.len()..];
+            rest[..rest.find('"').unwrap()].to_string()
+        })
+        .collect();
+    assert!(!used.is_empty(), "没扫到 option_env!,守卫本身失效了");
+
+    let missing: Vec<&String> = used.iter().filter(|v| !build_rs.contains(*v)).collect();
+    assert!(
+        missing.is_empty(),
+        "build.rs 漏了这些变量的 rerun-if-env-changed,改它们不会触发重编译:{missing:?}"
+    );
+}
