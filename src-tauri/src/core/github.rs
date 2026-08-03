@@ -307,3 +307,285 @@ impl RepoSource for GithubClient {
         GithubClient::download_archive(self, r).await
     }
 }
+
+// ============================================================ 写链路(M3-5b)
+//
+// 全部形状录制自真实 GitHub(tests/fixtures/github-write/,2026-08-03),要点:
+// - 多文件一次提交走 GraphQL `createCommitOnBranch`(REST contents 一次一个文件,
+//   一个技能会被拆成多笔提交且中途失败留半成品);无 mode 字段,脚本可执行位
+//   落 100644——与 Gitea 的 ChangeFilesRequest 同款限制,两侧一致,接受;
+// - GraphQL 的错误在 HTTP 200 里,判定用 `errors[].type`:陈旧头 `STALE_DATA`、
+//   分支保护 `BRANCH_PROTECTION_RULE_VIOLATION`,不 grep message;
+// - fork 是 202 异步受理,实测约 3 秒可用,响应体自带 full_name;
+// - 权限矩阵判据 `GET /repos` 的 `permissions.push`(匿名/无权限时字段整个缺席)。
+
+/// 权限矩阵要用的仓库视图(录制 01/01b)。
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepoView {
+    #[serde(default)]
+    pub permissions: RepoPermissions,
+    #[serde(default)]
+    pub default_branch: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RepoPermissions {
+    #[serde(default)]
+    pub push: bool,
+}
+
+/// fork 的落点。202 响应体自带 full_name(录制 11)。
+#[derive(Debug, Clone)]
+pub struct ForkTarget {
+    pub owner: String,
+    pub repo: String,
+}
+
+/// 开好的评审入口。
+#[derive(Debug, Clone, Deserialize)]
+pub struct PullView {
+    pub html_url: String,
+}
+
+impl GithubClient {
+    /// GraphQL 端点。github.com 是 api 域根下的 /graphql;GHE 是 {base}/api/graphql
+    /// (REST 的 api_base 带 /v3,GraphQL 不带)。
+    fn graphql_url(&self) -> String {
+        match self.api_base.strip_suffix("/api/v3") {
+            Some(base) => format!("{base}/api/graphql"),
+            None => format!("{}/graphql", self.api_base),
+        }
+    }
+
+    fn request(&self, method: reqwest::Method, url: String) -> reqwest::RequestBuilder {
+        let mut req = self
+            .http
+            .request(method, url)
+            .header("accept", "application/vnd.github+json")
+            .header("x-github-api-version", "2022-11-28");
+        if let Some(token) = &self.token {
+            req = req.bearer_auth(token);
+        }
+        req
+    }
+
+    async fn send_built(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response, AppError> {
+        let resp = req.send().await.map_err(|e| {
+            if gitea::is_unreachable(&e) {
+                AppError::new("NET_UNREACHABLE", "连不上 GitHub,请检查网络或代理设置")
+                    .with_detail(e.to_string())
+            } else {
+                AppError::new("NET_REQUEST", "网络请求失败,请稍后重试").with_detail(e.to_string())
+            }
+        })?;
+        check_status(resp).await
+    }
+
+    /// 仓库视图(权限矩阵判据)。
+    pub async fn repo_view(&self, owner: &str, repo: &str) -> Result<RepoView, AppError> {
+        let url = format!("{}/repos/{owner}/{repo}", self.api_base);
+        let resp = self.send_built(self.request(reqwest::Method::GET, url)).await?;
+        parse_json(resp).await
+    }
+
+    /// 分支是否受保护(录制 08b 的 `protected` 字段)。
+    /// 只作先探:保护规则可能只拦部分人,提交时的
+    /// `BRANCH_PROTECTION_RULE_VIOLATION` 才是最终真相。
+    pub async fn branch_protected(&self, r: &RepoRef) -> Result<bool, AppError> {
+        #[derive(Deserialize)]
+        struct Branch {
+            #[serde(default)]
+            protected: bool,
+        }
+        let url = format!(
+            "{}/repos/{}/{}/branches/{}",
+            self.api_base, r.owner, r.repo, r.branch
+        );
+        let resp = self.send_built(self.request(reqwest::Method::GET, url)).await?;
+        let branch: Branch = parse_json(resp).await?;
+        Ok(branch.protected)
+    }
+
+    /// 远端是否已有该文件(分享预检)。404 是"没有",不是错误。
+    pub async fn file_exists(&self, r: &RepoRef, path: &str) -> Result<bool, AppError> {
+        let url = format!(
+            "{}/repos/{}/{}/contents/{}?ref={}",
+            self.api_base, r.owner, r.repo, path, r.branch
+        );
+        let req = self.request(reqwest::Method::GET, url);
+        let resp = req.send().await.map_err(|e| {
+            AppError::new("NET_REQUEST", "网络请求失败,请稍后重试").with_detail(e.to_string())
+        })?;
+        if resp.status().as_u16() == 404 {
+            return Ok(false);
+        }
+        check_status(resp).await?;
+        Ok(true)
+    }
+
+    /// 从 `sha` 开出新分支(录制 05,REST git/refs)。
+    pub async fn create_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        sha: &str,
+    ) -> Result<(), AppError> {
+        let url = format!("{}/repos/{owner}/{repo}/git/refs", self.api_base);
+        let body = serde_json::json!({ "ref": format!("refs/heads/{branch}"), "sha": sha });
+        self.send_built(self.request(reqwest::Method::POST, url).json(&body))
+            .await?;
+        Ok(())
+    }
+
+    /// 多文件一次提交(录制 03/04/06/09)。返回新提交的 oid。
+    pub async fn create_commit_on_branch(
+        &self,
+        name_with_owner: &str,
+        branch: &str,
+        expected_head_oid: &str,
+        headline: &str,
+        additions: &[(String, Vec<u8>)],
+    ) -> Result<String, AppError> {
+        use base64::Engine;
+        const QUERY: &str = "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }";
+        let files: Vec<serde_json::Value> = additions
+            .iter()
+            .map(|(path, bytes)| {
+                serde_json::json!({
+                    "path": path,
+                    "contents": base64::engine::general_purpose::STANDARD.encode(bytes),
+                })
+            })
+            .collect();
+        let body = serde_json::json!({
+            "query": QUERY,
+            "variables": { "input": {
+                "branch": { "repositoryNameWithOwner": name_with_owner, "branchName": branch },
+                "expectedHeadOid": expected_head_oid,
+                "message": { "headline": headline },
+                "fileChanges": { "additions": files },
+            }},
+        });
+
+        let url = self.graphql_url();
+        let resp = self.send_built(self.request(reqwest::Method::POST, url).json(&body)).await?;
+
+        #[derive(Deserialize)]
+        struct GqlResp {
+            #[serde(default)]
+            data: Option<GqlData>,
+            #[serde(default)]
+            errors: Vec<GqlError>,
+        }
+        #[derive(Deserialize)]
+        struct GqlData {
+            #[serde(rename = "createCommitOnBranch")]
+            create: Option<GqlCreate>,
+        }
+        #[derive(Deserialize)]
+        struct GqlCreate {
+            commit: GqlCommit,
+        }
+        #[derive(Deserialize)]
+        struct GqlCommit {
+            oid: String,
+        }
+        #[derive(Deserialize)]
+        struct GqlError {
+            #[serde(rename = "type", default)]
+            kind: String,
+            #[serde(default)]
+            message: String,
+        }
+
+        let parsed: GqlResp = parse_json(resp).await?;
+        if let Some(err) = parsed.errors.first() {
+            // GraphQL 的错误在 HTTP 200 里;判定用 type,不 grep message(录制 04/09)
+            return Err(match err.kind.as_str() {
+                "STALE_DATA" => {
+                    AppError::new("REPO_STALE", "技能库刚刚有新变化,请刷新后重试")
+                }
+                "BRANCH_PROTECTION_RULE_VIOLATION" => AppError::new(
+                    "REPO_PROTECTED",
+                    "这个技能库不允许直接保存,需要提交审核",
+                ),
+                _ => AppError::new("NET_REQUEST", "保存未能完成,请稍后重试"),
+            }
+            .with_detail(format!("{}: {}", err.kind, err.message)));
+        }
+        parsed
+            .data
+            .and_then(|d| d.create)
+            .map(|c| c.commit.oid)
+            .ok_or_else(|| {
+                AppError::new("NET_BAD_RESPONSE", "技能库返回了无法识别的内容")
+                    .with_detail("createCommitOnBranch 无 commit")
+            })
+    }
+
+    /// 发起评审(录制 07)。跨库时 `head` 用 `{owner}:{branch}` 形式。
+    pub async fn create_pull(
+        &self,
+        owner: &str,
+        repo: &str,
+        head: &str,
+        base: &str,
+        title: &str,
+    ) -> Result<PullView, AppError> {
+        let url = format!("{}/repos/{owner}/{repo}/pulls", self.api_base);
+        let body = serde_json::json!({ "title": title, "head": head, "base": base, "body": "" });
+        let resp = self
+            .send_built(self.request(reqwest::Method::POST, url).json(&body))
+            .await?;
+        parse_json(resp).await
+    }
+
+    /// fork 到自己名下(只读用户的评审路径)。202 异步受理,就绪用
+    /// [`Self::wait_fork_ready`] 轮询(实测约 3 秒,录制 11)。
+    pub async fn fork_repo(&self, owner: &str, repo: &str) -> Result<ForkTarget, AppError> {
+        #[derive(Deserialize)]
+        struct Fork {
+            full_name: String,
+        }
+        let url = format!("{}/repos/{owner}/{repo}/forks", self.api_base);
+        let body = serde_json::json!({ "default_branch_only": true });
+        let resp = self
+            .send_built(self.request(reqwest::Method::POST, url).json(&body))
+            .await?;
+        let fork: Fork = parse_json(resp).await?;
+        let (fork_owner, fork_repo) = fork.full_name.split_once('/').ok_or_else(|| {
+            AppError::new("NET_BAD_RESPONSE", "技能库返回了无法识别的内容")
+                .with_detail(format!("fork full_name: {}", fork.full_name))
+        })?;
+        Ok(ForkTarget {
+            owner: fork_owner.to_string(),
+            repo: fork_repo.to_string(),
+        })
+    }
+
+    /// 轮询 fork 就绪(分支头可读即就绪)。`delay` 注入以便测试不真等。
+    pub async fn wait_fork_ready(
+        &self,
+        r: &RepoRef,
+        attempts: u32,
+        delay: std::time::Duration,
+    ) -> Result<BranchHead, AppError> {
+        let mut last_detail = String::new();
+        for _ in 0..attempts {
+            match self.branch_head(r).await {
+                Ok(head) => return Ok(head),
+                Err(e) if e.code == "REPO_NOT_FOUND" => {
+                    // 还在准备中;原样抛会误导成"技能库不存在"
+                    last_detail = e.detail.unwrap_or(e.message);
+                    tokio::time::sleep(delay).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(
+            AppError::new("REPO_FORK_PENDING", "技能库副本还没准备好,请稍后重试")
+                .with_detail(last_detail),
+        )
+    }
+}

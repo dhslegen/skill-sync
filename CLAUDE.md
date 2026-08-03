@@ -86,7 +86,8 @@ src-tauri/src/
   core/registry.rs   多源解析层:BuiltinSource(编译期常量经参数传入)+ resolve/list/
                      add/remove/url_allowed/auth_config;内建源锁定不落 config
   core/github.rs     GitHub client:读链路(branches/zipball,RepoSource trait)+
-                     device flow 原语 + current_user;分享写路径归 M3-5b(待外部条件)
+                     device flow 原语 + current_user + 写链路(M3-5b:repo_view 权限、
+                     createCommitOnBranch、git/refs、pulls、fork+就绪轮询)
   commands.rs        Tauri IPC command 定义(薄壳,逻辑在 core)+ 托盘/updater 接线在 lib.rs
 resources/agents.json  75-agent 注册表(移植自 vercel-labs/skills v1.5.20,MIT,保留出处注释)
 scripts/           维护脚本(verify-*.mjs 跑上游源码生成 ground-truth fixture;build-release.sh)
@@ -241,20 +242,20 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 - 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
   其余注册表 agent 尽力支持
 
-## 当前进度(2026-07-31,M3 主体完成)
+## 当前进度(2026-08-03,M3 全部完成)
 
-**M1 任务 1–13、M2 任务 1–6、M3 任务 1–4 + 5a + 6 全部完成并提交**(分解与拍板记录
+**M1 任务 1–13、M2 任务 1–6、M3 任务 1–6(含 5b)全部完成并提交**(分解与拍板记录
 在 docs/M3-任务分解.md,本地文档),逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 353 + 前端 289 测试通过,clippy/eslint/tsc 干净,`pnpm dev` 启动冒烟通过
+- 本机:Rust 362 + 前端 290 测试通过,clippy/eslint/tsc 干净,`pnpm dev` 启动冒烟通过
 - **双平台 CI 全绿至 HEAD**:M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;
   `de7b233`/`2eb0595` 当时因账号计费被拒,仓库转公开后 2026-08-03 rerun,
   **macOS + Windows 双 job 全绿**(任务 6 的 claim_flow junction 路径首次真实过 CI)
-- **真实 GitHub e2e 已跑通**(任务 4:`SKILLSYNC_GITHUB_LIVE=1 cargo test --test
-  github_live`,对 dhslegen/skills 走完 索引→发现→安装→lock 双写)
-- **M3 剩余 = 任务 5b**(GitHub 分享写路径):DoD 要求提交端点先对真实 GitHub 录行为
-  再定,录制需要可写测试仓凭证(见待处理);其余 M3 范围已交付
+- **真实 GitHub e2e 已跑通**:读链路(任务 4,`github_live` 对 dhslegen/skills
+  走完 索引→发现→安装→lock 双写)、device flow 登录(5a,`device_flow_live`,
+  身份 dhslegen)、分享写路径(5b,`share_github_live` 对一次性测试仓走完
+  新增分享→更新分享,两笔真实提交);三个 live 测试都默认跳过不进 CI
 
 > ⚠️ **"CI 绿"这句话曾经假了很久**:macOS job 一直绿,**Windows job 从 M1 任务 10 起
 > 连红六个提交**没被发现——M1 交接材料里"双平台 CI 已真实跑通"在任务 9 之后就不成立,
@@ -281,8 +282,12 @@ M3 后补(2026-08-03):`skill_local_detail`/`skill_reveal`(本地详情面板 + �
   第二份真相);自定义源 id 生成 `custom-N` 取 max+1 **绝不复用**(缓存与凭证按 id 落)。
 - **读链路对来源类型无感**(M3 任务 4):store/acquire/scheduler 只吃 `gitea::RepoSource`
   trait(branch_head + download_archive),分发在 `commands::read_source` 的 SourceClient
-  枚举。**写链路(分享)刻意不进 trait**——两家提交/评审 API 形状完全不同。
-  `require_gitea` 如今只守登录与分享两条通道。
+  枚举。**写链路(分享)刻意不进 trait**——两家提交/评审 API 形状完全不同,
+  分享走 share.rs 的 `ShareClient` 枚举分发(M3-5b,与 SourceClient 同款模式);
+  GitHub 写路径错误判定用 GraphQL `errors[].type`(STALE_DATA /
+  BRANCH_PROTECTION_RULE_VIOLATION),不 grep message,依据是真实录制
+  (tests/fixtures/github-write/NOTES.md)。`require_gitea` 如今只守 Gitea
+  专属的登录配置通道。
 - **GitHub zipball 前缀是 `{owner}-{repo}-{短sha}/`**(2026-07-31 实测,曾猜错为
   `<repo>-<ref>`);mode 语义与 Gitea 相同(可执行 0o755、其余 0=没记录)。
   fixture: `tests/fixtures/github-zipball-modes.zip`(真实录制裁剪,裁剪脚本必须保留
@@ -354,10 +359,12 @@ M3 后补(2026-08-03):`skill_local_detail`/`skill_reveal`(本地详情面板 + �
 ### 待处理
 
 **功能缺口**
-- **M3-5b:GitHub 分享写路径**(唯一的 M3 剩余):权限矩阵 + 提交端点
-  (createCommitOnBranch vs contents)+ fork 时序。DoD 要求先对真实 GitHub 录写行为
-  再定端点——**待外部条件**:可写测试仓 + 凭证。开工点:share.rs 模块头 + gitea.rs
-  RepoSource 注释("写链路刻意不进 trait")。
+- ~~M3-5b:GitHub 分享写路径~~ **已完成**(2026-08-03):先对真实 GitHub 录制
+  ground truth(`tests/fixtures/github-write/NOTES.md`,含端点拍板与错误形状),
+  再实现 share.rs 的 `ShareClient` 枚举分发 + `submit_github` 权限矩阵
+  (直推 / protected 走评审 / 无权限 fork+跨库评审),wiremock 矩阵 7 测 +
+  真实 GitHub 端到端。**用户侧收尾**:作废录制用 PAT、删掉 fork 产物
+  `dhslegen/skillsync-fork-timing-lab`;测试仓 skillsync-write-lab 可留作以后复验。
 - ~~GitHub device flow 的真实联调~~ **已完成**(2026-08-03):用户注册 OAuth App 后,
   `tests/device_flow_live.rs` 对真实 GitHub 走完 发码→浏览器授权→轮询换令牌→
   current_user(身份 dhslegen);过期分支(AUTH_DEVICE_EXPIRED)也真实验证过。

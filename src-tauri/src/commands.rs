@@ -648,12 +648,50 @@ pub fn auth_logout(args: RegistryArg) -> Result<(), AppError> {
 
 // ============================================================ 商店
 
-/// 解析某个源的技能库坐标。**分享链路专用**(Gitea-only,GitHub 分享归任务 5);
-/// 读链路走 [`read_source`],对来源类型无感。
-fn registry_target(registry_id: &str) -> Result<(String, RepoRef), AppError> {
+/// 分享链路的来源分发(M3-5b):按源类型构造**已登录**客户端。
+/// 写链路刻意不进 trait(见 share.rs 的 ShareClient 注释),这里的枚举
+/// 与读链路的 [`SourceClient`] 是同一种分发模式。
+enum ShareSource {
+    Gitea(GiteaClient),
+    Github(github::GithubClient),
+}
+
+impl ShareSource {
+    fn as_share_client(&self) -> share::ShareClient<'_> {
+        match self {
+            Self::Gitea(c) => share::ShareClient::Gitea(c),
+            Self::Github(c) => share::ShareClient::Github(c),
+        }
+    }
+}
+
+async fn share_source(registry_id: &str) -> Result<(ShareSource, RepoRef), AppError> {
     let resolved = resolve_registry(registry_id)?;
-    resolved.require_gitea()?;
-    Ok((resolved.base_url, resolved.repo))
+    let repo = resolved.repo.clone();
+    match resolved.kind {
+        registry::RegistryKind::Gitea => {
+            let client = authed_client(registry_id).await?;
+            Ok((ShareSource::Gitea(client), repo))
+        }
+        registry::RegistryKind::Github => {
+            // 分享必须实名(与读链路"取不到凭证降级匿名"相反):匿名提交无从谈起
+            let http = http_client_for(registry_id)?;
+            let token = KeyringStore
+                .load(registry_id)?
+                .map(|c| c.access_token)
+                .ok_or_else(|| {
+                    AppError::new("AUTH_REQUIRED", "分享前请先在设置中登录这个技能库")
+                })?;
+            Ok((
+                ShareSource::Github(github::GithubClient::new(
+                    &resolved.base_url,
+                    Some(token),
+                    http,
+                )),
+                repo,
+            ))
+        }
+    }
 }
 
 /// 商店索引的缓存落点。与 config/state 同目录(`~/.skillsync`)。
@@ -1085,13 +1123,12 @@ pub struct SkillShareArgs {
 #[tauri::command]
 pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (_, repo) = registry_target(registry_id)?;
-    let client = authed_client(registry_id).await?;
+    let (source, repo) = share_source(registry_id).await?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
 
     share::share(
-        &client,
+        &source.as_share_client(),
         &registry,
         &SystemEnv,
         &store,
@@ -1122,12 +1159,11 @@ pub struct ShareChangesArgs {
 #[tauri::command]
 pub async fn skill_share_changes(args: ShareChangesArgs) -> Result<share::Submitted, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let client = authed_client(registry_id).await?;
+    let (source, repo) = share_source(registry_id).await?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
-    let (_, repo) = registry_target(registry_id)?;
     share::share_installed(
-        &client,
+        &source.as_share_client(),
         &registry,
         &SystemEnv,
         &store,

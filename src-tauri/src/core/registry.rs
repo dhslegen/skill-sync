@@ -125,7 +125,7 @@ impl ResolvedRegistry {
             RegistryKind::Gitea => Ok(self),
             RegistryKind::Github => Err(AppError::new(
                 "REPO_KIND_UNSUPPORTED",
-                "GitHub 技能库来源暂不支持登录与分享,浏览与获取不受影响",
+                "这个操作只适用于 Gitea 类型的技能库来源",
             )
             .with_detail(format!("registry {} kind=github", self.id))),
         }

@@ -253,7 +253,7 @@ async fn precheck_fresh_when_remote_has_no_such_skill() {
     mount_skill_exists(&server, "my-notes", false).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let got = share::precheck(&client, &repo_ref(), &state_of(&c), "my-notes").await.unwrap();
+    let got = share::precheck(&share::ShareClient::Gitea(&client), &repo_ref(), &state_of(&c), "my-notes").await.unwrap();
     assert_eq!(got, SharePrecheck::Fresh);
 }
 
@@ -279,7 +279,7 @@ async fn precheck_mine_when_we_shared_it_before() {
     });
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let got = share::precheck(&client, &repo_ref(), &state, "my-notes").await.unwrap();
+    let got = share::precheck(&share::ShareClient::Gitea(&client), &repo_ref(), &state, "my-notes").await.unwrap();
     assert_eq!(got, SharePrecheck::Mine);
 }
 
@@ -290,7 +290,7 @@ async fn precheck_taken_when_someone_else_owns_the_name() {
     mount_skill_exists(&server, "my-notes", true).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let got = share::precheck(&client, &repo_ref(), &state_of(&c), "my-notes").await.unwrap();
+    let got = share::precheck(&share::ShareClient::Gitea(&client), &repo_ref(), &state_of(&c), "my-notes").await.unwrap();
     assert_eq!(got, SharePrecheck::Taken);
 }
 
@@ -345,7 +345,7 @@ async fn fresh_share_pushes_creates_and_records_the_books() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&client, &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
         .await
         .unwrap();
 
@@ -390,7 +390,7 @@ async fn taken_without_confirmation_sends_nothing() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&client, &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
         .await
         .unwrap();
 
@@ -437,7 +437,7 @@ async fn overwriting_a_taken_name_updates_with_remote_shas() {
 
     let mut req = share_req(&repo, &dir, "my-notes");
     req.overwrite = true;
-    share::share(&client, &c.registry, &env, &c.store, req, NOW).await.unwrap();
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, req, NOW).await.unwrap();
 
     let reqs = server.received_requests().await.unwrap();
     let posted: Vec<_> = reqs.iter().filter(|r| r.method.as_str() == "POST").collect();
@@ -482,7 +482,7 @@ async fn protected_branch_falls_back_to_review_request() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&client, &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
         .await
         .unwrap();
 
@@ -540,7 +540,7 @@ async fn read_only_users_go_through_a_fork() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&client, &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
         .await
         .unwrap();
 
@@ -573,7 +573,7 @@ async fn sharing_from_an_agent_dir_adopts_it_into_canonical() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&client, &c.registry, &env, &c.store, share_req(&repo, &orig, "hand-made"), NOW)
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &orig, "hand-made"), NOW)
         .await
         .unwrap();
 
@@ -604,7 +604,7 @@ async fn the_form_fixes_frontmatter_before_it_is_pushed() {
 
     let mut req = share_req(&repo, &dir, "my-notes");
     req.description = Some("补上的描述");
-    share::share(&client, &c.registry, &env, &c.store, req, NOW).await.unwrap();
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, req, NOW).await.unwrap();
 
     // 本地文件已补齐
     let local = std::fs::read_to_string(dir.join("SKILL.md")).unwrap();
@@ -642,7 +642,7 @@ async fn a_race_at_submit_time_surfaces_as_conflict_stale() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let err = share::share(&client, &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    let err = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
         .await
         .unwrap_err();
 
@@ -659,7 +659,7 @@ async fn a_chinese_share_name_is_rejected_up_front() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let err = share::share(&client, &c.registry, &env, &c.store, share_req(&repo, &dir, "周报"), NOW)
+    let err = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "周报"), NOW)
         .await
         .unwrap_err();
 
@@ -720,7 +720,7 @@ async fn pushing_local_changes_back_updates_the_books() {
         .await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let submitted = share::share_installed(&client, &c.registry, &env, &c.store, "weekly-report", "main", NOW)
+    let submitted = share::share_installed(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, "weekly-report", "main", NOW)
         .await
         .unwrap();
 
@@ -786,7 +786,7 @@ async fn review_requested_changes_do_not_touch_the_install_books() {
         .await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let submitted = share::share_installed(&client, &c.registry, &env, &c.store, "weekly-report", "main", NOW)
+    let submitted = share::share_installed(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, "weekly-report", "main", NOW)
         .await
         .unwrap();
 

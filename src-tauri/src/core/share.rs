@@ -23,6 +23,7 @@ use serde::Serialize;
 use crate::core::agents::{AgentEnv, AgentRegistry};
 use crate::core::fsops::{self, OnOccupied};
 use crate::core::gitea::{FileChange, ChangeFilesRequest, GiteaClient, RepoRef};
+use crate::core::github::GithubClient;
 use crate::core::skill_lock;
 use crate::core::skills::{parse_skill_md, sanitize_name};
 use crate::core::state::{self, SharedSkill, SkillSource, Store};
@@ -200,17 +201,28 @@ pub enum SharePrecheck {
     Taken,
 }
 
+/// 分享的目标客户端。**刻意不做 trait**(gitea.rs RepoSource 注释的约定):
+/// 两家的提交/评审 API 形状完全不同——Gitea 是多文件 contents(逐文件带 blob sha),
+/// GitHub 是 GraphQL createCommitOnBranch(只要 expectedHeadOid)。读链路那种
+/// "同一签名两种实现"的共性在写链路不存在,枚举分发把差异摆在明处。
+pub enum ShareClient<'a> {
+    Gitea(&'a GiteaClient),
+    Github(&'a GithubClient),
+}
+
 /// 实时确认远端有没有同名技能(不信缓存:过期缓存会把 Taken 误判成 Fresh)。
 pub async fn precheck(
-    client: &GiteaClient,
+    client: &ShareClient<'_>,
     repo: &RepoRef,
     state: &state::State,
     share_name: &str,
 ) -> Result<SharePrecheck, AppError> {
-    let remote = client
-        .file_sha(repo, &format!("skills/{share_name}/SKILL.md"))
-        .await?;
-    if remote.is_none() {
+    let path = format!("skills/{share_name}/SKILL.md");
+    let exists = match client {
+        ShareClient::Gitea(c) => c.file_sha(repo, &path).await?.is_some(),
+        ShareClient::Github(c) => c.file_exists(repo, &path).await?,
+    };
+    if !exists {
         return Ok(SharePrecheck::Fresh);
     }
     let mine = state.shared.iter().any(|s| {
@@ -267,7 +279,7 @@ pub enum ShareOutcome {
 /// 分享一个候选技能。`now` 由调用方注入(派生评审分支名,便于测试)。
 #[allow(clippy::too_many_arguments)]
 pub async fn share(
-    client: &GiteaClient,
+    client: &ShareClient<'_>,
     registry: &AgentRegistry,
     env: &dyn AgentEnv,
     store: &Store,
@@ -328,22 +340,8 @@ pub async fn share(
         rewrite_frontmatter(&source_dir, req.display_name, req.description)?;
     }
 
-    // 更新路径需要远端各文件的 blob sha;Fresh 不需要(全 create)
     let prefix = format!("skills/{}/", req.share_name);
-    let remote_shas: BTreeMap<String, String> = if checked == SharePrecheck::Fresh {
-        BTreeMap::new()
-    } else {
-        let head = client.branch_head(req.repo).await?;
-        client
-            .tree_files(&req.repo.owner, &req.repo.repo, &head.sha)
-            .await?
-            .into_iter()
-            .filter(|f| f.path.starts_with(&prefix))
-            .map(|f| (f.path, f.sha))
-            .collect()
-    };
-
-    let files = payload_changes(&source_dir, &prefix, &remote_shas)?;
+    let files = payload_files(&source_dir, &prefix)?;
     let title_name = req
         .display_name
         .map(str::to_string)
@@ -359,7 +357,17 @@ pub async fn share(
         _ => format!("更新技能:{title_name}"),
     };
 
-    let submitted = submit(client, req.repo, files, &message, req.share_name, now).await?;
+    let submitted = submit(
+        client,
+        req.repo,
+        &prefix,
+        checked == SharePrecheck::Fresh,
+        files,
+        &message,
+        req.share_name,
+        now,
+    )
+    .await?;
 
     // 记账:content_hash 从**实际推的目录**算——"有未分享的改动"的判据就是它
     let mut next = loaded.value.clone();
@@ -400,7 +408,7 @@ pub async fn share(
 /// 直推成功 → 更新 `contentHash`/`commitSha`,「已改动」标记消失;
 /// 走了评审 → **记账一个字不动**:改动还没进 main,标记消失等于把它藏起来。
 pub async fn share_installed(
-    client: &GiteaClient,
+    client: &ShareClient<'_>,
     registry: &AgentRegistry,
     env: &dyn AgentEnv,
     store: &Store,
@@ -438,18 +446,10 @@ pub async fn share_installed(
     }
 
     let prefix = format!("{}/", record.source.path.trim_end_matches('/'));
-    let head = client.branch_head(&repo).await?;
-    let remote_shas: BTreeMap<String, String> = client
-        .tree_files(&repo.owner, &repo.repo, &head.sha)
-        .await?
-        .into_iter()
-        .filter(|f| f.path.starts_with(&prefix))
-        .map(|f| (f.path, f.sha))
-        .collect();
-
-    let files = payload_changes(&source_dir, &prefix, &remote_shas)?;
+    let files = payload_files(&source_dir, &prefix)?;
     let message = format!("更新技能:{dir_slug}");
-    let submitted = submit(client, &repo, files, &message, dir_slug, now).await?;
+    // fresh=false:已装技能的回推,远端必然已有这组文件
+    let submitted = submit(client, &repo, &prefix, false, files, &message, dir_slug, now).await?;
 
     if submitted.mode == ShareMode::Pushed {
         let mut next = loaded.value.clone();
@@ -471,10 +471,49 @@ pub struct Submitted {
     pub review_url: Option<String>,
 }
 
-/// 按权限矩阵提交(gitea.rs 模块头的实测矩阵):
+/// 按来源类型分发提交。`fresh` = 远端还没有该技能(Gitea 路径可跳过拉取 blob sha)。
+#[allow(clippy::too_many_arguments)]
+async fn submit(
+    client: &ShareClient<'_>,
+    repo: &RepoRef,
+    prefix: &str,
+    fresh: bool,
+    files: Vec<(String, Vec<u8>)>,
+    message: &str,
+    share_name: &str,
+    now: &str,
+) -> Result<Submitted, AppError> {
+    match client {
+        ShareClient::Gitea(c) => {
+            // 更新路径需要远端各文件的 blob sha;Fresh 不需要(全 create)
+            let remote_shas: BTreeMap<String, String> = if fresh {
+                BTreeMap::new()
+            } else {
+                let head = c.branch_head(repo).await?;
+                c.tree_files(&repo.owner, &repo.repo, &head.sha)
+                    .await?
+                    .into_iter()
+                    .filter(|f| f.path.starts_with(prefix))
+                    .map(|f| (f.path, f.sha))
+                    .collect()
+            };
+            let changes = files
+                .into_iter()
+                .map(|(path, bytes)| match remote_shas.get(&path) {
+                    Some(sha) => FileChange::update(path.clone(), &bytes, sha.clone()),
+                    None => FileChange::create(path.clone(), &bytes),
+                })
+                .collect();
+            submit_gitea(c, repo, changes, message, share_name, now).await
+        }
+        ShareClient::Github(c) => submit_github(c, repo, files, message, share_name, now).await,
+    }
+}
+
+/// Gitea 的权限矩阵(gitea.rs 模块头的实测矩阵):
 /// 可写 → 先直推,被分支保护挡下(403)→ 开分支 + 提交审核;
 /// 只读 → fork 到自己名下 → fork 上开分支 → 跨库提交审核。
-async fn submit(
+async fn submit_gitea(
     client: &GiteaClient,
     repo: &RepoRef,
     files: Vec<FileChange>,
@@ -547,18 +586,107 @@ async fn submit(
     })
 }
 
+/// GitHub 的权限矩阵(录制自真实行为,tests/fixtures/github-write/NOTES.md):
+/// 有 push 且分支未保护 → createCommitOnBranch 直接保存;
+/// 有 push 但分支受保护(protected 先探,或提交撞上
+/// BRANCH_PROTECTION_RULE_VIOLATION)→ 开分支 + 提交审核;
+/// 无 push → fork 到自己名下(202 异步,轮询就绪)→ fork 上开分支 → 跨库提交审核。
+async fn submit_github(
+    client: &GithubClient,
+    repo: &RepoRef,
+    files: Vec<(String, Vec<u8>)>,
+    message: &str,
+    share_name: &str,
+    now: &str,
+) -> Result<Submitted, AppError> {
+    let view = client.repo_view(&repo.owner, &repo.repo).await?;
+    let branch_name = review_branch(share_name, now);
+    let name_with_owner = format!("{}/{}", repo.owner, repo.repo);
+
+    if view.permissions.push {
+        // protected 只是先探(保护规则可能只拦部分人),提交时的错误类型才是最终真相
+        if !client.branch_protected(repo).await? {
+            let head = client.branch_head(repo).await?;
+            match client
+                .create_commit_on_branch(&name_with_owner, &repo.branch, &head.sha, message, &files)
+                .await
+            {
+                Ok(oid) => {
+                    return Ok(Submitted {
+                        mode: ShareMode::Pushed,
+                        commit_sha: oid,
+                        review_url: None,
+                    })
+                }
+                Err(e) if e.code == "REPO_PROTECTED" => {}
+                Err(e) => return Err(e),
+            }
+        }
+        let head = client.branch_head(repo).await?;
+        client
+            .create_branch(&repo.owner, &repo.repo, &branch_name, &head.sha)
+            .await?;
+        let oid = client
+            .create_commit_on_branch(&name_with_owner, &branch_name, &head.sha, message, &files)
+            .await?;
+        let pull = client
+            .create_pull(&repo.owner, &repo.repo, &branch_name, &repo.branch, message)
+            .await?;
+        return Ok(Submitted {
+            mode: ShareMode::ReviewRequested,
+            commit_sha: oid,
+            review_url: Some(pull.html_url),
+        });
+    }
+
+    // 无 push:唯一的路是 fork(202 异步受理,实测约 3 秒可用)
+    let fork = client.fork_repo(&repo.owner, &repo.repo).await?;
+    let fork_ref = RepoRef {
+        owner: fork.owner.clone(),
+        repo: fork.repo.clone(),
+        branch: repo.branch.clone(),
+    };
+    let fork_head = client
+        .wait_fork_ready(&fork_ref, 60, std::time::Duration::from_secs(1))
+        .await?;
+    client
+        .create_branch(&fork.owner, &fork.repo, &branch_name, &fork_head.sha)
+        .await?;
+    let oid = client
+        .create_commit_on_branch(
+            &format!("{}/{}", fork.owner, fork.repo),
+            &branch_name,
+            &fork_head.sha,
+            message,
+            &files,
+        )
+        .await?;
+    let pull = client
+        .create_pull(
+            &repo.owner,
+            &repo.repo,
+            &format!("{}:{}", fork.owner, branch_name),
+            &repo.branch,
+            message,
+        )
+        .await?;
+    Ok(Submitted {
+        mode: ShareMode::ReviewRequested,
+        commit_sha: oid,
+        review_url: Some(pull.html_url),
+    })
+}
+
 /// 评审分支名。从 `now` 派生而非取系统时间:核心不摸时钟,测试才能钉住它。
 fn review_branch(share_name: &str, now: &str) -> String {
     let stamp: String = now.chars().filter(|c| c.is_ascii_digit()).collect();
     format!("skillsync/{share_name}-{stamp}")
 }
 
-/// 把本地目录读成提交清单:远端已有的 update(带 blob sha),没有的 create。
-fn payload_changes(
-    dir: &Path,
-    prefix: &str,
-    remote_shas: &BTreeMap<String, String>,
-) -> Result<Vec<FileChange>, AppError> {
+/// 把本地目录读成 `(远端路径, 字节)` 清单。来源无关:Gitea 侧再按远端 blob sha
+/// 分成 create/update,GitHub 侧原样进 createCommitOnBranch 的 additions
+/// (它对"新增"与"修改"不作区分)。
+fn payload_files(dir: &Path, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, AppError> {
     let mut out = Vec::new();
     for rel in fsops::list_files(dir)? {
         let bytes = std::fs::read(dir.join(&rel)).map_err(|e| {
@@ -566,11 +694,7 @@ fn payload_changes(
                 .with_detail(format!("read {}: {e}", rel.display()))
         })?;
         let rel = rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR_STR, "/");
-        let remote_path = format!("{prefix}{rel}");
-        out.push(match remote_shas.get(&remote_path) {
-            Some(sha) => FileChange::update(remote_path, &bytes, sha.clone()),
-            None => FileChange::create(remote_path, &bytes),
-        });
+        out.push((format!("{prefix}{rel}"), bytes));
     }
     Ok(out)
 }

@@ -108,11 +108,11 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
     // ① Fresh:远端没有 → 直推(admin 可写且 main 未保护)
     let state = store.load_state().unwrap().value;
     assert_eq!(
-        share::precheck(&admin, &repo, &state, &name).await.unwrap(),
+        share::precheck(&share::ShareClient::Gitea(&admin), &repo, &state, &name).await.unwrap(),
         SharePrecheck::Fresh
     );
     let outcome = share::share(
-        &admin,
+        &share::ShareClient::Gitea(&admin),
         &registry,
         &env,
         &store,
@@ -140,11 +140,11 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
         .unwrap();
     let state = store.load_state().unwrap().value;
     assert_eq!(
-        share::precheck(&admin, &repo, &state, &name).await.unwrap(),
+        share::precheck(&share::ShareClient::Gitea(&admin), &repo, &state, &name).await.unwrap(),
         SharePrecheck::Mine
     );
     let outcome = share::share(
-        &admin,
+        &share::ShareClient::Gitea(&admin),
         &registry,
         &env,
         &store,
@@ -170,11 +170,11 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
     store.save_state(&wiped).unwrap();
     let state = store.load_state().unwrap().value;
     assert_eq!(
-        share::precheck(&admin, &repo, &state, &name).await.unwrap(),
+        share::precheck(&share::ShareClient::Gitea(&admin), &repo, &state, &name).await.unwrap(),
         SharePrecheck::Taken
     );
     let outcome = share::share(
-        &admin,
+        &share::ShareClient::Gitea(&admin),
         &registry,
         &env,
         &store,
@@ -293,7 +293,7 @@ async fn read_only_users_can_contribute_via_fork_for_real() {
     write_skill(&dir, "只读用户的技能", "fork 链路实测");
 
     let outcome = share::share(
-        &reader,
+        &share::ShareClient::Gitea(&reader),
         &registry,
         &env,
         &store,
