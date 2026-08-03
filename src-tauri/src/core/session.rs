@@ -652,13 +652,17 @@ mod github_tests {
             .await;
 
         let store = MemoryStore::default();
+        // expires_in 不能用真实的 900:paused 虚拟时钟遇到真实网络 IO 时,
+        // 运行时会把时间自动快进到下一个定时器(reqwest 连接池的 90s 空闲定时器),
+        // 几轮快进就能跳穿 900 秒,在慢 runner 上偶发误报过期(776f8bf 的 Windows CI)。
+        // 放大到快进撞不到的量级,让这个测试只测"轮询序列",过期由下面的用例专测。
         let user = github_login_device(
             &reqwest::Client::new(),
             &server.uri(),
             "client-gh",
             &store,
             "custom-2",
-            &codes(1, 900),
+            &codes(1, 100_000_000),
         )
         .await
         .expect("pending → slow_down → token 应最终成功");
