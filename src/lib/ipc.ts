@@ -88,6 +88,25 @@ export interface SkillDetail {
   committedAt: string;
 }
 
+/** 本地技能定位:已装技能给 dirSlug(core 自行解析 canonical 目录),
+ *  分享页候选给 path(core 扫描回传的绝对路径原样带回)。 */
+export interface LocalSkillTarget {
+  dirSlug?: string;
+  path?: string;
+}
+
+/** skill_local_detail 的返回(core::local_detail::LocalSkillDetail)。 */
+export interface LocalSkillDetail {
+  name: string;
+  dirSlug: string;
+  description: string;
+  /** 目录绝对路径,详情面板展示 + 「在访达中打开」的目标。 */
+  path: string;
+  skillMd: string;
+  files: SkillFile[];
+  hasScripts: boolean;
+}
+
 export type ThemeMode = "light" | "dark" | "system";
 export type Accent = "clay" | "teal" | "ink";
 
@@ -196,6 +215,12 @@ export const storeIndex = (force = false, registryId?: string) =>
 
 export const storeSkillDetail = (dirSlug: string, registryId?: string) =>
   call<SkillDetail>("store_skill_detail", { args: { dirSlug, registryId } });
+
+export const skillLocalDetail = (target: LocalSkillTarget) =>
+  call<LocalSkillDetail>("skill_local_detail", { args: target });
+
+export const skillReveal = (target: LocalSkillTarget) =>
+  call<void>("skill_reveal", { args: target });
 
 export const authStatus = () => call<SessionStatus>("auth_status", { args: {} });
 export const authLoginOauth = () => call<SessionUser>("auth_login_oauth", { args: {} });

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SharePage } from "./SharePage";
 import type { ShareCandidate } from "@/lib/ipc";
+import { useLocalDetail } from "@/store/local-detail";
 import { useSession } from "@/store/session";
 import { useShare } from "@/store/share";
 
@@ -208,5 +209,27 @@ describe("分享页", () => {
     render(<SharePage />);
     await userEvent.click(await screen.findByRole("button", { name: "分享…" }));
     expect(screen.getByText(/移入统一技能目录/)).toBeInTheDocument();
+  });
+
+  it("点行内名称区按候选的绝对路径打开本地详情", async () => {
+    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    seedIpc([candidate()]);
+    render(<SharePage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /我的笔记/ }));
+
+    expect(invoke).toHaveBeenCalledWith("skill_local_detail", {
+      args: { path: "/home/u/.agents/skills/my-notes" },
+    });
+  });
+
+  it("「分享…」按钮不会顺带打开详情", async () => {
+    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    seedIpc([candidate()]);
+    render(<SharePage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "分享…" }));
+
+    expect(invoke).not.toHaveBeenCalledWith("skill_local_detail", expect.anything());
   });
 });

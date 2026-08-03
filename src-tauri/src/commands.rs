@@ -11,6 +11,7 @@ use crate::core::builtin;
 use crate::core::gitea::{GiteaClient, RepoRef};
 use crate::core::github;
 use crate::core::installer::{self, InstallReport, Installer};
+use crate::core::local_detail;
 use crate::core::registry::{self, BUILTIN_REGISTRY_ID};
 use crate::core::remove;
 use crate::core::scheduler;
@@ -964,6 +965,54 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
     })?
 }
 
+/// 本地技能定位:已装技能给 `dirSlug`(core 自己解析 canonical 目录,前端不传路径);
+/// 分享页候选给 `path`(它本来就是 core 扫描回传的绝对路径)。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSkillArgs {
+    #[serde(default)]
+    pub dir_slug: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+fn resolve_local_skill_dir(args: &LocalSkillArgs) -> Result<std::path::PathBuf, AppError> {
+    if let Some(slug) = args.dir_slug.as_deref() {
+        let registry = AgentRegistry::builtin();
+        let installer = Installer::new(&registry, &SystemEnv);
+        return installer.canonical_dir(slug);
+    }
+    if let Some(path) = args.path.as_deref() {
+        return Ok(std::path::PathBuf::from(path));
+    }
+    Err(AppError::new("FS_NOT_A_SKILL", "没有指定要查看的技能"))
+}
+
+#[tauri::command]
+pub async fn skill_local_detail(
+    args: LocalSkillArgs,
+) -> Result<local_detail::LocalSkillDetail, AppError> {
+    // 与 installed_list 同理:逐文件读盘,挪到阻塞线程池
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = resolve_local_skill_dir(&args)?;
+        local_detail::local_skill_detail(&dir)
+    })
+    .await
+    .map_err(|e| AppError::new("FS_TASK", "读取技能内容失败,请重试").with_detail(e.to_string()))?
+}
+
+/// 在访达/资源管理器中显示技能目录。
+/// 守卫与 `open_library_url` 同一种谨慎:这是 webview 通往系统的通道,
+/// 只对"确实是技能目录"的路径放行(存在 + 含 SKILL.md)。
+#[tauri::command]
+pub fn skill_reveal(args: LocalSkillArgs) -> Result<(), AppError> {
+    let dir = resolve_local_skill_dir(&args)?;
+    local_detail::ensure_skill_dir(&dir)?;
+    tauri_plugin_opener::reveal_item_in_dir(&dir).map_err(|e| {
+        AppError::new("FS_REVEAL_FAILED", "没能在文件管理器中显示这个技能").with_detail(e.to_string())
+    })
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallBatchArgs {
@@ -1245,4 +1294,21 @@ mod tests {
 
     // store_target 的两条测试(不依赖 OAuth 配置 / 未配置的人话报错)随解析层
     // 一起迁去了 core/registry.rs——resolve 就是它的继任者,守的是同一件事。
+
+    #[test]
+    fn local_skill_args_need_a_target() {
+        let err = resolve_local_skill_dir(&LocalSkillArgs { dir_slug: None, path: None })
+            .unwrap_err();
+        assert_eq!(err.code, "FS_NOT_A_SKILL");
+    }
+
+    #[test]
+    fn local_skill_args_pass_path_through() {
+        let dir = resolve_local_skill_dir(&LocalSkillArgs {
+            dir_slug: None,
+            path: Some("/tmp/some-skill".into()),
+        })
+        .unwrap();
+        assert_eq!(dir, std::path::PathBuf::from("/tmp/some-skill"));
+    }
 }

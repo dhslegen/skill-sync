@@ -5,6 +5,7 @@ import { t, type MessageKey } from "@/i18n";
 import { relativeTimeFromIso } from "@/lib/format";
 import type { InstalledSkillView, LinkHealth } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
+import { useLocalDetail } from "@/store/local-detail";
 import { hasUpdate, useMySkills } from "@/store/my-skills";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
@@ -175,22 +176,29 @@ function UnclaimedRow({
 }) {
   return (
     <div className="flex items-center gap-3 border-t border-border px-3.5 py-2.5 first:border-t-0">
-      <SkillIcon name={name} className="size-[26px] rounded-[6px] text-[12px]" />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-[13px] font-[550]">{name}</span>
-          <Badge tone="warn" title={t("mine.badgeUnclaimedHint")}>
-            {t("mine.badgeUnclaimed")}
-          </Badge>
+      {/* 名称区整块可点开详情;右侧动作按钮在这块外面,不会误触 */}
+      <button
+        type="button"
+        onClick={() => void useLocalDetail.getState().open({ dirSlug: skill.dirSlug })}
+        className="group flex min-w-0 flex-1 items-center gap-3 text-left"
+      >
+        <SkillIcon name={name} className="size-[26px] rounded-[6px] text-[12px]" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-[13px] font-[550] group-hover:text-accent">{name}</span>
+            <Badge tone="warn" title={t("mine.badgeUnclaimedHint")}>
+              {t("mine.badgeUnclaimed")}
+            </Badge>
+          </div>
+          <div className="mt-0.5 truncate text-[11.5px] text-text-3">
+            {t("mine.source", {
+              library: skill.sourceRepo
+                ? `${skill.sourceOwner}/${skill.sourceRepo}`
+                : skill.sourceOwner,
+            })}
+          </div>
         </div>
-        <div className="mt-0.5 truncate text-[11.5px] text-text-3">
-          {t("mine.source", {
-            library: skill.sourceRepo
-              ? `${skill.sourceOwner}/${skill.sourceRepo}`
-              : skill.sourceOwner,
-          })}
-        </div>
-      </div>
+      </button>
       <div className="flex flex-none items-center">
         <button
           type="button"
@@ -241,11 +249,17 @@ function Row({
 
   return (
     <div className="flex items-center gap-3 border-t border-border px-3.5 py-2.5 first:border-t-0">
+      {/* 名称区整块可点开详情;右侧动作按钮在这块外面,不会误触 */}
+      <button
+        type="button"
+        onClick={() => void useLocalDetail.getState().open({ dirSlug: skill.dirSlug })}
+        className="group flex min-w-0 flex-1 items-center gap-3 text-left"
+      >
       <SkillIcon name={name} className="size-[26px] rounded-[6px] text-[12px]" />
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-[13px] font-[550]">{name}</span>
+          <span className="truncate text-[13px] font-[550] group-hover:text-accent">{name}</span>
           {skill.localModified && <Badge tone="warn">{t("mine.badgeModified")}</Badge>}
           {!skill.bodyPresent && <Badge tone="danger">{t("mine.badgeBodyMissing")}</Badge>}
           {skill.sourceRemoved && (
@@ -285,6 +299,7 @@ function Row({
           <span>{t("mine.acquiredAt", { when: relativeTimeFromIso(skill.updatedAt) })}</span>
         </div>
       </div>
+      </button>
 
       <div className="flex flex-none items-center gap-1.5">
         {skill.localModified && skill.bodyPresent && !skill.sourceRemoved && (

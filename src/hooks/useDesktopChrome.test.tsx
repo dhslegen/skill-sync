@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useDesktopChrome } from "./useDesktopChrome";
 import { useAppearance } from "@/store/appearance";
+import { useLocalDetail } from "@/store/local-detail";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
 
@@ -44,6 +45,20 @@ describe("桌面快捷键", () => {
     await userEvent.keyboard("{Escape}");
     expect(useUi.getState().paletteOpen).toBe(false);
     // 一次 Esc 只关一层,详情还开着
+    expect(useStoreIndex.getState().detailSlug).toBe("weekly-report");
+
+    await userEvent.keyboard("{Escape}");
+    expect(useStoreIndex.getState().detailSlug).toBeNull();
+  });
+
+  it("Esc 关本地详情面板(我的技能/分享页打开的那种)", async () => {
+    render(<Harness />);
+    useLocalDetail.setState({ target: { dirSlug: "weekly-report" }, detail: null, error: null, revealError: null });
+    useStoreIndex.setState({ detailSlug: "weekly-report" });
+
+    await userEvent.keyboard("{Escape}");
+    // 一次 Esc 只关一层:本地详情先关,商店详情还开着
+    expect(useLocalDetail.getState().target).toBeNull();
     expect(useStoreIndex.getState().detailSlug).toBe("weekly-report");
 
     await userEvent.keyboard("{Escape}");

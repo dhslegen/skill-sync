@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MySkillsPage } from "./MySkillsPage";
 import type { InstalledSkillView } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
+import { useLocalDetail } from "@/store/local-detail";
 import { useMySkills } from "@/store/my-skills";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
@@ -325,5 +326,41 @@ describe("我的技能页", () => {
     expect(useMySkills.getState().removePhase).toBe("confirming");
     expect(useMySkills.getState().removeTarget).toBe("weekly-report");
     expect(invoke).not.toHaveBeenCalledWith("skill_remove", expect.anything());
+  });
+
+  it("点行内名称区打开本地详情(按 dirSlug 请求)", async () => {
+    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    seedIpc([view()]);
+    seedIndex();
+    render(<MySkillsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /周报生成/ }));
+
+    expect(invoke).toHaveBeenCalledWith("skill_local_detail", {
+      args: { dirSlug: "weekly-report" },
+    });
+  });
+
+  it("右侧动作按钮不会顺带打开详情", async () => {
+    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    seedIpc([view()]);
+    render(<MySkillsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "移除" }));
+
+    expect(invoke).not.toHaveBeenCalledWith("skill_local_detail", expect.anything());
+    expect(useLocalDetail.getState().target).toBeNull();
+  });
+
+  it("未认领行同样能点开详情", async () => {
+    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    seedIpc([view({ unclaimed: true, sourceOwner: "vercel-labs", sourceRepo: "skills" })]);
+    render(<MySkillsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /weekly-report|周报生成/ }));
+
+    expect(invoke).toHaveBeenCalledWith("skill_local_detail", {
+      args: { dirSlug: "weekly-report" },
+    });
   });
 });

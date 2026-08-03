@@ -245,12 +245,12 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 
 **M1 任务 1–13、M2 任务 1–6、M3 任务 1–4 + 5a + 6 全部完成并提交**(分解与拍板记录
 在 docs/M3-任务分解.md,本地文档),逐任务的产物与假设见 `git log`。远端 `origin` =
-github.com/dhslegen/skill-sync(**私有**)。
+github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 345 + 前端 272 测试通过,clippy/eslint/tsc 干净,`pnpm dev` 启动冒烟通过
-- **双平台 CI 在 M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿**;任务 6(`de7b233`)
-  的 CI **因 GitHub 账号计费限额未运行**(job 4 秒被拒,非代码问题)——处理账单后
-  `gh run rerun` 补验
+- 本机:Rust 353 + 前端 289 测试通过,clippy/eslint/tsc 干净,`pnpm dev` 启动冒烟通过
+- **双平台 CI 全绿至 HEAD**:M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;
+  `de7b233`/`2eb0595` 当时因账号计费被拒,仓库转公开后 2026-08-03 rerun,
+  **macOS + Windows 双 job 全绿**(任务 6 的 claim_flow junction 路径首次真实过 CI)
 - **真实 GitHub e2e 已跑通**(任务 4:`SKILLSYNC_GITHUB_LIVE=1 cargo test --test
   github_live`,对 dhslegen/skills 走完 索引→发现→安装→lock 双写)
 - **M3 剩余 = 任务 5b**(GitHub 分享写路径):DoD 要求提交端点先对真实 GitHub 录行为
@@ -266,6 +266,8 @@ M2 新增的 IPC:`ui_prefs_get/set`、`auto_update_get/set`、`agents_set_disabl
 `open_library_url`、`update_check_now`、`app_update_check/install`、`app_restart`、
 `skill_link_agents`;新增事件:`scheduler://report`、`app-update://available`。
 M3 新增的 IPC:`registry_list/add/remove`、`auth_device_start/wait`、`skill_claim`;
+M3 后补(2026-08-03):`skill_local_detail`/`skill_reveal`(本地详情面板 + 在访达/
+资源管理器中显示,core/local_detail.rs,守卫只放行含 SKILL.md 的真实目录);
 既有读写类 command 全部接受 `registryId`(缺省内建);编译期新常量
 `SKILLSYNC_GITHUB_CLIENT_ID`(未注入仅登录不可用,浏览获取照常)。
 

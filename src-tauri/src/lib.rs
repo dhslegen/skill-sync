@@ -153,6 +153,8 @@ pub fn run() {
             commands::skill_install,
             commands::skill_install_batch,
             commands::installed_list,
+            commands::skill_local_detail,
+            commands::skill_reveal,
             commands::skill_remove,
             commands::skill_repair,
             commands::skill_link_agents,

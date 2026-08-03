@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { SkillIcon } from "@/components/SkillIcon";
 import { t } from "@/i18n";
 import { isAppError, openLibraryUrl, type ShareCandidate } from "@/lib/ipc";
+import { useLocalDetail } from "@/store/local-detail";
 import { useSession } from "@/store/session";
 import { useShare, validShareName } from "@/store/share";
 
@@ -73,10 +74,16 @@ function Row({ candidate, disabled }: { candidate: ShareCandidate; disabled: boo
   return (
     <div className="border-t border-border first:border-t-0">
       <div className="flex items-center gap-3 px-3.5 py-2.5">
+        {/* 名称区整块可点开详情;右侧「分享」按钮在这块外面,不会误触 */}
+        <button
+          type="button"
+          onClick={() => void useLocalDetail.getState().open({ path: candidate.path })}
+          className="group flex min-w-0 flex-1 items-center gap-3 text-left"
+        >
         <SkillIcon name={display} className="size-[26px] rounded-[6px] text-[12px]" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-[13px] font-[550]">{display}</span>
+            <span className="truncate text-[13px] font-[550] group-hover:text-accent">{display}</span>
             {candidate.problem && (
               <span
                 title={candidate.problem}
@@ -99,6 +106,7 @@ function Row({ candidate, disabled }: { candidate: ShareCandidate; disabled: boo
             )}
           </div>
         </div>
+        </button>
         <button
           type="button"
           disabled={disabled}

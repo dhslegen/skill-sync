@@ -2,24 +2,28 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DetailPanel, stripFrontmatter } from "./DetailPanel";
-import type { SkillDetail } from "@/lib/ipc";
+import { DetailPanel, revealLabel, stripFrontmatter } from "./DetailPanel";
+import type { LocalSkillDetail, SkillDetail } from "@/lib/ipc";
+import { useLocalDetail } from "@/store/local-detail";
 import { useStoreIndex } from "@/store/store-index";
 
-// agent 探测走 IPC:mock 掉才能让"点安装 → 展开勾选"这条路走通
+// agent 探测走 IPC:mock 掉才能让"点安装 → 展开勾选"这条路走通。
+// spy 形式暴露出来,本地详情的 reveal 测试要断言调用参数。
+const invokeMock = vi.fn(async (cmd: string, args?: unknown) => {
+  void args; // 只为让 spy 把参数记进 calls;实现本身按 cmd 分发
+  if (cmd === "agents_detected") {
+    return {
+      agents: [
+        { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
+      ],
+      canonicalDir: "~/.agents/skills",
+    };
+  }
+  if (cmd === "installed_list") return [];
+  return null;
+});
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string) => {
-    if (cmd === "agents_detected") {
-      return {
-        agents: [
-          { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
-        ],
-        canonicalDir: "~/.agents/skills",
-      };
-    }
-    if (cmd === "installed_list") return [];
-    return null;
-  }),
+  invoke: (cmd: string, args: unknown) => invokeMock(cmd, args),
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 const openUrl = vi.fn();
@@ -228,5 +232,80 @@ describe("DetailPanel", () => {
     });
     render(<DetailPanel />);
     expect(screen.getByText(/请返回列表刷新后再试/)).toBeInTheDocument();
+  });
+});
+
+// ---- 本地详情(我的技能/分享页共用的另一个数据源) ----
+
+const localDetail = (over: Partial<LocalSkillDetail> = {}): LocalSkillDetail => ({
+  name: "周报生成",
+  dirSlug: "weekly-report",
+  description: "汇总本周工作",
+  path: "/home/u/.agents/skills/weekly-report",
+  skillMd: "---\nname: 周报生成\ndescription: 汇总本周工作\n---\n\n本地正文内容\n",
+  files: [
+    { path: "SKILL.md", size: 64 },
+    { path: "scripts/collect.py", size: 128 },
+  ],
+  hasScripts: true,
+  ...over,
+});
+
+function openLocal(over: Partial<LocalSkillDetail> = {}) {
+  const d = localDetail(over);
+  useLocalDetail.setState({ target: { dirSlug: d.dirSlug }, detail: d, error: null, revealError: null });
+  return d;
+}
+
+describe("DetailPanel(本地详情模式)", () => {
+  beforeEach(() => {
+    useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
+    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+  });
+
+  it("渲染名称、本地路径与正文;没有安装面板", () => {
+    openLocal();
+    render(<DetailPanel />);
+    expect(screen.getByRole("heading", { name: "周报生成" })).toBeInTheDocument();
+    expect(screen.getByText("/home/u/.agents/skills/weekly-report")).toBeInTheDocument();
+    expect(screen.getByText(/本地正文内容/)).toBeInTheDocument();
+    // 本地详情不是商店:不能出现"获取/安装"入口
+    expect(screen.queryByText("获取")).not.toBeInTheDocument();
+  });
+
+  it("文件标签页展示文件树与脚本警示", async () => {
+    openLocal();
+    render(<DetailPanel />);
+    await userEvent.click(screen.getByRole("tab", { name: /文件/ }));
+    expect(screen.getByText("scripts/collect.py")).toBeInTheDocument();
+    expect(screen.getByText(/含可执行脚本/)).toBeInTheDocument();
+  });
+
+  it("「在访达中打开」按当前 target 调 skill_reveal", async () => {
+    openLocal();
+    render(<DetailPanel />);
+    await userEvent.click(screen.getByRole("button", { name: revealLabel(navigator.userAgent) }));
+    expect(invokeMock).toHaveBeenCalledWith("skill_reveal", {
+      args: { dirSlug: "weekly-report" },
+    });
+  });
+
+  it("读取失败时显示可读原因", () => {
+    useLocalDetail.setState({
+      target: { path: "/tmp/nope" },
+      detail: null,
+      error: { code: "FS_NOT_A_SKILL", message: "这个文件夹不是技能,或技能描述文件缺失" },
+      revealError: null,
+    });
+    render(<DetailPanel />);
+    expect(screen.getByText(/不是技能/)).toBeInTheDocument();
+  });
+});
+
+describe("revealLabel", () => {
+  it("按平台挑选文案", () => {
+    expect(revealLabel("Mozilla (Macintosh; Mac OS X)")).toBe("在访达中打开");
+    expect(revealLabel("Mozilla (Windows NT 10.0)")).toBe("在资源管理器中打开");
+    expect(revealLabel("Mozilla (X11; Linux x86_64)")).toBe("在文件管理器中打开");
   });
 });
