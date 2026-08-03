@@ -1,0 +1,6 @@
+{
+  "skills/demo-skill": "040000",
+  "skills/demo-skill/SKILL.md": "100644",
+  "skills/demo-skill/scripts": "040000",
+  "skills/demo-skill/scripts/run.sh": "100644"
+}

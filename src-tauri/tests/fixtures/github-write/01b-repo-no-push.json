@@ -1,0 +1,13 @@
+{
+  "full_name": "vercel-labs/skills",
+  "private": false,
+  "permissions": {
+    "admin": false,
+    "maintain": false,
+    "push": false,
+    "triage": false,
+    "pull": true
+  },
+  "default_branch": "main",
+  "fork": false
+}

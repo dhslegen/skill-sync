@@ -1,0 +1,21 @@
+{
+  "note": "对 octocat/Hello-World 发 fork(name=skillsync-fork-timing-lab, default_branch_only),时间单位秒",
+  "accepted_http": "202",
+  "events": [
+    {
+      "t": 0.0,
+      "step": "POST /forks",
+      "http": "202",
+      "full_name": "dhslegen/skillsync-fork-timing-lab"
+    },
+    {
+      "t": 2.9,
+      "step": "GET repo 首次 200"
+    },
+    {
+      "t": 2.9,
+      "step": "GET branches/master 拿到头",
+      "sha": "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d"
+    }
+  ]
+}

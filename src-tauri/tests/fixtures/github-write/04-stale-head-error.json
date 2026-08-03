@@ -1,0 +1,1 @@
+{"data":{"createCommitOnBranch":null},"errors":[{"type":"STALE_DATA","path":["createCommitOnBranch"],"locations":[{"line":1,"column":48}],"message":"Expected branch to point to \"facd0e5854ab8106e300e3f2933e5afbb48d736a\" but it did not.  Pull and try again."}]}
