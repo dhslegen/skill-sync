@@ -25,8 +25,11 @@ export function Wizard() {
   const { open, step, finish } = useWizard();
   if (!open) return null;
 
+  // bg-bg(主画布色):这里曾引用不存在的 surface 序号 0,Tailwind v4 对
+  // 未定义 token 静默不生成 CSS,向导层透明、文字与主界面叠在一起。
+  // 现有 styles/design-tokens.test.ts 守卫钉住这类拼写。
   return (
-    <div className="fixed inset-0 z-80 bg-surface-0">
+    <div className="fixed inset-0 z-80 bg-bg">
       <div data-tauri-drag-region className="h-11" />
       <div className="mx-auto flex h-[calc(100%-44px)] max-w-[760px] gap-10 px-8 pt-6">
         <aside className="w-[180px] flex-none pt-1">
