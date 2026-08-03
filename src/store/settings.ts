@@ -22,6 +22,8 @@ import {
   type CheckReport,
   type DetectedAgent,
 } from "@/lib/ipc";
+import { useInstall } from "@/store/install";
+import { useMySkills } from "@/store/my-skills";
 
 function toAppError(raw: unknown): AppError {
   return isAppError(raw)
@@ -136,6 +138,12 @@ export const useSettings = create<SettingsState>((set, get) => ({
   attachReportListener: () => {
     return listenSchedulerReport((report) => {
       set({ lastReport: report, checking: false });
+      // 定时检查真装了东西时,界面上的记账已经过时:不刷新的话「我的技能」还挂着
+      // 「有新版本」、商店卡片还停在"更新"档,而磁盘上早就是新版了。
+      if (report.status === "checked" && report.updated.length > 0) {
+        void useInstall.getState().refreshInstalled();
+        void useMySkills.getState().load();
+      }
     });
   },
 

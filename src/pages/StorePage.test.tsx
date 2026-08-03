@@ -16,6 +16,7 @@ const card = (over: Partial<StoreSkillCard>): StoreSkillCard => ({
   path: "skills/weekly-report",
   hasScripts: false,
   fileCount: 2,
+  contentHash: "sha256:weekly",
   ...over,
 });
 
@@ -118,7 +119,7 @@ describe("StorePage", () => {
   });
 
   it("筛选档切换生效", async () => {
-    useInstall.setState({ installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", localModified: false }]]) });
+    useInstall.setState({ installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", contentHash: "sha256:weekly", localModified: false }]]) });
     render(<StorePage />);
     await userEvent.click(screen.getByRole("button", { name: "已安装" }));
     expect(useStoreIndex.getState().filter).toBe("installed");
@@ -198,7 +199,7 @@ describe("卡片安装状态", () => {
 
   it("装了且版本一致 → 已启用(且点不动,那是终态)", () => {
     useInstall.setState({
-      installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", localModified: false }]]),
+      installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", contentHash: "sha256:weekly", localModified: false }]]),
     });
     render(<StorePage />);
     const done = screen.getByRole("button", { name: /已启用/ });
@@ -209,7 +210,7 @@ describe("卡片安装状态", () => {
   it("装了但版本落后 → 更新", () => {
     // 这一档在任务 8 里没有数据源、只能永远显示"安装";接上 installed_list 后才真正可达
     useInstall.setState({
-      installed: new Map([["weekly-report", { commitSha: "老版本", localModified: false }]]),
+      installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", contentHash: "sha256:老版本", localModified: false }]]),
     });
     render(<StorePage />);
     expect(screen.getByRole("button", { name: /^更新 —/ })).toBeInTheDocument();

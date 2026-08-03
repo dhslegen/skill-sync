@@ -245,6 +245,7 @@
   "share.hasChanges": "上次分享后有改动",
   "share.action": "分享…",
   "share.actionAgain": "分享改动",
+  "share.actionShared": "已分享",
   "share.formTitle": "分享到公司技能库",
   "share.formName": "技能名称",
   "share.formDesc": "技能描述",

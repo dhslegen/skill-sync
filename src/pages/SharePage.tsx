@@ -1,5 +1,7 @@
+import { Check } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { Icon } from "@/components/Icon";
 import { SkillIcon } from "@/components/SkillIcon";
 import { t } from "@/i18n";
 import { isAppError, openLibraryUrl, type ShareCandidate } from "@/lib/ipc";
@@ -99,24 +101,30 @@ function Row({ candidate, disabled }: { candidate: ShareCandidate; disabled: boo
                 ? t("share.originNpx", { source: candidate.origin.source })
                 : t("share.originLocal")}
             </span>
-            {candidate.shared && (
-              <span>
-                {candidate.shared.upToDate ? t("share.upToDate") : t("share.hasChanges")}
-              </span>
+            {/* 「已分享」由右侧动作槽位承载,这里只解释"为什么还能再分享一次" */}
+            {candidate.shared && !candidate.shared.upToDate && (
+              <span>{t("share.hasChanges")}</span>
             )}
           </div>
         </div>
         </button>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => begin(candidate)}
-          className="h-6 flex-none rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50"
-        >
-          {candidate.shared && !candidate.shared.upToDate
-            ? t("share.actionAgain")
-            : t("share.action")}
-        </button>
+        {/* 三档,不是两档:已分享且没改动过的,曾经和"从未分享"显示同一个「分享…」
+            ——分享完按钮纹丝不动,看着就像什么都没发生(2026-08-03 用户实测缺陷)。 */}
+        {candidate.shared?.upToDate ? (
+          <span className="flex h-6 flex-none items-center gap-1 rounded-ctl px-2.5 text-[11.5px] font-medium text-ok">
+            <Icon icon={Check} size={12} />
+            {t("share.actionShared")}
+          </span>
+        ) : (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => begin(candidate)}
+            className="h-6 flex-none rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50"
+          >
+            {candidate.shared ? t("share.actionAgain") : t("share.action")}
+          </button>
+        )}
       </div>
       {active && <InlinePanel />}
     </div>

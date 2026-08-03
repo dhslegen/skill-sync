@@ -18,6 +18,7 @@ import {
   type ShareCandidate,
   type ShareOutcome,
 } from "@/lib/ipc";
+import { useInstall } from "@/store/install";
 import { useStoreIndex } from "@/store/store-index";
 
 export type SharePhase = "idle" | "form" | "busy" | "taken" | "done";
@@ -129,7 +130,12 @@ export const useShare = create<ShareState>((set, get) => ({
         return;
       }
       set({ phase: "done", done: result });
+      // 分享成功后要刷新的不止本页(2026-08-03 用户实测:分享完界面到处都是旧的)。
+      // 候选列表:这个技能变成"已分享";商店索引:库里多了(或更新了)一个技能,
+      // 不强刷就要等缓存过期才看得见;已装记账:商店卡片的状态机据它决定按钮档位。
       await get().load();
+      void useStoreIndex.getState().load(true);
+      void useInstall.getState().refreshInstalled();
     } catch (raw) {
       const error = toAppError(raw);
       if (error.code === "CONFLICT_STALE") {

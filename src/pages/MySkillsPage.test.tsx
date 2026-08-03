@@ -17,6 +17,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) })
 const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   dirSlug: "weekly-report",
   commitSha: "aaa1111",
+  contentHash: "sha256:mine",
   agents: ["claude-code"],
   installedAt: "2026-07-30T12:00:00.000Z",
   updatedAt: "2026-07-30T12:00:00.000Z",
@@ -47,14 +48,16 @@ function seedIpc(list: InstalledSkillView[]) {
   });
 }
 
-function seedIndex(commitSha = "aaa1111") {
+/** 远端这一版的内容指纹。与 view() 的 contentHash 一致 = 已是最新;
+ *  不一致 = 有可用更新(判定按逐技能内容,不再看整库 sha)。 */
+function seedIndex(remoteHash = "sha256:mine") {
   useStoreIndex.setState({
     index: {
       registryId: "company",
       owner: "skills",
       repo: "skills",
       branch: "main",
-      commitSha,
+      commitSha: "headsha",
       committedAt: "2026-07-30T10:00:00Z",
       fetchedAt: 0,
       skipped: [],
@@ -69,6 +72,7 @@ function seedIndex(commitSha = "aaa1111") {
           path: "",
           hasScripts: false,
           fileCount: 1,
+          contentHash: remoteHash,
         },
       ],
     },
@@ -139,7 +143,7 @@ describe("我的技能页", () => {
   });
 
   it("版本一致时没有更新按钮 —— 不能引诱用户做无意义的重装", async () => {
-    seedIndex("aaa1111");
+    seedIndex();
     seedIpc([view()]);
     render(<MySkillsPage />);
 
@@ -166,7 +170,7 @@ describe("我的技能页", () => {
       if (cmd === "agents_detected") return { agents: [], canonicalDir: "~/.agents/skills" };
       return [];
     });
-    seedIndex("aaa1111");
+    seedIndex();
     render(<MySkillsPage />);
 
     await screen.findByText("npx skills 安装");
@@ -182,7 +186,7 @@ describe("我的技能页", () => {
   it("来源已移除:亮出徽标,且更新与分享改动都不再提供", async () => {
     // 索引有新版本、本体也有改动——正常情况下两个按钮都该在,
     // 但来源没了,更新与回推都没有去处,摆出来就是引诱用户撞错误
-    seedIndex("bbb2222");
+    seedIndex("sha256:newer");
     seedIpc([view({ sourceRemoved: true, localModified: true })]);
     render(<MySkillsPage />);
 
@@ -193,7 +197,7 @@ describe("我的技能页", () => {
   });
 
   it("库里有新版本时出现更新按钮;点击沿用记账的工具直接更新", async () => {
-    seedIndex("bbb2222");
+    seedIndex("sha256:newer");
     seedIpc([view({ agents: ["claude-code", "cursor"] })]);
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "installed_list") return [view({ agents: ["claude-code", "cursor"] })];

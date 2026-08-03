@@ -21,6 +21,7 @@ import {
   type InstalledSkillView,
   type ShareMode,
 } from "@/lib/ipc";
+import { remoteHashOf } from "@/lib/update";
 import { useInstall } from "@/store/install";
 
 export type RemovePhase = "idle" | "confirming" | "confirmingForce" | "busy";
@@ -206,18 +207,23 @@ async function runRepair(
 }
 
 /**
- * 与商店页同口径:整库 head 变了就提示可更新。多源(M3)后加两道门:
- * 索引必须是**同一个源**的(商店切到别的源时,它的版本号说明不了这个技能),
+ * 与商店页同口径:**逐技能**比内容指纹。
+ *
+ * 曾经比的是整库 HEAD sha(`skill.commitSha !== index.commitSha`),于是库里任何
+ * 一次提交——哪怕是别人分享了另一个技能——都会让全部已装技能同时亮起"有更新"
+ * (2026-08-03 用户实测报的缺陷)。指纹由 core 在建索引时按与
+ * `fsops::dir_content_hash` 同一套算法算出,两边可直接比较。
+ *
+ * 另有两道门:索引必须是**同一个源**的(商店切到别的源时,它的内容说明不了这个技能);
  * 来源已移除的技能没有更新去处,永不亮"有新版本"。
  */
 export function hasUpdate(
   skill: InstalledSkillView,
-  index: { commitSha: string; registryId: string } | null | undefined,
+  index: { registryId: string; skills: { dirSlug: string; contentHash: string }[] } | null | undefined,
 ): boolean {
-  return (
-    Boolean(index) &&
-    !skill.sourceRemoved &&
-    skill.registryId === index!.registryId &&
-    skill.commitSha !== index!.commitSha
-  );
+  if (!index || skill.sourceRemoved || skill.registryId !== index.registryId) return false;
+  const remote = remoteHashOf(index, skill.dirSlug);
+  // 拿不到任一侧的指纹就说"没有更新":宁可漏报,也不能凭空催所有人去更新
+  if (!remote || !skill.contentHash) return false;
+  return remote !== skill.contentHash;
 }

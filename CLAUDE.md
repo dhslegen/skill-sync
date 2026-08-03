@@ -248,7 +248,7 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 在 docs/M3-任务分解.md,本地文档),逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 362 + 前端 290 测试通过,clippy/eslint/tsc 干净,`pnpm dev` 启动冒烟通过
+- 本机:Rust 367 + 前端 297 测试通过,clippy/eslint/tsc 干净,`pnpm dev` 启动冒烟通过
 - **双平台 CI 全绿至 HEAD**:M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;
   `de7b233`/`2eb0595` 当时因账号计费被拒,仓库转公开后 2026-08-03 rerun,
   **macOS + Windows 双 job 全绿**(任务 6 的 claim_flow junction 路径首次真实过 CI)
@@ -350,6 +350,17 @@ M3 后补(2026-08-03):`skill_local_detail`/`skill_reveal`(本地详情面板 + �
 - **curated.json 约定**(fixture 即此约定):技能库根目录,`{"curated": ["<frontmatter name>", …]}`,
   按显示名记;对不上的条目在 view 层丢弃。真实公司库(2026-07-30 快照)还没有这个文件,
   向导第三步会引导去商店——需要技能库管理员补一份才有"一键全装"。
+- **「有可用更新」按逐技能内容指纹判定,绝不用整库 HEAD sha**(2026-08-03 用户实测缺陷):
+  `store.rs` 建索引时对每个技能目录的压缩包条目算 `content_hash`,与安装后
+  `fsops::dir_content_hash(canonical)` **必须逐字节相等**——两侧共用
+  `fsops::ContentHasher` 与 `is_excluded_rel`,有测试钉住这条等式。等式一破的表现是
+  界面永远显示"有更新"(比没有这个功能更糟)。曾经比的是 `commitSha != index.commitSha`,
+  于是**别人分享任意一个技能都会让全部已装技能同时亮"有更新"**。
+  判定只有一处实现:`src/lib/update.ts` 的 `cardState`/`remoteHashOf`,商店卡片、
+  详情面板底部、我的技能三处共用——各写一份正是缺陷温床(详情面板曾只认两档,
+  于是卡片显示"更新"、点进去按钮是禁用的「已启用」,点了没反应)。
+  任一侧指纹为空时按"没有更新"处理:宁可漏报,不误报。
+- **索引缓存版本已升到 2**:旧缓存没有逐技能指纹,留着会让判定退化成"未知"。
 - **商店卡片上没有作者、也没有安装量**(`core/store.rs` 模块头):frontmatter 只有
   name/description/metadata.internal,逐技能的提交人归因要对每个目录各发一次 commits 请求,
   50 个技能撑不住首屏 <2s。UI-Demo 里那两栏因此留空——**不编造**。安装量是 C5 预留字段,等 M4。

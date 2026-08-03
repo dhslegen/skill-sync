@@ -5,6 +5,7 @@ import { InstallButton } from "@/components/InstallButton";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
 import type { InstallStage } from "@/lib/ipc";
+import { cardState, remoteHashOf } from "@/lib/update";
 import { failedLinks, linkedAgents, useInstall } from "@/store/install";
 import { useStoreIndex } from "@/store/store-index";
 
@@ -42,15 +43,15 @@ export function InstallPanel({ dirSlug }: { dirSlug: string }) {
 
 function IdleFooter({ dirSlug, onBegin }: { dirSlug: string; onBegin: () => void }) {
   const installed = useInstall((s) => s.installed);
+  const index = useStoreIndex((s) => s.index);
   const record = installed.get(dirSlug);
+  // 与商店卡片同一条判定。曾经这里只算 install/installed 两档,于是卡片显示
+  // "更新"、点进来按钮却是禁用的「已启用」——用户点了毫无反应(2026-08-03 实测缺陷)。
+  const state = cardState(record, remoteHashOf(index, dirSlug));
 
   return (
     <div className="flex items-center gap-2.5 border-t border-border px-5 py-3.5">
-      <InstallButton
-        state={record ? "installed" : "install"}
-        size="lg"
-        onClick={onBegin}
-      />
+      <InstallButton state={state} size="lg" onClick={onBegin} />
       {record?.localModified && (
         <span className="text-[11.5px] text-text-3">{t("conflict.modifiedTitle")}</span>
       )}

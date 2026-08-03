@@ -24,12 +24,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::fsops;
 use crate::core::gitea::{BranchHead, RepoArchive, RepoRef, RepoSource};
 use crate::core::skills::{self, DiscoverOptions, SkillTree};
 use crate::error::AppError;
 
 /// 索引缓存的结构版本。缓存是可丢弃的派生数据,版本不符即重建,不做迁移。
-pub const INDEX_SCHEMA_VERSION: u32 = 1;
+pub const INDEX_SCHEMA_VERSION: u32 = 2;
 
 // ============================================================ 缓存结构
 
@@ -60,6 +61,14 @@ pub struct IndexedSkill {
     pub files: Vec<SkillFile>,
     /// 含可执行脚本 → 详情页警示角标(UX 增强 #2:企业内网也要给用户知情权)。
     pub has_scripts: bool,
+    /// 远端这一版技能的内容哈希,与 `state.installed[].contentHash` **同算法可比**
+    /// ([`fsops::ContentHasher`])。
+    ///
+    /// 「有可用更新」只能靠它判定。**不能拿仓库 HEAD sha 比**——那是整库的,
+    /// 别人分享任何一个技能都会让所有已装技能被判成有更新(2026-08-03 用户实测撞到)。
+    /// 逐技能问 commits 接口是另一条路,但那要每个目录一次请求,首屏撑不住(见模块头)。
+    #[serde(default)]
+    pub content_hash: String,
 }
 
 /// 有 SKILL.md 但没通过校验的目录。界面据此引导修复,而不是让技能凭空消失。
@@ -121,6 +130,9 @@ pub struct StoreSkillCard {
     pub path: String,
     pub has_scripts: bool,
     pub file_count: usize,
+    /// 远端这一版的内容哈希,与已装记账的 contentHash 比即得"有无可用更新"。
+    /// 见 [`IndexedSkill::content_hash`]:**不能用整库 HEAD sha 代替**。
+    pub content_hash: String,
 }
 
 /// `store_index` 的返回。
@@ -243,6 +255,7 @@ pub fn build_index(
                 description: s.description,
                 path,
                 skill_md,
+                content_hash: remote_content_hash(archive, &s.dir),
                 files: collect_files(archive, &s.dir),
                 has_scripts: skills::has_executable_scripts(&s.dir, &archive.files),
             }
@@ -296,6 +309,28 @@ fn parse_curated(archive: &RepoArchive) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 远端这一版技能的内容哈希。
+///
+/// 必须与安装后 `fsops::dir_content_hash(canonical)` 得到的值**完全相等**——
+/// installer 把 `archive.entries` 里该目录下的字节原样落盘,所以只要:
+/// ①同一个 [`fsops::ContentHasher`];②同一份排除清单([`fsops::is_excluded_rel`]);
+/// ③同样按相对路径字典序喂入(entries 是 BTreeMap,天然有序),两边就一定一致。
+/// 有测试逐字节钉住这条等式——它一旦不成立,界面会永远显示"有更新"。
+fn remote_content_hash(archive: &RepoArchive, dir: &str) -> String {
+    let prefix = format!("{dir}/");
+    let mut hasher = fsops::ContentHasher::new();
+    for (full, entry) in &archive.entries {
+        let Some(rel) = full.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        if rel.is_empty() || fsops::is_excluded_rel(rel) {
+            continue;
+        }
+        hasher.push(rel, &entry.bytes);
+    }
+    hasher.finish()
+}
+
 fn collect_files(archive: &RepoArchive, dir: &str) -> Vec<SkillFile> {
     let prefix = format!("{dir}/");
     let mut out: Vec<SkillFile> = archive
@@ -336,6 +371,7 @@ impl StoreIndex {
                     path: s.path.clone(),
                     has_scripts: s.has_scripts,
                     file_count: s.files.len(),
+                    content_hash: s.content_hash.clone(),
                 })
                 .collect(),
             skipped: self.skipped.clone(),
@@ -685,5 +721,113 @@ mod tests {
         assert!(detail.skill_md.contains("weekly-report 的说明"));
         assert_eq!(detail.commit_sha, "abc1234");
         assert!(index.detail("不存在的技能").is_none());
+    }
+}
+
+#[cfg(test)]
+mod content_hash_tests {
+    use super::*;
+    use crate::core::skills::MemTree;
+
+    fn archive() -> RepoArchive {
+        let mut a = RepoArchive {
+            root: "skills".to_string(),
+            tree: MemTree::new(),
+            files: Vec::new(),
+            entries: Default::default(),
+        };
+        let files: [(&str, &[u8]); 4] = [
+            (
+                "skills/skills/weekly-report/SKILL.md",
+                b"---\nname: \xe5\x91\xa8\xe6\x8a\xa5\ndescription: d\n---\n\n\xe6\xad\xa3\xe6\x96\x87\n",
+            ),
+            ("skills/skills/weekly-report/scripts/run.sh", b"#!/bin/sh\necho hi\n"),
+            ("skills/skills/weekly-report/assets/logo.png", &[0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]),
+            // 排除清单里的:两侧都必须跳过
+            ("skills/skills/weekly-report/metadata.json", b"{\"x\":1}"),
+        ];
+        for (path, bytes) in files {
+            a.files.push(path.to_string());
+            a.entries.insert(
+                path.to_string(),
+                crate::core::gitea::ArchiveEntry { bytes: bytes.to_vec(), unix_mode: None },
+            );
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                a.tree = std::mem::take(&mut a.tree).with_file(path, text);
+            }
+        }
+        a
+    }
+
+    /// 本模块存在的**唯一理由**:远端算出的哈希必须与技能装到本地后
+    /// `fsops::dir_content_hash` 算出的值逐字节相等。不相等 = 界面永远显示"有更新"。
+    #[test]
+    fn remote_hash_equals_hash_of_what_gets_installed() {
+        let a = archive();
+        let remote = remote_content_hash(&a, "skills/skills/weekly-report");
+
+        // 模拟 installer:把该目录下的 entries 原样落盘(它就是这么做的)
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("weekly-report");
+        let prefix = "skills/skills/weekly-report/";
+        for (full, entry) in &a.entries {
+            let Some(rel) = full.strip_prefix(prefix) else { continue };
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, &entry.bytes).unwrap();
+        }
+        let local = fsops::dir_content_hash(&dir).unwrap();
+
+        assert_eq!(remote, local, "远端与本地哈希必须一致,否则装完就会永远提示有更新");
+        assert!(remote.starts_with("sha256:"));
+    }
+
+    /// 改一个技能的内容只影响它自己 —— 这正是"分享一个技能导致全部提示更新"的反面。
+    #[test]
+    fn editing_one_skill_does_not_change_another_skills_hash() {
+        let mut a = archive();
+        let other = "skills/skills/other/SKILL.md";
+        a.files.push(other.to_string());
+        a.entries.insert(
+            other.to_string(),
+            crate::core::gitea::ArchiveEntry { bytes: b"---\nname: o\ndescription: d\n---\n".to_vec(), unix_mode: None },
+        );
+
+        let before_weekly = remote_content_hash(&a, "skills/skills/weekly-report");
+        let before_other = remote_content_hash(&a, "skills/skills/other");
+
+        // 只动 other
+        a.entries.get_mut(other).unwrap().bytes = b"---\nname: o\ndescription: d2\n---\n".to_vec();
+
+        assert_eq!(before_weekly, remote_content_hash(&a, "skills/skills/weekly-report"));
+        assert_ne!(before_other, remote_content_hash(&a, "skills/skills/other"));
+    }
+
+    #[test]
+    fn excluded_entries_do_not_affect_the_hash() {
+        let a = archive();
+        let with_meta = remote_content_hash(&a, "skills/skills/weekly-report");
+
+        let mut b = archive();
+        b.entries.get_mut("skills/skills/weekly-report/metadata.json").unwrap().bytes =
+            b"{\"totally\":\"different\"}".to_vec();
+
+        assert_eq!(with_meta, remote_content_hash(&b, "skills/skills/weekly-report"));
+    }
+
+    #[test]
+    fn index_cards_carry_the_hash() {
+        let a = archive();
+        let index = build_index("company", &repo_ref(), &head_of("abc"), &a, 0);
+        let card = &index.to_view(false, false).skills[0];
+        assert_eq!(card.dir_slug, "weekly-report");
+        assert_eq!(card.content_hash, remote_content_hash(&a, "skills/skills/weekly-report"));
+    }
+
+    fn repo_ref() -> RepoRef {
+        RepoRef { owner: "skills".into(), repo: "skills".into(), branch: "main".into() }
+    }
+    fn head_of(sha: &str) -> BranchHead {
+        BranchHead { sha: sha.into(), committed_at: "2026-08-03T10:00:00Z".into() }
     }
 }

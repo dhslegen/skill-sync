@@ -49,7 +49,7 @@ interface InstallState {
   precheck: Precheck | null;
   error: AppError | null;
   /** 已安装技能:商店卡片的状态机数据源。 */
-  installed: Map<string, { commitSha: string; localModified: boolean }>;
+  installed: Map<string, { commitSha: string; contentHash: string; localModified: boolean }>;
 
   refreshInstalled: () => Promise<void>;
   /** 点"安装"→ 展开 agent 勾选。`registryId` 缺省 = 内建源。 */
@@ -102,7 +102,10 @@ export const useInstall = create<InstallState>((set, get) => ({
       const list = await installedList();
       set({
         installed: new Map(
-          list.map((s) => [s.dirSlug, { commitSha: s.commitSha, localModified: s.localModified }]),
+          list.map((s) => [
+            s.dirSlug,
+            { commitSha: s.commitSha, contentHash: s.contentHash, localModified: s.localModified },
+          ]),
         ),
       });
     } catch {

@@ -189,6 +189,29 @@ describe("分享流程状态机", () => {
     expect(useShare.getState().candidates?.[0].shared?.upToDate).toBe(true);
   });
 
+  it("分享成功后还要刷新商店索引与已装记账,不只刷本页", async () => {
+    // 2026-08-03 用户实测:分享完界面到处都是旧的——新技能在商店里看不到,
+    // 卡片状态机也没跟上。三处一起刷才算刷完。
+    const cmds: string[] = [];
+    invoke.mockImplementation(async (cmd: string) => {
+      cmds.push(cmd);
+      if (cmd === "skill_share") return SHARED_OK;
+      if (cmd === "share_candidates") return [];
+      if (cmd === "store_index") return null;
+      if (cmd === "installed_list") return [];
+      return null;
+    });
+    useShare.getState().begin(candidate());
+    await useShare.getState().submit();
+    await vi.waitFor(() => {
+      expect(cmds).toContain("store_index");
+      expect(cmds).toContain("installed_list");
+    });
+    // 必须是强制刷新:不带 force 会命中缓存,刚分享的技能仍然看不见
+    const call = invoke.mock.calls.find(([c]) => c === "store_index");
+    expect(call![1].args.force).toBe(true);
+  });
+
   it("「看看对方的版本」打开商店详情", () => {
     const openDetail = vi.fn(async () => {});
     useStoreIndex.setState({ openDetail });

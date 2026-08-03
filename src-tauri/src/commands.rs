@@ -909,6 +909,13 @@ pub struct InstalledSkillView {
     /// 安装目录名,也是商店卡片的 `dirSlug`。
     pub dir_slug: String,
     pub commit_sha: String,
+    /// 安装(或认领)那一刻的内容哈希,是**这个技能这一版**的指纹。
+    ///
+    /// 「有可用更新」= 它 != 商店卡片的 `contentHash`。**不要改用 commitSha 比**:
+    /// 那是整库 HEAD,库里任何一次提交(比如别人分享了另一个技能)都会让
+    /// 所有已装技能被判成有更新——2026-08-03 用户实测撞到过。
+    /// 用户改过本体时它**保持不变**(acquire 保留改动时刻意不更新),所以判定仍准确。
+    pub content_hash: String,
     pub agents: Vec<String>,
     pub installed_at: String,
     pub updated_at: String,
@@ -952,6 +959,7 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                 Ok(InstalledSkillView {
                     dir_slug: s.name.clone(),
                     commit_sha: s.commit_sha.clone(),
+                    content_hash: s.content_hash.clone(),
                     agents: s.agents.clone(),
                     installed_at: s.installed_at.clone(),
                     updated_at: s.updated_at.clone(),
@@ -982,6 +990,8 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
             views.push(InstalledSkillView {
                 dir_slug: u.dir_slug,
                 commit_sha: String::new(),
+                // 未认领的没有本 app 的记账基线;认领时才建立(见 acquire::claim)
+                content_hash: String::new(),
                 agents: Vec::new(),
                 installed_at: String::new(),
                 updated_at: String::new(),

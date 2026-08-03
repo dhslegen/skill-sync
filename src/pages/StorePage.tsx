@@ -7,18 +7,10 @@ import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { relativeTimeFromIso, relativeTimeFromUnix } from "@/lib/format";
 import { filterSkills, type StoreFilter } from "@/lib/search";
+import { cardState } from "@/lib/update";
 import { useInstall } from "@/store/install";
 import { useRegistries } from "@/store/registries";
 import { useStoreIndex } from "@/store/store-index";
-
-/** 卡片按钮状态:没装→安装;装了但版本落后→更新;否则→已启用。 */
-function cardState(
-  record: { commitSha: string } | undefined,
-  remoteSha: string,
-): "install" | "installed" | "update" {
-  if (!record) return "install";
-  return record.commitSha === remoteSha ? "installed" : "update";
-}
 
 const FILTERS: { id: StoreFilter; label: MessageKey }[] = [
   { id: "all", label: "store.filterAll" },
@@ -134,7 +126,7 @@ export function StorePage() {
               skill={skill}
               repo={index.repo}
               updatedAt={updatedAt}
-              state={cardState(records.get(skill.dirSlug), index.commitSha)}
+              state={cardState(records.get(skill.dirSlug), skill.contentHash)}
               onOpen={() => void openDetail(skill.dirSlug)}
             />
           ))}

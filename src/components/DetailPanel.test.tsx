@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DetailPanel, revealLabel, stripFrontmatter } from "./DetailPanel";
 import type { LocalSkillDetail, SkillDetail } from "@/lib/ipc";
+import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { useStoreIndex } from "@/store/store-index";
 
@@ -232,6 +233,50 @@ describe("DetailPanel", () => {
     });
     render(<DetailPanel />);
     expect(screen.getByText(/请返回列表刷新后再试/)).toBeInTheDocument();
+  });
+});
+
+describe("详情面板底部的获取区", () => {
+  beforeEach(() => {
+    useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
+    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    useInstall.setState({ phase: "idle", dirSlug: null, installed: new Map() });
+  });
+
+  it("装了且内容一致 → 已启用(终态,点不动)", () => {
+    const d = open();
+    useStoreIndex.setState({
+      index: { ...useStoreIndex.getState().index!, skills: [
+        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:same" },
+      ] },
+    });
+    useInstall.setState({
+      installed: new Map([[d.dirSlug, { commitSha: "x", contentHash: "sha256:same", localModified: false }]]),
+    });
+    render(<DetailPanel />);
+    expect(screen.getByRole("button", { name: /已启用/ })).toBeDisabled();
+  });
+
+  it("装了但内容落后 → 「更新」且可点(曾经这里只有两档,点了毫无反应)", async () => {
+    // 2026-08-03 用户实测:商店卡片显示"更新",点进详情按钮却是禁用的「已启用」
+    const d = open();
+    useStoreIndex.setState({
+      index: { ...useStoreIndex.getState().index!, skills: [
+        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:newer" },
+      ] },
+    });
+    useInstall.setState({
+      installed: new Map([[d.dirSlug, { commitSha: "x", contentHash: "sha256:old", localModified: false }]]),
+    });
+    render(<DetailPanel />);
+
+    const button = screen.getByRole("button", { name: /^更新/ });
+    expect(button).toBeEnabled();
+    await userEvent.click(button);
+    // 点了要真的进入流程(展开 agent 勾选),不是死按钮
+    await vi.waitFor(() => {
+      expect(useInstall.getState().dirSlug).toBe(d.dirSlug);
+    });
   });
 });
 

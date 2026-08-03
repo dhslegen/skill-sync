@@ -211,6 +211,23 @@ describe("分享页", () => {
     expect(screen.getByText(/移入统一技能目录/)).toBeInTheDocument();
   });
 
+  it("已分享且没改动:显示「已分享」而不是又一个「分享…」按钮", async () => {
+    // 2026-08-03 用户实测的缺陷:分享完按钮纹丝不动,看着像什么都没发生
+    seedIpc([candidate({ shared: { upToDate: true, shareName: "my-notes" } })]);
+    render(<SharePage />);
+
+    expect(await screen.findByText("已分享")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "分享…" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "分享改动" })).not.toBeInTheDocument();
+  });
+
+  it("分享过但本地又改了:给「分享改动」", async () => {
+    seedIpc([candidate({ shared: { upToDate: false, shareName: "my-notes" } })]);
+    render(<SharePage />);
+
+    expect(await screen.findByRole("button", { name: "分享改动" })).toBeInTheDocument();
+  });
+
   it("点行内名称区按候选的绝对路径打开本地详情", async () => {
     useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
     seedIpc([candidate()]);

@@ -10,6 +10,7 @@ const card = (over: Partial<StoreSkillCard>): StoreSkillCard => ({
   path: "skills/weekly-report",
   hasScripts: false,
   fileCount: 2,
+  contentHash: "sha256:x",
   ...over,
 });
 

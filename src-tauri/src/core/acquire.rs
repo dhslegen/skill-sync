@@ -914,6 +914,7 @@ mod tests {
             skill_md: String::new(),
             files: vec![SkillFile { path: "SKILL.md".into(), size: Some(1) }],
             has_scripts: false,
+            content_hash: String::new(),
         }
     }
 

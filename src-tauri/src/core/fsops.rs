@@ -416,14 +416,76 @@ pub fn write_file(path: &Path, bytes: &[u8], unix_mode: Option<u32>) -> Result<(
     Ok(())
 }
 
+/// 内容哈希的算法本体。
+///
+/// **两个调用方共用它是硬要求**:本地目录([`dir_content_hash`])与远端压缩包里的
+/// 同一个技能([`crate::core::store`] 建索引时)必须算出**逐字节相同**的值——
+/// "有可用更新"就是靠这两个值不相等来判定的。各写一份迟早会漂移,一漂移的表现是
+/// 刚装完就永远提示有更新(或永远提示没有),两种都比没有这个功能更糟。
+///
+/// 喂入顺序必须是相对路径的字典序,调用方负责排好。
+pub struct ContentHasher {
+    inner: sha2::Sha256,
+}
+
+impl Default for ContentHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ContentHasher {
+    pub fn new() -> Self {
+        use sha2::Digest;
+        Self {
+            inner: sha2::Sha256::new(),
+        }
+    }
+
+    /// 喂入一个文件。`rel` 用 `/` 分隔,相对技能目录。
+    pub fn push(&mut self, rel: &str, bytes: &[u8]) {
+        use sha2::Digest;
+        // 路径与长度都进 hash:否则把 a.md 的内容挪进 b.md 后 hash 不变,
+        // 相邻文件内容首尾相接也会撞成同一个值。
+        self.inner.update((rel.len() as u64).to_le_bytes());
+        self.inner.update(rel.as_bytes());
+        self.inner.update((bytes.len() as u64).to_le_bytes());
+        self.inner.update(bytes);
+    }
+
+    pub fn finish(self) -> String {
+        use sha2::Digest;
+        let digest = self.inner.finalize();
+        let mut hex = String::with_capacity(7 + digest.len() * 2);
+        hex.push_str("sha256:");
+        for b in digest {
+            use std::fmt::Write;
+            let _ = write!(hex, "{b:02x}");
+        }
+        hex
+    }
+}
+
+/// 相对路径是否被内容哈希排除。远端侧(压缩包)必须用它,才能与本地口径一致。
+///
+/// 装进来的目录本就没有被排除的那些条目;若某一侧口径更宽,一装完就会被判成
+/// "用户改过"或"有更新",流程会永远停在提示上。
+pub fn is_excluded_rel(rel: &str) -> bool {
+    rel.split('/').enumerate().any(|(i, seg)| {
+        let last = i + 1 == rel.split('/').count();
+        if last {
+            EXCLUDE_FILES.contains(&seg)
+        } else {
+            EXCLUDE_DIRS.contains(&seg)
+        }
+    })
+}
+
 /// 计算目录内容的 sha256,用于判断用户是否改过技能本体。
 ///
 /// 路径与内容都参与:改内容、改文件名、增删文件都会让结果变化。
-/// **排除清单必须与 [`copy_dir`] 完全一致**——装进来的目录本就没有被排除的那些条目,
-/// 若此处口径更宽,一装完就会被判成"用户改过",更新流程会永远停在冲突提示上。
+/// **排除清单必须与 [`copy_dir`] 完全一致**——见 [`is_excluded_rel`] 的说明。
 pub fn dir_content_hash(dir: &Path) -> Result<String, AppError> {
-    use sha2::{Digest, Sha256};
-
     let mut files = Vec::new();
     collect_files(dir, dir, &mut files).map_err(|e| {
         AppError::new("FS_HASH_FAILED", "无法读取技能目录内容,请重试")
@@ -432,28 +494,16 @@ pub fn dir_content_hash(dir: &Path) -> Result<String, AppError> {
     // 文件系统不保证枚举顺序,排序后 hash 才可复现
     files.sort();
 
-    let mut hasher = Sha256::new();
+    let mut hasher = ContentHasher::new();
     for rel in &files {
         let bytes = std::fs::read(dir.join(rel)).map_err(|e| {
             AppError::new("FS_HASH_FAILED", "无法读取技能目录内容,请重试")
                 .with_detail(format!("hash {}: {e}", rel.display()))
         })?;
-        // 路径与长度都进 hash:否则把 a.md 的内容挪进 b.md 后 hash 不变,
-        // 相邻文件内容首尾相接也会撞成同一个值。
         let rel = rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR_STR, "/");
-        hasher.update((rel.len() as u64).to_le_bytes());
-        hasher.update(rel.as_bytes());
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(&bytes);
+        hasher.push(&rel, &bytes);
     }
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(7 + digest.len() * 2);
-    hex.push_str("sha256:");
-    for b in digest {
-        use std::fmt::Write;
-        let _ = write!(hex, "{b:02x}");
-    }
-    Ok(hex)
+    Ok(hasher.finish())
 }
 
 /// 收集目录下全部文件的相对路径,排除清单与 [`copy_dir`] 共用同一套判定。

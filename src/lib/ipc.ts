@@ -48,6 +48,8 @@ export interface StoreSkillCard {
   path: string;
   hasScripts: boolean;
   fileCount: number;
+  /** 远端这一版的内容哈希。与已装记账的 contentHash 比,才是"有无可用更新"。 */
+  contentHash: string;
 }
 
 export interface SkippedEntry {
@@ -322,6 +324,10 @@ export interface LinkHealthReport {
 export interface InstalledSkillView {
   dirSlug: string;
   commitSha: string;
+  /** 安装(或认领)那一刻的内容哈希 —— 这个技能这一版的指纹。
+   *  判"有更新"要用它和商店卡片的 contentHash 比,**不能用 commitSha**:
+   *  那是整库 HEAD,库里任何一次提交都会让所有已装技能被判成有更新。 */
+  contentHash: string;
   agents: string[];
   installedAt: string;
   updatedAt: string;

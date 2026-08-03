@@ -11,6 +11,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) })
 const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   dirSlug: "weekly-report",
   commitSha: "aaa1111",
+  contentHash: "sha256:mine",
   agents: ["claude-code", "cursor"],
   installedAt: "2026-07-30T12:00:00.000Z",
   updatedAt: "2026-07-30T12:00:00.000Z",
@@ -247,16 +248,45 @@ describe("修复流程", () => {
 describe("更新判定与更新动作", () => {
   beforeEach(reset);
 
-  it("与商店卡片同口径:整库版本变了就提示可更新,且只认同源的索引", () => {
-    const idx = (sha: string, registryId = "company") => ({ commitSha: sha, registryId });
-    expect(hasUpdate(view(), idx("aaa1111"))).toBe(false);
-    expect(hasUpdate(view(), idx("bbb2222"))).toBe(true);
+  it("逐技能比内容指纹:只有这个技能自己变了才提示更新", () => {
+    const idx = (hash: string, registryId = "company") => ({
+      registryId,
+      skills: [{ dirSlug: "weekly-report", contentHash: hash }],
+    });
+    expect(hasUpdate(view(), idx("sha256:mine"))).toBe(false);
+    expect(hasUpdate(view(), idx("sha256:newer"))).toBe(true);
     // 索引还没加载出来时不能凭空提示有更新
     expect(hasUpdate(view(), undefined)).toBe(false);
-    // 商店当前浏览的是别的源:它的版本号说明不了这个技能有没有更新
-    expect(hasUpdate(view(), idx("bbb2222", "custom-1"))).toBe(false);
+    // 商店当前浏览的是别的源:它的内容说明不了这个技能有没有更新
+    expect(hasUpdate(view(), idx("sha256:newer", "custom-1"))).toBe(false);
     // 来源已移除:更新没有去处,绝不能亮"有新版本"
-    expect(hasUpdate(view({ sourceRemoved: true }), idx("bbb2222"))).toBe(false);
+    expect(hasUpdate(view({ sourceRemoved: true }), idx("sha256:newer"))).toBe(false);
+  });
+
+  it("库里别的技能变了,不影响这个技能(分享一个技能不该让全部亮更新)", () => {
+    // 这是 2026-08-03 用户实测的缺陷:旧实现比整库 HEAD sha,
+    // 别人分享任意一个技能都会让所有已装技能同时提示更新。
+    const index = {
+      registryId: "company",
+      skills: [
+        { dirSlug: "weekly-report", contentHash: "sha256:mine" },
+        { dirSlug: "other-skill", contentHash: "sha256:justchanged" },
+      ],
+    };
+    expect(hasUpdate(view(), index)).toBe(false);
+  });
+
+  it("任一侧指纹缺失时按没有更新处理:宁可漏报也不误报", () => {
+    const index = { registryId: "company", skills: [{ dirSlug: "weekly-report", contentHash: "" }] };
+    expect(hasUpdate(view(), index)).toBe(false);
+    expect(
+      hasUpdate(view({ contentHash: "" }), {
+        registryId: "company",
+        skills: [{ dirSlug: "weekly-report", contentHash: "sha256:remote" }],
+      }),
+    ).toBe(false);
+    // 索引里根本没有这个技能(已从库里删掉)
+    expect(hasUpdate(view(), { registryId: "company", skills: [] })).toBe(false);
   });
 
   it("更新沿用上次记账的工具,不再弹 agent 选择", async () => {
