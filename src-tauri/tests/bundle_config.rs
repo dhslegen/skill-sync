@@ -164,3 +164,30 @@ fn build_rs_watches_every_compile_time_constant() {
         "build.rs 漏了这些变量的 rerun-if-env-changed,改它们不会触发重编译:{missing:?}"
     );
 }
+
+/// 钥匙串的 service 名**故意与 bundle identifier 不一致**,别"顺手对齐"。
+///
+/// 2026-08-04 把 identifier 从 `com.skillsync.app` 改成 `com.dhslegen.skillsync`
+/// (原值以 `.app` 结尾,与 macOS 应用包扩展名冲突)。`KEYRING_SERVICE` 保持旧值——
+/// keyring 是**按 service 名查凭证**的,跟着改等于让所有已登录用户的凭证突然读不到、
+/// 得重新登录一次。而这个后果是**静默的**:测试全绿、应用照常启动,
+/// 要到用户手里才发现自己被登出了。所以用一条守卫钉死它。
+#[test]
+fn keyring_service_name_is_pinned_independently_of_the_bundle_id() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let auth = std::fs::read_to_string(dir.join("src/core/auth.rs")).unwrap();
+    assert!(
+        auth.contains(r#"const KEYRING_SERVICE: &str = "com.skillsync.app";"#),
+        "KEYRING_SERVICE 被改了。改它会让所有已登录用户丢失凭证——\
+         若确实要改,得先设计一次凭证迁移(读旧 service 名、写新的),而不是直接换字符串"
+    );
+
+    let conf: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("tauri.conf.json")).unwrap())
+            .unwrap();
+    let id = conf["identifier"].as_str().expect("identifier 必须有");
+    assert!(
+        !id.ends_with(".app"),
+        "bundle identifier 不能以 .app 结尾:与 macOS 应用包扩展名冲突,tauri 会告警"
+    );
+}

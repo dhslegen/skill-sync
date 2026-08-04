@@ -20,6 +20,12 @@ use sha2::{Digest, Sha256};
 use crate::error::AppError;
 
 /// 钥匙串里的服务名。同一台机器上多个技能库源各存一份,用 registryId 区分账户。
+///
+/// ⚠️ **故意与 `tauri.conf.json` 的 `identifier` 不一致,不要"顺手对齐"**。
+/// bundle id 在 2026-08-04 改成了 `com.dhslegen.skillsync`(原值以 `.app` 结尾,
+/// 与 macOS 应用包扩展名冲突),而这里保持旧值:keyring 是**按 service 名查凭证**的,
+/// 改掉它等于让所有已登录用户的凭证突然读不到,得重新登录一次。
+/// service 名是纯内部标识,与 bundle id 解耦本就合理。
 const KEYRING_SERVICE: &str = "com.skillsync.app";
 
 /// 等待浏览器回调的上限。用户可能要在浏览器里登录、过 SSO,给足时间。
