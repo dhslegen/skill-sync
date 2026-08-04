@@ -430,20 +430,33 @@ function InlinePanel() {
             className="h-7 w-full rounded-ctl border border-border bg-surface-1 px-2 text-[12.5px] outline-none focus:border-accent"
           />
         </Field>
-        <Field
-          label={t("share.formSlug")}
-          hint={
-            form.shareName && !nameOk ? t("share.formSlugInvalid") : t("share.formSlugHint")
-          }
-          invalid={form.shareName !== "" && !nameOk}
-        >
-          <input
-            value={form.shareName}
-            onChange={(e) => setForm({ shareName: e.target.value })}
-            spellCheck={false}
-            className="h-7 w-full rounded-ctl border border-border bg-surface-1 px-2 font-mono text-[12px] outline-none focus:border-accent"
-          />
-        </Field>
+        {target.shared ? (
+          /* 再次分享时**锁死远端目录名**:它是这个技能在团队库里的身份。
+             改了不是改名,是另发一个新技能——旧的那个会留在库里没人维护,
+             而本地会多出一条记账(记账按远端名去重、展示按本地路径查找,
+             两把钥匙从此对不上,界面之后一直显示旧的那条)。
+             真要换名字是另一个动作,不该在改动表单里顺手做。 */
+          <Field label={t("share.formSlug")} hint={t("share.formSlugLocked")}>
+            <p className="flex h-7 items-center rounded-ctl border border-border bg-surface-3 px-2 font-mono text-[12px] text-text-2">
+              {form.shareName}
+            </p>
+          </Field>
+        ) : (
+          <Field
+            label={t("share.formSlug")}
+            hint={
+              form.shareName && !nameOk ? t("share.formSlugInvalid") : t("share.formSlugHint")
+            }
+            invalid={form.shareName !== "" && !nameOk}
+          >
+            <input
+              value={form.shareName}
+              onChange={(e) => setForm({ shareName: e.target.value })}
+              spellCheck={false}
+              className="h-7 w-full rounded-ctl border border-border bg-surface-1 px-2 font-mono text-[12px] outline-none focus:border-accent"
+            />
+          </Field>
+        )}
       </div>
 
       <div className="mt-3 flex items-center gap-2">

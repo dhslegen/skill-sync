@@ -232,6 +232,30 @@ describe("分享页", () => {
     expect(screen.getByText(/移入统一技能目录/)).toBeInTheDocument();
   });
 
+  it("再次分享时远端目录名只读——改了不是改名,是另发一个新技能", async () => {
+    // 记账按远端名去重、展示按 local_path 查找(且 find 只取第一条),两把钥匙。
+    // 改名会让远端留下无人维护的孤儿,本地多一条记账,界面之后一直显示旧的那条。
+    seedIpc([candidate({ shared: { upToDate: false, shareName: "my-notes" } })]);
+    render(<SharePage />);
+    await userEvent.click(await screen.findByRole("button", { name: "分享改动" }));
+
+    // 名称与描述照常可改——那是内容,本来就该能更新
+    expect(screen.getByDisplayValue("我的笔记")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("记点东西")).toBeInTheDocument();
+    // 但远端目录名不再是可编辑的输入框
+    expect(screen.queryByDisplayValue("my-notes")).not.toBeInTheDocument();
+    expect(screen.getByText("my-notes")).toBeInTheDocument();
+    expect(screen.getByText(/这是它在团队库里的名字/)).toBeInTheDocument();
+  });
+
+  it("首次分享时远端目录名仍可编辑——那时还没有身份可言", async () => {
+    seedIpc([candidate()]);
+    render(<SharePage />);
+    await userEvent.click(await screen.findByRole("button", { name: "分享…" }));
+
+    expect(screen.getByDisplayValue("my-notes")).toBeInTheDocument();
+  });
+
   it("已分享且没改动:显示「已分享」而不是又一个「分享…」按钮", async () => {
     // 2026-08-03 用户实测的缺陷:分享完按钮纹丝不动,看着像什么都没发生
     seedIpc([candidate({ shared: { upToDate: true, shareName: "my-notes" } })]);

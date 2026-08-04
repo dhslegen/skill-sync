@@ -307,5 +307,6 @@
   "create.doneTitle": "技能已创建",
   "create.doneHint": "用编辑器打开这个文件夹,把 SKILL.md 的内容写完整,然后回到这一页分享给团队。",
   "create.doneVisible": "Cursor 和 Codex 现在就能读到它;Claude Code 和 Trae 要等它分享到技能库、再获取回来才能用。",
-  "create.done": "完成"
+  "create.done": "完成",
+  "share.formSlugLocked": "这是它在团队库里的名字,更新时保持不变。"
 }

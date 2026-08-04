@@ -390,6 +390,14 @@ M4 任务 1 新增的 IPC:`registry_add_repo`/`registry_remove_repo`;
 - **`acquire_batch` 的冲突语义**:改过/外来/已最新一律跳过并给人话原因,不弹三选。
   scheduler 的冲突保护直接复用它,**不要另写一套判定**。两档链接目标:
   `Uniform`(向导,统一列表)/ `FromAccount`(定时更新,各技能用账上 agents,自动流程绝不改写关联)。
+- **`state.shared` 的记账键与展示键不一致(潜在,已用 UI 锁死堵住入口)**:
+  写记账按**远端目录名** `next.shared.iter().position(|s| s.name == req.share_name)`,
+  读状态按**本地路径** `state.shared.iter().find(|s| s.local_path == ...)` 且 `find` 只取第一条。
+  只要同一个本地目录用两个远端名分享过,两把钥匙就对不上:远端留下无人维护的孤儿,
+  `shared` 里两条记录指向同一目录,界面之后一直显示**第一条**(旧的那条)。
+  M4 任务 6b 把「分享改动」的远端名字段改成只读堵住了唯一入口(`share_installed`
+  走账上坐标不经表单),**但底层的双键不一致仍在**——将来若再开放改名,必须先统一成
+  一把钥匙(建议记账也按 `local_path`,或改名时显式迁移旧条目)。
 - **保留本地改动时,关于内容的记账一个字不动**:`commitSha` 与 `contentHash` 保持旧值,
   它们不符正是"有可用更新 / 有未分享的改动"两个标记的判据。回推走了评审(分支保护/只读)时同理
   ——改动没进 main,清了 contentHash 等于把「已改动」标记藏起来。
