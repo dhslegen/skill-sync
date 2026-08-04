@@ -78,6 +78,8 @@ pub fn create_skill(
     store: &Store,
     req: &CreateRequest<'_>,
 ) -> Result<CreateReport, AppError> {
+    // 写盘期间的文件事件不上报(与获取/移除同理)
+    let _quiet = crate::core::watcher::app_write();
     if !usable_slug(req.dir_slug) {
         return Err(AppError::new(
             "FS_UNUSABLE_NAME",

@@ -18,6 +18,7 @@
 // 没人看。`load` 只写列表不碰表单(已确认),所以刷新不会打断正在填的分享表单。
 import { useEffect, useRef } from "react";
 
+import { listenLocalSkillsChanged } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useMySkills } from "@/store/my-skills";
 import { useShare } from "@/store/share";
@@ -73,6 +74,25 @@ export function useLocalRefresh(): void {
       }
     })();
 
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // 级别 3:core 侧的文件监听。窗口有焦点时改动也能立刻反映
+  //(应用和编辑器并排放着的用法)。core 已经滤掉本应用自己写盘引发的事件。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void listenLocalSkillsChanged(() => refreshLocalFor(pageRef.current))
+      .then((stop) => {
+        if (cancelled) stop();
+        else unlisten = stop;
+      })
+      .catch(() => {
+        // 监听不上就降级到级别 1 与 2
+      });
     return () => {
       cancelled = true;
       unlisten?.();

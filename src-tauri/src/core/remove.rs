@@ -45,6 +45,8 @@ pub fn remove(
     dir_slug: &str,
     force: bool,
 ) -> Result<RemoveOutcome, AppError> {
+    // 删本体期间的文件事件不上报——那是本应用自己干的,界面已经会刷新
+    let _quiet = crate::core::watcher::app_write();
     let loaded = store.load_state()?;
     let Some(idx) = loaded.value.installed.iter().position(|s| s.name == dir_slug) else {
         return Err(AppError::new(

@@ -254,6 +254,9 @@ pub async fn acquire(
     fetched_at: i64,
     progress: ProgressSink<'_>,
 ) -> Result<AcquireOutcome, AppError> {
+    // 这段期间的文件事件不上报:`Installer::install` 是清空重建,监听器若在此时
+    // 触发,前端会拿到一个技能凭空消失或只写了一半的瞬间(见 core::watcher 模块头)。
+    let _quiet = crate::core::watcher::app_write();
     progress(Stage::Fetching);
     // 先问分支头再下载:记账要记**实际装下来的那个版本**。
     // 拿商店缓存里的 sha 去记会在"浏览时是 A、点安装时远端已到 B"的情况下永久记错,
@@ -419,6 +422,9 @@ pub async fn acquire_batch(
     now: &str,
     fetched_at: i64,
 ) -> Result<Vec<BatchItem>, AppError> {
+    // 这段期间的文件事件不上报:`Installer::install` 是清空重建,监听器若在此时
+    // 触发,前端会拿到一个技能凭空消失或只写了一半的瞬间(见 core::watcher 模块头)。
+    let _quiet = crate::core::watcher::app_write();
     let head = client.branch_head(repo).await?;
     let archive = client.download_archive(repo).await?;
     let index = store_index::build_index(registry_id, repo, &head, &archive, fetched_at);

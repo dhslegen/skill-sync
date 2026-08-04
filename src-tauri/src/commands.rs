@@ -9,6 +9,7 @@ use crate::core::agents::{AgentRegistry, DetectedAgent, SystemEnv};
 use crate::core::auth::{self, CredentialStore, KeyringStore, OAuthConfig};
 use crate::core::builtin;
 use crate::core::create;
+use crate::core::watcher;
 use crate::core::gitea::{GiteaClient, RepoRef};
 use crate::core::github;
 use crate::core::installer::{self, InstallReport, Installer};
@@ -187,6 +188,74 @@ pub fn app_restart(app: tauri::AppHandle) {
 
 /// 启动时的一次性 App 更新检查(config.autoUpdate.app 开着且更新源已配置才跑)。
 /// 假设:每次启动至多提醒一次,不做"忽略此版本"记忆——那是 M3 打磨项。
+/// 起本地技能目录的文件监听(M4 任务 6c 级别 3)。
+///
+/// 三条不可让步的姿态,理由都在 `core::watcher` 模块头:
+/// 1. **本应用自己的写入不上报**——`Installer::install` 是清空重建,那期间上报会让
+///    前端读到半写状态(靠 `watcher::app_write()` 守卫 + 静默期);
+/// 2. **起不来只记日志,不拦启动**——与托盘图标同款姿态,降级到级别 1 与 2;
+/// 3. **绝不创建用户没要求的目录**——canonical 不在就盯父目录,父目录也不在就不起。
+pub fn spawn_watcher(app: tauri::AppHandle) {
+    use notify::{RecursiveMode, Watcher};
+
+    let registry = AgentRegistry::builtin();
+    let Some(canonical) = registry.canonical_global_dir(&SystemEnv) else {
+        tracing::info!("跳过技能目录监听: 找不到用户主目录");
+        return;
+    };
+    let Some(root) = watcher::watch_root(&canonical) else {
+        tracing::info!(
+            path = %canonical.display(),
+            "跳过技能目录监听: 目录还不存在(装第一个技能后重启即可生效)"
+        );
+        return;
+    };
+
+    std::thread::spawn(move || {
+        // 先钉死单调时钟的基准,再开始收事件——否则第一次调用 now_ms() 的地方
+        // 会拿到 0,静音判定整个失准(见 core::watcher::now_ms 的文档)
+        watcher::init_clock();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut w = match notify::recommended_watcher(tx) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::warn!(error = %e, "技能目录监听起不来,降级到窗口焦点刷新");
+                return;
+            }
+        };
+        if let Err(e) = w.watch(&root, RecursiveMode::Recursive) {
+            tracing::warn!(error = %e, path = %root.display(), "技能目录监听注册失败");
+            return;
+        }
+        tracing::info!(path = %root.display(), "技能目录监听已启动");
+
+        let mut debouncer = watcher::Debouncer::default();
+        loop {
+            // 收事件用 TICK 超时轮询:既能及时收,又能在没有新事件时检查防抖是否到点
+            match rx.recv_timeout(watcher::TICK) {
+                Ok(Ok(event)) => {
+                    if event.paths.iter().any(|p| watcher::is_interesting(&canonical, p)) {
+                        debouncer.record(watcher::now_ms());
+                    }
+                }
+                Ok(Err(e)) => tracing::debug!(error = %e, "技能目录监听事件出错"),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                // 发送端没了 = watcher 被回收,退出线程
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            if debouncer.take_due(watcher::now_ms()) {
+                // 判定放在**吐出来的这一刻**而不是记录事件时:一次安装横跨整个防抖窗口,
+                // 记录时还没开始写、吐出时才知道这批事件是不是自己造的
+                if watcher::should_report() {
+                    let _ = app.emit(watcher::CHANGED_EVENT, ());
+                } else {
+                    tracing::debug!("忽略本应用自己写盘引发的技能目录变更");
+                }
+            }
+        }
+    });
+}
+
 pub fn spawn_app_update_probe(app: tauri::AppHandle) {
     if !builtin::update_configured() {
         return;

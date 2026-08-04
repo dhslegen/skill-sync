@@ -9,7 +9,14 @@ import { useUi } from "@/store/ui";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args: unknown) => invoke(cmd, args) }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
+let changedCb: (() => void) | null = null;
+const eventUnlisten = vi.fn();
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (name: string, cb: () => void) => {
+    if (name === "local-skills://changed") changedCb = cb;
+    return eventUnlisten;
+  }),
+}));
 
 // 捕获注册进来的焦点回调,好在测试里手动触发
 let focusCb: ((e: { payload: boolean }) => void) | null = null;
@@ -138,5 +145,43 @@ describe("窗口焦点监听(级别 1)", () => {
     await vi.waitFor(() => expect(focusCb).not.toBeNull());
     unmount();
     expect(unlistenSpy).toHaveBeenCalled();
+  });
+});
+
+describe("文件监听(级别 3)", () => {
+  beforeEach(() => {
+    reset();
+    changedCb = null;
+    eventUnlisten.mockReset();
+    useUi.setState({ page: "share" });
+  });
+
+  it("core 报来变更就刷新当前页——窗口有焦点时改动也能立刻反映", async () => {
+    renderHook(() => useLocalRefresh());
+    await vi.waitFor(() => expect(changedCb).not.toBeNull());
+    invoke.mockClear();
+
+    changedCb!();
+
+    await vi.waitFor(() => expect(sent()).toContain("share_candidates"));
+  });
+
+  it("刷的同样是此刻所在的那一页", async () => {
+    renderHook(() => useLocalRefresh());
+    await vi.waitFor(() => expect(changedCb).not.toBeNull());
+
+    act(() => useUi.setState({ page: "mine" }));
+    invoke.mockClear();
+    changedCb!();
+
+    await vi.waitFor(() => expect(sent()).toContain("installed_list"));
+    expect(sent()).not.toContain("share_candidates");
+  });
+
+  it("卸载时退订,不留野回调", async () => {
+    const { unmount } = renderHook(() => useLocalRefresh());
+    await vi.waitFor(() => expect(changedCb).not.toBeNull());
+    unmount();
+    expect(eventUnlisten).toHaveBeenCalled();
   });
 });

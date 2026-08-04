@@ -424,6 +424,16 @@ export type RemoveOutcome =
   | { outcome: "removed"; report: UninstallReport; lock: string };
 
 /** 订阅一次安装的进度。契约 3.3:长任务走 `progress://{taskId}` 事件。 */
+/**
+ * 订阅本地技能目录的变更(M4 任务 6c 级别 3)。
+ *
+ * 载荷为空——它只是"去重新扫描一下"的信号。core 侧已经滤掉了本应用自己写盘
+ * 引发的事件(见 core/watcher.rs),所以收到它就意味着**外面**真的改了东西。
+ */
+export function listenLocalSkillsChanged(onChanged: () => void): Promise<UnlistenFn> {
+  return listen("local-skills://changed", () => onChanged());
+}
+
 export function listenProgress(
   taskId: string,
   onStage: (stage: InstallStage) => void,

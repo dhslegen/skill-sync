@@ -117,6 +117,8 @@ pub fn run() {
             setup_tray(app)?;
             // App 自更新的启动探测(M2 任务 5;更新源未配置或开关关闭时内部直接返回)
             commands::spawn_app_update_probe(app.handle().clone());
+            // 本地技能目录的文件监听(M4 任务 6c 级别 3)。起不来只记日志不拦启动。
+            commands::spawn_watcher(app.handle().clone());
             Ok(())
         })
         // 关窗 = 缩到托盘(已拍板):拦下关闭请求,只隐藏窗口。
