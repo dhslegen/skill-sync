@@ -59,15 +59,18 @@ eslint 也不管,只有 `tsc` 会拦。M2 任务 6 就因为只跑了 test+lint,
 src/
   i18n/          文案资源 + t() 插值;测试里带术语与禁 emoji 的自动门
   styles/        设计 token、dark: 变体绑定 data-theme、少量非 utility 样式
-  lib/           ipc(唯一 invoke 通道 + core 返回类型)、format、search、tint、cn
+  lib/           ipc(唯一 invoke 通道 + core 返回类型)、format、search、tint、cn、
+                 slug(与 core 同一把尺子,口径在 fixtures/slug-samples.json)、update(cardState)
   store/         Zustand:appearance/store-index/install/session/ui/my-skills/share/
-                 wizard/settings(agent 开关+更新档位+App 自更新)/prefs(偏好落盘协调)
+                 wizard/settings(agent 开关+更新档位+App 自更新)/prefs(偏好落盘协调)/
+                 registries(多源)/local-detail(本地详情)/create(新建技能向导)
   components/    Sidebar/Toolbar/SearchBox/SkillCard/InstallButton/DetailPanel/CommandPalette/
                  Markdown/Icon/SkillIcon/InstallPanel/Wizard + 五个弹窗:
                  ConflictDialog(三选)/RemoveDialog(双确认)/RepairDialog(占位替换)/
                  ShareTakenDialog(占用三选)/RetryLinkDialog(重试时的占位替换)
   pages/         StorePage / MySkillsPage / SharePage / SettingsPage
-  hooks/         useDesktopChrome(快捷键 + 右键拦截)
+  hooks/         useDesktopChrome(快捷键 + 右键拦截)、
+                 useLocalRefresh(本地技能变更的三级刷新:焦点/切页/文件监听)
 src-tauri/src/
   core/builtin.rs    编译期注入的常量(内网地址/ClientID/仓库坐标/更新源+公钥)
   core/agents.rs     agent 注册表加载与探测 + disabled 标记(数据在 resources/agents.json)
@@ -87,6 +90,10 @@ src-tauri/src/
                      share_installed(把已装技能的改动推回来源)
   core/scheduler.rs  定时更新检查:run_check(head 比对→FromAccount 批量)+ 可测的调度循环
                      + notification_copy(通知判定与文案)
+  core/create.rs     新建技能(等价 skills init):只落 canonical 一个 SKILL.md,
+                     不建链/不写 lock/不进 state;slug 必须是 sanitize_name 的不动点
+  core/watcher.rs    本地技能目录的文件监听:app_write 静音守卫 + 防抖 + 变更过滤
+  core/local_detail.rs 本地技能详情(守卫只放行含 SKILL.md 的真实目录)
   core/registry.rs   多源解析层:BuiltinSource(编译期常量经参数传入)+ resolve/list/
                      add/remove/url_allowed/auth_config;内建源锁定不落 config
   core/github.rs     GitHub client:读链路(branches/zipball,RepoSource trait)+
@@ -256,15 +263,15 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 - 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
   其余注册表 agent 尽力支持
 
-## 当前进度(2026-08-04,M4 任务 1–2、4 完成)
+## 当前进度(2026-08-04,M4 任务 1–2、4、6a–6c 完成)
 
 **M1 任务 1–13、M2 任务 1–6、M3 任务 1–6(含 5b)全部完成并提交**;**M4 已开工**
 (分解与拍板记录在 docs/M4-任务分解.md:任务 1 一源多仓 ✅ → 2 权限细分 ✅ → 4 新建技能向导 ✅
-→ 5 收尾;**任务 3 安装量已摘除**,内网埋点服务落点未定,2026-08-04 用户拍板暂缓;
+→ 6a/6b/6c 体验修复 ✅(用户实测报的四个问题,见下)→ 5 收尾;**任务 3 安装量已摘除**,内网埋点服务落点未定,2026-08-04 用户拍板暂缓;
 C7 项目级 skill 不纳入 M4)。逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 410 + 前端 338 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
+- 本机:Rust 426 + 前端 363 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
   `pnpm dev` 启动冒烟通过(M4 任务 1 后带内网配置实测:商店读到真实库 28 个技能)
 - **双平台 CI**:**M4 任务 1 的两笔(`3857720` / `a7a1de3`)macOS + Windows 双 job 全绿**(2026-08-04 逐 job 实测);
   M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;`de7b233`/`2eb0595` 当时因账号计费
@@ -291,6 +298,10 @@ M3 后补(2026-08-03):`skill_local_detail`/`skill_reveal`(本地详情面板 + �
 `SKILLSYNC_GITHUB_CLIENT_ID`(未注入仅登录不可用,浏览获取照常)。
 M4 任务 1 新增的 IPC:`registry_add_repo`/`registry_remove_repo`;
 读写类 command 再加可选 `repo` 参数(寻址键 `owner/repo`,缺省 = 该源主仓)。
+M4 后续新增的 IPC:`share_preview`(任务 2)、`skill_create`(任务 4)、
+`skill_unclaim`(任务 6a);新增事件 `local-skills://changed`(任务 6c,载荷为空,
+只是"去重新扫描一下"的信号,core 侧已滤掉本应用自己写盘引发的那些)。
+`InstalledSkillView` 新增 `localOnly` / `claimed` 两个字段(任务 6a 的第三档与取消认领)。
 
 ### 现役机制约束(动相关代码前必读)
 
@@ -446,6 +457,44 @@ M4 任务 1 新增的 IPC:`registry_add_repo`/`registry_remove_repo`;
   50 个技能撑不住首屏 <2s。UI-Demo 里那两栏因此留空——**不编造**。安装量是 C5 预留字段,等 M4。
 - **UI-Demo 的分类 chip 换成了"全部/未安装/已安装"**:SKILL.md 里没有分类字段,
   硬造分类等于在界面上撒谎。要分类得技能库侧先约定 frontmatter 字段。
+- **「我的技能」有三档,`installed_list` 返回的不等于 `state.installed`**(M4 任务 6a)。
+  这一页的语义是"这台电脑上我拥有的技能",不是"本 app 记了账的东西":
+  1. 从技能库获取的(`state.installed`);
+  2. 别的工具装的、未认领的(判据是 `.skill-lock.json` 里有条目);
+  3. **本地技能**——canonical 下有 SKILL.md 的实体目录,前两档都不属于。
+     发现逻辑复用 `share::scan_candidates`(取 `in_canonical && origin == Local`),
+     **不另写扫描**;agent 目录里的不算(那些归分享页收编)。
+  第三档没有来源、没有关联记账,所以**更新 / 修复关联 / 分享改动 / 移除一概不摆**,
+  `hasUpdate` 也**显式判掉**(不靠"空 registryId 恰好对不上 index"碰运气)。
+  **`install.ts` 的 `refreshInstalled` 必须排除第 2、3 档**:混进那张 map,商店里的
+  同名技能会显示「已启用」——用户装的是自己那个,不是库里这个。
+- **认领是纯记账,取消认领也必须是纯记账**(M4 任务 6a):`claim` 全程只调一次
+  `save_state`,磁盘/npx 建的链接/lock 一个字节不动。在 `unclaim` 存在之前,认领后
+  唯一的退路是「移除」,而移除会解链 → 删本体 → **从 lock 删条目**——用户点一个
+  零副作用的动作,反悔时唯一的按钮会把技能从 npx skills 那边一并毁掉。
+  判据是 `InstalledSkill.origin`(`claimed`/`acquired`,serde default 不升 schemaVersion),
+  存量条目 fallback 到 `commit_sha.is_empty()`(已实证 `state.installed` 全仓只有两处
+  写入,只有 claim 留空 sha)。**保守方向:拿不准就当"获取来的"不许取消**。
+  比测试更硬的保障是签名——`unclaim(store, dir_slug)` 没有 `Installer` 也没有
+  `AgentEnv`,结构上拿不到 canonical 路径与 lock 落点,动不了磁盘。
+- **本地技能变更的三级刷新**(M4 任务 6c):
+  1. 窗口重获焦点(`hooks/useLocalRefresh.ts`,只刷当前页,用 ref 存页面避免重复注册);
+  2. 切页(页面组件挂载时 load,有测试钉住,不再是"靠组件重挂"的巧合);
+  3. 文件监听(`core/watcher.rs` + `commands::spawn_watcher`)。
+  **级别 3 的头号风险是它会对本应用自己的写入触发**:`Installer::install` 是清空重建,
+  监听器在那期间上报会让前端读到技能凭空消失的瞬间;防抖救不了(一次安装比任何
+  合理的防抖窗口都长)。靠 `watcher::app_write()` 这个 RAII 守卫 + 800ms 静默期,
+  **加在 core 层而不是 commands 层**——scheduler 的自动更新不经过 commands,
+  commands 不是真咽喉。四个写盘入口:acquire / acquire_batch / remove / create_skill。
+  判定放在防抖**吐出来的那一刻**(记录事件时还不知道这批是不是自己造的)。
+  其余:只盯 canonical(agent 目录由别的工具主动写,递归监听只换噪音);
+  canonical 不在就盯父目录、父目录也不在就不起监听(**绝不创建用户没要求的目录**);
+  起不来只记日志不拦启动。**不给 CI 加时序测试**——FSEvents 与 ReadDirectoryChangesW
+  的合并策略各不相同,断言"N 毫秒内到达"等于埋定时炸弹;测纯逻辑,OS 集成交给启动冒烟。
+  ⚠️ `watcher::now_ms()` **永不返回 0**(+1):0 是 `should_report_at` 里"从未写过盘"的
+  哨兵。曾经不加这个 +1,于是 `OnceLock` 首次调用返回 0、`LAST_WRITE_END_MS` 初值也是 0,
+  `0 - 0 >= 800` 为假——**第一次外部文件变更必然被吞掉**;而守卫 drop 时若拿到 0
+  又会把自己的静音取消掉。两面都是真机验证才抓到的,纯逻辑单测直接传参走不到那条路。
 - **新建技能只创建文件**(M4 任务 4,`core/create.rs` 模块头):落 canonical 的
   `<slug>/SKILL.md` 一个文件,**不建关联、不写 lock、不进 `state`**——对齐上游
   `npx skills init`(它同样只产出这一个文件、同样不写 lock)。新建的技能靠
