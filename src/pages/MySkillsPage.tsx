@@ -260,8 +260,18 @@ function Row({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate text-[13px] font-[550] group-hover:text-accent">{name}</span>
-          {skill.localModified && <Badge tone="warn">{t("mine.badgeModified")}</Badge>}
-          {!skill.bodyPresent && <Badge tone="danger">{t("mine.badgeBodyMissing")}</Badge>}
+          {/* 每个徽标都要能说清"这是什么、我该做什么":其余徽标一直有 tooltip,
+              这两个的文案早就写好却没接上,悬停什么也看不到 */}
+          {skill.localModified && (
+            <Badge tone="warn" title={t("mine.badgeModifiedHint")}>
+              {t("mine.badgeModified")}
+            </Badge>
+          )}
+          {!skill.bodyPresent && (
+            <Badge tone="danger" title={t("mine.badgeBodyMissingHint")}>
+              {t("mine.badgeBodyMissing")}
+            </Badge>
+          )}
           {skill.sourceRemoved && (
             <Badge tone="warn" title={t("mine.badgeSourceRemovedHint")}>
               {t("mine.badgeSourceRemoved")}

@@ -132,3 +132,32 @@ describe("stringLiterals", () => {
     ]);
   });
 });
+
+/**
+ * 反向的那道门:资源文件里**不该有没人用的文案**。
+ *
+ * 死文案会越攒越多,并制造两种错觉:改它以为改了界面(其实没接上),
+ * 或以为某个功能已经做了(其实只有文案)。2026-08-04 收官时一次扫出 7 个,
+ * 其中两个是**该接却漏接**的徽标 tooltip——悬停什么也看不到,
+ * 正是靠这条规则才发现的。
+ *
+ * 判定按"键名作为字符串字面量出现在 src 的非测试源码里"。
+ * `Record<X, MessageKey>` 那类间接映射也算数——键名照样以字面量写在源码中。
+ * 只被测试用到的键同样算孤儿:那说明它在应用里已经没有去处。
+ */
+describe("i18n 孤儿键守卫", () => {
+  it("每一条文案都必须有人用", () => {
+    const raw = readFileSync(join(SRC, "i18n", "zh-CN.json"), "utf8");
+    const keys = Object.keys(JSON.parse(raw) as Record<string, string>);
+    expect(keys.length).toBeGreaterThan(0);
+
+    const blob = collect(SRC)
+      .map((f) => readFileSync(f, "utf8"))
+      .join("\n");
+
+    const orphans = keys.filter(
+      (k) => !blob.includes(`"${k}"`) && !blob.includes(`'${k}'`) && !blob.includes(`\`${k}\``),
+    );
+    expect(orphans, `这些文案没有任何地方在用,删掉或接上:\n${orphans.join("\n")}`).toEqual([]);
+  });
+});

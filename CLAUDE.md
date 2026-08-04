@@ -248,7 +248,7 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 在 docs/M3-任务分解.md,本地文档),逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 367 + 前端 297 测试通过,clippy/eslint/tsc 干净,`pnpm dev` 启动冒烟通过
+- 本机:Rust 367 + 前端 298 测试通过,clippy/eslint/tsc 干净,`pnpm dev` 启动冒烟通过
 - **双平台 CI 全绿至 HEAD**:M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;
   `de7b233`/`2eb0595` 当时因账号计费被拒,仓库转公开后 2026-08-03 rerun,
   **macOS + Windows 双 job 全绿**(任务 6 的 claim_flow junction 路径首次真实过 CI)
