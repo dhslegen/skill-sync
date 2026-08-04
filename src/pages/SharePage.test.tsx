@@ -326,6 +326,30 @@ describe("新建技能向导", () => {
     expect(screen.getByText(/Claude Code 和 Trae 要等它分享到技能库/)).toBeInTheDocument();
   });
 
+  it("「在访达中打开」失败要把原因摆出来,不能点了没反应", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_create") {
+        return { dirSlug: "weekly-report", path: "/home/u/.agents/skills/weekly-report" };
+      }
+      if (cmd === "skill_reveal") {
+        throw { code: "FS_REVEAL_FAILED", message: "打不开这个文件夹,请检查它是否还在" };
+      }
+      if (cmd === "share_candidates") return [];
+      return null;
+    });
+    render(<SharePage />);
+    await userEvent.click(await screen.findByRole("button", { name: "新建技能" }));
+
+    await userEvent.type(screen.getByLabelText(/技能名称/), "周报生成");
+    await userEvent.type(screen.getByLabelText(/技能描述/), "每周汇总");
+    await userEvent.type(screen.getByLabelText(/文件夹名称/), "weekly-report");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    await userEvent.click(await screen.findByRole("button", { name: /打开/ }));
+
+    expect(await screen.findByText(/打不开这个文件夹/)).toBeInTheDocument();
+  });
+
   it("创建失败留在表单并保住已填内容", async () => {
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "skill_create") {

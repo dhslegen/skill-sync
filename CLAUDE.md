@@ -121,6 +121,16 @@ docs/              ⚠️ 设计方案/交接包/UI 规范/UI-Demo/任务分解/
 - core 模块单测覆盖:installer 降级链、SKILL.md 解析边界、state 迁移、同名预检三分支
 - Gitea client 用 wiremock-rs 模拟;e2e 用 docker compose 起 gitea(见 fixtures/)
 - Windows 相关(junction、路径、CRLF)必须在 Windows CI runner 上跑,不得只测 macOS
+- **路径一律按 `Path` 比,不按字符串比**(M4 任务 4 的 CI 教训):`home.join(".agents/skills")`
+  在 Windows 上产出 `.agents/skills\x`,而分段 join 产出 `.agents\skills\x`——同一个目录,
+  字符串却不等。`create.rs` 的 shared 撞名检查原先按字符串比,在 Windows 上直接失配放行;
+  macOS 上两种写法恰好相同,本地怎么跑都是绿的。**同类隐患仍在 `share.rs`**
+  (`s.local_path == path.to_string_lossy()`),目前靠"两侧都出自 `canonical_global_dir`"
+  才碰巧一致,那是巧合不是保证。
+- **别靠 `drop(MockServer)` 空出端口来模拟"连不上"**(M4 任务 4 的 macOS CI 教训):
+  测试是并发跑的,另一个 MockServer 完全可能立刻绑上刚空出来的随机端口,请求打到别人
+  身上拿到正常响应。用保留域名 `.invalid`(DNS 必然解析失败)——与 `proxy_bypass.rs`
+  绕开 loopback 豁免是同一个套路。这条测试之前一直绿**只是运气好**。
 - **动 `tauri::Builder` 的插件/setup/窗口配置后,必做一次 `pnpm dev` 启动冒烟**
   (M2 任务 6 的教训):cargo test 与 vitest **都不启动 Tauri runtime**,插件初始化、
   托盘构建、窗口事件这些路径一行都没覆盖。任务 5 加 updater 插件时 Rust 309 +

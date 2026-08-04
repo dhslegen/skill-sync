@@ -16,7 +16,14 @@
 //!   代价是有限的:`resources/agents.json` 里 Cursor 与 Codex 的 `skillsDir` 就是
 //!   `.agents/skills`(= canonical),草稿对它们立刻可见;只有 Claude Code
 //!   (`.claude/skills`)与 Trae(`.trae/skills`)需要链接,这两个要走「分享到团队库
-//!   → 从商店获取」。而这条限制**对所有本地技能都成立**(用户手放的、npx 装的一样),
+//!   → 从商店获取」。
+//!
+//!   ⚠️ 前端文案 `create.doneVisible` 把这四个工具名**写死**在句子里。真相在
+//!   `AgentDef::is_universal()`(即 `skillsDir == ".agents/skills"`),而
+//!   `pnpm verify:agents` 会从上游重新同步注册表——universal 集合一变,那句文案
+//!   就悄悄成了假话。重新校验 agents.json 时请一并核对它。
+//!
+//!   而这条限制**对所有本地技能都成立**(用户手放的、npx 装的一样),
 //!   不是本模块造出来的——`acquire::claim` 的错误文案「可以在分享页把它收编进来」
 //!   说的就是这条既有路径。
 //!
@@ -102,7 +109,11 @@ pub fn create_skill(
         return Err(taken("这个名字已经被一个已获取的技能占用了,换一个吧", &req.dir_slug));
     }
     let path_str = dir.to_string_lossy().into_owned();
-    if state.shared.iter().any(|s| s.local_path == path_str) {
+    // 按 `Path` 比而不是按字符串比:同一个位置可以有不止一种写法
+    // (Windows 上 `.agents/skills\x` 与 `.agents\skills\x` 是同一个目录,字符串却不等),
+    // 而撞名检查一旦因为形态不同而失配,就等于直接放行去覆盖。
+    // 真实路径下两侧都出自 `canonical_global_dir` 所以碰巧一致——那是巧合,不是保证。
+    if state.shared.iter().any(|s| std::path::Path::new(&s.local_path) == dir) {
         return Err(taken("这个名字已经被一个分享过的技能占用了,换一个吧", &path_str));
     }
 

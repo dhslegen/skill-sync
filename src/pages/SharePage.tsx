@@ -177,6 +177,12 @@ function CreatePanel() {
         )}
         <p className="mt-1.5 text-[12px] leading-[1.6] text-text-2">{t("create.doneHint")}</p>
         <p className="mt-1 text-[11.5px] leading-[1.5] text-text-3">{t("create.doneVisible")}</p>
+        {/* 「在访达中打开」失败也要说出来:这一档只有这一处能显示 error,
+            漏了它就是点一下没反应、也没提示——与分享页那条「打开被拒时把原因摆出来,
+            不静默」是同一条规矩 */}
+        {error && (
+          <p className="mt-1.5 text-[12px] text-[#c0392b] dark:text-[#e0705f]">{error.message}</p>
+        )}
         <div className="mt-2.5 flex items-center gap-2">
           <button
             type="button"

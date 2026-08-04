@@ -116,11 +116,13 @@ async fn an_unreachable_or_missing_branch_is_unknown_not_no_permission() {
             "HTTP {status} 应当是「未知」,不能落进无权限档"
         );
     }
-    // 连不上(端口关掉)也一样
-    let server = MockServer::start().await;
-    let uri = server.uri();
-    drop(server);
-    let client = GiteaClient::new(uri, Some("tok-abc".into())).unwrap();
+    // 连不上也一样。**不能靠 drop 掉 MockServer 空出端口来模拟**:测试是并发跑的,
+    // 另一个 MockServer 完全可能立刻绑上刚空出来的随机端口,请求就打到别人身上,
+    // 拿到的是那个 server 的响应而不是连接失败(2026-08-04 macOS CI 真红过一次,
+    // 之前一直绿只是运气好)。用保留域名 `.invalid`,DNS 必然解析不出来——
+    // 与 `tests/proxy_bypass.rs` 绕开 loopback 豁免是同一个套路。
+    let client =
+        GiteaClient::new("http://unreachable.invalid".to_string(), Some("tok-abc".into())).unwrap();
     assert_eq!(preview(&client, &repo()).await, SharePath::Unknown);
 }
 

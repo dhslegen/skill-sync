@@ -111,7 +111,9 @@ fn creates_only_skill_md_and_leaves_state_untouched() {
     .expect("新建应当成功");
 
     let dir = ctx.canonical("weekly-report");
-    assert_eq!(report.path, dir.to_string_lossy());
+    // 按 `Path` 比:Windows 上 `.agents/skills\x` 与 `.agents\skills\x` 是同一个目录,
+    // 字符串却不等(CI 上真实红过一次)
+    assert_eq!(PathBuf::from(&report.path), dir);
     assert_eq!(report.dir_slug, "weekly-report");
 
     // 上游 init 只产出一个文件,我们对齐它:不建子目录、不放 README、不写别的
@@ -240,6 +242,11 @@ fn refuses_when_name_is_taken_by_an_installed_record_without_files() {
     assert_eq!(after.installed.len(), 1);
 }
 
+/// 顺带钉住一条**只有 Windows 才测得到**的事:这里的 `local_path` 由 `Ctx::canonical`
+/// 用 `join(".agents/skills")` 拼出,在 Windows 上是 `.agents/skills\x`,而 core 走分段
+/// join 得到 `.agents\skills\x`——同一个目录,字符串却不等。core 原先按字符串比,
+/// 于是撞名检查在 Windows 上直接失配放行(2026-08-04 CI 真红)。macOS 上两种写法
+/// 恰好相同,本地怎么跑都是绿的。
 #[test]
 fn refuses_when_path_is_taken_by_a_shared_record_without_files() {
     let (ctx, env) = ctx();
