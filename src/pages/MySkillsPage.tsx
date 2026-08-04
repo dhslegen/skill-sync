@@ -32,6 +32,7 @@ export function MySkillsPage() {
     shareDone,
     shareError,
     claim,
+    unclaim,
     claimBusy,
     claimError,
   } = useMySkills();
@@ -128,7 +129,14 @@ export function MySkillsPage() {
       )}
       <div className="overflow-hidden rounded-card border border-border bg-surface-1">
         {list.map((skill) =>
-          skill.unclaimed ? (
+          skill.localOnly ? (
+            <LocalOnlyRow
+              key={skill.dirSlug}
+              skill={skill}
+              name={nameOf(skill.dirSlug)}
+              onGoShare={() => setPage("share")}
+            />
+          ) : skill.unclaimed ? (
             <UnclaimedRow
               key={skill.dirSlug}
               skill={skill}
@@ -160,6 +168,8 @@ export function MySkillsPage() {
             onRepair={() => void repair(skill.dirSlug)}
             onShareChanges={() => void shareChanges(skill.dirSlug)}
             onRemove={() => askRemove(skill.dirSlug)}
+            unclaiming={claimBusy === skill.dirSlug}
+            onUnclaim={() => void unclaim(skill.dirSlug)}
           />
           ),
         )}
@@ -219,6 +229,53 @@ function UnclaimedRow({
   );
 }
 
+/**
+ * 第三档:本地技能(自己新建的 / 手放进 canonical 的)。
+ *
+ * 它没有来源、没有关联记账,所以**更新、修复关联、分享改动、移除一概不摆**
+ * ——摆出来就是引诱用户点一个必然失败的按钮。能做的只有看详情与去分享,
+ * 而"去分享"正是这类技能的下一步。
+ */
+function LocalOnlyRow({
+  skill,
+  name,
+  onGoShare,
+}: {
+  skill: InstalledSkillView;
+  name: string;
+  onGoShare: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 border-t border-border px-3.5 py-2.5 first:border-t-0">
+      <button
+        type="button"
+        onClick={() => void useLocalDetail.getState().open({ dirSlug: skill.dirSlug })}
+        className="group flex min-w-0 flex-1 items-center gap-3 text-left"
+      >
+        <SkillIcon name={name} className="size-[26px] rounded-[6px] text-[12px]" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-[13px] font-[550] group-hover:text-accent">{name}</span>
+            <Badge tone="neutral" title={t("mine.badgeLocalHint")}>
+              {t("mine.badgeLocal")}
+            </Badge>
+          </div>
+          <div className="mt-0.5 truncate text-[11.5px] text-text-3">{t("mine.localHint")}</div>
+        </div>
+      </button>
+      <div className="flex flex-none items-center">
+        <button
+          type="button"
+          onClick={onGoShare}
+          className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+        >
+          {t("mine.goShare")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 const HEALTH_LABEL: Record<Exclude<LinkHealth, "healthy">, MessageKey> = {
   broken: "health.broken",
   redirected: "health.redirected",
@@ -238,6 +295,8 @@ function Row({
   onRepair,
   onShareChanges,
   onRemove,
+  unclaiming,
+  onUnclaim,
 }: {
   skill: InstalledSkillView;
   name: string;
@@ -250,6 +309,8 @@ function Row({
   onRepair: () => void;
   onShareChanges: () => void;
   onRemove: () => void;
+  unclaiming: boolean;
+  onUnclaim: () => void;
 }) {
   const issues = skill.links.filter((l) => l.health !== "healthy");
 
@@ -356,6 +417,20 @@ function Row({
             {updating ? t("mine.updating") : t("mine.update")}
           </button>
         )}
+        {/* 认领来的才给「取消认领」:它只删记账、磁盘一个字节不动,是认领的逆操作。
+            在它之前,认领后唯一的退路是「移除」,而移除会连 npx skills 那边的
+            安装一起毁掉——无害的进入,破坏性的退出。 */}
+        {skill.claimed && (
+          <button
+            type="button"
+            disabled={unclaiming}
+            onClick={onUnclaim}
+            title={t("mine.unclaimHint")}
+            className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50"
+          >
+            {unclaiming ? t("mine.unclaiming") : t("mine.unclaim")}
+          </button>
+        )}
         <button
           type="button"
           onClick={onRemove}
@@ -373,7 +448,7 @@ function Badge({
   title,
   children,
 }: {
-  tone: "warn" | "danger";
+  tone: "warn" | "danger" | "neutral";
   title?: string;
   children: React.ReactNode;
 }) {
@@ -384,7 +459,10 @@ function Badge({
         "flex-none rounded-[4px] border px-1.5 py-px text-[10.5px] font-medium",
         tone === "danger"
           ? "border-[#c0392b]/40 text-[#c0392b] dark:border-[#e0705f]/40 dark:text-[#e0705f]"
-          : "border-[#b8860b]/40 text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]",
+          : tone === "neutral"
+            // 本地创建不是问题,只是一个事实,不该用警示色喊出来
+            ? "border-border text-text-3"
+            : "border-[#b8860b]/40 text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]",
       ].join(" ")}
     >
       {children}

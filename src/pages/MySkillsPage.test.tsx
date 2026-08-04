@@ -28,6 +28,8 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   sourceRemoved: false,
   libraryRemoved: false,
   unclaimed: false,
+  localOnly: false,
+  claimed: false,
   bodyPresent: true,
   links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
   ...over,
@@ -383,5 +385,43 @@ describe("我的技能页", () => {
     expect(invoke).toHaveBeenCalledWith("skill_local_detail", {
       args: { dirSlug: "weekly-report" },
     });
+  });
+
+  it("本地新建的技能出现在列表里,且不摆任何它做不到的动作", async () => {
+    // 页面叫「我的技能」,用户的直觉是"我拥有的技能"。新建的技能不进
+    // state.installed(会让 precheck 撒谎),但那不等于它不该出现在这一页。
+    seedIpc([view({ dirSlug: "my-draft", localOnly: true, registryId: "", contentHash: "" })]);
+    render(<MySkillsPage />);
+
+    expect(await screen.findByText("本地创建")).toBeInTheDocument();
+    // 它没有来源、没建过关联:这些按钮摆出来就是引诱用户点必然失败的东西
+    expect(screen.queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "修复关联" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "分享改动" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+    // 能做的是去分享——那正是这类技能的下一步
+    expect(screen.getByRole("button", { name: "去分享" })).toBeInTheDocument();
+  });
+
+  it("认领来的才给「取消认领」,获取来的不给", async () => {
+    seedIpc([view({ claimed: true })]);
+    const { unmount } = render(<MySkillsPage />);
+    expect(await screen.findByRole("button", { name: "取消认领" })).toBeInTheDocument();
+    unmount();
+
+    seedIpc([view({ claimed: false })]);
+    render(<MySkillsPage />);
+    expect(await screen.findByRole("button", { name: "移除" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "取消认领" })).not.toBeInTheDocument();
+  });
+
+  it("点「取消认领」走的是 skill_unclaim,不是破坏性的 skill_remove", async () => {
+    seedIpc([view({ claimed: true })]);
+    render(<MySkillsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "取消认领" }));
+
+    expect(invoke).toHaveBeenCalledWith("skill_unclaim", { args: { dirSlug: "weekly-report" } });
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_remove")).toBe(false);
   });
 });

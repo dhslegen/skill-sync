@@ -494,4 +494,43 @@ describe("已装记账的来源坐标(M4 一源多仓)", () => {
     expect(record?.sourceOwner).toBe("design");
     expect(record?.sourceRepo).toBe("design-skills");
   });
+
+  it("refreshInstalled 必须排除未认领与本地新建两档", async () => {
+    // 它们不是从任何技能库获取的。混进这张 map,商店里的同名技能就会显示「已启用」
+    // ——那是假话,用户装的是自己那个,不是库里这个。
+    invoke.mockResolvedValueOnce([
+      { ...row("from-library"), registryId: "company", sourceOwner: "skills", sourceRepo: "skills" },
+      { ...row("npx-installed"), unclaimed: true },
+      { ...row("my-draft"), localOnly: true },
+    ]);
+
+    await useInstall.getState().refreshInstalled();
+
+    const map = useInstall.getState().installed;
+    expect(map.has("from-library")).toBe(true);
+    expect(map.has("npx-installed")).toBe(false);
+    expect(map.has("my-draft")).toBe(false);
+  });
 });
+
+function row(dirSlug: string) {
+  return {
+        dirSlug,
+        commitSha: "",
+        contentHash: "",
+        agents: [],
+        installedAt: "",
+        updatedAt: "",
+        localModified: false,
+        sourceOwner: "",
+        sourceRepo: "",
+        registryId: "",
+        sourceRemoved: false,
+        libraryRemoved: false,
+        unclaimed: false,
+        localOnly: false,
+        claimed: false,
+        bodyPresent: true,
+        links: [],
+  };
+}

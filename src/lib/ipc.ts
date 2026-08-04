@@ -375,10 +375,27 @@ export interface InstalledSkillView {
   libraryRemoved: boolean;
   /** 上游(npx skills)装的、尚未认领:只有「认领」这一个动作可做。 */
   unclaimed: boolean;
+  /**
+   * 本地技能:自己新建的、或手放进 canonical 的。没有来源、没有关联记账。
+   *
+   * 能做的事诚实地少:看详情 / 在访达中打开 / 去分享。
+   * **更新、修复关联、分享改动、移除都要抑制**——它没有来源,也没建过关联。
+   */
+  localOnly: boolean;
+  /** 这条记账是认领来的,因而可以「取消认领」(只删记账,磁盘一个字节不动)。 */
+  claimed: boolean;
   /** 技能本体是否还在。false = 残缺,界面要正面说出来。 */
   bodyPresent: boolean;
   links: LinkHealthReport[];
 }
+
+/**
+ * 取消认领:认领的**精确逆操作**,只删记账,磁盘/链接/lock 一个字节都不动。
+ *
+ * 与「移除」的区别就是这条命令存在的理由——移除会解链、删本体、清 lock 条目。
+ */
+export const skillUnclaim = (args: { dirSlug: string }) =>
+  call<void>("skill_unclaim", { args });
 
 export interface ClaimReport {
   dirSlug: string;

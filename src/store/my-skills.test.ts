@@ -22,6 +22,8 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   sourceRemoved: false,
   libraryRemoved: false,
   unclaimed: false,
+  localOnly: false,
+  claimed: false,
   bodyPresent: true,
   links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
   ...over,
@@ -374,5 +376,53 @@ describe("更新判定与更新动作", () => {
 
     expect(useInstall.getState().phase).toBe("conflict");
     expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_install")).toHaveLength(1);
+  });
+
+  it("取消认领只发一条命令,不碰移除那条破坏性通道", async () => {
+    invoke.mockImplementation(async (cmd) => (cmd === "installed_list" ? [] : AGENTS));
+
+    await useMySkills.getState().unclaim("weekly-report");
+
+    expect(invoke).toHaveBeenCalledWith("skill_unclaim", {
+      args: { dirSlug: "weekly-report" },
+    });
+    // 移除会解链、删本体、清 lock 条目——取消认领绝不能顺手走那条路
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_remove")).toBe(false);
+    // 列表与商店卡片状态都要跟上
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "installed_list").length).toBeGreaterThan(0);
+  });
+
+  it("取消认领失败要把原因摆出来,不静默", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_unclaim") {
+        throw { code: "CONFLICT_NOT_CLAIMED", message: "这个技能是从技能库获取的,不能取消认领" };
+      }
+      return cmd === "installed_list" ? [] : AGENTS;
+    });
+
+    await useMySkills.getState().unclaim("weekly-report");
+
+    expect(useMySkills.getState().claimError?.code).toBe("CONFLICT_NOT_CLAIMED");
+    expect(useMySkills.getState().claimBusy).toBeNull();
+  });
+});
+
+describe("hasUpdate 对没有来源的两档", () => {
+  const index = {
+    registryId: "company",
+    owner: "skills",
+    repo: "skills",
+    skills: [{ dirSlug: "weekly-report", contentHash: "sha256:remote" }],
+  };
+
+  it("本地新建的永远没有更新——它不来自任何技能库", () => {
+    // 显式判掉,不靠"空 registryId 恰好对不上 index"碰运气
+    expect(hasUpdate(view({ localOnly: true, registryId: "", contentHash: "" }), index)).toBe(false);
+    // 就算某天空字段被填上,也不该亮更新
+    expect(hasUpdate(view({ localOnly: true }), index)).toBe(false);
+  });
+
+  it("未认领的同理", () => {
+    expect(hasUpdate(view({ unclaimed: true }), index)).toBe(false);
   });
 });

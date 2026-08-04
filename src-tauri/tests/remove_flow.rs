@@ -91,6 +91,7 @@ fn install_one(c: &Ctx, env: &TmpEnv, slug: &str) {
         },
         commit_sha: "aaa1111".into(),
         content_hash: fsops::dir_content_hash(&canonical).unwrap(),
+        origin: None,
         agents: vec!["claude-code".into()],
         links: report
             .links

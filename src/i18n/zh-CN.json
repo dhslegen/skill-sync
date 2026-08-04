@@ -308,5 +308,12 @@
   "create.doneHint": "用编辑器打开这个文件夹,把 SKILL.md 的内容写完整,然后回到这一页分享给团队。",
   "create.doneVisible": "Cursor 和 Codex 现在就能读到它;Claude Code 和 Trae 要等它分享到技能库、再获取回来才能用。",
   "create.done": "完成",
-  "share.formSlugLocked": "这是它在团队库里的名字,更新时保持不变。"
+  "share.formSlugLocked": "这是它在团队库里的名字,更新时保持不变。",
+  "mine.badgeLocal": "本地创建",
+  "mine.badgeLocalHint": "这个技能是在本机创建的,还没有分享到技能库。",
+  "mine.localHint": "尚未分享到技能库",
+  "mine.goShare": "去分享",
+  "mine.unclaim": "取消认领",
+  "mine.unclaiming": "正在取消",
+  "mine.unclaimHint": "只把它移出管理列表,技能文件与其他工具的关联都不会动。"
 }

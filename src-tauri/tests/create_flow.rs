@@ -221,6 +221,7 @@ fn refuses_when_name_is_taken_by_an_installed_record_without_files() {
         },
         commit_sha: "abc".into(),
         content_hash: "hash".into(),
+        origin: None,
         agents: vec![],
         links: vec![],
         installed_at: "2026-08-01T00:00:00.000Z".into(),
@@ -346,4 +347,33 @@ fn missing_home_reports_an_error_instead_of_panicking() {
     )
     .unwrap_err();
     assert_eq!(err.code, "FS_NO_HOME");
+}
+
+/// 「我的技能」第三档的过滤条件(M4 任务 6a):canonical 里的本地技能。
+///
+/// commands::installed_list 就是拿这两个条件从 `scan_candidates` 里挑第三档。
+/// agent 目录下的实体目录**不算**——那些归分享页收编,在「我的技能」里摆出来
+/// 会让用户以为它已经归本 app 管了。
+#[test]
+fn local_tier_filter_picks_the_new_skill_but_not_agent_dir_ones() {
+    let (ctx, env) = ctx();
+    let installer = Installer::new(&ctx.registry, &env);
+    create::create_skill(&installer, &ctx.store, &req("my-draft", "我的草稿", "还没写完"))
+        .unwrap();
+
+    // 另放一个在 agent 目录里(模拟别的工具装的实体目录)
+    let claude = ctx.home.join(".claude/skills/theirs");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(claude.join("SKILL.md"), "---\nname: 别人的\ndescription: x\n---\n正文\n")
+        .unwrap();
+
+    let state = ctx.store.load_state().unwrap().value;
+    let tier: Vec<String> = share::scan_candidates(&ctx.registry, &env, &state)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.in_canonical && c.origin == share::CandidateOrigin::Local)
+        .map(|c| c.dir_name)
+        .collect();
+
+    assert_eq!(tier, vec!["my-draft".to_string()]);
 }

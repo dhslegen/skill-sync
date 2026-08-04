@@ -191,6 +191,14 @@ pub struct InstalledSkill {
     /// 安装当时 canonical 目录的内容 hash。与当前实际值不符即说明用户改过本体。
     pub content_hash: String,
     pub agents: Vec<String>,
+    /// 这条记账是怎么来的。`Some("claimed")` = 由 [`crate::core::acquire::claim`] 认领而来,
+    /// 文件不是本 app 装的,因此**可以取消认领**(只删这条记账,磁盘一个字节不动)。
+    ///
+    /// `None` 是旧版 state 的存量条目(serde default),此时退回判据
+    /// `commit_sha.is_empty()`——已实证 `state.installed` 只有两处写入,
+    /// 正常安装写远端 sha,只有 claim 留空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     /// 逐目录的关联记账。
     ///
     /// 设计方案 2.4 写的是单个 `linkMode`,但任务 6 确认关联是**按目录**建立的,
@@ -455,6 +463,7 @@ mod tests {
                 },
                 commit_sha: "abc123".into(),
                 content_hash: "sha256:deadbeef".into(),
+                origin: None,
                 agents: vec!["claude-code".into()],
                 links: vec![LinkRecord {
                     dir: "/h/.claude/skills".into(),

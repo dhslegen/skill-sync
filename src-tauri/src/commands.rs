@@ -1069,6 +1069,19 @@ pub struct InstalledSkillView {
     pub library_removed: bool,
     /// 上游(npx skills)装的、尚未认领:只有「认领」这一个动作可做(M3 任务 6)。
     pub unclaimed: bool,
+    /// **本地技能**:自己新建的、或手放进 canonical 的。既不在 `state.installed`,
+    /// 也不在 `.skill-lock.json` 里,因此没有来源、没有关联记账(M4 任务 6a)。
+    ///
+    /// 这一档存在的理由:页面叫「我的技能」,用户的直觉是"我拥有的技能",而不是
+    /// "我从别处拿来的技能"。新建的技能不进 `state.installed`(会让
+    /// `acquire::precheck` 撒谎),但那**不等于**它不该出现在这一页——
+    /// `unclaimed` 那一档就是现成的先例,它同样不在 `state.installed` 里。
+    ///
+    /// 它能做的事诚实地少:看详情 / 在访达中打开 / 去分享。
+    /// **更新、修复关联、分享改动、移除都必须抑制**——它没有来源、没建过关联。
+    pub local_only: bool,
+    /// 这条记账是认领来的,因而可以**取消认领**(只删记账,磁盘一个字节不动)。
+    pub claimed: bool,
     /// 技能本体是否还在 canonical 目录里。不在 = 残缺,界面要正面说出来。
     pub body_present: bool,
     /// 各关联目录的健康态(universal agent 不建链,不在此列)。
@@ -1140,6 +1153,8 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                     source_removed: source_state(&builtin_src, &config, &s.source).0,
                     library_removed: source_state(&builtin_src, &config, &s.source).1,
                     unclaimed: false,
+                    local_only: false,
+                    claimed: acquire::is_claimed(s),
                     body_present: canonical.is_dir(),
                     links: installer.link_health(&s.name, &recorded)?,
                 })
@@ -1168,6 +1183,39 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                 source_removed: false,
                 library_removed: false,
                 unclaimed: true,
+                local_only: false,
+                claimed: false,
+                body_present: true,
+                links: Vec::new(),
+            });
+        }
+
+        // 第三档:本地技能(自己新建的 / 手放进 canonical 的)。
+        //
+        // 发现逻辑**复用 share::scan_candidates**,不另写一套扫描——两份实现迟早漂移,
+        // 那正是本项目记录的空转测试模式 #1。只取 canonical 里的:agent 目录下的
+        // 实体目录归分享页收编,在「我的技能」里摆出来会让用户以为它已经归本 app 管。
+        for c in share::scan_candidates(&registry, &SystemEnv, &state)?
+            .into_iter()
+            .filter(|c| c.in_canonical && c.origin == share::CandidateOrigin::Local)
+        {
+            views.push(InstalledSkillView {
+                dir_slug: c.dir_name,
+                // 没有来源就一个字段都不编:空串在前端一律走"这一档不显示"的分支
+                commit_sha: String::new(),
+                content_hash: String::new(),
+                agents: Vec::new(),
+                installed_at: String::new(),
+                updated_at: String::new(),
+                local_modified: false,
+                source_owner: String::new(),
+                source_repo: String::new(),
+                registry_id: String::new(),
+                source_removed: false,
+                library_removed: false,
+                unclaimed: false,
+                local_only: true,
+                claimed: false,
                 body_present: true,
                 links: Vec::new(),
             });
@@ -1517,6 +1565,22 @@ pub async fn skill_claim(args: SkillClaimArgs) -> Result<acquire::ClaimReport, A
     .map_err(|e| AppError::new("FS_TASK", "认领操作未能完成,请重试").with_detail(e.to_string()))?
 }
 
+/// 取消认领:[`skill_claim`] 的精确逆操作,只删记账不动磁盘。
+///
+/// 与「移除」的区别是整条命令存在的理由——移除会解链、删本体、清 lock 条目;
+/// 这个一个字节都不动(见 `acquire::unclaim` 的文档)。
+#[tauri::command]
+pub async fn skill_unclaim(args: SkillClaimArgs) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app_store()?;
+        acquire::unclaim(&store, &args.dir_slug)
+    })
+    .await
+    .map_err(|e| {
+        AppError::new("FS_TASK", "取消认领未能完成,请重试").with_detail(e.to_string())
+    })?
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillRemoveArgs {
@@ -1719,6 +1783,7 @@ mod tests {
             },
             commit_sha: "aaa1111".into(),
             content_hash: "sha256:x".into(),
+            origin: None,
             agents: vec![],
             links: vec![],
             installed_at: "2026-08-04T00:00:00.000Z".into(),

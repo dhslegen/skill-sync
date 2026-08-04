@@ -598,6 +598,9 @@ fn record(
             source: source_of(&req, skill, remote_sha),
             commit_sha: remote_sha.to_string(),
             content_hash,
+            // 从技能库获取的:文件是本 app 装的,**不可取消认领**
+            // (只删记账会留下孤儿目录与孤儿链接)
+            origin: Some(ORIGIN_ACQUIRED.to_string()),
             agents,
             links,
             installed_at: now.to_string(),
@@ -836,6 +839,59 @@ pub struct ClaimReport {
 /// 记账基线:`content_hash` 取**认领此刻**的目录内容(此后的改动才算"已改动");
 /// `commit_sha` 留空——基线版本未知,与远端头一比必然"有更新",第一次更新即对齐,
 /// 覆盖前照走既有预检(内容没动过才直接覆盖,动过必弹三选,绝不静默覆盖)。
+/// `state.installed` 里 `origin` 的两个取值。
+///
+/// 它决定一条记账**能不能被取消认领**:认领来的文件是别的工具装的,本 app 只记了账,
+/// 删账无损;获取来的文件是本 app 装的,只删账会留下孤儿目录与孤儿链接。
+pub const ORIGIN_CLAIMED: &str = "claimed";
+pub const ORIGIN_ACQUIRED: &str = "acquired";
+
+/// 这条记账是不是认领来的(因而可以取消认领)。
+///
+/// `origin` 缺席是旧版 state 的存量条目,退回判据 `commit_sha.is_empty()`
+/// ——已实证 `state.installed` 全仓只有两处写入,正常安装写远端 sha、只有 claim 留空。
+/// 判据保守:拿不准就当成"获取来的"不许取消,宁可少给一个按钮,不可误删记账留下孤儿。
+pub fn is_claimed(skill: &state::InstalledSkill) -> bool {
+    match skill.origin.as_deref() {
+        Some(ORIGIN_CLAIMED) => true,
+        Some(_) => false,
+        None => skill.commit_sha.is_empty(),
+    }
+}
+
+/// 取消认领:[`claim`] 的**精确逆操作**。
+///
+/// 只从 `state.installed` 删掉这条记账——**磁盘、各工具下的链接、
+/// `.skill-lock.json` 一个字节都不动**。认领本身就是纯记账(claim 全程只调一次
+/// `save_state`),所以它的撤销也必须是纯记账。
+///
+/// 这个函数存在的理由(M4 任务 6a,用户 2026-08-04 实测报的):在它之前,认领后唯一的
+/// 退出路径是「移除」,而移除会解链 → 删本体 → **从 `.skill-lock.json` 删掉条目**。
+/// 于是用户点一个零副作用的记账动作,反悔时唯一的按钮会把这个技能从 npx skills
+/// 那边一并毁掉。无害的进入,破坏性的退出。
+pub fn unclaim(store: &Store, dir_slug: &str) -> Result<(), AppError> {
+    let loaded = store.load_state()?;
+    let Some(idx) = loaded.value.installed.iter().position(|s| s.name == dir_slug) else {
+        return Err(AppError::new(
+            "FS_NOT_INSTALLED",
+            "这个技能不在管理列表中,无需取消",
+        )
+        .with_detail(format!("not in state.installed: {dir_slug}")));
+    };
+    if !is_claimed(&loaded.value.installed[idx]) {
+        return Err(AppError::new(
+            "CONFLICT_NOT_CLAIMED",
+            "这个技能是从技能库获取的,不能取消认领。不想要的话请用「移除」",
+        )
+        .with_detail(format!("origin is not claimed: {dir_slug}")));
+    }
+
+    let mut next = loaded.value.clone();
+    next.installed.remove(idx);
+    store.save_state(&next)?;
+    Ok(())
+}
+
 pub fn claim(
     installer: &Installer,
     registry: &AgentRegistry,
@@ -907,6 +963,8 @@ pub fn claim(
         },
         commit_sha: String::new(),
         content_hash,
+        // 认领来的:文件是别的工具装的,本 app 只是记了账,因此**可以取消认领**
+        origin: Some(ORIGIN_CLAIMED.to_string()),
         agents: agent_names.into_iter().collect(),
         links,
         // 上游记的安装时间照抄(它更接近事实),没有才用现在

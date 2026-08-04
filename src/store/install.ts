@@ -116,7 +116,13 @@ export const useInstall = create<InstallState>((set, get) => ({
       const list = await installedList();
       set({
         installed: new Map(
-          list.map((s) => [
+          list
+            // 「我的技能」还会返回未认领与**本地新建**两档,它们不是从任何技能库
+            // 获取的。混进这张 map,商店里的同名技能就会显示「已启用」——那是假话,
+            // 用户装的是自己那个,不是库里这个。真去点获取时 core 的预检会认出
+            // canonical 里有目录但没记账(外来目录档)并要求拍板,那才是对的路径。
+            .filter((s) => !s.unclaimed && !s.localOnly)
+            .map((s) => [
             s.dirSlug,
             {
               commitSha: s.commitSha,

@@ -17,6 +17,7 @@ import {
   skillRemove,
   skillRepair,
   skillShareChanges,
+  skillUnclaim,
   type AppError,
   type InstalledSkillView,
   type ShareMode,
@@ -71,6 +72,12 @@ interface MySkillsState {
 
   /** 认领上游(npx skills)装的技能,成功后刷新列表。 */
   claim: (dirSlug: string) => Promise<void>;
+
+  /**
+   * 取消认领:认领的精确逆操作,只删记账,磁盘一个字节不动。
+   * 不需要二次确认——它无损,而弹窗会让人以为要删东西。
+   */
+  unclaim: (dirSlug: string) => Promise<void>;
 }
 
 function toAppError(raw: unknown): AppError {
@@ -172,6 +179,20 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     }
   },
 
+  unclaim: async (dirSlug) => {
+    set({ claimBusy: dirSlug, claimError: null });
+    try {
+      await skillUnclaim({ dirSlug });
+      await get().load();
+      // 它不再由本 app 管理了,商店卡片的「已启用」也要跟着撤下
+      await useInstall.getState().refreshInstalled();
+    } catch (raw) {
+      set({ claimError: toAppError(raw) });
+    } finally {
+      set({ claimBusy: null });
+    }
+  },
+
   shareChanges: async (dirSlug) => {
     set({ shareBusy: dirSlug, shareDone: null, shareError: null });
     try {
@@ -233,7 +254,10 @@ export function hasUpdate(
 ): boolean {
   // 来源没了、或这个技能库不在列表里,更新都没有去处:摆出「更新」就是引诱用户
   // 去点一个必然报 REPO_UNKNOWN_REPO 的按钮(M4 任务 2)。
+  // 本地新建的与未认领的压根没有来源,同理(M4 任务 6a)——**显式判掉,
+  // 不靠"空串恰好对不上 index"碰运气**。
   if (!index || skill.sourceRemoved || skill.libraryRemoved) return false;
+  if (skill.localOnly || skill.unclaimed) return false;
   if (
     skill.registryId !== index.registryId ||
     skill.sourceOwner !== index.owner ||

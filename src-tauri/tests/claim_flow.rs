@@ -347,3 +347,154 @@ fn unclaimed_listing_skips_managed_and_missing_bodies() {
     assert_eq!(unclaimed[0].dir_slug, "weekly-report");
     assert_eq!(unclaimed[0].source, "vercel-labs/skills");
 }
+
+// ============================================================ 取消认领(M4 任务 6a)
+
+/// 黄金测试:**claim → unclaim 之后,磁盘与 lock 必须与认领之前逐字节相同**。
+///
+/// 这一条断言就是整个契约。认领本身是纯记账(claim 全程只调一次 save_state),
+/// 所以它的撤销也必须是纯记账——磁盘、各工具下的链接、`.skill-lock.json` 全不动。
+///
+/// 在 unclaim 存在之前,认领后唯一的退出路径是「移除」,而移除会解链 → 删本体 →
+/// 从 lock 删条目:用户点一个零副作用的动作,反悔时唯一的按钮会把这个技能从
+/// npx skills 那边一并毁掉(2026-08-04 用户实测报的)。
+///
+/// 注:比这三条断言更硬的保障是**签名本身**——`unclaim(store, dir_slug)` 里既没有
+/// `Installer` 也没有 `AgentEnv`,它在类型层面就拿不到 canonical 路径与 lock 落点,
+/// 结构上动不了磁盘。这条测试是"将来有人给它加参数"时的护栏。
+#[test]
+fn unclaim_restores_everything_exactly_as_it_was_before_the_claim() {
+    let (ctx, env) = ctx();
+    upstream_install(&ctx, "weekly-report");
+    let canonical = ctx.home.join(".agents/skills/weekly-report");
+    let lock_path = ctx.home.join(".agents/.skill-lock.json");
+    let link = ctx.home.join(".claude/skills/weekly-report");
+
+    let skill_before = std::fs::read(canonical.join("SKILL.md")).unwrap();
+    let lock_before = std::fs::read(&lock_path).unwrap();
+    let link_target_before = fsops::read_link_target(&link);
+    assert!(link_target_before.is_some(), "前提:npx 建的链接存在");
+
+    let installer = Installer::new(&ctx.registry, &env);
+    acquire::claim(
+        &installer, &ctx.registry, &env, &ctx.store,
+        &[github_registry()], "weekly-report", NOW,
+    )
+    .expect("认领应当成功");
+    assert_eq!(ctx.store.load_state().unwrap().value.installed.len(), 1);
+
+    acquire::unclaim(&ctx.store, "weekly-report").expect("取消认领应当成功");
+
+    // 记账没了
+    assert!(ctx.store.load_state().unwrap().value.installed.is_empty());
+    // 而磁盘上的一切原封不动——这才是"无损撤销"
+    assert_eq!(
+        std::fs::read(canonical.join("SKILL.md")).unwrap(),
+        skill_before,
+        "技能本体不该被动过"
+    );
+    assert_eq!(std::fs::read(&lock_path).unwrap(), lock_before, "lock 不该被动过");
+    assert_eq!(
+        fsops::read_link_target(&link),
+        link_target_before,
+        "npx 建的链接不该被解掉"
+    );
+}
+
+/// 取消认领后,它回到「未认领」那一档,可以再认领一次——一进一出都无损。
+#[test]
+fn unclaimed_skill_shows_up_again_and_can_be_reclaimed() {
+    let (ctx, env) = ctx();
+    upstream_install(&ctx, "weekly-report");
+    let installer = Installer::new(&ctx.registry, &env);
+    let claim_once = || {
+        acquire::claim(
+            &installer, &ctx.registry, &env, &ctx.store,
+            &[github_registry()], "weekly-report", NOW,
+        )
+    };
+
+    claim_once().unwrap();
+    acquire::unclaim(&ctx.store, "weekly-report").unwrap();
+
+    let st = ctx.store.load_state().unwrap().value;
+    let pending = acquire::unclaimed_skills(&env, &installer, &st);
+    assert_eq!(pending.len(), 1, "该回到未认领那一档");
+    assert_eq!(pending[0].dir_slug, "weekly-report");
+
+    claim_once().expect("应当能再认领一次");
+    assert_eq!(ctx.store.load_state().unwrap().value.installed.len(), 1);
+}
+
+/// 从技能库获取的**不许**取消认领:文件是本 app 装的,只删记账会留下
+/// 孤儿目录与孤儿链接——那正是「绝不静默毁坏」要防的。
+#[test]
+fn refuses_to_unclaim_a_skill_that_was_acquired_from_a_library() {
+    let (ctx, _env) = ctx();
+    let mut st = skillsync_lib::core::state::State::default();
+    st.installed.push(skillsync_lib::core::state::InstalledSkill {
+        name: "weekly-report".into(),
+        source: skillsync_lib::core::state::SkillSource {
+            registry_id: "builtin".into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            path: "skills/weekly-report".into(),
+            git_ref: "abc".into(),
+        },
+        commit_sha: "abc123".into(),
+        content_hash: "hash".into(),
+        origin: Some(acquire::ORIGIN_ACQUIRED.into()),
+        agents: vec![],
+        links: vec![],
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    });
+    ctx.store.save_state(&st).unwrap();
+
+    let err = acquire::unclaim(&ctx.store, "weekly-report").unwrap_err();
+    assert_eq!(err.code, "CONFLICT_NOT_CLAIMED");
+    // 记账原样保留
+    assert_eq!(ctx.store.load_state().unwrap().value.installed.len(), 1);
+}
+
+/// 存量条目(`origin` 缺席)退回按空 `commit_sha` 判定。
+/// 已实证 `state.installed` 全仓只有两处写入,只有 claim 留空 sha。
+#[test]
+fn legacy_entries_without_origin_fall_back_to_the_empty_sha_rule() {
+    let (ctx, _env) = ctx();
+    let entry = |name: &str, sha: &str| skillsync_lib::core::state::InstalledSkill {
+        name: name.into(),
+        source: skillsync_lib::core::state::SkillSource {
+            registry_id: String::new(),
+            owner: "acme".into(),
+            repo: "skills".into(),
+            path: String::new(),
+            git_ref: String::new(),
+        },
+        commit_sha: sha.into(),
+        content_hash: "hash".into(),
+        origin: None, // 旧版 state 没有这个字段
+        agents: vec![],
+        links: vec![],
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    };
+    let mut st = skillsync_lib::core::state::State::default();
+    st.installed.push(entry("claimed-one", ""));
+    st.installed.push(entry("acquired-one", "abc123"));
+    ctx.store.save_state(&st).unwrap();
+
+    acquire::unclaim(&ctx.store, "claimed-one").expect("空 sha 的存量条目 = 认领来的");
+    assert_eq!(
+        acquire::unclaim(&ctx.store, "acquired-one").unwrap_err().code,
+        "CONFLICT_NOT_CLAIMED",
+        "有 sha 的存量条目 = 获取来的,拿不准也不许删"
+    );
+}
+
+#[test]
+fn unclaiming_something_that_is_not_managed_is_an_error_not_a_silent_noop() {
+    let (ctx, _env) = ctx();
+    let err = acquire::unclaim(&ctx.store, "never-existed").unwrap_err();
+    assert_eq!(err.code, "FS_NOT_INSTALLED");
+}

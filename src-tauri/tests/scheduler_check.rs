@@ -123,6 +123,7 @@ fn seed_installed(c: &Ctx, slug: &str, body: &str, sha: &str, agents: &[&str]) -
         },
         commit_sha: sha.to_string(),
         content_hash,
+        origin: None,
         agents: agents.iter().map(|s| s.to_string()).collect(),
         links: vec![],
         installed_at: NOW.into(),
