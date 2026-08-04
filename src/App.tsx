@@ -11,6 +11,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { Toolbar } from "@/components/Toolbar";
 import { Wizard } from "@/components/Wizard";
 import { useDesktopChrome } from "@/hooks/useDesktopChrome";
+import { useLocalRefresh } from "@/hooks/useLocalRefresh";
 import { call } from "@/lib/ipc";
 import { MySkillsPage } from "@/pages/MySkillsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
@@ -34,6 +35,8 @@ export default function App() {
   const page = useUi((s) => s.page);
   const [info, setInfo] = useState<AppInfo | null>(null);
   useDesktopChrome();
+  // 切到编辑器改完 SKILL.md 再切回来,列表要跟上(M4 任务 6c 级别 1)
+  useLocalRefresh();
 
   useEffect(() => {
     // 商店索引与登录态并行拉:技能库公开可匿名读,浏览不必等登录查完

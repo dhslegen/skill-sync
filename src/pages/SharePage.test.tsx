@@ -394,4 +394,24 @@ describe("新建技能向导", () => {
     expect(screen.getByDisplayValue("周报生成")).toBeInTheDocument();
     expect(screen.getByDisplayValue("weekly-report")).toBeInTheDocument();
   });
+
+  it("离开再回到这一页会重新扫描——不是靠组件重挂的巧合,是显式契约", async () => {
+    // 新建向导的完成页写着「然后回到这一页分享给团队」。回到这一页看到旧状态
+    // 就是自打脸(M4 任务 6c 级别 2)。
+    seedIpc([]);
+    const { unmount } = render(<SharePage />);
+    await screen.findByText(/没有找到可分享的技能/);
+    const firstRound = invoke.mock.calls.filter(([cmd]) => cmd === "share_candidates").length;
+    expect(firstRound).toBeGreaterThan(0);
+
+    unmount();
+    // 这次扫描能看到刚在编辑器里建好的技能
+    seedIpc([candidate({ dirName: "just-created", name: "刚建好的" })]);
+    render(<SharePage />);
+
+    expect(await screen.findByText("刚建好的")).toBeInTheDocument();
+    expect(
+      invoke.mock.calls.filter(([cmd]) => cmd === "share_candidates").length,
+    ).toBeGreaterThan(firstRound);
+  });
 });
