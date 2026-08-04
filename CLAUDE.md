@@ -459,6 +459,24 @@ M4 任务 1 新增的 IPC:`registry_add_repo`/`registry_remove_repo`;
 ### 待处理
 
 **功能缺口**
+- 🔴 **「认领」没有撤销路径,而唯一的退出路径会毁掉 npx skills 的数据**
+  (2026-08-04 用户实测报的,汇报后修)。事实链:
+  - `acquire::claim` 是**纯记账**——全程只调一次 `save_state`,磁盘、npx 建的链接、
+    `.skill-lock.json` 一个字节都不动(CLAUDE.md 自己写着「认领读 lock 不写」,
+    理由正是"那是 npx skills 的数据")。
+  - 认领后没有「取消认领」,唯一能做的是「移除」,而 `remove::remove` 会
+    解链 → `remove_tree` 删本体 → 清账 → **从 `.skill-lock.json` 删掉该条目**。
+  - 于是:用户点一个零副作用的记账动作,反悔时唯一的按钮会把这个技能从
+    npx skills 那边一并毁掉。**无害的进入,破坏性的退出**——进入时那么克制,
+    退出时却直接删别人的数据,自相矛盾。
+  - 界面文案也只说了一半:「认领后就能在这里更新、修复与移除」说了能做什么,
+    没说不能撤销,更没说撤销会连带毁掉别的工具的安装。
+  - 修法:加 `unclaim` 作 `claim` 的**精确逆操作**——只从 `state.installed` 删这条记账,
+    磁盘/链接/lock 全不动,技能回到未认领状态重新挂回列表尾部。
+    判据(哪些能取消认领):商店获取的**不能**(文件是本 app 装的,只删账会留孤儿目录
+    与孤儿链接)。现成判据是 `commit_sha` 留空(claim 时特意留空的),但偏脆弱;
+    建议给 `InstalledSkill` 加 `origin`(serde default 兼容,不升 schemaVersion),
+    存量数据 fallback 到空 sha。
 - ~~M3-5b:GitHub 分享写路径~~ **已完成**(2026-08-03):先对真实 GitHub 录制
   ground truth(`tests/fixtures/github-write/NOTES.md`,含端点拍板与错误形状),
   再实现 share.rs 的 `ShareClient` 枚举分发 + `submit_github` 权限矩阵
