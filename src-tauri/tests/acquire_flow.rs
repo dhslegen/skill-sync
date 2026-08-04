@@ -546,7 +546,7 @@ async fn acquiring_also_refreshes_the_store_index_cache() {
 
     run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
 
-    let cache = skillsync_lib::core::store::cache_path(c.store.dir(), REGISTRY);
+    let cache = skillsync_lib::core::store::cache_path(c.store.dir(), REGISTRY, &repo_ref());
     let index = skillsync_lib::core::store::load_cache(&cache).expect("索引缓存应已写入");
     assert_eq!(index.commit_sha, "ddd4444");
     assert_eq!(index.skills.len(), 1);

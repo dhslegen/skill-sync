@@ -214,14 +214,31 @@ async function runRepair(
  * (2026-08-03 用户实测报的缺陷)。指纹由 core 在建索引时按与
  * `fsops::dir_content_hash` 同一套算法算出,两边可直接比较。
  *
- * 另有两道门:索引必须是**同一个源**的(商店切到别的源时,它的内容说明不了这个技能);
+ * 另有两道门:索引必须是**同一个技能库**的——源相同还不够,一源多仓后
+ * (M4 任务 1)同一个源下有多份索引,商店切到设计部技能库时它的内容说明不了
+ * 主库装的技能;两库有同名技能时按源比会直接比出错误结论。
  * 来源已移除的技能没有更新去处,永不亮"有新版本"。
  */
 export function hasUpdate(
   skill: InstalledSkillView,
-  index: { registryId: string; skills: { dirSlug: string; contentHash: string }[] } | null | undefined,
+  index:
+    | {
+        registryId: string;
+        owner: string;
+        repo: string;
+        skills: { dirSlug: string; contentHash: string }[];
+      }
+    | null
+    | undefined,
 ): boolean {
-  if (!index || skill.sourceRemoved || skill.registryId !== index.registryId) return false;
+  if (!index || skill.sourceRemoved) return false;
+  if (
+    skill.registryId !== index.registryId ||
+    skill.sourceOwner !== index.owner ||
+    skill.sourceRepo !== index.repo
+  ) {
+    return false;
+  }
   const remote = remoteHashOf(index, skill.dirSlug);
   // 拿不到任一侧的指纹就说"没有更新":宁可漏报,也不能凭空催所有人去更新
   if (!remote || !skill.contentHash) return false;

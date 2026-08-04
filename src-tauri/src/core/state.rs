@@ -44,6 +44,11 @@ pub struct Config {
     pub schema_version: u32,
     #[serde(default)]
     pub registries: Vec<RegistryConfig>,
+    /// 内建源上用户追加的技能库(M4 任务 1)。只存 owner/repo/branch/展示名,
+    /// **base_url 永远取编译期常量**——同源由构造保证;内建主仓本身仍不落盘
+    /// (坐标是编译期常量,落盘会造出第二份真相),这里只有"追加"的部分。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub builtin_extra_repos: Vec<RepoConfig>,
     #[serde(default)]
     pub auto_update: AutoUpdate,
     /// 界面偏好。`None` = 从未设置过(前端据此做 localStorage 一次性迁移),
@@ -109,6 +114,10 @@ pub struct RepoConfig {
     pub owner: String,
     pub repo: String,
     pub branch: String,
+    /// 界面展示名(M4 任务 1)。`None` 时界面回退 repo slug——
+    /// slug 是 ASCII kebab 不算内部标识,但允许用户起个人话名字。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +151,7 @@ impl Default for Config {
         Self {
             schema_version: SCHEMA_VERSION,
             registries: Vec::new(),
+            builtin_extra_repos: Vec::new(),
             auto_update: AutoUpdate::default(),
             ui: None,
             disabled_agents: Vec::new(),
@@ -656,6 +666,7 @@ mod tests {
                 owner: "skills".into(),
                 repo: "skills".into(),
                 branch: "main".into(),
+                name: None,
             }],
         });
         config.auto_update.skills.interval_hours = 24;

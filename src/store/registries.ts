@@ -11,8 +11,10 @@ import {
   authLoginToken,
   isAppError,
   registryAdd,
+  registryAddRepo,
   registryList,
   registryRemove,
+  registryRemoveRepo,
   type AppError,
   type RegistryView,
 } from "@/lib/ipc";
@@ -47,6 +49,10 @@ interface RegistriesState {
   /** 新增自定义源。成功返回 true(界面收起表单)。 */
   add: (form: RegistryAddForm) => Promise<boolean>;
   remove: (registryId: string) => Promise<void>;
+  /** 给源追加技能库(M4 一源多仓)。成功返回 true(界面收起表单)。 */
+  addRepo: (registryId: string, form: { repoPath: string; name: string }) => Promise<boolean>;
+  /** 移除源里的一个技能库(repo = 寻址键 `owner/repo`)。 */
+  removeRepo: (registryId: string, repo: string) => Promise<void>;
   /** 自定义源的 PAT 登录。成功返回 true。 */
   tokenLogin: (registryId: string, token: string) => Promise<boolean>;
   /** GitHub 一键登录(device flow):start 展示用户码 → 后台等授权 → 记录用户。 */
@@ -105,6 +111,43 @@ export const useRegistries = create<RegistriesState>((set, get) => ({
       const loggedIn = { ...get().loggedIn };
       delete loggedIn[registryId];
       set({ list, busy: false, loggedIn });
+    } catch (raw) {
+      set({ error: toAppError(raw), busy: false });
+    }
+  },
+
+  addRepo: async (registryId, form) => {
+    // 与 add 同款的本地拆分:表单是「所属者/名称」一段式
+    const parts = form.repoPath.split("/").map((p) => p.trim());
+    if (parts.length !== 2 || parts.some((p) => !p)) {
+      set({
+        error: { code: "UI_INVALID_REPO_PATH", message: t("registries.invalidRepoPath") },
+      });
+      return false;
+    }
+    const [owner, repo] = parts;
+    set({ busy: true, error: null });
+    try {
+      const name = form.name.trim();
+      const list = await registryAddRepo({
+        registryId,
+        owner,
+        repo,
+        ...(name ? { name } : {}),
+      });
+      set({ list, busy: false });
+      return true;
+    } catch (raw) {
+      set({ error: toAppError(raw), busy: false });
+      return false;
+    }
+  },
+
+  removeRepo: async (registryId, repo) => {
+    set({ busy: true, error: null });
+    try {
+      const list = await registryRemoveRepo({ registryId, repo });
+      set({ list, busy: false });
     } catch (raw) {
       set({ error: toAppError(raw), busy: false });
     }

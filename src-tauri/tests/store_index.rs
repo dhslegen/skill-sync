@@ -69,14 +69,17 @@ async fn mount_archive(server: &MockServer, slugs: &[String]) {
         .await;
 }
 
-/// 至今为止发往压缩包端点的请求数。缓存是否真的省掉了下载,只能靠这个数字说话。
+/// 至今为止发往**主库**压缩包端点的请求数。缓存是否真的省掉了下载,只能靠这个数字说话。
+///
+/// 路径写全 `skills/skills`,不能只匹配 `/archive/main.zip` 结尾:一源多仓后
+/// 别的技能库的下载也是这个后缀,宽匹配会把它们一起算进来(M4 任务 1 撞到过)。
 async fn archive_hits(server: &MockServer) -> usize {
     server
         .received_requests()
         .await
         .expect("wiremock 未记录请求")
         .iter()
-        .filter(|r| r.url.path().ends_with("/archive/main.zip"))
+        .filter(|r| r.url.path().ends_with("/repos/skills/skills/archive/main.zip"))
         .count()
 }
 
@@ -101,7 +104,7 @@ async fn first_run_downloads_and_writes_the_cache() {
     mount_branch(&server, "aaa1111").await;
     mount_archive(&server, &slugs(3)).await;
     let tmp = tempfile::tempdir().unwrap();
-    let cache = store::cache_path(tmp.path(), REGISTRY);
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
 
     let (index, outcome) = refresh(&server, &cache, false).await;
 
@@ -118,7 +121,7 @@ async fn unchanged_sha_serves_cache_without_downloading_again() {
     mount_branch(&server, "aaa1111").await;
     mount_archive(&server, &slugs(3)).await;
     let tmp = tempfile::tempdir().unwrap();
-    let cache = store::cache_path(tmp.path(), REGISTRY);
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
 
     refresh(&server, &cache, false).await;
     assert_eq!(archive_hits(&server).await, 1, "首次必须下载");
@@ -141,7 +144,7 @@ async fn changed_sha_refetches_and_replaces_the_cache() {
     mount_branch(&server, "aaa1111").await;
     mount_archive(&server, &slugs(2)).await;
     let tmp = tempfile::tempdir().unwrap();
-    let cache = store::cache_path(tmp.path(), REGISTRY);
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
     refresh(&server, &cache, false).await;
 
     // 远端向前走了一版,且多了一个技能
@@ -163,7 +166,7 @@ async fn force_bypasses_the_freshness_check() {
     mount_branch(&server, "aaa1111").await;
     mount_archive(&server, &slugs(3)).await;
     let tmp = tempfile::tempdir().unwrap();
-    let cache = store::cache_path(tmp.path(), REGISTRY);
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
     refresh(&server, &cache, false).await;
 
     let (_, outcome) = refresh(&server, &cache, true).await;
@@ -178,7 +181,7 @@ async fn corrupt_cache_is_refetched_instead_of_failing() {
     mount_branch(&server, "aaa1111").await;
     mount_archive(&server, &slugs(3)).await;
     let tmp = tempfile::tempdir().unwrap();
-    let cache = store::cache_path(tmp.path(), REGISTRY);
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
     std::fs::create_dir_all(tmp.path()).unwrap();
     std::fs::write(&cache, "{\"schemaVersion\":1,\"skills\":截断了").unwrap();
 
@@ -195,7 +198,7 @@ async fn cache_written_by_a_newer_version_is_rebuilt() {
     mount_branch(&server, "aaa1111").await;
     mount_archive(&server, &slugs(3)).await;
     let tmp = tempfile::tempdir().unwrap();
-    let cache = store::cache_path(tmp.path(), REGISTRY);
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
     std::fs::create_dir_all(tmp.path()).unwrap();
     std::fs::write(
         &cache,
@@ -223,7 +226,7 @@ async fn cache_of_a_different_repo_is_ignored() {
     mount_branch(&server, "aaa1111").await;
     mount_archive(&server, &slugs(3)).await;
     let tmp = tempfile::tempdir().unwrap();
-    let cache = store::cache_path(tmp.path(), REGISTRY);
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
     refresh(&server, &cache, false).await;
 
     // 同一个缓存文件,但这次问的是另一个技能库的同名分支
@@ -254,12 +257,59 @@ async fn cache_of_a_different_repo_is_ignored() {
 }
 
 #[tokio::test]
+async fn two_repos_of_one_source_keep_separate_caches() {
+    // M4 一源多仓:同一源下交替浏览两个技能库,各自的缓存不能互相冲刷
+    // ——冲刷的表现是"每次切库都重新下载",而 from_cache 会如实说出这件事。
+    let server = MockServer::start().await;
+    mount_branch(&server, "aaa1111").await;
+    mount_archive(&server, &slugs(3)).await;
+    let other = RepoRef { owner: "design".into(), repo: "design-skills".into(), branch: "main".into() };
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/v1/repos/design/design-skills/branches/main$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "name": "main",
+            "commit": { "id": "bbb2222", "timestamp": "2026-08-01T10:00:00+08:00" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/v1/repos/design/design-skills/archive/main\.zip$"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(zip_with(&slugs(7))))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let primary_cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
+    let other_cache = store::cache_path(tmp.path(), REGISTRY, &other);
+    assert_ne!(primary_cache, other_cache, "同源不同仓必须落不同文件");
+
+    // 主库 → 追加库 → 回主库
+    refresh(&server, &primary_cache, false).await;
+    let (other_index, other_outcome) = store::refresh_index(
+        &client(&server), &other, REGISTRY, &other_cache, false, 1_753_800_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(other_index.skills.len(), 7);
+    assert!(!other_outcome.from_cache, "第一次访问追加库必然要下载");
+
+    let (back, back_outcome) = refresh(&server, &primary_cache, false).await;
+    assert!(back_outcome.from_cache, "切回主库应命中它自己的缓存,而不是被追加库冲掉");
+    assert_eq!(back.skills.len(), 3);
+    assert_eq!(archive_hits(&server).await, 1, "主库的压缩包只该下载过一次");
+
+    // 两份缓存并存,各记各的版本
+    assert_eq!(store::load_cache(&primary_cache).unwrap().commit_sha, "aaa1111");
+    assert_eq!(store::load_cache(&other_cache).unwrap().commit_sha, "bbb2222");
+}
+
+#[tokio::test]
 async fn unreachable_registry_serves_the_cache_and_flags_offline() {
     let server = MockServer::start().await;
     mount_branch(&server, "aaa1111").await;
     mount_archive(&server, &slugs(4)).await;
     let tmp = tempfile::tempdir().unwrap();
-    let cache = store::cache_path(tmp.path(), REGISTRY);
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
     refresh(&server, &cache, false).await;
 
     // 技能库出故障(5xx 与连不上内网在编排层是同一条 Err 分支)
@@ -286,7 +336,7 @@ async fn unreachable_registry_without_cache_reports_an_actionable_error() {
         .mount(&down)
         .await;
     let tmp = tempfile::tempdir().unwrap();
-    let cache = store::cache_path(tmp.path(), REGISTRY);
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
 
     let err = store::refresh_index(
         &client(&down), &repo_ref(), REGISTRY, &cache, false, 0,
@@ -305,7 +355,7 @@ async fn archive_failure_falls_back_to_the_stale_cache() {
     mount_branch(&server, "aaa1111").await;
     mount_archive(&server, &slugs(4)).await;
     let tmp = tempfile::tempdir().unwrap();
-    let cache = store::cache_path(tmp.path(), REGISTRY);
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
     refresh(&server, &cache, false).await;
 
     // 分支头能拿到(说明远端已经更新了),但压缩包下载失败
@@ -340,7 +390,7 @@ async fn cache_hit_for_fifty_skills_does_not_silently_redownload() {
     mount_branch(&server, "aaa1111").await;
     mount_archive(&server, &slugs(50)).await;
     let tmp = tempfile::tempdir().unwrap();
-    let cache = store::cache_path(tmp.path(), REGISTRY);
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
     let (first, _) = refresh(&server, &cache, false).await;
     assert_eq!(first.skills.len(), 50);
 

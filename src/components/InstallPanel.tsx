@@ -26,12 +26,15 @@ const STAGE_LABEL: Record<InstallStage, MessageKey> = {
  */
 export function InstallPanel({ dirSlug }: { dirSlug: string }) {
   const { phase, dirSlug: active, begin, cancel } = useInstall();
-  // 详情面板只会从商店打开:装的就是商店当前浏览的那个源(M3 多源)
+  // 详情面板只会从商店打开:装的就是商店当前浏览的那个库(M3 多源 + M4 多仓)
   const activeRegistry = useStoreIndex((s) => s.activeRegistry);
+  const activeRepo = useStoreIndex((s) => s.activeRepo);
   const mine = active === dirSlug;
 
   if (!mine || phase === "idle") {
-    return <IdleFooter dirSlug={dirSlug} onBegin={() => void begin(dirSlug, activeRegistry)} />;
+    return (
+      <IdleFooter dirSlug={dirSlug} onBegin={() => void begin(dirSlug, activeRegistry, activeRepo)} />
+    );
   }
   if (phase === "choosing") return <AgentChooser onCancel={cancel} />;
   if (phase === "running") return <Running />;

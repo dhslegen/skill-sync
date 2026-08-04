@@ -5,7 +5,7 @@ import { LogIn } from "lucide-react";
 import { Icon } from "@/components/Icon";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
-import type { Accent, CheckReport, RegistryView, ThemeMode } from "@/lib/ipc";
+import type { Accent, CheckReport, RegistryView, RepoView, ThemeMode } from "@/lib/ipc";
 import { skillGlyph } from "@/lib/tint";
 import { ACCENT_LABEL_KEY, ACCENT_SWATCH, useAppearance } from "@/store/appearance";
 import { useRegistries } from "@/store/registries";
@@ -154,7 +154,7 @@ const SMALL_BUTTON =
   "h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50";
 
 function RegistryRow({ registry }: { registry: RegistryView }) {
-  const [mode, setMode] = useState<"idle" | "confirmRemove" | "credentials">("idle");
+  const [mode, setMode] = useState<"idle" | "confirmRemove" | "credentials" | "addRepo">("idle");
   const [token, setToken] = useState("");
   const remove = useRegistries((s) => s.remove);
   const tokenLogin = useRegistries((s) => s.tokenLogin);
@@ -171,6 +171,8 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
     : registry.builtin
       ? t("registries.notConfigured")
       : registry.baseUrl;
+  // 追加技能库只对能解析出坐标的源开放:内建未注入配置的构建没有主仓,谈不上追加
+  const canAddRepo = registry.repos.length > 0;
 
   return (
     <div className="border-t border-border first:border-t-0">
@@ -190,9 +192,9 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
               `${t("punct.listSeparator")}${t("registries.loggedInAs", { name: loggedName })}`}
           </div>
         </div>
-        {!registry.builtin && mode === "idle" && (
+        {mode === "idle" && (
           <div className="flex flex-none items-center gap-1.5">
-            {registry.kind === "github" && (
+            {!registry.builtin && registry.kind === "github" && (
               // GitHub 的主通道:device flow 一键登录(任务 5);下面的凭证输入是备用
               <button
                 type="button"
@@ -203,12 +205,31 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
                 {myDevicePrompt ? t("registries.deviceWaiting") : t("registries.deviceLogin")}
               </button>
             )}
-            <button type="button" className={SMALL_BUTTON} onClick={() => setMode("credentials")}>
-              {t("registries.credentials")}
-            </button>
-            <button type="button" className={SMALL_BUTTON} onClick={() => setMode("confirmRemove")}>
-              {t("registries.remove")}
-            </button>
+            {canAddRepo && (
+              // 一源多仓(M4 任务 1):内建源 = 同一公司 Gitea 上的其他技能库;
+              // 自定义源 = 同服务器上的另一个库
+              <button type="button" className={SMALL_BUTTON} onClick={() => setMode("addRepo")}>
+                {t("registries.addRepoButton")}
+              </button>
+            )}
+            {!registry.builtin && (
+              <>
+                <button
+                  type="button"
+                  className={SMALL_BUTTON}
+                  onClick={() => setMode("credentials")}
+                >
+                  {t("registries.credentials")}
+                </button>
+                <button
+                  type="button"
+                  className={SMALL_BUTTON}
+                  onClick={() => setMode("confirmRemove")}
+                >
+                  {t("registries.remove")}
+                </button>
+              </>
+            )}
           </div>
         )}
         {mode === "confirmRemove" && (
@@ -230,6 +251,17 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
           </div>
         )}
       </div>
+      {registry.repos.length > 1 && (
+        // 多于一个技能库才展开子列表:单库时头部那行坐标已经说清了,重复一行是噪音
+        <div className="flex flex-col gap-1 px-3.5 pb-2.5">
+          {registry.repos.map((repo) => (
+            <RepoRow key={repo.key} registryId={registry.id} repo={repo} />
+          ))}
+        </div>
+      )}
+      {mode === "addRepo" && (
+        <AddRepoForm registryId={registry.id} onClose={() => setMode("idle")} />
+      )}
       {myDevicePrompt && (
         <div className="flex items-center gap-2.5 px-3.5 pb-2.5">
           <span className="rounded-ctl border border-border-strong bg-surface-3 px-2.5 py-1 font-mono text-[15px] font-semibold tracking-[0.12em] select-text">
@@ -279,6 +311,102 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/** 源下的一个技能库(M4 一源多仓)。锁定的主仓不给移除入口;移除走内联双确认。 */
+function RepoRow({ registryId, repo }: { registryId: string; repo: RepoView }) {
+  const [confirming, setConfirming] = useState(false);
+  const removeRepo = useRegistries((s) => s.removeRepo);
+  const busy = useRegistries((s) => s.busy);
+
+  return (
+    <div className="flex items-center gap-2 rounded-ctl border border-border bg-surface-1 px-2.5 py-1.5">
+      <span className="truncate text-[12px] font-medium">{repo.name ?? repo.repo}</span>
+      {repo.primary && (
+        <span className="flex-none rounded-[4px] border border-border px-1.5 py-px text-[10.5px] font-medium text-text-3">
+          {t("registries.repoPrimaryTag")}
+        </span>
+      )}
+      <span className="truncate font-mono text-[11px] text-text-3">{repo.key}</span>
+      {!repo.locked && !confirming && (
+        <button
+          type="button"
+          className={cn(SMALL_BUTTON, "ml-auto")}
+          onClick={() => setConfirming(true)}
+        >
+          {t("registries.remove")}
+        </button>
+      )}
+      {confirming && (
+        <div className="ml-auto flex flex-none items-center gap-1.5">
+          <span className="text-[11.5px] text-text-3">{t("registries.removeConfirmHint")}</span>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              void removeRepo(registryId, repo.key).then(() => setConfirming(false));
+            }}
+            className="h-6 rounded-ctl border border-[#c0392b]/50 px-2.5 text-[11.5px] font-medium text-[#c0392b] hover:border-[#c0392b] disabled:opacity-50 dark:border-[#e0705f]/50 dark:text-[#e0705f]"
+          >
+            {t("registries.removeConfirm")}
+          </button>
+          <button type="button" className={SMALL_BUTTON} onClick={() => setConfirming(false)}>
+            {t("registries.formCancel")}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 给源追加技能库的表单:路径(所属者/名称)+ 可选显示名。
+ *  与添加来源的表单同一套字段风格;不暴露分支输入,缺省 main(与添加来源一致)。 */
+function AddRepoForm({ registryId, onClose }: { registryId: string; onClose: () => void }) {
+  const [repoPath, setRepoPath] = useState("");
+  const [name, setName] = useState("");
+  const addRepo = useRegistries((s) => s.addRepo);
+  const busy = useRegistries((s) => s.busy);
+
+  return (
+    <div className="flex flex-col gap-2 px-3.5 pb-2.5">
+      <label className="flex items-center gap-2 text-[11.5px] text-text-3">
+        <span className="w-[76px] flex-none">{t("registries.formRepoPath")}</span>
+        <input
+          value={repoPath}
+          onChange={(e) => setRepoPath(e.target.value)}
+          placeholder={t("registries.formRepoPathPlaceholder")}
+          spellCheck={false}
+          className={cn(FIELD_INPUT, "max-w-[300px] font-mono text-[12px]")}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-[11.5px] text-text-3">
+        <span className="w-[76px] flex-none">{t("registries.formName")}</span>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={t("registries.repoNamePlaceholder")}
+          className={cn(FIELD_INPUT, "max-w-[300px]")}
+        />
+      </label>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          disabled={busy || !repoPath.trim()}
+          onClick={() => {
+            void addRepo(registryId, { repoPath, name }).then((ok) => {
+              if (ok) onClose();
+            });
+          }}
+          className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+        >
+          {t("registries.formSubmit")}
+        </button>
+        <button type="button" className={SMALL_BUTTON} onClick={onClose}>
+          {t("registries.formCancel")}
+        </button>
+      </div>
     </div>
   );
 }

@@ -9,7 +9,6 @@
 //!   SKILLSYNC_GITHUB_WRITE_TOKEN=ghp_… cargo test --test share_github_live -- --nocapture
 //! ```
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use skillsync_lib::core::agents::{AgentEnv, AgentRegistry};

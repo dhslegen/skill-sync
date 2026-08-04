@@ -140,6 +140,8 @@ pub fn run() {
             commands::auth_device_wait,
             commands::registry_add,
             commands::registry_remove,
+            commands::registry_add_repo,
+            commands::registry_remove_repo,
             commands::update_check_now,
             commands::app_update_check,
             commands::app_update_install,

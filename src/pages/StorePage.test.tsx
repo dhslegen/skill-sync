@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StorePage } from "./StorePage";
 import type { StoreIndexView, StoreSkillCard } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
+import { useRegistries } from "@/store/registries";
 import { useStoreIndex } from "@/store/store-index";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -59,6 +60,7 @@ describe("StorePage", () => {
   beforeEach(() => {
     seed();
     useInstall.setState({ installed: new Map() });
+    useRegistries.setState({ list: null });
   });
 
   it("首屏就是搜索结果与卡片,没有 hero 区", () => {
@@ -214,5 +216,72 @@ describe("卡片安装状态", () => {
     });
     render(<StorePage />);
     expect(screen.getByRole("button", { name: /^更新 —/ })).toBeInTheDocument();
+  });
+
+});
+
+describe("库切换器(M4 一源多仓)", () => {
+  const twoLibraries = [
+    {
+      id: "company",
+      name: "公司技能库",
+      kind: "gitea",
+      baseUrl: "http://gitea.internal:3000",
+      builtin: true,
+      repo: { owner: "skills", repo: "skills", branch: "main" },
+      repos: [
+        { key: "skills/skills", owner: "skills", repo: "skills", branch: "main", name: null, primary: true, locked: true },
+        {
+          key: "design/design-skills",
+          owner: "design",
+          repo: "design-skills",
+          branch: "main",
+          name: "设计部技能库",
+          primary: false,
+          locked: false,
+        },
+      ],
+    },
+  ];
+
+  it("加载失败时切换器仍在:否则切到连不上的库就再也回不来", () => {
+    // 2026-08-04 真机视觉自查抓到的死路——错误分支早退,把切换器一起挡掉了,
+    // 界面上只剩一个「重试」,而重试的还是那个连不上的库。
+    useRegistries.setState({ list: twoLibraries });
+    seed({ status: "error", index: null, error: { code: "REPO_NOT_FOUND", message: "找不到对应的技能库或文件" } });
+    render(<StorePage />);
+
+    expect(screen.getByText("找不到对应的技能库或文件")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "公司技能库" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "设计部技能库" })).toBeInTheDocument();
+  });
+
+  it("首屏加载中切换器也在(同一条死路的另一半)", () => {
+    useRegistries.setState({ list: twoLibraries });
+    seed({ status: "loading", index: null });
+    render(<StorePage />);
+
+    expect(screen.getByRole("button", { name: "公司技能库" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "设计部技能库" })).toBeInTheDocument();
+  });
+
+  it("只有一个技能库时不渲染切换器:没得选的选择器是噪音", () => {
+    useRegistries.setState({ list: [{ ...twoLibraries[0], repos: [twoLibraries[0].repos[0]] }] });
+    render(<StorePage />);
+    expect(screen.queryByRole("group", { name: "技能库来源" })).not.toBeInTheDocument();
+  });
+
+  it("追加库回退展示名,没起名时用技能库名而不是内部标识", () => {
+    const unnamed = {
+      ...twoLibraries[0],
+      repos: [
+        twoLibraries[0].repos[0],
+        { ...twoLibraries[0].repos[1], name: null },
+      ],
+    };
+    useRegistries.setState({ list: [unnamed] });
+    render(<StorePage />);
+    // 回退到 repo slug(design-skills),不是寻址键 design/design-skills
+    expect(screen.getByRole("button", { name: "design-skills" })).toBeInTheDocument();
   });
 });

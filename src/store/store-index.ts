@@ -23,6 +23,8 @@ interface StoreIndexState {
   filter: StoreFilter;
   /** 当前浏览的源(M3 多源)。默认内建。 */
   activeRegistry: string;
+  /** 当前浏览的仓(M4 一源多仓):寻址键 `owner/repo`。null = 该源主仓。 */
+  activeRepo: string | null;
   /** 已安装技能的目录名。任务 10 接 installed_list 后填充;M1 恒为空集,
    *  卡片状态机因此只会走到"安装"那一档——组件本身三档都实现且有测试。 */
   installed: Set<string>;
@@ -33,8 +35,8 @@ interface StoreIndexState {
   detailError: AppError | null;
 
   load: (force?: boolean) => Promise<void>;
-  /** 切换浏览的源:清掉上一个源的索引并立即按新源重载。 */
-  setRegistry: (registryId: string) => Promise<void>;
+  /** 切换浏览的库:清掉上一个库的索引并立即按新库重载。repo 缺省 = 该源主仓。 */
+  setRegistry: (registryId: string, repo?: string | null) => Promise<void>;
   setQuery: (query: string) => void;
   setFilter: (filter: StoreFilter) => void;
   openDetail: (dirSlug: string) => Promise<void>;
@@ -54,6 +56,7 @@ export const useStoreIndex = create<StoreIndexState>((set, get) => ({
   query: "",
   filter: "all",
   activeRegistry: "company",
+  activeRepo: null,
   installed: new Set(),
   detailSlug: null,
   detail: null,
@@ -62,25 +65,26 @@ export const useStoreIndex = create<StoreIndexState>((set, get) => ({
   load: async (force = false) => {
     // 已有内容时保持列表可见,只在首次加载显示骨架——刷新不该让页面闪空
     const registryId = get().activeRegistry;
+    const repo = get().activeRepo;
     set({ status: "loading", error: null });
     try {
-      const index = await storeIndex(force, registryId);
-      // 等待期间用户可能又切了源:旧源的结果不能写进来冒充新源
-      if (get().activeRegistry === registryId) {
+      const index = await storeIndex(force, registryId, repo ?? undefined);
+      // 等待期间用户可能又切了库:旧库的结果不能写进来冒充新库
+      if (get().activeRegistry === registryId && get().activeRepo === repo) {
         set({ index, status: "ready", error: null });
       }
     } catch (raw) {
       // 拿不到索引也不弹对话框:界面上给一条带下一步动作的提示 + 重试按钮
-      if (get().activeRegistry === registryId) {
+      if (get().activeRegistry === registryId && get().activeRepo === repo) {
         set({ error: toAppError(raw), status: "error" });
       }
     }
   },
 
-  setRegistry: async (registryId) => {
-    if (get().activeRegistry === registryId) return;
-    // 上一个源的索引立刻清掉:挂着旧源的列表却标着新源,等于对用户撒谎
-    set({ activeRegistry: registryId, index: null, detailSlug: null, detail: null });
+  setRegistry: async (registryId, repo = null) => {
+    if (get().activeRegistry === registryId && get().activeRepo === repo) return;
+    // 上一个库的索引立刻清掉:挂着旧库的列表却标着新库,等于对用户撒谎
+    set({ activeRegistry: registryId, activeRepo: repo, index: null, detailSlug: null, detail: null });
     await get().load();
   },
 
@@ -90,7 +94,7 @@ export const useStoreIndex = create<StoreIndexState>((set, get) => ({
   openDetail: async (dirSlug) => {
     set({ detailSlug: dirSlug, detail: null, detailError: null });
     try {
-      const detail = await storeSkillDetail(dirSlug, get().activeRegistry);
+      const detail = await storeSkillDetail(dirSlug, get().activeRegistry, get().activeRepo ?? undefined);
       // 面板可能在等待期间被关掉或换了技能,回来的结果就不该再写进去
       if (get().detailSlug === dirSlug) set({ detail });
     } catch (raw) {

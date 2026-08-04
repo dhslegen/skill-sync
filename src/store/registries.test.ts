@@ -15,6 +15,17 @@ const BUILTIN = {
   baseUrl: "http://gitea.internal:3000",
   builtin: true,
   repo: { owner: "skills", repo: "skills", branch: "main" },
+  repos: [
+    {
+      key: "skills/skills",
+      owner: "skills",
+      repo: "skills",
+      branch: "main",
+      name: null,
+      primary: true,
+      locked: true,
+    },
+  ],
 };
 
 const CUSTOM = {
@@ -24,6 +35,17 @@ const CUSTOM = {
   baseUrl: "http://tools.example:8080",
   builtin: false,
   repo: { owner: "ai-skills", repo: "dept-skills", branch: "main" },
+  repos: [
+    {
+      key: "ai-skills/dept-skills",
+      owner: "ai-skills",
+      repo: "dept-skills",
+      branch: "main",
+      name: null,
+      primary: true,
+      locked: false,
+    },
+  ],
 };
 
 function reset() {
@@ -142,6 +164,68 @@ describe("技能库来源 store", () => {
 
     invoke.mockRejectedValueOnce({ code: "REPO_BUILTIN_LOCKED", message: "不能移除" });
     await useRegistries.getState().remove("company");
+    expect(useRegistries.getState().list).toHaveLength(1);
+    expect(useRegistries.getState().error?.code).toBe("REPO_BUILTIN_LOCKED");
+  });
+
+  // ---- 一源多仓(M4 任务 1)----
+
+  it("addRepo 拆开「所属者/名称」并整份替换列表", async () => {
+    useRegistries.setState({ list: [BUILTIN] });
+    invoke.mockResolvedValueOnce([BUILTIN, CUSTOM]);
+
+    const ok = await useRegistries
+      .getState()
+      .addRepo("company", { repoPath: "design/design-skills", name: "  设计部技能库  " });
+
+    expect(ok).toBe(true);
+    expect(invoke).toHaveBeenCalledWith("registry_add_repo", {
+      args: {
+        registryId: "company",
+        owner: "design",
+        repo: "design-skills",
+        // 展示名去空白后传;这里正面断言值,不只断言"字段在"
+        name: "设计部技能库",
+      },
+    });
+    expect(useRegistries.getState().list).toHaveLength(2);
+  });
+
+  it("addRepo 的展示名留空时整个字段不发,由后端落 None", async () => {
+    useRegistries.setState({ list: [BUILTIN] });
+    invoke.mockResolvedValueOnce([BUILTIN]);
+
+    await useRegistries.getState().addRepo("company", { repoPath: "qa/qa-skills", name: "   " });
+
+    expect(invoke).toHaveBeenCalledWith("registry_add_repo", {
+      args: { registryId: "company", owner: "qa", repo: "qa-skills" },
+    });
+  });
+
+  it("addRepo 在本地拦下没有斜杠的路径,不发 IPC", async () => {
+    useRegistries.setState({ list: [BUILTIN] });
+
+    const ok = await useRegistries.getState().addRepo("company", { repoPath: "只有一段", name: "" });
+
+    expect(ok).toBe(false);
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useRegistries.getState().error?.message).toBeTruthy();
+  });
+
+  it("removeRepo 成功替换列表;失败(锁定的主库)保留并报错", async () => {
+    useRegistries.setState({ list: [BUILTIN, CUSTOM] });
+    invoke.mockResolvedValueOnce([BUILTIN]);
+    await useRegistries.getState().removeRepo("company", "design/design-skills");
+    expect(invoke).toHaveBeenCalledWith("registry_remove_repo", {
+      args: { registryId: "company", repo: "design/design-skills" },
+    });
+    expect(useRegistries.getState().list).toHaveLength(1);
+
+    invoke.mockRejectedValueOnce({
+      code: "REPO_BUILTIN_LOCKED",
+      message: "公司主技能库是内建的,不能移除",
+    });
+    await useRegistries.getState().removeRepo("company", "skills/skills");
     expect(useRegistries.getState().list).toHaveLength(1);
     expect(useRegistries.getState().error?.code).toBe("REPO_BUILTIN_LOCKED");
   });

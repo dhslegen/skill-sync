@@ -111,6 +111,7 @@ fn github_registry() -> RegistryConfig {
             owner: "vercel-labs".into(),
             repo: "skills".into(),
             branch: "main".into(),
+            name: None,
         }],
     }
 }
@@ -174,6 +175,7 @@ fn without_a_matching_registry_the_claim_is_local_only() {
             owner: "tools".into(),
             repo: "skills".into(),
             branch: "main".into(),
+            name: None,
         }],
     };
     let report = acquire::claim(
@@ -192,6 +194,71 @@ fn without_a_matching_registry_the_claim_is_local_only() {
     assert_eq!(st.installed[0].source.registry_id, "", "绑不上就留空,不能瞎绑内建源");
     // 展示信息仍在
     assert_eq!(st.installed[0].source.owner, "vercel-labs");
+}
+
+#[test]
+fn same_origin_but_a_different_repo_is_not_bound() {
+    // M4 任务 1:同源还不够,技能所属的库也得在源的库列表里。
+    // 绑上去等于承诺"能从这个来源更新它",而源里没有这个库时,更新只会去主库
+    // 找同名技能——找不到就报错,找到就装错内容(M3 起就静默存在的错绑)。
+    let (ctx_a, env_a) = ctx();
+    upstream_install(&ctx_a, "weekly-report"); // 上游来源是 vercel-labs/skills
+    let installer = Installer::new(&ctx_a.registry, &env_a);
+
+    let other_repo = RegistryConfig {
+        // 同一个 github.com,但配的是另一个技能库
+        repos: vec![RepoConfig {
+            owner: "someone".into(),
+            repo: "other-skills".into(),
+            branch: "main".into(),
+            name: None,
+        }],
+        ..github_registry()
+    };
+    let report = acquire::claim(
+        &installer,
+        &ctx_a.registry,
+        &env_a,
+        &ctx_a.store,
+        std::slice::from_ref(&other_repo),
+        "weekly-report",
+        NOW,
+    )
+    .unwrap();
+
+    assert!(!report.bound, "同源但技能库对不上,不得绑定");
+    let st = ctx_a.store.load_state().unwrap().value;
+    assert_eq!(st.installed[0].source.registry_id, "");
+    // 展示信息仍如实保留
+    assert_eq!(st.installed[0].source.owner, "vercel-labs");
+    assert_eq!(st.installed[0].source.repo, "skills");
+
+    // 对照组:同一个源里**追加**上这个库之后,同一次认领就该绑上了
+    let mut with_repo = other_repo;
+    with_repo.repos.push(RepoConfig {
+        owner: "vercel-labs".into(),
+        repo: "skills".into(),
+        branch: "main".into(),
+        name: None,
+    });
+    let (ctx_b, env_b) = ctx();
+    upstream_install(&ctx_b, "weekly-report");
+    let installer_b = Installer::new(&ctx_b.registry, &env_b);
+    let report_b = acquire::claim(
+        &installer_b,
+        &ctx_b.registry,
+        &env_b,
+        &ctx_b.store,
+        &[with_repo],
+        "weekly-report",
+        NOW,
+    )
+    .unwrap();
+    assert!(report_b.bound, "库在列表里就该绑上——否则上面那条断言证明不了是库在起作用");
+    assert_eq!(
+        ctx_b.store.load_state().unwrap().value.installed[0].source.registry_id,
+        "custom-7"
+    );
 }
 
 #[test]

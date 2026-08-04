@@ -147,9 +147,15 @@ export function MySkillsPage() {
             repairing={repairBusy === skill.dirSlug}
             sharing={shareBusy === skill.dirSlug}
             onUpdate={() =>
+              // 更新带账上的来源坐标(M4 多仓):缺省会打到该源主仓,追加仓的技能就更新错了库
               void useInstall
                 .getState()
-                .beginUpdate(skill.dirSlug, skill.agents, skill.registryId)
+                .beginUpdate(
+                  skill.dirSlug,
+                  skill.agents,
+                  skill.registryId,
+                  `${skill.sourceOwner}/${skill.sourceRepo}`,
+                )
             }
             onRepair={() => void repair(skill.dirSlug)}
             onShareChanges={() => void shareChanges(skill.dirSlug)}

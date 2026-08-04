@@ -238,7 +238,7 @@ pub async fn acquire(
 
     // 压缩包已经在手上,顺带把索引缓存刷新到同一版本:一次下载服务两处。
     let index = store_index::build_index(req.registry_id, req.repo, &head, &archive, fetched_at);
-    let cache = store_index::cache_path(store.dir(), req.registry_id);
+    let cache = store_index::cache_path(store.dir(), req.registry_id, req.repo);
     if let Err(err) = store_index::save_cache(&cache, &index) {
         eprintln!("[acquire] 刷新索引缓存失败(不影响安装): {err}");
     }
@@ -389,7 +389,7 @@ pub async fn acquire_batch(
     let head = client.branch_head(repo).await?;
     let archive = client.download_archive(repo).await?;
     let index = store_index::build_index(registry_id, repo, &head, &archive, fetched_at);
-    let cache = store_index::cache_path(store.dir(), registry_id);
+    let cache = store_index::cache_path(store.dir(), registry_id, repo);
     if let Err(err) = store_index::save_cache(&cache, &index) {
         eprintln!("[acquire] 刷新索引缓存失败(不影响安装): {err}");
     }
@@ -890,7 +890,12 @@ fn bind_source(
         .unwrap_or_else(|| (entry.source.clone(), String::new()));
     if entry.source_type == "github" {
         if let Some(m) = registries.iter().find(|r| {
-            r.kind == "github" && crate::core::gitea::is_same_origin(&r.base_url, &entry.source_url)
+            r.kind == "github"
+                && crate::core::gitea::is_same_origin(&r.base_url, &entry.source_url)
+                // 同源还不够,**这个技能库本身也得在源的库列表里**(M4 任务 1):
+                // 绑上去等于对用户承诺"能从这个来源更新它",而源里没有这个库时,
+                // 更新只会去该源的主库找同名技能——找不到就报错,找到就装错内容。
+                && r.repos.iter().any(|c| c.owner == owner && c.repo == repo)
         }) {
             return (m.id.clone(), owner, repo);
         }

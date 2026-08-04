@@ -186,6 +186,21 @@ export interface SessionStatus {
 
 // ============================================================ 技能库来源(M3)
 
+/** 一个技能库(仓)在源下的展示数据,与 core::registry::RepoView 一一对应。 */
+export interface RepoView {
+  /** 仓库寻址键 `owner/repo`,IPC 的 `repo` 参数原样带回。 */
+  key: string;
+  owner: string;
+  repo: string;
+  branch: string;
+  /** 用户起的展示名;null 时界面回退 repo slug。 */
+  name: string | null;
+  /** 主仓(缺省落点)。 */
+  primary: boolean;
+  /** 锁定不可移除(仅内建源主仓)。 */
+  locked: boolean;
+}
+
 /** 与 core::registry::RegistryView 的 serde 契约一一对应。 */
 export interface RegistryView {
   id: string;
@@ -195,6 +210,8 @@ export interface RegistryView {
   builtin: boolean;
   /** 内建源在未注入配置的构建上为 null,界面据此显示"构建未配置"。 */
   repo: { owner: string; repo: string; branch: string } | null;
+  /** 该源下的全部技能库,主仓在首位(M4 任务 1)。 */
+  repos: RepoView[];
 }
 
 export const registryList = () => call<RegistryView[]>("registry_list");
@@ -212,11 +229,24 @@ export const registryAdd = (args: {
 export const registryRemove = (registryId: string) =>
   call<RegistryView[]>("registry_remove", { args: { registryId } });
 
-export const storeIndex = (force = false, registryId?: string) =>
-  call<StoreIndexView>("store_index", { args: { force, registryId } });
+/** 给某个源追加技能库(内建源 = 同一公司 Gitea 上的其他库)。 */
+export const registryAddRepo = (args: {
+  registryId: string;
+  owner: string;
+  repo: string;
+  branch?: string;
+  name?: string;
+}) => call<RegistryView[]>("registry_add_repo", { args });
 
-export const storeSkillDetail = (dirSlug: string, registryId?: string) =>
-  call<SkillDetail>("store_skill_detail", { args: { dirSlug, registryId } });
+/** 从源里移除一个技能库(repo = 寻址键 `owner/repo`)。已装技能保留。 */
+export const registryRemoveRepo = (args: { registryId: string; repo: string }) =>
+  call<RegistryView[]>("registry_remove_repo", { args });
+
+export const storeIndex = (force = false, registryId?: string, repo?: string) =>
+  call<StoreIndexView>("store_index", { args: { force, registryId, repo } });
+
+export const storeSkillDetail = (dirSlug: string, registryId?: string, repo?: string) =>
+  call<SkillDetail>("store_skill_detail", { args: { dirSlug, registryId, repo } });
 
 export const skillLocalDetail = (target: LocalSkillTarget) =>
   call<LocalSkillDetail>("skill_local_detail", { args: target });
@@ -388,6 +418,8 @@ export const skillInstall = (args: {
   taskId: string;
   resolution?: Resolution;
   registryId?: string;
+  /** 仓库寻址键 `owner/repo`。商店语境带当前浏览的仓;更新带账上来源坐标。 */
+  repo?: string;
 }) => call<AcquireOutcome>("skill_install", { args });
 
 export const skillRemove = (args: { dirSlug: string; force?: boolean }) =>
@@ -403,6 +435,8 @@ export const skillInstallBatch = (args: {
   dirSlugs: string[];
   agentIds: string[];
   registryId?: string;
+  /** 仓库寻址键,缺省 = 主仓(向导的 curated 清单只在主仓)。 */
+  repo?: string;
 }) => call<BatchItem[]>("skill_install_batch", { args });
 
 export const skillRepair = (args: { dirSlug: string; replaceOccupied?: boolean }) =>
@@ -460,6 +494,9 @@ export const skillShare = (args: {
   description?: string;
   origin: string;
   overwrite?: boolean;
+  registryId?: string;
+  /** 分享目标仓的寻址键,缺省 = 主仓;目标选择器进表单归 M4 任务 2。 */
+  repo?: string;
 }) => call<ShareOutcome>("skill_share", { args });
 
 export const skillShareChanges = (args: { dirSlug: string; registryId?: string }) =>

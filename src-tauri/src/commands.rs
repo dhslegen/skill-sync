@@ -230,8 +230,8 @@ pub fn spawn_app_update_probe(app: tauri::AppHandle) {
 /// ——把"全挂了"报成 `NothingInstalled` 等于撒谎。
 async fn run_all_sources_check() -> Option<scheduler::CheckReport> {
     let store = app_store().ok()?;
-    let registries_cfg = match store.load_config() {
-        Ok(l) => l.value.registries,
+    let (registries_cfg, builtin_extra) = match store.load_config() {
+        Ok(l) => (l.value.registries, l.value.builtin_extra_repos),
         Err(err) => {
             tracing::warn!(code = %err.code, "定时检查读不到配置,本轮跳过");
             return None;
@@ -240,18 +240,26 @@ async fn run_all_sources_check() -> Option<scheduler::CheckReport> {
     let builtin_src = registry::BuiltinSource::from_build();
     let registry = AgentRegistry::builtin();
 
-    let mut ids = vec![BUILTIN_REGISTRY_ID.to_string()];
-    ids.extend(registries_cfg.iter().map(|r| r.id.clone()));
+    // 逐 (源,仓) 检查(M4 任务 1):run_check 本来就按 owner/repo 过滤账目,
+    // 只查主仓会漏掉追加仓里装的技能。仓清单直接取 registry::list 的视图。
+    let mut targets: Vec<(String, Option<String>)> = Vec::new();
+    for view in registry::list(&builtin_src, &registries_cfg, &builtin_extra) {
+        for repo in &view.repos {
+            targets.push((view.id.clone(), Some(repo.key.clone())));
+        }
+    }
 
     let mut reports = Vec::new();
-    for id in ids {
-        if registry::resolve(&builtin_src, &registries_cfg, &id).is_err() {
+    for (id, repo_key) in targets {
+        if registry::resolve(&builtin_src, &registries_cfg, &builtin_extra, &id, repo_key.as_deref())
+            .is_err()
+        {
             // 内建未注入配置的开发构建每轮都走到这:记 debug 免得刷日志
             tracing::debug!(registry_id = %id, "定时检查跳过该源(解析失败)");
             continue;
         }
         let round = async {
-            let (client, repo) = read_source(&id).await?;
+            let (client, repo) = read_source(&id, repo_key.as_deref()).await?;
             scheduler::run_check(
                 &client,
                 &registry,
@@ -352,10 +360,11 @@ pub fn open_library_url(args: OpenUrlArgs) -> Result<(), AppError> {
 
 #[tauri::command]
 pub fn registry_list() -> Result<Vec<registry::RegistryView>, AppError> {
-    let registries = app_store()?.load_config()?.value.registries;
+    let config = app_store()?.load_config()?.value;
     Ok(registry::list(
         &registry::BuiltinSource::from_build(),
-        &registries,
+        &config.registries,
+        &config.builtin_extra_repos,
     ))
 }
 
@@ -392,6 +401,7 @@ pub fn registry_add(args: RegistryAddArgs) -> Result<Vec<registry::RegistryView>
     Ok(registry::list(
         &registry::BuiltinSource::from_build(),
         &config.registries,
+        &config.builtin_extra_repos,
     ))
 }
 
@@ -413,12 +423,95 @@ pub fn registry_remove(args: RegistryRemoveArgs) -> Result<Vec<registry::Registr
     if let Err(err) = session::logout(&KeyringStore, &args.registry_id) {
         tracing::warn!(registry_id = %args.registry_id, code = %err.code, "移除源时清理凭证失败");
     }
-    if let Ok(cache) = index_cache_file(&args.registry_id) {
-        store::drop_cache(&cache);
-    }
+    // 缓存按 (源,仓) 分文件(M4 任务 1):按前缀清掉该源全部仓的缓存,含旧命名。
+    store::drop_caches_for_registry(store.dir(), &args.registry_id);
     Ok(registry::list(
         &registry::BuiltinSource::from_build(),
         &config.registries,
+        &config.builtin_extra_repos,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryAddRepoArgs {
+    pub registry_id: String,
+    pub owner: String,
+    pub repo: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// 可选展示名;空白折成无。
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// 给某个源追加技能库(M4 任务 1)。内建源的追加仓与内建 Gitea 天然同源
+/// (base_url 取编译期常量),自定义源落它自己的仓列表。返回更新后的完整列表。
+#[tauri::command]
+pub fn registry_add_repo(
+    args: RegistryAddRepoArgs,
+) -> Result<Vec<registry::RegistryView>, AppError> {
+    let store = app_store()?;
+    let mut config = store.load_config()?.value;
+    let builtin_src = registry::BuiltinSource::from_build();
+    registry::add_repo(
+        &builtin_src,
+        &mut config.registries,
+        &mut config.builtin_extra_repos,
+        &args.registry_id,
+        &registry::AddRepoRequest {
+            owner: &args.owner,
+            repo: &args.repo,
+            branch: args.branch.as_deref(),
+            name: args.name.as_deref(),
+        },
+    )?;
+    store.save_config(&config)?;
+    Ok(registry::list(
+        &builtin_src,
+        &config.registries,
+        &config.builtin_extra_repos,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryRemoveRepoArgs {
+    pub registry_id: String,
+    /// 仓库寻址键 `owner/repo`(RepoView.key 原样带回)。
+    pub repo: String,
+}
+
+/// 从源里移除一个技能库。**已装技能保留**(与移除整源同一铁律),该仓的索引缓存清掉;
+/// 凭证按源不按仓,不动。
+#[tauri::command]
+pub fn registry_remove_repo(
+    args: RegistryRemoveRepoArgs,
+) -> Result<Vec<registry::RegistryView>, AppError> {
+    let store = app_store()?;
+    let mut config = store.load_config()?.value;
+    let builtin_src = registry::BuiltinSource::from_build();
+    let removed = registry::remove_repo(
+        &builtin_src,
+        &mut config.registries,
+        &mut config.builtin_extra_repos,
+        &args.registry_id,
+        &args.repo,
+    )?;
+    store.save_config(&config)?;
+    store::drop_cache(&store::cache_path(
+        store.dir(),
+        &args.registry_id,
+        &RepoRef {
+            owner: removed.owner,
+            repo: removed.repo,
+            branch: removed.branch,
+        },
+    ));
+    Ok(registry::list(
+        &builtin_src,
+        &config.registries,
+        &config.builtin_extra_repos,
     ))
 }
 
@@ -436,19 +529,25 @@ impl BrowserOpener for SystemBrowser {
     }
 }
 
-/// 解析某个源(不限 kind,github 的闸门由各调用方按需加)。
-fn resolve_registry(registry_id: &str) -> Result<registry::ResolvedRegistry, AppError> {
-    let registries = app_store()?.load_config()?.value.registries;
+/// 解析某个源的某个技能库(不限 kind,github 的闸门由各调用方按需加)。
+/// `repo_key = None` 落主仓——登录等仓无关的调用方都走这一档。
+fn resolve_registry(
+    registry_id: &str,
+    repo_key: Option<&str>,
+) -> Result<registry::ResolvedRegistry, AppError> {
+    let config = app_store()?.load_config()?.value;
     registry::resolve(
         &registry::BuiltinSource::from_build(),
-        &registries,
+        &config.registries,
+        &config.builtin_extra_repos,
         registry_id,
+        repo_key,
     )
 }
 
 /// 某个源的登录配置。内建:OAuth PKCE;自定义:PAT(client_id 留空,判定在 core)。
 fn auth_config(registry_id: &str) -> Result<OAuthConfig, AppError> {
-    let resolved = resolve_registry(registry_id)?;
+    let resolved = resolve_registry(registry_id, None)?;
     resolved.require_gitea()?;
     resolved.auth_config(builtin::OAUTH_CLIENT_ID)
 }
@@ -478,7 +577,7 @@ impl RegistryArg {
 
 #[tauri::command]
 pub async fn auth_login_oauth(args: RegistryArg) -> Result<SessionUser, AppError> {
-    let resolved = resolve_registry(args.id())?;
+    let resolved = resolve_registry(args.id(), None)?;
     resolved.require_gitea()?;
     // OAuth 应用是逐 Gitea 实例注册的,自定义源没有 Client ID 可用——只有 PAT 通道
     if !resolved.builtin {
@@ -508,7 +607,7 @@ pub struct LoginTokenArgs {
 #[tauri::command]
 pub async fn auth_login_token(args: LoginTokenArgs) -> Result<SessionUser, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let resolved = resolve_registry(registry_id)?;
+    let resolved = resolve_registry(registry_id, None)?;
     match resolved.kind {
         registry::RegistryKind::Gitea => {
             session::login_with_token(
@@ -535,7 +634,7 @@ pub async fn auth_login_token(args: LoginTokenArgs) -> Result<SessionUser, AppEr
 
 #[tauri::command]
 pub async fn auth_status(args: RegistryArg) -> Result<SessionStatus, AppError> {
-    let resolved = resolve_registry(args.id())?;
+    let resolved = resolve_registry(args.id(), None)?;
     match resolved.kind {
         registry::RegistryKind::Gitea => {
             session::status(
@@ -575,7 +674,7 @@ pub struct DeviceStartView {
 /// 发起 GitHub 一键登录:拿用户码并打开授权页。等待段在 `auth_device_wait`。
 #[tauri::command]
 pub async fn auth_device_start(args: RegistryArg) -> Result<DeviceStartView, AppError> {
-    let resolved = resolve_registry(args.id())?;
+    let resolved = resolve_registry(args.id(), None)?;
     if resolved.kind != registry::RegistryKind::Github {
         return Err(AppError::new(
             "AUTH_DEVICE_UNSUPPORTED",
@@ -616,7 +715,7 @@ pub struct DeviceWaitArgs {
 #[tauri::command]
 pub async fn auth_device_wait(args: DeviceWaitArgs) -> Result<SessionUser, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let resolved = resolve_registry(registry_id)?;
+    let resolved = resolve_registry(registry_id, None)?;
     if resolved.kind != registry::RegistryKind::Github {
         return Err(AppError::new(
             "AUTH_DEVICE_UNSUPPORTED",
@@ -665,8 +764,11 @@ impl ShareSource {
     }
 }
 
-async fn share_source(registry_id: &str) -> Result<(ShareSource, RepoRef), AppError> {
-    let resolved = resolve_registry(registry_id)?;
+async fn share_source(
+    registry_id: &str,
+    repo_key: Option<&str>,
+) -> Result<(ShareSource, RepoRef), AppError> {
+    let resolved = resolve_registry(registry_id, repo_key)?;
     let repo = resolved.repo.clone();
     match resolved.kind {
         registry::RegistryKind::Gitea => {
@@ -694,9 +796,9 @@ async fn share_source(registry_id: &str) -> Result<(ShareSource, RepoRef), AppEr
     }
 }
 
-/// 商店索引的缓存落点。与 config/state 同目录(`~/.skillsync`)。
-fn index_cache_file(registry_id: &str) -> Result<std::path::PathBuf, AppError> {
-    Ok(store::cache_path(app_store()?.dir(), registry_id))
+/// 商店索引的缓存落点。与 config/state 同目录(`~/.skillsync`),按 (源,仓) 分文件。
+fn index_cache_file(registry_id: &str, repo: &RepoRef) -> Result<std::path::PathBuf, AppError> {
+    Ok(store::cache_path(app_store()?.dir(), registry_id, repo))
 }
 
 /// 读链路的来源分发(M3 任务 4):store/acquire/scheduler 拿到的都是这个 enum,
@@ -734,8 +836,11 @@ impl crate::core::gitea::RepoSource for SourceClient {
 /// 带过期令牌反而把能成的匿名请求变成 401);自定义 Gitea 源可能是私有库,
 /// 有凭证就带上,取不出来降级匿名;GitHub 源任务 4 先匿名(公共库),
 /// 凭证随 device flow(任务 5)接入。
-async fn read_source(registry_id: &str) -> Result<(SourceClient, RepoRef), AppError> {
-    let resolved = resolve_registry(registry_id)?;
+async fn read_source(
+    registry_id: &str,
+    repo_key: Option<&str>,
+) -> Result<(SourceClient, RepoRef), AppError> {
+    let resolved = resolve_registry(registry_id, repo_key)?;
     let http = http_client_for(registry_id)?;
     let client = match resolved.kind {
         registry::RegistryKind::Github => {
@@ -785,6 +890,9 @@ async fn authed_client(registry_id: &str) -> Result<GiteaClient, AppError> {
 pub struct StoreIndexArgs {
     #[serde(default)]
     pub registry_id: Option<String>,
+    /// 仓库寻址键 `owner/repo`(M4 任务 1),缺省 = 该源主仓。
+    #[serde(default)]
+    pub repo: Option<String>,
     /// 用户手动点刷新:跳过"版本没变就不下载"的判定。
     #[serde(default)]
     pub force: bool,
@@ -793,8 +901,8 @@ pub struct StoreIndexArgs {
 #[tauri::command]
 pub async fn store_index(args: StoreIndexArgs) -> Result<StoreIndexView, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (client, repo) = read_source(registry_id).await?;
-    let cache = index_cache_file(registry_id)?;
+    let (client, repo) = read_source(registry_id, args.repo.as_deref()).await?;
+    let cache = index_cache_file(registry_id, &repo)?;
     let (index, outcome) = store::refresh_index(
         &client,
         &repo,
@@ -812,6 +920,9 @@ pub async fn store_index(args: StoreIndexArgs) -> Result<StoreIndexView, AppErro
 pub struct StoreDetailArgs {
     #[serde(default)]
     pub registry_id: Option<String>,
+    /// 仓库寻址键 `owner/repo`,缺省 = 该源主仓。
+    #[serde(default)]
+    pub repo: Option<String>,
     /// 技能库中的技能目录名(卡片上展示的 slug 后半段)。
     pub dir_slug: String,
 }
@@ -819,8 +930,8 @@ pub struct StoreDetailArgs {
 #[tauri::command]
 pub async fn store_skill_detail(args: StoreDetailArgs) -> Result<SkillDetail, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (client, repo) = read_source(registry_id).await?;
-    let cache = index_cache_file(registry_id)?;
+    let (client, repo) = read_source(registry_id, args.repo.as_deref()).await?;
+    let cache = index_cache_file(registry_id, &repo)?;
 
     // 详情走缓存:打开面板不该再等一次网络往返。
     if let Some(detail) = store::load_cache(&cache)
@@ -855,6 +966,10 @@ pub async fn store_skill_detail(args: StoreDetailArgs) -> Result<SkillDetail, Ap
 pub struct InstallArgs {
     #[serde(default)]
     pub registry_id: Option<String>,
+    /// 仓库寻址键 `owner/repo`,缺省 = 该源主仓。商店语境带当前浏览的仓;
+    /// 「我的技能」的更新带账上的来源坐标——多仓下缺省会打到主仓,别省。
+    #[serde(default)]
+    pub repo: Option<String>,
     /// 技能库中的技能目录名。
     pub dir_slug: String,
     /// 要关联到哪些 AI 工具。空数组表示只落到 canonical(universal agent 即可见)。
@@ -873,7 +988,7 @@ pub async fn skill_install(
     args: InstallArgs,
 ) -> Result<acquire::AcquireOutcome, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (client, repo) = read_source(registry_id).await?;
+    let (client, repo) = read_source(registry_id, args.repo.as_deref()).await?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
 
@@ -946,7 +1061,7 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
         let registry = AgentRegistry::builtin();
         let installer = Installer::new(&registry, &SystemEnv);
         let state = store.load_state()?.value;
-        let registries_cfg = store.load_config()?.value.registries;
+        let config = store.load_config()?.value;
         let builtin_src = registry::BuiltinSource::from_build();
 
         let mut views: Vec<InstalledSkillView> = state
@@ -967,10 +1082,14 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                     source_owner: s.source.owner.clone(),
                     source_repo: s.source.repo.clone(),
                     registry_id: s.source.registry_id.clone(),
+                    // 按 (源,仓) 判定(M4 任务 1):仓从源里被移除时,该仓装的技能
+                    // 更新与回推同样没了去处,和整源被删一个待遇。
                     source_removed: registry::resolve(
                         &builtin_src,
-                        &registries_cfg,
+                        &config.registries,
+                        &config.builtin_extra_repos,
                         &s.source.registry_id,
+                        Some(&registry::repo_key(&s.source.owner, &s.source.repo)),
                     )
                     .is_err(),
                     unclaimed: false,
@@ -1066,6 +1185,9 @@ pub fn skill_reveal(args: LocalSkillArgs) -> Result<(), AppError> {
 pub struct InstallBatchArgs {
     #[serde(default)]
     pub registry_id: Option<String>,
+    /// 仓库寻址键 `owner/repo`,缺省 = 该源主仓(向导的 curated 清单只在主仓)。
+    #[serde(default)]
+    pub repo: Option<String>,
     pub dir_slugs: Vec<String>,
     #[serde(default)]
     pub agent_ids: Vec<String>,
@@ -1077,7 +1199,7 @@ pub async fn skill_install_batch(
     args: InstallBatchArgs,
 ) -> Result<Vec<acquire::BatchItem>, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (client, repo) = read_source(registry_id).await?;
+    let (client, repo) = read_source(registry_id, args.repo.as_deref()).await?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
 
@@ -1115,6 +1237,10 @@ pub async fn share_candidates() -> Result<Vec<share::ShareCandidate>, AppError> 
 pub struct SkillShareArgs {
     #[serde(default)]
     pub registry_id: Option<String>,
+    /// 分享目标仓的寻址键 `owner/repo`,缺省 = 该源主仓。
+    /// 目标仓选择器进分享表单归 M4 任务 2,通道先打通。
+    #[serde(default)]
+    pub repo: Option<String>,
     /// 候选的本地绝对路径(share_candidates 返回的 `path`,原样带回)。
     pub source_path: String,
     /// 远端目录名(ASCII kebab,表单定)。
@@ -1133,7 +1259,7 @@ pub struct SkillShareArgs {
 #[tauri::command]
 pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (source, repo) = share_source(registry_id).await?;
+    let (source, repo) = share_source(registry_id, args.repo.as_deref()).await?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
 
@@ -1165,11 +1291,26 @@ pub struct ShareChangesArgs {
     pub dir_slug: String,
 }
 
+/// 回推目标仓的寻址键,取**账上**的来源坐标(M4 任务 1)。
+///
+/// `share_installed` 的仓库 owner/repo 本来就取账上,但 **branch 由调用方给**
+/// ——按主仓给会把追加仓技能的改动推到主仓的默认分支上去。
+/// 账上找不到时返回 `None`(缺省落主仓),让 `share_installed` 给出既有的
+/// `FS_NOT_INSTALLED`,而不是在这层多造一条错误码。
+fn installed_repo_key(state: &state::State, dir_slug: &str) -> Option<String> {
+    state
+        .installed
+        .iter()
+        .find(|s| s.name == dir_slug)
+        .map(|s| registry::repo_key(&s.source.owner, &s.source.repo))
+}
+
 /// 把本 app 安装、用户改过的技能推回来源仓库(冲突弹窗承诺的那条路)。
 #[tauri::command]
 pub async fn skill_share_changes(args: ShareChangesArgs) -> Result<share::Submitted, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let (source, repo) = share_source(registry_id).await?;
+    let repo_key = installed_repo_key(&app_store()?.load_state()?.value, &args.dir_slug);
+    let (source, repo) = share_source(registry_id, repo_key.as_deref()).await?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
     share::share_installed(
@@ -1356,5 +1497,43 @@ mod tests {
         })
         .unwrap();
         assert_eq!(dir, std::path::PathBuf::from("/tmp/some-skill"));
+    }
+
+    #[test]
+    fn share_changes_targets_the_repo_on_record_not_the_primary() {
+        let installed = |name: &str, owner: &str, repo: &str| state::InstalledSkill {
+            name: name.into(),
+            source: state::SkillSource {
+                registry_id: "company".into(),
+                owner: owner.into(),
+                repo: repo.into(),
+                path: format!("skills/{name}"),
+                git_ref: "aaa1111".into(),
+            },
+            commit_sha: "aaa1111".into(),
+            content_hash: "sha256:x".into(),
+            agents: vec![],
+            links: vec![],
+            installed_at: "2026-08-04T00:00:00.000Z".into(),
+            updated_at: "2026-08-04T00:00:00.000Z".into(),
+        };
+        let st = state::State {
+            installed: vec![
+                installed("weekly-report", "skills", "skills"),
+                installed("design-tokens", "design", "design-skills"),
+            ],
+            ..Default::default()
+        };
+        // 追加库装的技能必须回推到追加库,不是主库
+        assert_eq!(
+            installed_repo_key(&st, "design-tokens").as_deref(),
+            Some("design/design-skills")
+        );
+        assert_eq!(
+            installed_repo_key(&st, "weekly-report").as_deref(),
+            Some("skills/skills")
+        );
+        // 账上没有:留给 share_installed 报 FS_NOT_INSTALLED,不在这层另造错误
+        assert_eq!(installed_repo_key(&st, "never-installed"), None);
     }
 }

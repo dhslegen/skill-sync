@@ -37,6 +37,7 @@ fn updater_plugin_needs_an_empty_placeholder_config() {
 /// - 主 conf **不开** createUpdaterArtifacts——否则没有签名私钥的日常构建直接失败;
 /// - 发布通道(build-release.sh 与 release.yml)**必须开**——否则发布包没有 .sig,
 ///   自更新链路整个哑火。
+///
 /// 两侧一起断言,字段名拼错在任何一侧都逃不掉。
 #[test]
 fn updater_artifacts_are_release_only() {

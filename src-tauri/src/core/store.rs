@@ -176,14 +176,48 @@ pub struct SkillDetail {
 
 const INDEX_FILE_PREFIX: &str = "index-";
 
-pub fn cache_path(dir: &Path, registry_id: &str) -> PathBuf {
-    // registry id 由本应用生成(内建为 `company`,自定义源在任务 11 起也由应用编号),
-    // 仍做一次保守清洗:它要拼进文件名,不能带路径分隔符。
+pub fn cache_path(dir: &Path, registry_id: &str, repo: &RepoRef) -> PathBuf {
+    // 缓存按 (源,仓) 分文件(M4 任务 1):同一源下多个技能库交替浏览不互相冲刷。
+    // registry id 由本应用生成,owner/repo 是用户输入——都要拼进文件名,保守清洗;
+    // 清洗可能撞名(如 `a/b` 与 `a_b`),兜底是 `is_for` 校验:错拿只是缓存失效重取。
+    //
+    // 升级留痕:M3 的命名是 `index-<registryId>.json`,改名后那些文件再也不会被读到。
+    // 内建源不可移除,所以 `~/.skillsync/index-company.json` 会一直留在用户目录里
+    // ——**这不是缺陷**,缓存是可再生的派生数据,不值得为清它写一条迁移。
+    // 移除自定义源时 [`drop_caches_for_registry`] 会把新旧两种命名一起清掉。
+    let safe = |s: &str| -> String {
+        s.chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect()
+    };
+    dir.join(format!(
+        "{INDEX_FILE_PREFIX}{}-{}-{}.json",
+        safe(registry_id),
+        safe(&repo.owner),
+        safe(&repo.repo)
+    ))
+}
+
+/// 清掉某个源**全部**仓的索引缓存(移除整源时用):精确名 `index-<id>.json`
+/// (M3 的旧命名,升级残留)+ 前缀 `index-<id>-`(按仓分文件的新命名)。
+/// 前缀带尾横杠,`custom-1` 不会误伤 `custom-10` 的文件。
+pub fn drop_caches_for_registry(dir: &Path, registry_id: &str) {
     let safe: String = registry_id
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
         .collect();
-    dir.join(format!("{INDEX_FILE_PREFIX}{safe}.json"))
+    let exact = format!("{INDEX_FILE_PREFIX}{safe}.json");
+    let prefix = format!("{INDEX_FILE_PREFIX}{safe}-");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name == exact || (name.starts_with(&prefix) && name.ends_with(".json")) {
+            drop_cache(&entry.path());
+        }
+    }
 }
 
 /// 丢弃某个源的索引缓存(移除自定义源时用)。不存在不算错;删不掉只记日志
@@ -629,17 +663,44 @@ mod tests {
     // ---- 缓存文件 ----
 
     #[test]
-    fn cache_file_name_is_scoped_by_registry() {
+    fn cache_file_name_is_scoped_by_registry_and_repo() {
         let dir = Path::new("/tmp/x");
-        assert_eq!(cache_path(dir, "company"), dir.join("index-company.json"));
-        // id 要拼进文件名,路径分隔符与 `.` 都必须被清掉,不能让它跑出目录
-        assert_eq!(cache_path(dir, "a/../b"), dir.join("index-a____b.json"));
+        // owner 与 repo 取不同值:哪个字段进了文件名的哪一段要能分辨
+        let r = RepoRef { owner: "design".into(), repo: "design-skills".into(), branch: "main".into() };
+        assert_eq!(cache_path(dir, "company", &r), dir.join("index-company-design-design-skills.json"));
+        // 同源不同仓 → 不同文件,交替浏览不互相冲刷
+        let r2 = RepoRef { owner: "design".into(), repo: "qa-skills".into(), branch: "main".into() };
+        assert_ne!(cache_path(dir, "company", &r), cache_path(dir, "company", &r2));
+        // 三段都要拼进文件名:路径分隔符与 `.` 必须被清掉,不能让它跑出目录
+        let evil = RepoRef { owner: "a/../b".into(), repo: "c.d/e".into(), branch: "main".into() };
+        assert_eq!(cache_path(dir, "x", &evil), dir.join("index-x-a____b-c_d_e.json"));
+    }
+
+    #[test]
+    fn drop_caches_for_registry_matches_exact_and_prefix_but_not_similar_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let touch = |name: &str| std::fs::write(tmp.path().join(name), "{}").unwrap();
+        // custom-1 的旧命名 + 新命名;custom-10 是"前缀相似"的陷阱
+        touch("index-custom-1.json");
+        touch("index-custom-1-a-b.json");
+        touch("index-custom-10.json");
+        touch("index-custom-10-a-b.json");
+        drop_caches_for_registry(tmp.path(), "custom-1");
+        let left: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!left.contains(&"index-custom-1.json".to_string()), "{left:?}");
+        assert!(!left.contains(&"index-custom-1-a-b.json".to_string()), "{left:?}");
+        assert!(left.contains(&"index-custom-10.json".to_string()), "custom-10 被误伤: {left:?}");
+        assert!(left.contains(&"index-custom-10-a-b.json".to_string()), "custom-10 被误伤: {left:?}");
     }
 
     #[test]
     fn corrupt_cache_is_discarded_instead_of_reported() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = cache_path(tmp.path(), "company");
+        let path = cache_path(tmp.path(), "company", &repo());
         std::fs::write(&path, "{ 这不是 json").unwrap();
         assert!(load_cache(&path).is_none(), "损坏的索引必须当作没有缓存,而不是报错锁死商店");
     }
@@ -647,7 +708,7 @@ mod tests {
     #[test]
     fn cache_from_a_newer_app_version_is_rebuilt_not_locked() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = cache_path(tmp.path(), "company");
+        let path = cache_path(tmp.path(), "company", &repo());
         let mut index = build_index("company", &repo(), &head("abc"), &archive_with(&["a"]), 0);
         index.schema_version = INDEX_SCHEMA_VERSION + 1;
         std::fs::write(&path, serde_json::to_string(&index).unwrap()).unwrap();
@@ -661,7 +722,7 @@ mod tests {
     #[test]
     fn cache_round_trips() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = cache_path(tmp.path(), "company");
+        let path = cache_path(tmp.path(), "company", &repo());
         let index = build_index("company", &repo(), &head("abc"), &archive_with(&["a", "b"]), 42);
         save_cache(&path, &index).unwrap();
         assert_eq!(load_cache(&path).unwrap(), index);
@@ -670,7 +731,7 @@ mod tests {
     #[test]
     fn cache_write_is_atomic() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = cache_path(tmp.path(), "company");
+        let path = cache_path(tmp.path(), "company", &repo());
         let old = build_index("company", &repo(), &head("old"), &archive_with(&["a"]), 1);
         save_cache(&path, &old).unwrap();
         let new = build_index("company", &repo(), &head("new"), &archive_with(&["a", "b"]), 2);

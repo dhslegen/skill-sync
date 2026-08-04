@@ -12,7 +12,7 @@ use skillsync_lib::core::agents::{AgentEnv, AgentRegistry};
 use skillsync_lib::core::fsops;
 use skillsync_lib::core::gitea::{GiteaClient, RepoRef};
 use skillsync_lib::core::scheduler::{self, CheckReport};
-use skillsync_lib::core::state::{InstalledSkill, SkillSource, State, Store};
+use skillsync_lib::core::state::{InstalledSkill, SkillSource, Store};
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

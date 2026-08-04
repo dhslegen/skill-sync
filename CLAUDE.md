@@ -36,16 +36,20 @@ pnpm test           # 前端 vitest
 cargo test --workspace   # Rust 单测(在 src-tauri/ 下)
 pnpm lint           # eslint
 pnpm build:web      # tsc + vite build —— **提交前必跑**,见下
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings   # --all-targets 必带,见下
 pnpm verify:agents     # 与上游 vercel-labs/skills 差分校验 agents.json 并重生成 fixture(需联网)
 pnpm verify:discovery  # 同上,校验技能发现规则
 pnpm verify:lock       # 同上,录制 .skill-lock.json(v3)的真实读写行为
 ```
 
 **提交前的四道闸**:`pnpm test` + `pnpm lint` + **`pnpm build:web`** + `cargo test --workspace`
-+ `cargo clippy -- -D warnings`。`build:web` 那道最容易漏——vitest **不做类型检查**,
++ `cargo clippy --all-targets -- -D warnings`。`build:web` 那道最容易漏——vitest **不做类型检查**,
 eslint 也不管,只有 `tsc` 会拦。M2 任务 6 就因为只跑了 test+lint,把一处 `.at(-1)`
 (超出 tsconfig 的 ES2020 lib)提交进去,双平台 CI 一起红。
+
+**clippy 必带 `--all-targets`**(M4 任务 1 起):不带它**只查 lib**,`tests/` 下的
+集成测试一行都不过 clippy。M1–M3 全程漏查,攒下三处告警(两个未用导入 + 一处文档缩进)
+一直没人发现——测试代码也是代码,同一把尺子量。
 
 ## 目录结构
 
@@ -242,13 +246,16 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 - 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
   其余注册表 agent 尽力支持
 
-## 当前进度(2026-08-03,M3 全部完成)
+## 当前进度(2026-08-04,M4 任务 1 完成)
 
-**M1 任务 1–13、M2 任务 1–6、M3 任务 1–6(含 5b)全部完成并提交**(分解与拍板记录
-在 docs/M3-任务分解.md,本地文档),逐任务的产物与假设见 `git log`。远端 `origin` =
+**M1 任务 1–13、M2 任务 1–6、M3 任务 1–6(含 5b)全部完成并提交**;**M4 已开工**
+(分解与拍板记录在 docs/M4-任务分解.md:任务 1 一源多仓 ✅ → 2 权限细分 → 4 新建技能向导
+→ 5 收尾;**任务 3 安装量已摘除**,内网埋点服务落点未定,2026-08-04 用户拍板暂缓;
+C7 项目级 skill 不纳入 M4)。逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 367 + 前端 298 测试通过,clippy/eslint/tsc 干净,`pnpm dev` 启动冒烟通过
+- 本机:Rust 382 + 前端 313 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
+  `pnpm dev` 启动冒烟通过(M4 任务 1 后带内网配置实测:商店读到真实库 28 个技能)
 - **双平台 CI 全绿至 HEAD**:M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;
   `de7b233`/`2eb0595` 当时因账号计费被拒,仓库转公开后 2026-08-03 rerun,
   **macOS + Windows 双 job 全绿**(任务 6 的 claim_flow junction 路径首次真实过 CI)
@@ -271,6 +278,8 @@ M3 后补(2026-08-03):`skill_local_detail`/`skill_reveal`(本地详情面板 + �
 资源管理器中显示,core/local_detail.rs,守卫只放行含 SKILL.md 的真实目录);
 既有读写类 command 全部接受 `registryId`(缺省内建);编译期新常量
 `SKILLSYNC_GITHUB_CLIENT_ID`(未注入仅登录不可用,浏览获取照常)。
+M4 任务 1 新增的 IPC:`registry_add_repo`/`registry_remove_repo`;
+读写类 command 再加可选 `repo` 参数(寻址键 `owner/repo`,缺省 = 该源主仓)。
 
 ### 现役机制约束(动相关代码前必读)
 
@@ -280,6 +289,27 @@ M3 后补(2026-08-03):`skill_local_detail`/`skill_reveal`(本地详情面板 + �
   (`BuiltinSource` 把编译期常量当参数传——测试构建不注入常量,直读会让测试只能测
   "未配置"分支)。内建源锁定且**不落 config.registries**(坐标是编译期常量,落盘会造出
   第二份真相);自定义源 id 生成 `custom-N` 取 max+1 **绝不复用**(缓存与凭证按 id 落)。
+- **一源多仓:浏览/获取/分享的最小单位是「(源, 技能库)」**(M4 任务 1)。
+  寻址键 = `owner/repo`,`resolve(.., key)` 不带键时落主仓(内建 = 编译期常量,
+  自定义 = `repos[0]`),既有调用方外部行为不变。要点:
+  - 内建源的追加仓落 `config.builtinExtraRepos`,**base_url 永远取编译期常量**
+    ——同源由构造保证,不需要 URL 校验,也不违反铁律 5(用户输入的坐标不算源码泄漏);
+    内建**主仓**仍不落盘、不可移除(`REPO_BUILTIN_LOCKED`);自定义源不许删到空
+    (`REPO_LAST_REPO`,引导删整个来源)。
+  - **索引缓存按 (源,仓) 分文件**:`index-<id>-<owner>-<repo>.json`。M3 的
+    `index-<id>.json` 升级后成孤儿(内建源不可移除,清不掉),**这不是缺陷**——
+    派生数据,重下即可;删自定义源时 `drop_caches_for_registry` 新旧命名一起清,
+    前缀带尾横杠所以 `custom-1` 不误伤 `custom-10`。
+  - **更新与回推必须带账上的仓库坐标**,缺省会打到主仓:「我的技能」的更新传
+    `sourceOwner/sourceRepo`,回推在 `commands::installed_repo_key` 取账上坐标
+    (`share_installed` 的 owner/repo 本来就取账上,但 **branch 由调用方给**)。
+  - **「有无可用更新」的判定要比到仓**(`my-skills.ts` 的 `hasUpdate`):
+    源相同还不够,同源多库时两库有同名技能会直接比出错误结论。
+  - **认领绑源要求"同源 + 该库在源的库列表里"**(`acquire::bind_source`):
+    只比同源会把 `host/someone/other-repo` 的技能绑到该 host 的源上,而更新只会
+    去主库找同名技能——M3 起就静默存在,M4 任务 1 修掉。
+  - **商店的库切换器在加载中/出错两档也要渲染**:早退分支把它挡掉后,用户切到
+    连不上的库就再也点不回来(2026-08-04 真机视觉自查抓到,有测试钉住)。
 - **读链路对来源类型无感**(M3 任务 4):store/acquire/scheduler 只吃 `gitea::RepoSource`
   trait(branch_head + download_archive),分发在 `commands::read_source` 的 SourceClient
   枚举。**写链路(分享)刻意不进 trait**——两家提交/评审 API 形状完全不同,

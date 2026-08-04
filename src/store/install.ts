@@ -37,6 +37,8 @@ interface InstallState {
   dirSlug: string | null;
   /** 装的是哪个源的技能(M3 多源):商店传当前浏览的源,更新传记账的来源。 */
   registryId: string | null;
+  /** 装的是哪个仓的技能(M4 一源多仓):寻址键 `owner/repo`,null = 主仓。 */
+  repo: string | null;
   agents: DetectedAgent[];
   /** 勾选的 agent name。 */
   selected: Set<string>;
@@ -53,9 +55,9 @@ interface InstallState {
 
   refreshInstalled: () => Promise<void>;
   /** 点"安装"→ 展开 agent 勾选。`registryId` 缺省 = 内建源。 */
-  begin: (dirSlug: string, registryId?: string) => Promise<void>;
+  begin: (dirSlug: string, registryId?: string, repo?: string | null) => Promise<void>;
   /** 「我的技能」页的更新:沿用上次记账的工具与**来源**,不再问一遍。冲突照走 ConflictDialog。 */
-  beginUpdate: (dirSlug: string, agentIds: string[], registryId?: string) => Promise<void>;
+  beginUpdate: (dirSlug: string, agentIds: string[], registryId?: string, repo?: string | null) => Promise<void>;
   toggleAgent: (name: string) => void;
   /** 确认安装。`resolution` 只在从冲突弹窗回来时带。 */
   run: (resolution?: Resolution) => Promise<void>;
@@ -87,6 +89,7 @@ export const useInstall = create<InstallState>((set, get) => ({
   phase: "idle",
   dirSlug: null,
   registryId: null,
+  repo: null,
   agents: [],
   selected: new Set(),
   stage: null,
@@ -113,11 +116,12 @@ export const useInstall = create<InstallState>((set, get) => ({
     }
   },
 
-  begin: async (dirSlug, registryId) => {
+  begin: async (dirSlug, registryId, repo) => {
     set({
       phase: "choosing",
       dirSlug,
       registryId: registryId ?? null,
+      repo: repo ?? null,
       stage: null,
       report: null,
       error: null,
@@ -140,11 +144,12 @@ export const useInstall = create<InstallState>((set, get) => ({
     }
   },
 
-  beginUpdate: async (dirSlug, agentIds, registryId) => {
+  beginUpdate: async (dirSlug, agentIds, registryId, repo) => {
     set({
       phase: "running",
       dirSlug,
       registryId: registryId ?? null,
+      repo: repo ?? null,
       agents: [],
       selected: new Set(agentIds),
       stage: null,
@@ -185,6 +190,7 @@ export const useInstall = create<InstallState>((set, get) => ({
         taskId,
         resolution,
         registryId: get().registryId ?? undefined,
+        repo: get().repo ?? undefined,
       });
       if (result.outcome === "needsDecision") {
         // core 没动磁盘,等用户拍板
@@ -230,6 +236,7 @@ export const useInstall = create<InstallState>((set, get) => ({
       phase: "idle",
       dirSlug: null,
       registryId: null,
+      repo: null,
       stage: null,
       report: null,
       precheck: null,

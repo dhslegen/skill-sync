@@ -142,7 +142,7 @@ async fn measures_cold_first_paint_and_warm_cache_against_real_gitea() {
         branch: BRANCH.into(),
     };
     let tmp = tempfile::tempdir().unwrap();
-    let cache = store::cache_path(tmp.path(), "fixture");
+    let cache = store::cache_path(tmp.path(), "fixture", &target);
     let now = 1_753_800_000;
 
     // 冷启动:空缓存 → 查分支头 + 下载压缩包 + 发现解析 + 落盘

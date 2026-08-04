@@ -36,23 +36,34 @@ export function StorePage() {
     [index, query, filter, installed],
   );
 
-  // 首屏骨架只在还没有任何内容时显示;刷新时保持旧列表可见,不闪空
+  // 加载中与出错这两档也要留着库切换器(2026-08-04 视觉自查抓到):
+  // 早退分支把它一起挡掉后,用户切到一个连不上的技能库就**再也点不回来**
+  // ——只剩一个「重试」按钮,而重试的还是那个连不上的库,界面成了死路。
+  // 首屏骨架只在还没有任何内容时显示;刷新时保持旧列表可见,不闪空。
   if (!index && status === "loading") {
-    return <p className="py-6 text-[12.5px] text-text-3">{t("store.loading")}</p>;
+    return (
+      <>
+        <SourcePicker />
+        <p className="py-6 text-[12.5px] text-text-3">{t("store.loading")}</p>
+      </>
+    );
   }
 
   if (!index && status === "error" && error) {
     return (
-      <div className="py-6">
-        <p className="text-[12.5px] text-text-2">{error.message}</p>
-        <button
-          type="button"
-          onClick={() => load(true)}
-          className="mt-2.5 h-7 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
-        >
-          {t("store.retry")}
-        </button>
-      </div>
+      <>
+        <SourcePicker />
+        <div className="py-6">
+          <p className="text-[12.5px] text-text-2">{error.message}</p>
+          <button
+            type="button"
+            onClick={() => load(true)}
+            className="mt-2.5 h-7 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+          >
+            {t("store.retry")}
+          </button>
+        </div>
+      </>
     );
   }
 
@@ -142,37 +153,58 @@ export function StorePage() {
   );
 }
 
-/** 源切换器(M3 多源)。只有一个源时不渲染——摆一个没得选的选择器是噪音。 */
+/** 库切换器(M3 多源 + M4 一源多仓):源 × 仓拍平成一排。
+ *  只有一个库时不渲染——摆一个没得选的选择器是噪音。 */
 function SourcePicker() {
   const registries = useRegistries((s) => s.list);
   const activeRegistry = useStoreIndex((s) => s.activeRegistry);
+  const activeRepo = useStoreIndex((s) => s.activeRepo);
   const setRegistry = useStoreIndex((s) => s.setRegistry);
 
-  if (!registries || registries.length <= 1) return null;
+  const entries = useMemo(() => {
+    if (!registries) return [];
+    return registries.flatMap((r) => {
+      const sourceName = r.builtin ? t("registries.builtinName") : r.name;
+      return r.repos.map((repo) => ({
+        registryId: r.id,
+        // 主仓走缺省档:与既有"只带 registryId"的调用语义一致
+        repoKey: repo.primary ? null : repo.key,
+        // 展示名优先用户起的名;主仓回退源名;追加仓回退 repo slug
+        label: repo.name ?? (repo.primary ? sourceName : repo.repo),
+        title: `${sourceName} · ${repo.key}`,
+      }));
+    });
+  }, [registries]);
+
+  if (entries.length <= 1) return null;
 
   return (
     <div
-      className="mt-2.5 flex items-center gap-1.5"
+      className="mt-2.5 flex flex-wrap items-center gap-1.5"
       role="group"
       aria-label={t("store.sourcePicker")}
     >
       <span className="text-[11.5px] text-text-3">{t("store.sourcePicker")}</span>
-      {registries.map((r) => (
-        <button
-          key={r.id}
-          type="button"
-          aria-pressed={activeRegistry === r.id}
-          onClick={() => void setRegistry(r.id)}
-          className={cn(
-            "rounded-full border px-2.5 py-[3px] text-[12px]",
-            activeRegistry === r.id
-              ? "border-border-strong bg-surface-3 font-medium text-text"
-              : "border-border bg-surface-1 text-text-2 hover:border-border-strong hover:text-text",
-          )}
-        >
-          {r.builtin ? t("registries.builtinName") : r.name}
-        </button>
-      ))}
+      {entries.map((e) => {
+        const active = activeRegistry === e.registryId && activeRepo === e.repoKey;
+        return (
+          <button
+            key={`${e.registryId}:${e.repoKey ?? ""}`}
+            type="button"
+            title={e.title}
+            aria-pressed={active}
+            onClick={() => void setRegistry(e.registryId, e.repoKey)}
+            className={cn(
+              "rounded-full border px-2.5 py-[3px] text-[12px]",
+              active
+                ? "border-border-strong bg-surface-3 font-medium text-text"
+                : "border-border bg-surface-1 text-text-2 hover:border-border-strong hover:text-text",
+            )}
+          >
+            {e.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

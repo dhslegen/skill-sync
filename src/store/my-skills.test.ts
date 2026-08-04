@@ -251,6 +251,8 @@ describe("更新判定与更新动作", () => {
   it("逐技能比内容指纹:只有这个技能自己变了才提示更新", () => {
     const idx = (hash: string, registryId = "company") => ({
       registryId,
+      owner: "skills",
+      repo: "skills",
       skills: [{ dirSlug: "weekly-report", contentHash: hash }],
     });
     expect(hasUpdate(view(), idx("sha256:mine"))).toBe(false);
@@ -263,11 +265,34 @@ describe("更新判定与更新动作", () => {
     expect(hasUpdate(view({ sourceRemoved: true }), idx("sha256:newer"))).toBe(false);
   });
 
+  it("同一个源、另一个技能库的索引不能用来判定(M4 一源多仓)", () => {
+    // 一源多仓后同一个 registryId 有多份索引:商店切到「设计部技能库」浏览时,
+    // 它的内容说明不了主库装的技能。两库有同名技能时,按源比会直接比出错误结论。
+    const designIndex = {
+      registryId: "company",
+      owner: "design",
+      repo: "design-skills",
+      // 同名技能在两个库里各有一份,指纹不同——这正是会比错的场景
+      skills: [{ dirSlug: "weekly-report", contentHash: "sha256:design-version" }],
+    };
+    expect(hasUpdate(view(), designIndex)).toBe(false);
+
+    // 反过来:装自设计库的技能,对着设计库的索引照常判定
+    const fromDesign = view({ sourceOwner: "design", sourceRepo: "design-skills" });
+    expect(hasUpdate(fromDesign, designIndex)).toBe(true);
+    // owner 与 repo 不能互换着比(fixture 特意取不同值,换了就红)
+    expect(
+      hasUpdate(fromDesign, { ...designIndex, owner: "design-skills", repo: "design" }),
+    ).toBe(false);
+  });
+
   it("库里别的技能变了,不影响这个技能(分享一个技能不该让全部亮更新)", () => {
     // 这是 2026-08-03 用户实测的缺陷:旧实现比整库 HEAD sha,
     // 别人分享任意一个技能都会让所有已装技能同时提示更新。
     const index = {
       registryId: "company",
+      owner: "skills",
+      repo: "skills",
       skills: [
         { dirSlug: "weekly-report", contentHash: "sha256:mine" },
         { dirSlug: "other-skill", contentHash: "sha256:justchanged" },
@@ -277,16 +302,18 @@ describe("更新判定与更新动作", () => {
   });
 
   it("任一侧指纹缺失时按没有更新处理:宁可漏报也不误报", () => {
-    const index = { registryId: "company", skills: [{ dirSlug: "weekly-report", contentHash: "" }] };
-    expect(hasUpdate(view(), index)).toBe(false);
+    const base = { registryId: "company", owner: "skills", repo: "skills" };
+    expect(
+      hasUpdate(view(), { ...base, skills: [{ dirSlug: "weekly-report", contentHash: "" }] }),
+    ).toBe(false);
     expect(
       hasUpdate(view({ contentHash: "" }), {
-        registryId: "company",
+        ...base,
         skills: [{ dirSlug: "weekly-report", contentHash: "sha256:remote" }],
       }),
     ).toBe(false);
     // 索引里根本没有这个技能(已从库里删掉)
-    expect(hasUpdate(view(), { registryId: "company", skills: [] })).toBe(false);
+    expect(hasUpdate(view(), { ...base, skills: [] })).toBe(false);
   });
 
   it("更新沿用上次记账的工具,不再弹 agent 选择", async () => {
@@ -310,6 +337,29 @@ describe("更新判定与更新动作", () => {
     // 没有进入 choosing,也没拉 agent 列表让用户重选
     expect(invoke.mock.calls.some(([cmd]) => cmd === "agents_detected")).toBe(false);
     expect(useInstall.getState().phase).toBe("done");
+  });
+
+  it("更新把账上的来源仓原样带回(M4 一源多仓:缺省会打到主库)", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "installed_list") return [];
+      if (cmd === "skill_install")
+        return {
+          outcome: "installed",
+          report: { dirName: "weekly-report", canonicalDir: "/c", links: [] },
+          localKept: false,
+          lock: "written",
+        };
+      return AGENTS;
+    });
+
+    await useInstall
+      .getState()
+      .beginUpdate("weekly-report", ["claude-code"], "company", "design/design-skills");
+
+    const sent = invoke.mock.calls.find(([cmd]) => cmd === "skill_install")?.[1].args;
+    // 正面断言值:只断言"字段在"分不出主库与追加库
+    expect(sent.registryId).toBe("company");
+    expect(sent.repo).toBe("design/design-skills");
   });
 
   it("更新遇到本地改动:停在冲突态交给 ConflictDialog,不静默覆盖", async () => {
