@@ -490,6 +490,24 @@ export interface Submitted {
   reviewUrl: string | null;
 }
 
+export interface CreateReport {
+  dirSlug: string;
+  /** 绝对路径,用于完成提示与「在访达中显示」。 */
+  path: string;
+}
+
+/**
+ * 新建一个空技能(等价上游 `skills init`)。
+ *
+ * 只在 canonical 目录建文件,**不建关联、不进账**——理由见 core/create.rs 模块头。
+ * 建完它会作为「本地创建」出现在分享候选里。
+ */
+export const skillCreate = (args: {
+  dirSlug: string;
+  displayName: string;
+  description: string;
+}) => call<CreateReport>("skill_create", { args });
+
 export const shareCandidates = () => call<ShareCandidate[]>("share_candidates");
 
 /**

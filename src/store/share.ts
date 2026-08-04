@@ -72,10 +72,13 @@ function toAppError(raw: unknown): AppError {
 
 const EMPTY_FORM: ShareForm = { shareName: "", displayName: "", description: "" };
 
-/** 与 core 的 sanitize 同一口径的前端预校验:小写字母/数字/点/下划线/短横线。 */
-export function validShareName(name: string): boolean {
-  return /^[a-z0-9][a-z0-9._-]*$/.test(name) && name !== "unnamed-skill";
-}
+/**
+ * 远端目录名的预校验。与新建向导的本地文件夹名**同一把尺子**(见 `lib/slug.ts`)。
+ *
+ * 这里原本另写了一个正则,已实测不准:它放行 `a--b` / `trail-` / 超长名字,
+ * 而 core 会把这三种静默清洗成别的名字——用户填的和落盘的不是一个东西。
+ */
+export { validSlug as validShareName } from "@/lib/slug";
 
 export const useShare = create<ShareState>((set, get) => ({
   candidates: null,

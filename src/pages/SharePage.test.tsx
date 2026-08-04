@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SharePage } from "./SharePage";
 import type { ShareCandidate } from "@/lib/ipc";
+import { useCreate } from "@/store/create";
 import { useLocalDetail } from "@/store/local-detail";
 import { useSession } from "@/store/session";
 import { useShare } from "@/store/share";
@@ -47,6 +48,12 @@ function reset() {
     done: null,
   });
   useSession.setState({ status: "signedIn", user: { login: "zhang-san", displayName: "", avatarUrl: "" } });
+  useCreate.setState({
+    phase: "closed",
+    form: { dirSlug: "", displayName: "", description: "" },
+    error: null,
+    createdPath: null,
+  });
 }
 
 describe("分享页", () => {
@@ -123,7 +130,21 @@ describe("分享页", () => {
     await userEvent.type(slug, "周报");
 
     expect(screen.getByRole("button", { name: "分享" })).toBeDisabled();
-    expect(screen.getByText("只能用英文小写字母、数字和短横线")).toBeInTheDocument();
+    expect(screen.getByText(/这个名字不能用/)).toBeInTheDocument();
+  });
+
+  it("会被 core 静默改名的文件夹名也要拦下,不只是中文", async () => {
+    seedIpc([candidate()]);
+    render(<SharePage />);
+    await userEvent.click(await screen.findByRole("button", { name: "分享…" }));
+
+    const slug = screen.getByDisplayValue("my-notes");
+    // 旧正则放行这个,而 core 的 sanitize 会把它折成 a-b —— 填的和落盘的不是一个东西
+    await userEvent.clear(slug);
+    await userEvent.type(slug, "a--b");
+
+    expect(screen.getByRole("button", { name: "分享" })).toBeDisabled();
+    expect(screen.getByText(/这个名字不能用/)).toBeInTheDocument();
   });
 
   it("描述为空:确认按钮禁用 —— core 会拒,但不该让用户白跑一趟", async () => {
@@ -248,5 +269,81 @@ describe("分享页", () => {
     await userEvent.click(await screen.findByRole("button", { name: "分享…" }));
 
     expect(invoke).not.toHaveBeenCalledWith("skill_local_detail", expect.anything());
+  });
+});
+
+describe("新建技能向导", () => {
+  beforeEach(reset);
+
+  it("入口即使一个候选都没有也在——那正是该新建的时候", async () => {
+    render(<SharePage />);
+    expect(await screen.findByRole("button", { name: "新建技能" })).toBeInTheDocument();
+  });
+
+  it("未登录也能新建:创建只写本地文件,登录是分享那一步的前提", async () => {
+    useSession.setState({ status: "signedOut", user: null });
+    render(<SharePage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "新建技能" }));
+    // 表单填齐后按钮可点,不因未登录而禁用
+    await userEvent.type(screen.getByLabelText(/技能名称/), "周报生成");
+    await userEvent.type(screen.getByLabelText(/技能描述/), "每周汇总");
+    await userEvent.type(screen.getByLabelText(/文件夹名称/), "weekly-report");
+    expect(screen.getByRole("button", { name: "创建" })).toBeEnabled();
+  });
+
+  it("文件夹名会被静默改名时禁用创建并说明原因", async () => {
+    render(<SharePage />);
+    await userEvent.click(await screen.findByRole("button", { name: "新建技能" }));
+
+    await userEvent.type(screen.getByLabelText(/技能名称/), "周报生成");
+    await userEvent.type(screen.getByLabelText(/技能描述/), "每周汇总");
+    await userEvent.type(screen.getByLabelText(/文件夹名称/), "a--b");
+
+    expect(screen.getByRole("button", { name: "创建" })).toBeDisabled();
+    expect(screen.getByText(/这个名字不能用/)).toBeInTheDocument();
+  });
+
+  it("创建成功后如实说明哪些工具立刻读得到、哪些要走分享", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_create") {
+        return { dirSlug: "weekly-report", path: "/home/u/.agents/skills/weekly-report" };
+      }
+      if (cmd === "share_candidates") return [];
+      return null;
+    });
+    render(<SharePage />);
+    await userEvent.click(await screen.findByRole("button", { name: "新建技能" }));
+
+    await userEvent.type(screen.getByLabelText(/技能名称/), "周报生成");
+    await userEvent.type(screen.getByLabelText(/技能描述/), "每周汇总");
+    await userEvent.type(screen.getByLabelText(/文件夹名称/), "weekly-report");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    expect(await screen.findByText("技能已创建")).toBeInTheDocument();
+    expect(screen.getByText("/home/u/.agents/skills/weekly-report")).toBeInTheDocument();
+    // 不建关联是有意的,界面必须说清后果,不能让用户以为哪都能用
+    expect(screen.getByText(/Claude Code 和 Trae 要等它分享到技能库/)).toBeInTheDocument();
+  });
+
+  it("创建失败留在表单并保住已填内容", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_create") {
+        throw { code: "CONFLICT_NAME_TAKEN", message: "本地已经有同名的技能文件夹了,换一个名字吧" };
+      }
+      if (cmd === "share_candidates") return [];
+      return null;
+    });
+    render(<SharePage />);
+    await userEvent.click(await screen.findByRole("button", { name: "新建技能" }));
+
+    await userEvent.type(screen.getByLabelText(/技能名称/), "周报生成");
+    await userEvent.type(screen.getByLabelText(/技能描述/), "每周汇总");
+    await userEvent.type(screen.getByLabelText(/文件夹名称/), "weekly-report");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    expect(await screen.findByText(/本地已经有同名的技能文件夹了/)).toBeInTheDocument();
+    expect(screen.getByDisplayValue("周报生成")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("weekly-report")).toBeInTheDocument();
   });
 });

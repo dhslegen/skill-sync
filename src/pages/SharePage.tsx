@@ -1,24 +1,27 @@
-import { Check } from "lucide-react";
+import { Check, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { revealLabel } from "@/components/DetailPanel";
 import { Icon } from "@/components/Icon";
 import { SkillIcon } from "@/components/SkillIcon";
 import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { isAppError, openLibraryUrl, type ShareCandidate } from "@/lib/ipc";
+import { validSlug } from "@/lib/slug";
+import { createFormComplete, useCreate } from "@/store/create";
 import { useRegistries } from "@/store/registries";
 import { useLocalDetail } from "@/store/local-detail";
 import { useSession } from "@/store/session";
 import { useShare, validShareName } from "@/store/share";
 
 /**
- * 分享页:排除法候选列表(UI-Demo share 视图形态)。
- *
- * 假设(文档未覆盖):Demo 里的「新建技能」向导不在任务 11 范围(交接包只列了
- * 扫描/标签/收编/表单/预检/推送),不摆一个点了没反应的按钮——向导随任务 12 再来。
+ * 分享页:排除法候选列表(UI-Demo share 视图形态)+ 新建技能入口(M4 任务 4)。
  *
  * 表单做行内展开(与获取流程的 agent 多选同理):它不是必须打断的决策;
  * 「名称被占用」那一档才是,由 ShareTakenDialog 弹窗接管。
+ *
+ * 新建向导同样行内展开在列表上方——它是"从无到有",不属于任何一行候选。
+ * 它**不需要登录**:创建只写本地文件,登录是分享那一步的前提。
  */
 export function SharePage() {
   const { candidates, scanning, scanError, load } = useShare();
@@ -59,6 +62,7 @@ export function SharePage() {
       )}
       <TargetPicker />
       <SharePathNotice />
+      <CreatePanel />
       {candidates.length === 0 ? (
         <p className="py-4 text-[12.5px] text-text-3">{t("share.empty")}</p>
       ) : (
@@ -121,6 +125,8 @@ function SharePathNotice() {
   const preview = useShare((s) => s.preview);
   if (preview === "unknown") return null;
 
+  // 逐档显式匹配,**不给"其余一切"兜底**:原先的三元链把任何意料外的值都落进
+  // 「可能直接生效」——最乐观的那一档,与本组件"宁可不说,不说错"的承诺正好相反。
   const message =
     preview === "directPush"
       ? t("share.pathDirectPush")
@@ -128,10 +134,133 @@ function SharePathNotice() {
         ? t("share.pathReviewInRepo")
         : preview === "reviewViaCopy"
           ? t("share.pathReviewViaCopy")
-          : t("share.pathMaybeDirect");
+          : preview === "maybeDirect"
+            ? t("share.pathMaybeDirect")
+            : null;
+  if (!message) return null;
 
   return (
     <p className="pb-2.5 text-[12px] leading-[1.6] text-text-2">{message}</p>
+  );
+}
+
+/**
+ * 「新建技能」入口与表单(M4 任务 4,等价上游 `skills init`)。
+ *
+ * 只创建文件,不建关联、不进账——理由见 core/create.rs 模块头。完成页因此要如实
+ * 说明哪些工具立刻读得到、哪些要走"分享再获取",不含糊过去。
+ */
+function CreatePanel() {
+  const { phase, form, error, createdPath, open, close, setForm, submit, reveal } = useCreate();
+
+  if (phase === "closed") {
+    return (
+      <div className="pb-2.5">
+        <button
+          type="button"
+          onClick={open}
+          className="flex h-7 items-center gap-1.5 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+        >
+          <Icon icon={Plus} className="size-3.5" />
+          {t("create.action")}
+        </button>
+      </div>
+    );
+  }
+
+  if (phase === "done") {
+    return (
+      <div className="mb-2.5 rounded-card border border-border bg-surface-2 px-3.5 py-3">
+        <p className="text-[12.5px] font-medium text-text">{t("create.doneTitle")}</p>
+        {createdPath && (
+          <p className="mt-1 break-all font-mono text-[11.5px] text-text-3">{createdPath}</p>
+        )}
+        <p className="mt-1.5 text-[12px] leading-[1.6] text-text-2">{t("create.doneHint")}</p>
+        <p className="mt-1 text-[11.5px] leading-[1.5] text-text-3">{t("create.doneVisible")}</p>
+        <div className="mt-2.5 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void reveal()}
+            className="h-7 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+          >
+            {revealLabel(navigator.userAgent)}
+          </button>
+          <button
+            type="button"
+            onClick={close}
+            className="h-7 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+          >
+            {t("create.done")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const busy = phase === "busy";
+  const slugOk = validSlug(form.dirSlug);
+  const complete = createFormComplete(form);
+
+  return (
+    <div className="mb-2.5 rounded-card border border-border bg-surface-2 px-3.5 py-3">
+      <p className="text-[12px] font-medium text-text-2">{t("create.title")}</p>
+      <p className="mt-1 text-[11.5px] leading-[1.5] text-text-3">{t("create.intro")}</p>
+      {error && (
+        <p className="mt-1.5 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+          {t("create.failed")}
+          {t("punct.labelSeparator")}
+          {error.message}
+        </p>
+      )}
+
+      <div className="mt-2.5 flex flex-col gap-2">
+        <Field label={t("create.formName")} hint={t("create.formNameHint")}>
+          <input
+            value={form.displayName}
+            onChange={(e) => setForm({ displayName: e.target.value })}
+            className="h-7 w-full rounded-ctl border border-border bg-surface-1 px-2 text-[12.5px] outline-none focus:border-accent"
+          />
+        </Field>
+        <Field label={t("create.formDesc")} hint={t("create.formDescHint")}>
+          <input
+            value={form.description}
+            onChange={(e) => setForm({ description: e.target.value })}
+            className="h-7 w-full rounded-ctl border border-border bg-surface-1 px-2 text-[12.5px] outline-none focus:border-accent"
+          />
+        </Field>
+        <Field
+          label={t("create.formSlug")}
+          hint={form.dirSlug && !slugOk ? t("create.formSlugInvalid") : t("create.formSlugHint")}
+          invalid={form.dirSlug !== "" && !slugOk}
+        >
+          <input
+            value={form.dirSlug}
+            onChange={(e) => setForm({ dirSlug: e.target.value })}
+            spellCheck={false}
+            className="h-7 w-full rounded-ctl border border-border bg-surface-1 px-2 font-mono text-[12px] outline-none focus:border-accent"
+          />
+        </Field>
+      </div>
+
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          type="button"
+          disabled={busy || !complete}
+          onClick={() => void submit()}
+          className="h-7 rounded-ctl bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+        >
+          {busy ? t("create.creating") : t("create.confirm")}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={close}
+          className="h-7 rounded-ctl border border-border px-3 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50"
+        >
+          {t("install.cancel")}
+        </button>
+      </div>
+    </div>
   );
 }
 

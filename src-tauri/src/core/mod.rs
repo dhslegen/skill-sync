@@ -4,6 +4,7 @@ pub mod acquire;
 pub mod agents;
 pub mod auth;
 pub mod builtin;
+pub mod create;
 pub mod fsops;
 pub mod gitea;
 pub mod github;

@@ -8,6 +8,7 @@ use crate::core::acquire;
 use crate::core::agents::{AgentRegistry, DetectedAgent, SystemEnv};
 use crate::core::auth::{self, CredentialStore, KeyringStore, OAuthConfig};
 use crate::core::builtin;
+use crate::core::create;
 use crate::core::gitea::{GiteaClient, RepoRef};
 use crate::core::github;
 use crate::core::installer::{self, InstallReport, Installer};
@@ -1263,6 +1264,41 @@ pub async fn skill_install_batch(
         auth::now_unix(),
     )
     .await
+}
+
+// ============================================================ 新建技能
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillCreateArgs {
+    /// 文件夹名。ASCII kebab,强制,core 侧按 `sanitize_name` 的不动点判定。
+    pub dir_slug: String,
+    /// 显示名,可中文。
+    pub display_name: String,
+    pub description: String,
+}
+
+/// 新建一个空技能到 canonical 目录(等价上游 `skills init`)。
+///
+/// 只创建文件,不建链、不进账——理由见 `core::create` 模块头。
+#[tauri::command]
+pub async fn skill_create(args: SkillCreateArgs) -> Result<create::CreateReport, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app_store()?;
+        let registry = AgentRegistry::builtin();
+        let installer = Installer::new(&registry, &SystemEnv);
+        create::create_skill(
+            &installer,
+            &store,
+            &create::CreateRequest {
+                dir_slug: &args.dir_slug,
+                display_name: &args.display_name,
+                description: &args.description,
+            },
+        )
+    })
+    .await
+    .map_err(|e| AppError::new("FS_TASK", "新建技能失败,请重试").with_detail(e.to_string()))?
 }
 
 // ============================================================ 分享

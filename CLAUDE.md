@@ -246,15 +246,15 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 - 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
   其余注册表 agent 尽力支持
 
-## 当前进度(2026-08-04,M4 任务 1–2 完成)
+## 当前进度(2026-08-04,M4 任务 1–2、4 完成)
 
 **M1 任务 1–13、M2 任务 1–6、M3 任务 1–6(含 5b)全部完成并提交**;**M4 已开工**
-(分解与拍板记录在 docs/M4-任务分解.md:任务 1 一源多仓 ✅ → 2 权限细分 ✅ → 4 新建技能向导
+(分解与拍板记录在 docs/M4-任务分解.md:任务 1 一源多仓 ✅ → 2 权限细分 ✅ → 4 新建技能向导 ✅
 → 5 收尾;**任务 3 安装量已摘除**,内网埋点服务落点未定,2026-08-04 用户拍板暂缓;
 C7 项目级 skill 不纳入 M4)。逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 396 + 前端 322 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
+- 本机:Rust 410 + 前端 338 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
   `pnpm dev` 启动冒烟通过(M4 任务 1 后带内网配置实测:商店读到真实库 28 个技能)
 - **双平台 CI**:**M4 任务 1 的两笔(`3857720` / `a7a1de3`)macOS + Windows 双 job 全绿**(2026-08-04 逐 job 实测);
   M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;`de7b233`/`2eb0595` 当时因账号计费
@@ -428,6 +428,23 @@ M4 任务 1 新增的 IPC:`registry_add_repo`/`registry_remove_repo`;
   50 个技能撑不住首屏 <2s。UI-Demo 里那两栏因此留空——**不编造**。安装量是 C5 预留字段,等 M4。
 - **UI-Demo 的分类 chip 换成了"全部/未安装/已安装"**:SKILL.md 里没有分类字段,
   硬造分类等于在界面上撒谎。要分类得技能库侧先约定 frontmatter 字段。
+- **新建技能只创建文件**(M4 任务 4,`core/create.rs` 模块头):落 canonical 的
+  `<slug>/SKILL.md` 一个文件,**不建关联、不写 lock、不进 `state`**——对齐上游
+  `npx skills init`(它同样只产出这一个文件、同样不写 lock)。新建的技能靠
+  `share::scan_candidates` 的排除法出现在分享页,那是它唯一的出路;进了
+  `state.installed` 就从候选里消失,而且会让 `acquire::precheck` 撒谎(见「待处理」里
+  那条推迟项)。三种撞名(canonical 目录非空 / installed 同名 / shared 同路径)一律拒,
+  **空目录放行**(写 SKILL.md 失败会留空壳,一律拒等于同名再也建不成)。
+- **slug 的口径只有一份真相:`fixtures/slug-samples.json`**。判据是 `sanitize_name` 的
+  **不动点**(填什么就得到什么),不是"看起来像 kebab"。core 侧 `create::usable_slug`
+  与前端 `lib/slug.ts` 各有一条测试读**同一个文件**——手抄两份样本表的话,口径漂了
+  两边照样各自全绿,那道护栏就是空转的(空转测试模式 #1)。
+  前端原先那个正则 `/^[a-z0-9][a-z0-9._-]*$/` **已实测不准**:放行 `a--b`(折成 `a-b`)、
+  `trail-`(trim 成 `trail`)、超 255 字符(截断),按它放行就是静默改名,已修。
+- **写 frontmatter 时值要不要加引号,交给 YAML 解析器自己判定**(`create::yaml_scalar`):
+  裸写一遍再读回来,读到的不是等值字符串才加引号。手写"危险字符表"必漏,而且会猜错——
+  实测 saphyr 走 YAML 1.2 core schema,`yes`/`no` 裸写就是字符串(YAML 1.1 才当布尔),
+  但 `123`/`3.14`/`null`/`~`/`&anchor` 会走样。往返测试是唯一可靠的护栏。
 
 ### 待处理
 
@@ -443,8 +460,19 @@ M4 任务 1 新增的 IPC:`registry_add_repo`/`registry_remove_repo`;
   current_user(身份 dhslegen);过期分支(AUTH_DEVICE_EXPIRED)也真实验证过。
   坑:GitHub API 对无 User-Agent 的请求一律 403——live 测试必须用
   `app_http_client_proxied()`,不能用裸 reqwest Client(已修并注释)。
-- **分享页的「新建技能」向导没做**(Demo 里有):等价 `skills init` 的脚手架,
-  用户拍板(2026-07-31)留 M4。
+- ~~分享页的「新建技能」向导没做~~ **已完成**(M4 任务 4,2026-08-04):
+  先录上游 `npx skills@1.5.20 init` 的 ground truth(`tests/fixtures/skills-init/NOTES.md`),
+  再实现 `core/create.rs`。**有意只做一半**——见下面这条推迟项。
+- **给本地技能建关联的能力仍然没有**(M4 任务 4 显式推迟,不是遗漏):
+  新建的技能只落 canonical,`skillsDir` 等于 `.agents/skills` 的工具(Cursor / Codex /
+  universal 那六个)立刻读得到,**Claude Code 与 Trae 读不到**,要走「分享到技能库 →
+  从商店获取」才能用上。这条限制对**所有**本地技能都成立(用户手放的、npx 装的一样),
+  不是向导造出来的。补它需要一处能记链接的账:`link_agents` 硬要 `state.installed`
+  有条目,而把无来源的技能塞进 `installed` 会让 `acquire::precheck` 撒谎
+  (空 owner 必然不等于商店的 owner → 同名技能的卡片说「装自另一个技能库」)。
+  真要做,得加一档 `Precheck` + 一个 `localOnly` 标记 + 放宽 `share::scan_candidates`
+  的排除条件 + 审一遍 scheduler / share_installed / installed_repo_key / remove / repair,
+  是 M4 任务 1 那个量级,不该塞进脚手架任务里。
 - **Windows 外观打磨决定不做**(M2 任务 6 的判断):UI 规范 §75 要 tauri-plugin-decorum,
   但没有 Windows 真机,装上等于把能用的系统窗口装饰换成无法目视验证的自绘控件——画不出
   窗口控制的话用户连关窗都做不到,而关窗现在还接着"缩到托盘"。等有真机再做,连同 vibrancy。

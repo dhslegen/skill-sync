@@ -1,0 +1,23 @@
+{
+  "_comment": "技能文件夹名(slug)的口径契约,Rust 与前端**共读这一份**。判据是 sanitize_name 的不动点:填什么就得到什么,绝不静默改名。Rust 侧 core/create.rs 的 usable_slug、前端 lib/slug.ts 的 validSlug 各有一条测试断言与本表一致——任一侧口径漂了,那一侧的测试就红。新增样本请写清它测的是哪条规则。",
+  "samples": [
+    { "slug": "weekly-report", "valid": true, "why": "标准 ASCII kebab" },
+    { "slug": "my_skill.v2", "valid": true, "why": "下划线与点都在白名单内" },
+    { "slug": "a1", "valid": true, "why": "最短形态" },
+    { "slug": "_leading-underscore", "valid": true, "why": "下划线不在 trim 集合里,可作首字符" },
+    { "slug": "a..b", "valid": true, "why": "点在白名单,连续点不折叠" },
+
+    { "slug": "a--b", "valid": false, "why": "短横线是替换字符,连续的会被折成一个" },
+    { "slug": "-lead", "valid": false, "why": "首部的短横线会被 trim 掉" },
+    { "slug": "trail-", "valid": false, "why": "尾部的短横线会被 trim 掉" },
+    { "slug": ".dot", "valid": false, "why": "首部的点会被 trim 掉" },
+    { "slug": "dot.", "valid": false, "why": "尾部的点会被 trim 掉" },
+    { "slug": "Weekly", "valid": false, "why": "大写会被压成小写" },
+    { "slug": "周报", "valid": false, "why": "非 ASCII 整体折成 unnamed-skill" },
+    { "slug": "unnamed-skill", "valid": false, "why": "这是「信息全丢」的哨兵值,不许直接用" },
+    { "slug": "", "valid": false, "why": "空" },
+    { "slug": " ", "valid": false, "why": "空白会被替换再 trim 成空" },
+    { "slug": "a b", "valid": false, "why": "空格会被替换成短横线" },
+    { "slug": "../etc", "valid": false, "why": "路径分隔符会被替换,顺带钉住路径穿越防线" }
+  ]
+}

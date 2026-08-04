@@ -162,6 +162,7 @@ pub fn run() {
             commands::skill_repair,
             commands::skill_link_agents,
             commands::skill_claim,
+            commands::skill_create,
             commands::share_candidates,
             commands::skill_share,
             commands::skill_share_changes
