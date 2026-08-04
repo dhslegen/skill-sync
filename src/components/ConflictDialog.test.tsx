@@ -125,6 +125,25 @@ describe("冲突对话框", () => {
     expect(screen.getByText(/acme\/skills/)).toBeInTheDocument();
   });
 
+  it("同名异库:说清它现在从哪来,只给替换与取消,默认焦点在取消", () => {
+    // 它**是**本应用装的,所以既不能套"改过本体"的三选(没有改动可保留),
+    // 也不能套外来目录那句"不是本应用安装的"——那是假话。
+    conflict({
+      status: "otherLibrary",
+      installedSha: "zzz9999",
+      sourceOwner: "design",
+      sourceRepo: "design-skills",
+    });
+    render(<ConflictDialog />);
+
+    expect(screen.getByText(/design\/design-skills/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /保留我的改动/ })).not.toBeInTheDocument();
+    // 不能落进外来目录那一档的文案
+    expect(screen.queryByText(/不是本应用安装的|不是这个应用安装的/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /替换/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "取消" })).toHaveFocus();
+  });
+
   it("Esc 取消,不留在半路", async () => {
     const cancel = vi.fn();
     conflict({ status: "locallyModified", installedSha: "aaa1111" });

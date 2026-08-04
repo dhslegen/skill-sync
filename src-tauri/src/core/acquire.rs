@@ -50,6 +50,17 @@ pub enum Precheck {
     },
     /// 本应用装的,但**用户改过本体**。覆盖会丢改动,必须先问。
     LocallyModified { installed_sha: String },
+    /// 本应用装的,但装自**另一个技能库**的同名技能(M4 任务 1 一源多仓)。
+    ///
+    /// 这不是"更新",是"用另一个库的同名技能替换掉现有的"——两者内容可能毫无关系。
+    /// 用户没改过本体时 hash 也照样不等,只比 hash 会把它当成一次正常更新静默做掉,
+    /// 那就是在没问过任何问题的情况下换掉用户的技能。展示名要说清是从哪个库来的。
+    OtherLibrary {
+        installed_sha: String,
+        /// 账上记的来源库,展示为 `owner/repo`。
+        source_owner: String,
+        source_repo: String,
+    },
     /// 有同名目录但不在本应用的记账里——别的工具装的,或用户自己建的。
     ///
     /// 这一档**没有"你的改动"可分享**,所以默认动作是取消,不是保留后分享。
@@ -83,6 +94,8 @@ pub fn precheck(
     state: &state::State,
     dir_slug: &str,
     remote_sha: &str,
+    // target:本次请求的目标库。`None` = 调用方不关心来源,跳过库比对。
+    target: Option<&RepoRef>,
 ) -> Result<Precheck, AppError> {
     let canonical = installer.canonical_dir(dir_slug)?;
     if !canonical.exists() {
@@ -99,6 +112,18 @@ pub fn precheck(
             origin: foreign_origin(env, &dir_name),
         });
     };
+
+    // 来源库不同要**先于**内容比对:用户没改过本体时 hash 照样不等(两个库的同名
+    // 技能内容本就不同),落进 Managed 就会被当成一次正常更新静默做掉。
+    if let Some(t) = target {
+        if recorded.source.owner != t.owner || recorded.source.repo != t.repo {
+            return Ok(Precheck::OtherLibrary {
+                installed_sha: recorded.commit_sha.clone(),
+                source_owner: recorded.source.owner.clone(),
+                source_repo: recorded.source.repo.clone(),
+            });
+        }
+    }
 
     let actual = fsops::dir_content_hash(&canonical)?;
     if actual != recorded.content_hash {
@@ -274,12 +299,20 @@ pub async fn acquire(
     progress(Stage::Checking);
     let installer = Installer::new(registry, env);
     let loaded = store.load_state()?;
-    let checked = precheck(&installer, env, &loaded.value, req.dir_slug, &head.sha)?;
+    let checked = precheck(
+        &installer,
+        env,
+        &loaded.value,
+        req.dir_slug,
+        &head.sha,
+        Some(req.repo),
+    )?;
 
-    // 需要用户拍板的两种情况:改过本体、或目录是别人的。此时不动磁盘。
+    // 需要用户拍板的三种情况:改过本体、目录是别人的、或它装自另一个技能库。
+    // 此时不动磁盘。
     let needs_decision = matches!(
         checked,
-        Precheck::LocallyModified { .. } | Precheck::Foreign { .. }
+        Precheck::LocallyModified { .. } | Precheck::Foreign { .. } | Precheck::OtherLibrary { .. }
     );
     if needs_decision && req.resolution.is_none() {
         return Ok(AcquireOutcome::NeedsDecision { precheck: checked });
@@ -458,7 +491,7 @@ fn install_one_from_archive(
         };
         let agent_names = agent_names.as_slice();
 
-        match precheck(installer, env, &loaded.value, dir_slug, head_sha)? {
+        match precheck(installer, env, &loaded.value, dir_slug, head_sha, Some(repo))? {
             Precheck::LocallyModified { .. } => {
                 return Ok(BatchOutcome::Skipped {
                     reason: "已安装且有你的本地改动,未覆盖".into(),
@@ -467,6 +500,13 @@ fn install_one_from_archive(
             Precheck::Foreign { .. } => {
                 return Ok(BatchOutcome::Skipped {
                     reason: "这个位置已有其他来源的技能,未替换".into(),
+                })
+            }
+            // 同名但装自另一个技能库:批量流程一律跳过并说人话
+            // (定时更新绝不替换用户的技能,向导也不该拿别的库覆盖已装的)
+            Precheck::OtherLibrary { source_owner, source_repo, .. } => {
+                return Ok(BatchOutcome::Skipped {
+                    reason: format!("同名技能已从 {source_owner}/{source_repo} 获取,未替换"),
                 })
             }
             Precheck::Managed { up_to_date: true, .. } => {

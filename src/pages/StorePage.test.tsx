@@ -121,7 +121,7 @@ describe("StorePage", () => {
   });
 
   it("筛选档切换生效", async () => {
-    useInstall.setState({ installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", contentHash: "sha256:weekly", localModified: false }]]) });
+    useInstall.setState({ installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", contentHash: "sha256:weekly", localModified: false, registryId: "company", sourceOwner: "skills", sourceRepo: "skills" }]]) });
     render(<StorePage />);
     await userEvent.click(screen.getByRole("button", { name: "已安装" }));
     expect(useStoreIndex.getState().filter).toBe("installed");
@@ -201,7 +201,7 @@ describe("卡片安装状态", () => {
 
   it("装了且版本一致 → 已启用(且点不动,那是终态)", () => {
     useInstall.setState({
-      installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", contentHash: "sha256:weekly", localModified: false }]]),
+      installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", contentHash: "sha256:weekly", localModified: false, registryId: "company", sourceOwner: "skills", sourceRepo: "skills" }]]),
     });
     render(<StorePage />);
     const done = screen.getByRole("button", { name: /已启用/ });
@@ -212,12 +212,36 @@ describe("卡片安装状态", () => {
   it("装了但版本落后 → 更新", () => {
     // 这一档在任务 8 里没有数据源、只能永远显示"安装";接上 installed_list 后才真正可达
     useInstall.setState({
-      installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", contentHash: "sha256:老版本", localModified: false }]]),
+      installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", contentHash: "sha256:老版本", localModified: false, registryId: "company", sourceOwner: "skills", sourceRepo: "skills" }]]),
     });
     render(<StorePage />);
     expect(screen.getByRole("button", { name: /^更新 —/ })).toBeInTheDocument();
   });
 
+  it("装自另一个技能库的同名技能 → 替换,不是更新(M4 一源多仓)", () => {
+    // 内容当然不一样,但那不是"更新"——点下去是用另一个库的同名技能替换掉现有的。
+    // 标成「更新」既是假话,也会把用户引向一次没预期的替换(core 的 precheck 会拦下来
+    // 要求拍板,但界面不能先撒谎再让 core 兜底)。
+    useInstall.setState({
+      installed: new Map([
+        [
+          "weekly-report",
+          {
+            commitSha: "zzz9999",
+            contentHash: "sha256:设计库那版",
+            localModified: false,
+            registryId: "company",
+            // 同一个源,另一个技能库
+            sourceOwner: "design",
+            sourceRepo: "design-skills",
+          },
+        ],
+      ]),
+    });
+    render(<StorePage />);
+    expect(screen.getByRole("button", { name: /^替换/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^更新 —/ })).not.toBeInTheDocument();
+  });
 });
 
 describe("库切换器(M4 一源多仓)", () => {

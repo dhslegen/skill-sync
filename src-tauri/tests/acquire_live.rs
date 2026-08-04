@@ -127,7 +127,7 @@ async fn installs_a_real_skill_from_the_fixture_registry() {
     let installer = skillsync_lib::core::installer::Installer::new(&registry, &env);
     assert!(
         matches!(
-            acquire::precheck(&installer, &env, &state, "with-scripts", &state.installed[0].commit_sha).unwrap(),
+            acquire::precheck(&installer, &env, &state, "with-scripts", &state.installed[0].commit_sha, Some(&repo)).unwrap(),
             acquire::Precheck::Managed { up_to_date: true, .. }
         ),
         "刚装完就被判成改过,说明 contentHash 的口径与落盘不一致"

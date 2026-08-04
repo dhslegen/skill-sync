@@ -313,7 +313,9 @@ export type Precheck =
   | { status: "fresh" }
   | { status: "managed"; installedSha: string; upToDate: boolean }
   | { status: "locallyModified"; installedSha: string }
-  | { status: "foreign"; origin: ForeignOrigin };
+  | { status: "foreign"; origin: ForeignOrigin }
+  /** 同名技能已装自另一个技能库(M4 一源多仓):不是更新,是替换。 */
+  | { status: "otherLibrary"; installedSha: string; sourceOwner: string; sourceRepo: string };
 
 export type ForeignOrigin = { kind: "npxSkills"; source: string } | { kind: "unknown" };
 

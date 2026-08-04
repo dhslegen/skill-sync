@@ -456,3 +456,42 @@ describe("逐条重试建链(安装当时没建成的)", () => {
     expect(failedLinks(useInstall.getState().report)).toBe(1);
   });
 });
+
+describe("已装记账的来源坐标(M4 一源多仓)", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    useInstall.setState({ installed: new Map() });
+  });
+
+  it("refreshInstalled 必须把来源坐标一起收进来", async () => {
+    // 少了这三个字段,cardState 就拿不到"这是哪个技能库装的",判定会**静默**退回
+    // M3 口径:切到同源的另一个技能库时,那边的同名技能被标成「更新」,而点下去是替换。
+    // 别的测试都直接 setState 塞 map,走不到这条路——这里是它唯一的护栏。
+    invoke.mockResolvedValueOnce([
+      {
+        dirSlug: "weekly-report",
+        commitSha: "aaa1111",
+        contentHash: "sha256:mine",
+        agents: [],
+        installedAt: "",
+        updatedAt: "",
+        localModified: false,
+        // owner 与 repo 取不同值:弄反了要能看出来
+        sourceOwner: "design",
+        sourceRepo: "design-skills",
+        registryId: "company",
+        sourceRemoved: false,
+        unclaimed: false,
+        bodyPresent: true,
+        links: [],
+      },
+    ]);
+
+    await useInstall.getState().refreshInstalled();
+
+    const record = useInstall.getState().installed.get("weekly-report");
+    expect(record?.registryId).toBe("company");
+    expect(record?.sourceOwner).toBe("design");
+    expect(record?.sourceRepo).toBe("design-skills");
+  });
+});

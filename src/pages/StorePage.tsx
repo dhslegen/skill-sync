@@ -137,7 +137,11 @@ export function StorePage() {
               skill={skill}
               repo={index.repo}
               updatedAt={updatedAt}
-              state={cardState(records.get(skill.dirSlug), skill.contentHash)}
+              state={cardState(records.get(skill.dirSlug), skill.contentHash, {
+                registryId: index.registryId,
+                owner: index.owner,
+                repo: index.repo,
+              })}
               onOpen={() => void openDetail(skill.dirSlug)}
             />
           ))}

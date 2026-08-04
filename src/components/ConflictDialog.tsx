@@ -44,6 +44,9 @@ export function ConflictDialog() {
   if (!open || !precheck) return null;
   const name = displayName ?? dirSlug ?? "";
   const modified = precheck.status === "locallyModified";
+  // 装自另一个技能库:它**是**本应用装的,所以既不能套"改过本体"的三选
+  // (没有改动可保留),也不能套外来目录那句"不是本应用安装的"(那是假话)。
+  const otherLibrary = precheck.status === "otherLibrary" ? precheck : null;
 
   return (
     <div className="fixed inset-0 z-70 grid place-items-center bg-[rgba(15,14,12,.35)] backdrop-blur-[2px]">
@@ -54,14 +57,23 @@ export function ConflictDialog() {
         className="w-[440px] rounded-pop border border-border-strong bg-surface-1 p-5 shadow-[var(--shadow-pop)]"
       >
         <h2 id="conflict-title" className="text-[14px] font-semibold">
-          {modified ? t("conflict.modifiedTitle") : t("conflict.foreignTitle")}
+          {modified
+            ? t("conflict.modifiedTitle")
+            : otherLibrary
+              ? t("conflict.otherLibraryTitle")
+              : t("conflict.foreignTitle")}
         </h2>
         <p className="mt-1.5 text-[12.5px] leading-[1.6] text-text-2">
           {modified
             ? t("conflict.modifiedBody", { name })
-            : precheck.status === "foreign" && precheck.origin.kind === "npxSkills"
-              ? t("conflict.foreignBodyNpx", { name, source: precheck.origin.source })
-              : t("conflict.foreignBodyUnknown", { name })}
+            : otherLibrary
+              ? t("conflict.otherLibraryBody", {
+                  name,
+                  library: `${otherLibrary.sourceOwner}/${otherLibrary.sourceRepo}`,
+                })
+              : precheck.status === "foreign" && precheck.origin.kind === "npxSkills"
+                ? t("conflict.foreignBodyNpx", { name, source: precheck.origin.source })
+                : t("conflict.foreignBodyUnknown", { name })}
         </p>
 
         <div className="mt-4 flex flex-col gap-2">
@@ -87,6 +99,14 @@ export function ConflictDialog() {
                 onClick={() => void run("overwrite")}
               />
             </>
+          ) : otherLibrary ? (
+            // 同名异库:同样只有替换与取消,默认落在取消。
+            <Choice
+              label={t("conflict.otherLibraryReplace")}
+              hint={t("conflict.otherLibraryHint")}
+              danger
+              onClick={() => void run("overwrite")}
+            />
           ) : (
             // 外来目录没有"你的改动"可保留,所以只有替换与取消两条路,
             // 且默认落在取消——绝不静默替换用户从别处装的东西。

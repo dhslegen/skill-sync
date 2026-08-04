@@ -363,7 +363,8 @@ pub fn add(
     Ok(cfg)
 }
 
-/// 给某个源追加技能库的请求。`branch` 缺省按 `main`;`name` 是可选展示名。
+/// 给某个源追加技能库的请求。`branch` 缺省**跟随该源的主库**(见 [`add_repo`]);
+/// `name` 是可选展示名。
 #[derive(Debug)]
 pub struct AddRepoRequest<'a> {
     pub owner: &'a str,
@@ -380,6 +381,9 @@ pub struct AddRepoRequest<'a> {
 /// - 自定义源:落该源的 `repos`。
 /// - 查重按寻址键 `owner/repo` 精确匹配(假设:同键异大小写视为不同仓,
 ///   Gitea/GitHub 的 URL 虽不区分大小写,但改写用户输入的坐标更危险)。
+/// - **分支缺省跟随该源的主库**,不是写死 `main`:追加库与主库同在一台服务器上,
+///   沿用主库的分支约定更接近事实。写死 `main` 会让一台默认分支是 `master` 的
+///   服务器上加进来的库变成永久报错的死条目——而表单不给分支输入,用户救不回来。
 pub fn add_repo(
     builtin: &BuiltinSource,
     registries: &mut [RegistryConfig],
@@ -392,17 +396,15 @@ pub fn add_repo(
         return Err(invalid_registry("owner/repo is empty".into()));
     }
     let key = repo_key(owner, repo);
-    let entry = RepoConfig {
+    let explicit_branch = req.branch.map(str::trim).filter(|b| !b.is_empty());
+    let name = req.name.map(str::trim).filter(|n| !n.is_empty()).map(String::from);
+    let make = |default_branch: &str| RepoConfig {
         owner: owner.to_string(),
         repo: repo.to_string(),
-        branch: req
-            .branch
-            .map(str::trim)
-            .filter(|b| !b.is_empty())
-            .unwrap_or("main")
-            .to_string(),
-        name: req.name.map(str::trim).filter(|n| !n.is_empty()).map(String::from),
+        branch: explicit_branch.unwrap_or(default_branch).to_string(),
+        name: name.clone(),
     };
+
     if id == BUILTIN_REGISTRY_ID {
         let Some((owner0, repo0)) = builtin.repo else {
             return Err(AppError::new(
@@ -415,6 +417,7 @@ pub fn add_repo(
         if taken {
             return Err(duplicate_repo(&key));
         }
+        let entry = make(builtin.branch);
         builtin_extra.push(entry.clone());
         return Ok(entry);
     }
@@ -425,6 +428,8 @@ pub fn add_repo(
     if cfg.repos.iter().any(|r| repo_key(&r.owner, &r.repo) == key) {
         return Err(duplicate_repo(&key));
     }
+    let default_branch = cfg.repos.first().map(|r| r.branch.as_str()).unwrap_or("main");
+    let entry = make(default_branch);
     cfg.repos.push(entry.clone());
     Ok(entry)
 }
@@ -912,7 +917,7 @@ mod tests {
             &AddRepoRequest { owner: "design", repo: "design-skills", branch: None, name: Some("  设计部技能库  ") },
         )
         .unwrap();
-        // branch 缺省 main;展示名去空白
+        // branch 缺省跟随主库(fixture 的主库是 main);展示名去空白
         assert_eq!(added.branch, "main");
         assert_eq!(added.name.as_deref(), Some("设计部技能库"));
         assert_eq!(extras.len(), 1);
@@ -927,6 +932,50 @@ mod tests {
         .unwrap();
         assert_eq!(added2.branch, "release");
         assert_eq!(added2.name, None);
+    }
+
+    #[test]
+    fn added_repo_follows_the_primary_branch_not_a_hardcoded_main() {
+        // 一台默认分支是 master 的服务器上,写死 main 会造出永久报错的死条目
+        // ——而表单不给分支输入,用户救不回来。
+        let master_builtin = BuiltinSource {
+            base_url: Some("http://gitea.internal:3000"),
+            repo: Some(("skills", "skills")),
+            branch: "master",
+        };
+        let mut extras = Vec::new();
+        let added = add_repo(
+            &master_builtin,
+            &mut [],
+            &mut extras,
+            BUILTIN_REGISTRY_ID,
+            &AddRepoRequest { owner: "design", repo: "design-skills", branch: None, name: None },
+        )
+        .unwrap();
+        assert_eq!(added.branch, "master");
+
+        // 自定义源同理:跟随它自己的主库(fixture 的主库是 release)
+        let mut regs = vec![custom_cfg()];
+        let added = add_repo(
+            &fake_builtin(),
+            &mut regs,
+            &mut Vec::new(),
+            "custom-1",
+            &AddRepoRequest { owner: "ai-skills", repo: "qa-skills", branch: None, name: None },
+        )
+        .unwrap();
+        assert_eq!(added.branch, "release");
+
+        // 显式给了就用给的,不被主库覆盖
+        let explicit = add_repo(
+            &fake_builtin(),
+            &mut regs,
+            &mut Vec::new(),
+            "custom-1",
+            &AddRepoRequest { owner: "ai-skills", repo: "dev-skills", branch: Some("develop"), name: None },
+        )
+        .unwrap();
+        assert_eq!(explicit.branch, "develop");
     }
 
     #[test]

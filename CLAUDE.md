@@ -254,11 +254,12 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 C7 项目级 skill 不纳入 M4)。逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 382 + 前端 313 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
+- 本机:Rust 384 + 前端 316 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
   `pnpm dev` 启动冒烟通过(M4 任务 1 后带内网配置实测:商店读到真实库 28 个技能)
-- **双平台 CI 全绿至 HEAD**:M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;
-  `de7b233`/`2eb0595` 当时因账号计费被拒,仓库转公开后 2026-08-03 rerun,
-  **macOS + Windows 双 job 全绿**(任务 6 的 claim_flow junction 路径首次真实过 CI)
+- **双平台 CI**:**M4 任务 1(`3857720`)macOS + Windows 双 job 已绿**(2026-08-04 实测);
+  M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;`de7b233`/`2eb0595` 当时因账号计费
+  被拒,仓库转公开后 2026-08-03 rerun 双 job 全绿(任务 6 的 claim_flow junction 路径
+  首次真实过 CI)。**下一个提交的 CI 结论自己 `gh run list` 看,别照抄这一行**
 - **真实 GitHub e2e 已跑通**:读链路(任务 4,`github_live` 对 dhslegen/skills
   走完 索引→发现→安装→lock 双写)、device flow 登录(5a,`device_flow_live`,
   身份 dhslegen)、分享写路径(5b,`share_github_live` 对一次性测试仓走完
@@ -303,8 +304,20 @@ M4 任务 1 新增的 IPC:`registry_add_repo`/`registry_remove_repo`;
   - **更新与回推必须带账上的仓库坐标**,缺省会打到主仓:「我的技能」的更新传
     `sourceOwner/sourceRepo`,回推在 `commands::installed_repo_key` 取账上坐标
     (`share_installed` 的 owner/repo 本来就取账上,但 **branch 由调用方给**)。
-  - **「有无可用更新」的判定要比到仓**(`my-skills.ts` 的 `hasUpdate`):
-    源相同还不够,同源多库时两库有同名技能会直接比出错误结论。
+  - **「有无可用更新」的判定要比到仓**,两处都要:`my-skills.ts` 的 `hasUpdate`
+    与 `lib/update.ts` 的 `cardState`(商店卡片 + 详情面板底部共用)。源相同还不够
+    ——同源两库有同名技能时,内容当然不一样,按源比会把它判成"更新"。
+  - **「同名技能装自另一个技能库」是独立的一档,不是更新**:
+    core 侧 `acquire::precheck` 收 `target: Option<&RepoRef>`,来源库不同即返回
+    `Precheck::OtherLibrary` 并进"需要拍板"分支(批量流程跳过并给人话原因);
+    UI 侧 `cardState` 给 `otherLibrary` 档,按钮文案是「替换」不是「更新」,
+    冲突弹窗另有一档文案(套外来目录那句"不是本应用安装的"是假话——它就是本应用装的)。
+    **来源库比对必须先于内容 hash 比对**:用户没改过本体时 hash 照样不等,
+    落进 `Managed` 就会被当成一次正常更新静默做掉——清空重建 canonical 并把记账
+    改指过去,全程不问用户一句。有测试断言"拍板之前磁盘一个字节都没动"。
+  - `install.ts` 的 `refreshInstalled` **必须把 registryId/sourceOwner/sourceRepo
+    一起收进 `installed` map**:少了它 `cardState` 拿不到库,判定静默退回 M3 口径。
+    别的测试都直接 setState 塞 map 走不到这条路,`install.test.ts` 里那条是唯一护栏。
   - **认领绑源要求"同源 + 该库在源的库列表里"**(`acquire::bind_source`):
     只比同源会把 `host/someone/other-repo` 的技能绑到该 host 的源上,而更新只会
     去主库找同名技能——M3 起就静默存在,M4 任务 1 修掉。

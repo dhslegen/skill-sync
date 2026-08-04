@@ -53,21 +53,27 @@ const PNG_BYTES: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00,
 const SCRIPT: &[u8] = b"#!/bin/sh\necho hi\n";
 
 fn zip_with_skill(slug: &str, body: &str) -> Vec<u8> {
+    zip_with_skill_in("skills", slug, body)
+}
+
+/// 同上,但压缩包顶层目录是 `repo`(Gitea 的 archive 用仓库名做顶层)。
+/// 一源多仓的测试要造第二个技能库的压缩包,顶层目录必须跟着变。
+fn zip_with_skill_in(repo: &str, slug: &str, body: &str) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
         let plain: zip::write::SimpleFileOptions = Default::default();
         let exec = plain.unix_permissions(0o755);
-        w.add_directory("skills/", plain).unwrap();
-        w.start_file(format!("skills/skills/{slug}/SKILL.md"), plain).unwrap();
+        w.add_directory(format!("{repo}/"), plain).unwrap();
+        w.start_file(format!("{repo}/skills/{slug}/SKILL.md"), plain).unwrap();
         std::io::Write::write_all(
             &mut w,
             format!("---\nname: 周报生成\ndescription: 汇总本周工作\n---\n\n{body}\n").as_bytes(),
         )
         .unwrap();
-        w.start_file(format!("skills/skills/{slug}/logo.png"), plain).unwrap();
+        w.start_file(format!("{repo}/skills/{slug}/logo.png"), plain).unwrap();
         std::io::Write::write_all(&mut w, PNG_BYTES).unwrap();
-        w.start_file(format!("skills/skills/{slug}/run.sh"), exec).unwrap();
+        w.start_file(format!("{repo}/skills/{slug}/run.sh"), exec).unwrap();
         std::io::Write::write_all(&mut w, SCRIPT).unwrap();
         w.finish().unwrap();
     }
@@ -206,12 +212,138 @@ async fn a_fresh_install_immediately_reads_back_as_unmodified() {
 
     let state = c.store.load_state().unwrap().value;
     let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
-    let checked = acquire::precheck(&installer, &env, &state, "weekly-report", "aaa1111").unwrap();
+    let checked = acquire::precheck(&installer, &env, &state, "weekly-report", "aaa1111", Some(&repo_ref())).unwrap();
 
     assert_eq!(
         checked,
         Precheck::Managed { installed_sha: "aaa1111".into(), up_to_date: true }
     );
+}
+
+#[tokio::test]
+async fn a_same_named_skill_from_another_library_needs_a_decision_not_a_silent_swap() {
+    // M4 一源多仓最危险的一条:主库装了 weekly-report,用户没改过任何东西,
+    // 切到同一个源的另一个技能库,那边也有一个 weekly-report——内容当然不一样。
+    // 只比 hash 会把它判成一次正常"更新",清空重建 canonical 并把记账改指过去,
+    // **全程不问用户一句**。那不是更新,是替换,必须停下来问。
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "主库的正文").await;
+    let (c, env) = ctx();
+    run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+    let before = std::fs::read_to_string(canonical(&c.home, "weekly-report").join("SKILL.md")).unwrap();
+
+    // 另一个库:同源、同名技能、不同内容
+    let other = RepoRef { owner: "design".into(), repo: "design-skills".into(), branch: "main".into() };
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/v1/repos/design/design-skills/branches/main$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "name": "main",
+            "commit": { "id": "bbb2222", "timestamp": "2026-08-01T10:00:00+08:00" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/v1/repos/design/design-skills/archive/main\.zip$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(zip_with_skill_in("design-skills", "weekly-report", "设计库的正文")),
+        )
+        .mount(&server)
+        .await;
+
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let stages = std::sync::Mutex::new(Vec::new());
+    let sink = |s: Stage| stages.lock().unwrap().push(s);
+    let outcome = acquire::acquire(
+        &client,
+        &c.registry,
+        &env,
+        &c.store,
+        AcquireRequest {
+            registry_id: REGISTRY,
+            repo: &other,
+            dir_slug: "weekly-report",
+            agent_names: &[],
+            resolution: None,
+        },
+        NOW,
+        1_753_800_000,
+        &sink,
+    )
+    .await
+    .unwrap();
+
+    match outcome {
+        acquire::AcquireOutcome::NeedsDecision {
+            precheck: Precheck::OtherLibrary { source_owner, source_repo, .. },
+        } => {
+            // 文案要说清"现在这个是从哪来的",否则用户没法判断该不该换
+            assert_eq!(source_owner, "skills");
+            assert_eq!(source_repo, "skills");
+        }
+        other => panic!("同名异库必须停下来问,实际: {other:?}"),
+    }
+
+    // 关键:磁盘一个字节都没动,记账也没被改指
+    let after = std::fs::read_to_string(canonical(&c.home, "weekly-report").join("SKILL.md")).unwrap();
+    assert_eq!(after, before, "拍板之前不得动本体");
+    let st = c.store.load_state().unwrap().value;
+    assert_eq!(st.installed[0].source.repo, "skills", "拍板之前不得改指来源");
+}
+
+#[tokio::test]
+async fn batch_skips_a_same_named_skill_from_another_library_with_a_readable_reason() {
+    // 批量流程(向导一键全装 / 定时更新)不弹三选:跳过并给人话原因。
+    // 定时更新绝不替换用户的技能——这条与上面那条是同一个不变量的两副面孔。
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "主库的正文").await;
+    let (c, env) = ctx();
+    run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+
+    let other = RepoRef { owner: "design".into(), repo: "design-skills".into(), branch: "main".into() };
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/v1/repos/design/design-skills/branches/main$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "name": "main",
+            "commit": { "id": "bbb2222", "timestamp": "2026-08-01T10:00:00+08:00" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/v1/repos/design/design-skills/archive/main\.zip$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(zip_with_skill_in("design-skills", "weekly-report", "设计库的正文")),
+        )
+        .mount(&server)
+        .await;
+
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let items = acquire::acquire_batch(
+        &client,
+        &c.registry,
+        &env,
+        &c.store,
+        REGISTRY,
+        &other,
+        &["weekly-report".to_string()],
+        acquire::BatchAgents::Uniform(&[]),
+        NOW,
+        1_753_800_000,
+    )
+    .await
+    .unwrap();
+
+    match &items[0].outcome {
+        acquire::BatchOutcome::Skipped { reason } => {
+            assert!(reason.contains("skills/skills"), "原因要说清现在这个是从哪来的: {reason}");
+            // 人话:不露内部术语
+            assert!(!reason.contains("repo"), "{reason}");
+        }
+        other => panic!("批量流程必须跳过,实际: {other:?}"),
+    }
+    let st = c.store.load_state().unwrap().value;
+    assert_eq!(st.installed[0].source.repo, "skills");
 }
 
 #[tokio::test]
@@ -292,7 +424,7 @@ async fn keeping_local_changes_touches_nothing_in_the_skill_body() {
     assert_eq!(record.commit_sha, "aaa1111", "保留本地时不该把版本推进到远端");
     let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
     assert_eq!(
-        acquire::precheck(&installer, &env, &state, "weekly-report", "ccc3333").unwrap(),
+        acquire::precheck(&installer, &env, &state, "weekly-report", "ccc3333", Some(&repo_ref())).unwrap(),
         Precheck::LocallyModified { installed_sha: "aaa1111".into() },
         "保留本地之后,它仍应被认作有未分享的改动"
     );
@@ -323,7 +455,7 @@ async fn overwriting_is_only_done_when_explicitly_chosen() {
     // 覆盖后 hash 必须与新内容一致,否则下一次又会被判成"用户改过"
     let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
     assert!(matches!(
-        acquire::precheck(&installer, &env, &state, "weekly-report", "ccc3333").unwrap(),
+        acquire::precheck(&installer, &env, &state, "weekly-report", "ccc3333", Some(&repo_ref())).unwrap(),
         Precheck::Managed { up_to_date: true, .. }
     ));
 }

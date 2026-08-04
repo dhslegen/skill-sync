@@ -4,8 +4,10 @@ import { Icon } from "@/components/Icon";
 import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
 
-/** 安装状态机。三档都在这里实现;M1 数据源只会给出 "install"(见 store-index 的 installed)。 */
-export type InstallState = "install" | "installed" | "update";
+/** 安装状态机。判定唯一实现在 `lib/update.ts` 的 `cardState`,这里只负责画。
+ *  `otherLibrary` = 同名技能已装自另一个技能库(M4 一源多仓):那不是更新,
+ *  是替换,按钮文案与去向都不同。 */
+export type InstallState = "install" | "installed" | "update" | "otherLibrary";
 
 /**
  * 安装按钮。
@@ -34,7 +36,9 @@ export function InstallButton({
       ? t("skill.actionInstalled")
       : state === "update"
         ? t("skill.actionUpdate")
-        : t("skill.actionInstall");
+        : state === "otherLibrary"
+          ? t("skill.actionReplace")
+          : t("skill.actionInstall");
 
   // 置灰的主按钮不能只是"半透明的实心强调色":深色主题下它看着还是个能点的主按钮,
   // 用户会反复去点。降级成 ghost 灰,一眼就知道现在不可用。
@@ -55,6 +59,8 @@ export function InstallButton({
         size === "lg" ? "h-[30px] px-[14px] text-[12.5px]" : "h-6 px-[10px]",
         !inert && state === "install" && "bg-accent text-white hover:bg-accent-hover",
         !inert && state === "update" && "bg-accent-soft text-accent",
+        // 替换不是常规动作:给中性描边,不用强调色去引诱点击
+        !inert && state === "otherLibrary" && "border-border bg-transparent text-text-2 hover:border-border-strong hover:text-text",
         state === "installed" && "bg-transparent font-medium text-ok",
         inert && "cursor-default border-border bg-transparent font-medium text-text-3",
       )}

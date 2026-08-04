@@ -51,7 +51,18 @@ interface InstallState {
   precheck: Precheck | null;
   error: AppError | null;
   /** 已安装技能:商店卡片的状态机数据源。 */
-  installed: Map<string, { commitSha: string; contentHash: string; localModified: boolean }>;
+  installed: Map<
+    string,
+    {
+      commitSha: string;
+      contentHash: string;
+      localModified: boolean;
+      /** 来源坐标:判定"是不是同一个技能库"要用(M4 一源多仓)。 */
+      registryId: string;
+      sourceOwner: string;
+      sourceRepo: string;
+    }
+  >;
 
   refreshInstalled: () => Promise<void>;
   /** 点"安装"→ 展开 agent 勾选。`registryId` 缺省 = 内建源。 */
@@ -107,7 +118,16 @@ export const useInstall = create<InstallState>((set, get) => ({
         installed: new Map(
           list.map((s) => [
             s.dirSlug,
-            { commitSha: s.commitSha, contentHash: s.contentHash, localModified: s.localModified },
+            {
+              commitSha: s.commitSha,
+              contentHash: s.contentHash,
+              localModified: s.localModified,
+              // 来源坐标必须带上:少了它,商店切到同源的另一个技能库时,那边的同名
+              // 技能会被判成"更新"——而点下去是替换,不是更新(M4 一源多仓)
+              registryId: s.registryId,
+              sourceOwner: s.sourceOwner,
+              sourceRepo: s.sourceRepo,
+            },
           ]),
         ),
       });

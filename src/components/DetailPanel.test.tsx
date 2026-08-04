@@ -251,7 +251,7 @@ describe("详情面板底部的获取区", () => {
       ] },
     });
     useInstall.setState({
-      installed: new Map([[d.dirSlug, { commitSha: "x", contentHash: "sha256:same", localModified: false }]]),
+      installed: new Map([[d.dirSlug, { commitSha: "x", contentHash: "sha256:same", localModified: false, registryId: "company", sourceOwner: "skills", sourceRepo: "skills" }]]),
     });
     render(<DetailPanel />);
     expect(screen.getByRole("button", { name: /已启用/ })).toBeDisabled();
@@ -266,7 +266,7 @@ describe("详情面板底部的获取区", () => {
       ] },
     });
     useInstall.setState({
-      installed: new Map([[d.dirSlug, { commitSha: "x", contentHash: "sha256:old", localModified: false }]]),
+      installed: new Map([[d.dirSlug, { commitSha: "x", contentHash: "sha256:old", localModified: false, registryId: "company", sourceOwner: "skills", sourceRepo: "skills" }]]),
     });
     render(<DetailPanel />);
 
