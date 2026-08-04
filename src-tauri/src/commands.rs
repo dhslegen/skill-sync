@@ -225,6 +225,28 @@ pub fn spawn_app_update_probe(app: tauri::AppHandle) {
     });
 }
 
+/// 定时检查要遍历的 (源, 技能库) 清单(M4 任务 1)。
+///
+/// `run_check` 本来就按 owner/repo 过滤账目,**只查主库会漏掉追加库里装的技能**
+/// ——那些技能永远等不到更新,而界面上看不出任何异常。清单直接取 [`registry::list`]
+/// 的视图,与设置页看到的库列表同一份真相。
+///
+/// 提成纯函数是为了可测:`run_all_sources_check` 要 app handle 与真实网络,测不了。
+fn check_targets(
+    builtin: &registry::BuiltinSource,
+    registries: &[state::RegistryConfig],
+    builtin_extra: &[state::RepoConfig],
+) -> Vec<(String, Option<String>)> {
+    registry::list(builtin, registries, builtin_extra)
+        .into_iter()
+        .flat_map(|view| {
+            view.repos
+                .into_iter()
+                .map(move |repo| (view.id.clone(), Some(repo.key)))
+        })
+        .collect()
+}
+
 /// 一轮逐源检查(M3 任务 2):内建 + 全部自定义源依次跑,一个源失败不拦其他源。
 /// 返回 `None` = 没有任何源成功跑完(全失败或没有可查的源),这一轮不上报
 /// ——把"全挂了"报成 `NothingInstalled` 等于撒谎。
@@ -240,14 +262,7 @@ async fn run_all_sources_check() -> Option<scheduler::CheckReport> {
     let builtin_src = registry::BuiltinSource::from_build();
     let registry = AgentRegistry::builtin();
 
-    // 逐 (源,仓) 检查(M4 任务 1):run_check 本来就按 owner/repo 过滤账目,
-    // 只查主仓会漏掉追加仓里装的技能。仓清单直接取 registry::list 的视图。
-    let mut targets: Vec<(String, Option<String>)> = Vec::new();
-    for view in registry::list(&builtin_src, &registries_cfg, &builtin_extra) {
-        for repo in &view.repos {
-            targets.push((view.id.clone(), Some(repo.key.clone())));
-        }
-    }
+    let targets = check_targets(&builtin_src, &registries_cfg, &builtin_extra);
 
     let mut reports = Vec::new();
     for (id, repo_key) in targets {
@@ -1497,6 +1512,63 @@ mod tests {
         })
         .unwrap();
         assert_eq!(dir, std::path::PathBuf::from("/tmp/some-skill"));
+    }
+
+    #[test]
+    fn scheduled_check_visits_every_library_not_just_the_primary_one() {
+        // 只查主库会让追加库里装的技能永远等不到更新,而界面上看不出任何异常。
+        let builtin = registry::BuiltinSource {
+            base_url: Some("http://gitea.internal:3000"),
+            repo: Some(("skills", "skills")),
+            branch: "main",
+        };
+        let extras = vec![state::RepoConfig {
+            owner: "design".into(),
+            repo: "design-skills".into(),
+            branch: "main".into(),
+            name: None,
+        }];
+        let custom = state::RegistryConfig {
+            id: "custom-1".into(),
+            name: "部门工具库".into(),
+            kind: "gitea".into(),
+            base_url: "http://tools.example:8080".into(),
+            builtin: false,
+            repos: vec![
+                state::RepoConfig {
+                    owner: "ai-skills".into(),
+                    repo: "dept-skills".into(),
+                    branch: "release".into(),
+                    name: None,
+                },
+                state::RepoConfig {
+                    owner: "ai-skills".into(),
+                    repo: "qa-skills".into(),
+                    branch: "main".into(),
+                    name: None,
+                },
+            ],
+        };
+
+        let targets = check_targets(&builtin, &[custom], &extras);
+        let keys: Vec<(String, String)> = targets
+            .into_iter()
+            .map(|(id, k)| (id, k.unwrap_or_default()))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("company".to_string(), "skills/skills".to_string()),
+                ("company".to_string(), "design/design-skills".to_string()),
+                ("custom-1".to_string(), "ai-skills/dept-skills".to_string()),
+                ("custom-1".to_string(), "ai-skills/qa-skills".to_string()),
+            ]
+        );
+
+        // 内建未注入配置的开发构建:那个源一个目标都不产出,自定义源照常
+        let unconfigured = registry::BuiltinSource { base_url: None, repo: None, branch: "main" };
+        let targets = check_targets(&unconfigured, &[], &extras);
+        assert!(targets.is_empty(), "没有主库时追加库也无从查起: {targets:?}");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! 商店索引:技能库压缩包 → 技能发现 → 可离线复用的本地缓存。
 //!
-//! 落点 `~/.skillsync/index-<registryId>.json`。
+//! 落点 `~/.skillsync/index-<registryId>-<owner>-<repo>.json`
+//! ——按 (源, 技能库) 分文件(M4 任务 1),同一源下多个库交替浏览不互相冲刷。
 //!
 //! ## 与 state.rs 相反的取舍(有意为之,勿"对齐修正")
 //!
