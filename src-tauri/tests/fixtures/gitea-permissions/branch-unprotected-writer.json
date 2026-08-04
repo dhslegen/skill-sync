@@ -1,0 +1,10 @@
+{
+  "name": "main",
+  "protected": false,
+  "required_approvals": 0,
+  "enable_status_check": false,
+  "status_check_contexts": [],
+  "user_can_push": true,
+  "user_can_merge": true,
+  "effective_branch_protection_name": ""
+}

@@ -1,0 +1,9 @@
+{
+  "default_branch": "main",
+  "empty": false,
+  "permissions": {
+    "admin": false,
+    "push": false,
+    "pull": true
+  }
+}

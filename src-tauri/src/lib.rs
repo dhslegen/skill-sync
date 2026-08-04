@@ -142,6 +142,7 @@ pub fn run() {
             commands::registry_remove,
             commands::registry_add_repo,
             commands::registry_remove_repo,
+            commands::share_preview,
             commands::update_check_now,
             commands::app_update_check,
             commands::app_update_install,

@@ -20,6 +20,7 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   sourceRepo: "skills",
   registryId: "company",
   sourceRemoved: false,
+  libraryRemoved: false,
   unclaimed: false,
   bodyPresent: true,
   links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],

@@ -283,6 +283,12 @@ function Row({
               {t("mine.badgeSourceRemoved")}
             </Badge>
           )}
+          {/* 源在、库不在:与上面互斥(core 保证两者不同时为 true),但话不一样 */}
+          {skill.libraryRemoved && (
+            <Badge tone="warn" title={t("mine.badgeLibraryRemovedHint")}>
+              {t("mine.badgeLibraryRemoved")}
+            </Badge>
+          )}
           {issues.length > 0 && (
             <Badge
               tone="warn"
@@ -318,7 +324,7 @@ function Row({
       </button>
 
       <div className="flex flex-none items-center gap-1.5">
-        {skill.localModified && skill.bodyPresent && !skill.sourceRemoved && (
+        {skill.localModified && skill.bodyPresent && !skill.sourceRemoved && !skill.libraryRemoved && (
           // 冲突弹窗承诺过的那条路:改动可以推回来源技能库;来源没了就没有去处
           <button
             type="button"

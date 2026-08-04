@@ -26,6 +26,7 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   sourceRepo: "skills",
   registryId: "company",
   sourceRemoved: false,
+  libraryRemoved: false,
   unclaimed: false,
   bodyPresent: true,
   links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
@@ -192,6 +193,22 @@ describe("我的技能页", () => {
 
     await screen.findByText("周报生成");
     expect(screen.getByText("来源已移除")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "分享改动" })).not.toBeInTheDocument();
+  });
+
+  it("技能库不在列表里:说的是这句话,不是「来源已移除」(M4 任务 2)", async () => {
+    // 源好好的,只是这个技能库不在你的库列表里(M3 认领绑歪的存量条目,
+    // 或用户后来把库移除了)。去向与来源已移除相同,但**说法必须不同**
+    // ——说"来源已移除"是假话,而且会把用户引去查一个根本没问题的来源。
+    seedIndex("sha256:newer");
+    seedIpc([view({ libraryRemoved: true, localModified: true })]);
+    render(<MySkillsPage />);
+
+    await screen.findByText("周报生成");
+    expect(screen.getByText("技能库不在列表中")).toBeInTheDocument();
+    expect(screen.queryByText("来源已移除")).not.toBeInTheDocument();
+    // 与来源已移除同样:更新与回推没有去处,不摆按钮引诱用户撞错误
     expect(screen.queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "分享改动" })).not.toBeInTheDocument();
   });

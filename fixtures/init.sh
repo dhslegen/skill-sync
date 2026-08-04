@@ -6,9 +6,11 @@
 #
 # 建成的东西:
 #   组织 ai-skills,仓库 ai-skills/team-skills(内容取自 fixtures/team-skills-repo/)
-#   用户 skillsync-admin  —— 仓库写权限,验证「直推」路径
+#   用户 skillsync-admin  —— 站点管理员 + 仓库写权限,验证「直推」路径
+#   用户 skillsync-writer —— **普通**写权限协作者(非管理员),这一档才是真实公司场景:
+#                            普通员工有写权限而 main 受保护(M4 任务 2 录制时补上)
 #   用户 skillsync-reader —— 仓库只读,验证「无写权限自动走提交审核」路径
-#   两个用户的访问令牌写入 fixtures/.env.local(已在 .gitignore 中,勿提交)
+#   三个用户的访问令牌写入 fixtures/.env.local(已在 .gitignore 中,勿提交)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -16,6 +18,8 @@ cd "$(dirname "$0")"
 BASE_URL="http://127.0.0.1:3300"
 ADMIN_USER="skillsync-admin"
 ADMIN_PASS="skillsync-admin-pw"
+WRITER_USER="skillsync-writer"
+WRITER_PASS="skillsync-writer-pw"
 READER_USER="skillsync-reader"
 READER_PASS="skillsync-reader-pw"
 ORG="ai-skills"
@@ -57,6 +61,7 @@ create_user() {
 }
 
 create_user "$ADMIN_USER" "$ADMIN_PASS" "--admin"
+create_user "$WRITER_USER" "$WRITER_PASS" ""
 create_user "$READER_USER" "$READER_PASS" ""
 
 # 令牌:同名令牌重复创建会 400,失败就重建一次
@@ -77,6 +82,7 @@ issue_token() {
 
 log "签发访问令牌"
 ADMIN_TOKEN=$(issue_token "$ADMIN_USER" "$ADMIN_PASS")
+WRITER_TOKEN=$(issue_token "$WRITER_USER" "$WRITER_PASS")
 READER_TOKEN=$(issue_token "$READER_USER" "$READER_PASS")
 
 api() {
@@ -101,6 +107,11 @@ else
   api POST "/orgs/$ORG/repos" \
     "{\"name\":\"$REPO\",\"description\":\"SkillSync fixture 技能库\",\"auto_init\":true,\"default_branch\":\"main\"}" >/dev/null
 fi
+
+log "把 $WRITER_USER 加为写权限协作者"
+curl -sS -X PUT "$BASE_URL/api/v1/repos/$ORG/$REPO/collaborators/$WRITER_USER" \
+  -H "Authorization: token $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"permission":"write"}' >/dev/null
 
 log "把 $READER_USER 加为只读协作者"
 curl -sS -X PUT "$BASE_URL/api/v1/repos/$ORG/$REPO/collaborators/$READER_USER" \
@@ -141,6 +152,8 @@ SKILLSYNC_FIXTURE_ORG=$ORG
 SKILLSYNC_FIXTURE_REPO=$REPO
 SKILLSYNC_FIXTURE_ADMIN_USER=$ADMIN_USER
 SKILLSYNC_FIXTURE_ADMIN_TOKEN=$ADMIN_TOKEN
+SKILLSYNC_FIXTURE_WRITER_USER=$WRITER_USER
+SKILLSYNC_FIXTURE_WRITER_TOKEN=$WRITER_TOKEN
 SKILLSYNC_FIXTURE_READER_USER=$READER_USER
 SKILLSYNC_FIXTURE_READER_TOKEN=$READER_TOKEN
 EOF

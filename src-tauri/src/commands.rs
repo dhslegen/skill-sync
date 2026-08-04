@@ -1059,12 +1059,50 @@ pub struct InstalledSkillView {
     /// 来源已解析不出来(自定义源被移除,或该构建没配内建源):
     /// 技能照常可用可移除,但更新与回推没了去处,界面要正面说出来。
     pub source_removed: bool,
+    /// **源还在,但这个技能库不在源的库列表里**(M4 任务 2)。
+    ///
+    /// 两条路径会走到:M3 的 `bind_source` 只比同源不校验库,认领时可能把
+    /// `host/someone/other-repo` 的技能绑到该 host 的源上(存量条目);
+    /// 或用户后来把这个库从源里移除了。它与 `source_removed` 的去向相同
+    /// (更新/回推没有去处),但**说法不同**——把它说成"来源已移除"是假话,源好好的。
+    pub library_removed: bool,
     /// 上游(npx skills)装的、尚未认领:只有「认领」这一个动作可做(M3 任务 6)。
     pub unclaimed: bool,
     /// 技能本体是否还在 canonical 目录里。不在 = 残缺,界面要正面说出来。
     pub body_present: bool,
     /// 各关联目录的健康态(universal agent 不建链,不在此列)。
     pub links: Vec<installer::LinkHealthReport>,
+}
+
+/// 一个已装技能的来源还通不通(M4 任务 2)。返回 `(source_removed, library_removed)`。
+///
+/// 两者都为 true 是**不允许**的组合:源都没了就只说"来源已移除",再补一句
+/// "技能库不在列表里"是废话。`library_removed` 专指"源好好的,但这个技能库不在它的
+/// 列表里"——M3 的 `bind_source` 只比同源不校验库,存量条目会走到这一档,
+/// 说成"来源已移除"是假话。
+///
+/// 提成纯函数是为了可测:`installed_list` 要 app_store,测不了
+/// ——只测两个 helper 而不测这里的组合方式,注入把两者对调也照样绿(实撞过)。
+fn source_state(
+    builtin: &registry::BuiltinSource,
+    config: &state::Config,
+    source: &state::SkillSource,
+) -> (bool, bool) {
+    let resolve_with = |key: Option<&str>| {
+        registry::resolve(
+            builtin,
+            &config.registries,
+            &config.builtin_extra_repos,
+            &source.registry_id,
+            key,
+        )
+        .is_ok()
+    };
+    if !resolve_with(None) {
+        return (true, false);
+    }
+    let key = registry::repo_key(&source.owner, &source.repo);
+    (false, !resolve_with(Some(&key)))
 }
 
 #[tauri::command]
@@ -1097,16 +1135,9 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                     source_owner: s.source.owner.clone(),
                     source_repo: s.source.repo.clone(),
                     registry_id: s.source.registry_id.clone(),
-                    // 按 (源,仓) 判定(M4 任务 1):仓从源里被移除时,该仓装的技能
-                    // 更新与回推同样没了去处,和整源被删一个待遇。
-                    source_removed: registry::resolve(
-                        &builtin_src,
-                        &config.registries,
-                        &config.builtin_extra_repos,
-                        &s.source.registry_id,
-                        Some(&registry::repo_key(&s.source.owner, &s.source.repo)),
-                    )
-                    .is_err(),
+                    // 源没了 与 库不在源的列表里 是**两句不同的话**(M4 任务 2)
+                    source_removed: source_state(&builtin_src, &config, &s.source).0,
+                    library_removed: source_state(&builtin_src, &config, &s.source).1,
                     unclaimed: false,
                     body_present: canonical.is_dir(),
                     links: installer.link_health(&s.name, &recorded)?,
@@ -1134,6 +1165,7 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                 source_repo: repo,
                 registry_id: String::new(),
                 source_removed: false,
+                library_removed: false,
                 unclaimed: true,
                 body_present: true,
                 links: Vec::new(),
@@ -1296,6 +1328,35 @@ pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, Ap
         &now_iso8601(),
     )
     .await
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharePreviewArgs {
+    #[serde(default)]
+    pub registry_id: Option<String>,
+    /// 目标库的寻址键 `owner/repo`,缺省 = 该源主库。
+    #[serde(default)]
+    pub repo: Option<String>,
+}
+
+/// 分享前的路径预告(M4 任务 2)。**永不失败**:探不到就是 `unknown`,界面不显示预告,
+/// 分享流程一步不受影响。
+///
+/// 走的是**带凭证**的 `share_source`,不是读链路的 `read_source`——后者对内建源
+/// 硬编码匿名,而匿名与只读用户的 permissions 完全相同(录制结论 5),
+/// 用它探出来的永远是"无权限"。未登录时同样返回 `unknown`(分享本来就要求先登录)。
+#[tauri::command]
+pub async fn share_preview(args: SharePreviewArgs) -> Result<share::SharePath, AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    match share_source(registry_id, args.repo.as_deref()).await {
+        Ok((source, repo)) => Ok(share::preview_permission(&source.as_share_client(), &repo).await),
+        // 未登录 / 源解析不出来:不预告,也不报错——它只是个提示
+        Err(err) => {
+            tracing::debug!(registry_id, code = %err.code, "分享路径预告未取到");
+            Ok(share::SharePath::Unknown)
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1512,6 +1573,44 @@ mod tests {
         })
         .unwrap();
         assert_eq!(dir, std::path::PathBuf::from("/tmp/some-skill"));
+    }
+
+    #[test]
+    fn a_library_missing_from_a_live_source_is_not_the_same_as_a_removed_source() {
+        // M3 的 bind_source 只比同源不校验库,认领时可能把 host/someone/other-repo
+        // 的技能绑到该 host 的源上(存量条目);或用户后来把库从源里移除了。
+        // 两种情况下更新与回推都没了去处,但**说法不同**:源好好的,
+        // 说成"来源已移除"是假话。
+        let builtin = registry::BuiltinSource {
+            base_url: Some("http://gitea.internal:3000"),
+            repo: Some(("skills", "skills")),
+            branch: "main",
+        };
+        let config = state::Config::default();
+        let src = |registry_id: &str, owner: &str, repo: &str| state::SkillSource {
+            registry_id: registry_id.into(),
+            owner: owner.into(),
+            repo: repo.into(),
+            path: "skills/x".into(),
+            git_ref: "aaa1111".into(),
+        };
+
+        // 主库:两个标记都不亮
+        assert_eq!(
+            source_state(&builtin, &config, &src("company", "skills", "skills")),
+            (false, false)
+        );
+        // 源在,但这个库不在它的列表里 —— 只有 library_removed 该亮
+        assert_eq!(
+            source_state(&builtin, &config, &src("company", "someone", "other-repo")),
+            (false, true),
+            "源好好的,说成「来源已移除」是假话"
+        );
+        // 源本身不在:只说"来源已移除",不再补一句库不在列表里(那是废话)
+        assert_eq!(
+            source_state(&builtin, &config, &src("custom-99", "a", "b")),
+            (true, false)
+        );
     }
 
     #[test]

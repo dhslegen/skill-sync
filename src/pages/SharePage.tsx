@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { SkillIcon } from "@/components/SkillIcon";
 import { t } from "@/i18n";
+import { cn } from "@/lib/cn";
 import { isAppError, openLibraryUrl, type ShareCandidate } from "@/lib/ipc";
+import { useRegistries } from "@/store/registries";
 import { useLocalDetail } from "@/store/local-detail";
 import { useSession } from "@/store/session";
 import { useShare, validShareName } from "@/store/share";
@@ -55,6 +57,8 @@ export function SharePage() {
       {!signedIn && (
         <p className="pb-2 text-[12px] text-text-2">{t("share.signInFirst")}</p>
       )}
+      <TargetPicker />
+      <SharePathNotice />
       {candidates.length === 0 ? (
         <p className="py-4 text-[12.5px] text-text-3">{t("share.empty")}</p>
       ) : (
@@ -65,6 +69,69 @@ export function SharePage() {
         </div>
       )}
     </div>
+  );
+}
+
+/** 分享目标库选择器(M4)。只有一个库时不渲染——没得选的选择器是噪音。
+ *  只列**内建源**的库:分享到自定义源要先在设置里给那个源登录,不是这一屏的事。 */
+function TargetPicker() {
+  const registries = useRegistries((s) => s.list);
+  const loadRegistries = useRegistries((s) => s.load);
+  const targetRepo = useShare((s) => s.targetRepo);
+  const setTargetRepo = useShare((s) => s.setTargetRepo);
+
+  useEffect(() => {
+    if (!registries) void loadRegistries();
+  }, [registries, loadRegistries]);
+
+  const repos = registries?.find((r) => r.builtin)?.repos ?? [];
+  if (repos.length <= 1) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 pb-2.5" role="group" aria-label={t("share.targetLabel")}>
+      <span className="text-[11.5px] text-text-3">{t("share.targetLabel")}</span>
+      {repos.map((repo) => {
+        const key = repo.primary ? null : repo.key;
+        const active = targetRepo === key;
+        return (
+          <button
+            key={repo.key}
+            type="button"
+            title={repo.key}
+            aria-pressed={active}
+            onClick={() => void setTargetRepo(key)}
+            className={cn(
+              "rounded-full border px-2.5 py-[3px] text-[12px]",
+              active
+                ? "border-border-strong bg-surface-3 font-medium text-text"
+                : "border-border bg-surface-1 text-text-2 hover:border-border-strong hover:text-text",
+            )}
+          >
+            {repo.name ?? repo.repo}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 「分享后会发生什么」的预告(M4 任务 2)。
+ *  探不到(未登录、网络不通、旧版服务器)就整条不显示——**宁可不说,不说错**。 */
+function SharePathNotice() {
+  const preview = useShare((s) => s.preview);
+  if (preview === "unknown") return null;
+
+  const message =
+    preview === "directPush"
+      ? t("share.pathDirectPush")
+      : preview === "reviewInRepo"
+        ? t("share.pathReviewInRepo")
+        : preview === "reviewViaCopy"
+          ? t("share.pathReviewViaCopy")
+          : t("share.pathMaybeDirect");
+
+  return (
+    <p className="pb-2.5 text-[12px] leading-[1.6] text-text-2">{message}</p>
   );
 }
 

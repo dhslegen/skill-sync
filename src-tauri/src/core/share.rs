@@ -210,6 +210,65 @@ pub enum ShareClient<'a> {
     Github(&'a GithubClient),
 }
 
+/// 分享**会走哪条路**的预告(M4 任务 2)。
+///
+/// 判据来自真实录制(`tests/fixtures/gitea-permissions/NOTES.md`),与 [`submit`] 的
+/// 三条提交路径一一对应。**它只是提示,提交时刻的权限矩阵仍是权威判定**
+/// ——预检与提交之间权限可能变化,所以两边不共用一次结果。
+///
+/// 返回的是枚举不是句子:文案在 i18n。core 若返回中文,两道术语门都扫不到它
+/// (`tests/terminology.rs` 只扒 `AppError::new` 的 message,前端守卫只扫 `src/`)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SharePath {
+    /// 能直推目标分支:改动立即生效。
+    DirectPush,
+    /// 有写权限但分支受保护:在本库开分支提交审核。
+    ReviewInRepo,
+    /// 没有写权限:先复制一份到自己名下,再跨库提交审核。
+    ReviewViaCopy,
+    /// 有写权限但**探不到分支保护**(GitHub:保护规则要 admin 权限才读得到)。
+    /// 可能直推,也可能被挡下转评审——不假装知道。
+    MaybeDirect,
+    /// 探不到(网络失败 / 空库 404 / 旧版 Gitea 缺字段)。界面不显示预告。
+    Unknown,
+}
+
+/// 探一次目标库的分享路径。**永不返回 Err**:预检失败一律 [`SharePath::Unknown`],
+/// 绝不拦住分享本身(fail-open)。
+///
+/// 注意调用方必须传**带凭证**的 client:匿名与只读用户的 `permissions` 完全相同
+/// (录制结论 5),拿匿名 client 探出来的永远是"无权限"——而内建源的读链路
+/// 恰好硬编码匿名,顺手复用 `read_source` 就会让每次预检都反向撒谎。
+pub async fn preview_permission(client: &ShareClient<'_>, repo: &RepoRef) -> SharePath {
+    match client {
+        ShareClient::Gitea(c) => {
+            // 两个端点都要:user_can_push 说得出"能不能直推",但它为 false 时
+            // 分不出「有写权限但受保护」与「只读」——那两档的去向完全不同。
+            let (Ok(branch), Ok(info)) = (
+                c.branch_access(repo).await,
+                c.repo_info(&repo.owner, &repo.repo).await,
+            ) else {
+                return SharePath::Unknown;
+            };
+            match (branch.user_can_push, info.permissions.push) {
+                (Some(true), _) => SharePath::DirectPush,
+                (Some(false), true) => SharePath::ReviewInRepo,
+                (Some(false), false) => SharePath::ReviewViaCopy,
+                // 旧版 Gitea 没有 user_can_push:有写权限时分支保护无从得知,
+                // 不许预告"直接生效";没有写权限则与新版结论一致。
+                (None, true) => SharePath::Unknown,
+                (None, false) => SharePath::ReviewViaCopy,
+            }
+        }
+        ShareClient::Github(c) => match c.repo_view(&repo.owner, &repo.repo).await {
+            Ok(view) if view.permissions.push => SharePath::MaybeDirect,
+            Ok(_) => SharePath::ReviewViaCopy,
+            Err(_) => SharePath::Unknown,
+        },
+    }
+}
+
 /// 实时确认远端有没有同名技能(不信缓存:过期缓存会把 Taken 误判成 Fresh)。
 pub async fn precheck(
     client: &ShareClient<'_>,

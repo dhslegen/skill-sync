@@ -46,6 +46,8 @@ function reset() {
     staleNotice: false,
     shareError: null,
     done: null,
+    targetRepo: null,
+    preview: "unknown",
   });
 }
 
@@ -233,5 +235,97 @@ describe("分享流程状态机", () => {
     const s = useShare.getState();
     expect(s.scanError?.message).toContain("失败");
     expect(s.candidates).toHaveLength(1);
+  });
+});
+describe("分享路径预告与目标库(M4 任务 2)", () => {
+  beforeEach(reset);
+
+  it("load 顺带探一次路径,主库时不带 repo 参数", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "share_candidates") return [];
+      if (cmd === "share_preview") return "reviewInRepo";
+      return null;
+    });
+
+    await useShare.getState().load();
+
+    expect(invoke).toHaveBeenCalledWith("share_preview", { args: {} });
+    expect(useShare.getState().preview).toBe("reviewInRepo");
+  });
+
+  it("切目标库:带上仓库键重探,并先清掉上一个库的预告", async () => {
+    useShare.setState({ preview: "directPush" });
+    let resolvePreview!: (v: unknown) => void;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "share_preview")
+        return new Promise((resolve) => {
+          resolvePreview = resolve;
+        });
+      return null;
+    });
+
+    const done = useShare.getState().setTargetRepo("design/design-skills");
+    // 还没拿到新结果时,绝不能挂着主库的"直接生效"
+    expect(useShare.getState().preview).toBe("unknown");
+    expect(useShare.getState().targetRepo).toBe("design/design-skills");
+
+    resolvePreview("reviewViaCopy");
+    await done;
+    expect(invoke).toHaveBeenCalledWith("share_preview", {
+      args: { repo: "design/design-skills" },
+    });
+    expect(useShare.getState().preview).toBe("reviewViaCopy");
+  });
+
+  it("预告失败不亮错误、不拦分享:只是没有预告", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "share_candidates") return [];
+      if (cmd === "share_preview") throw { code: "NET_UNREACHABLE", message: "连不上" };
+      return null;
+    });
+
+    await useShare.getState().load();
+
+    const s = useShare.getState();
+    expect(s.preview).toBe("unknown");
+    expect(s.scanError).toBeNull();
+    expect(s.shareError).toBeNull();
+    // 候选照常拿到,表单流程一步不受影响
+    expect(s.candidates).toEqual([]);
+  });
+
+  it("提交时把目标库原样带上,缺省会推到主库", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "share_candidates") return [];
+      if (cmd === "share_preview") return "unknown";
+      if (cmd === "skill_share")
+        return { outcome: "shared", mode: "pushed", commitSha: "a", reviewUrl: null, adopted: false, shareName: "my-notes" };
+      return null;
+    });
+    useShare.setState({ targetRepo: "design/design-skills" });
+    useShare.getState().begin(candidate());
+
+    await useShare.getState().submit();
+
+    const sent = invoke.mock.calls.find(([cmd]) => cmd === "skill_share")?.[1].args;
+    expect(sent.repo).toBe("design/design-skills");
+  });
+
+  it("等待期间又切了库:迟到的结果不冒充当前库", async () => {
+    const pending: ((v: unknown) => void)[] = [];
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "share_preview") return new Promise((resolve) => pending.push(resolve));
+      return null;
+    });
+
+    const first = useShare.getState().setTargetRepo("a/one");
+    const second = useShare.getState().setTargetRepo("b/two");
+    // 先回来的是第一个库的结果
+    pending[0]("directPush");
+    pending[1]("reviewViaCopy");
+    await Promise.all([first, second]);
+
+    expect(useShare.getState().targetRepo).toBe("b/two");
+    expect(useShare.getState().preview).toBe("reviewViaCopy");
   });
 });

@@ -231,7 +231,9 @@ export function hasUpdate(
     | null
     | undefined,
 ): boolean {
-  if (!index || skill.sourceRemoved) return false;
+  // 来源没了、或这个技能库不在列表里,更新都没有去处:摆出「更新」就是引诱用户
+  // 去点一个必然报 REPO_UNKNOWN_REPO 的按钮(M4 任务 2)。
+  if (!index || skill.sourceRemoved || skill.libraryRemoved) return false;
   if (
     skill.registryId !== index.registryId ||
     skill.sourceOwner !== index.owner ||

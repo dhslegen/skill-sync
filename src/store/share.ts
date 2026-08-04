@@ -13,10 +13,12 @@ import { t } from "@/i18n";
 import {
   isAppError,
   shareCandidates,
+  sharePreview,
   skillShare,
   type AppError,
   type ShareCandidate,
   type ShareOutcome,
+  type SharePath,
 } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useStoreIndex } from "@/store/store-index";
@@ -37,12 +39,21 @@ interface ShareState {
   phase: SharePhase;
   target: ShareCandidate | null;
   form: ShareForm;
+  /** 分享目标库(M4):寻址键 `owner/repo`,null = 该源主库。 */
+  targetRepo: string | null;
+  /** 目标库的路径预告。权限是**仓库级**的,一个目标库探一次,切库才重探
+   *  ——不对每个候选技能各发一次(候选可能有十几个)。 */
+  preview: SharePath;
   /** CONFLICT_STALE 后回到表单时的提示。 */
   staleNotice: boolean;
   shareError: AppError | null;
   done: Extract<ShareOutcome, { outcome: "shared" }> | null;
 
   load: () => Promise<void>;
+  /** 切换分享目标库并重探路径。 */
+  setTargetRepo: (repo: string | null) => Promise<void>;
+  /** 探一次目标库的分享路径。**永不抛错**:探不到就是 unknown,表单照常可提交。 */
+  refreshPreview: () => Promise<void>;
   begin: (candidate: ShareCandidate) => void;
   setForm: (patch: Partial<ShareForm>) => void;
   cancel: () => void;
@@ -73,6 +84,8 @@ export const useShare = create<ShareState>((set, get) => ({
   phase: "idle",
   target: null,
   form: EMPTY_FORM,
+  targetRepo: null,
+  preview: "unknown",
   staleNotice: false,
   shareError: null,
   done: null,
@@ -86,6 +99,27 @@ export const useShare = create<ShareState>((set, get) => ({
       // 扫描失败保留上次内容并报错,不画成"没有可分享的技能"
       set({ scanError: toAppError(raw), scanning: false });
     }
+    // 预告与候选扫描互不依赖:哪个失败都不影响另一个
+    await get().refreshPreview();
+  },
+
+  refreshPreview: async () => {
+    const repo = get().targetRepo;
+    try {
+      const preview = await sharePreview(repo ? { repo } : {});
+      // 等待期间用户可能又切了库:迟到的结果不能冒充当前库
+      if (get().targetRepo === repo) set({ preview });
+    } catch {
+      // 预告只是提示,失败连错误都不亮——表单照常可提交
+      if (get().targetRepo === repo) set({ preview: "unknown" });
+    }
+  },
+
+  setTargetRepo: async (repo) => {
+    if (get().targetRepo === repo) return;
+    // 立刻清掉上一个库的预告:挂着旧库的路径却标着新库,等于对用户撒谎
+    set({ targetRepo: repo, preview: "unknown" });
+    await get().refreshPreview();
   },
 
   begin: (candidate) =>
@@ -123,6 +157,8 @@ export const useShare = create<ShareState>((set, get) => ({
           form.description !== (target.description ?? "") ? form.description : undefined,
         origin: target.origin.kind === "npxSkills" ? "npx-skills" : "local",
         overwrite,
+        // 目标库要带上:缺省会推到该源主库,选了别的库却推错地方
+        ...(get().targetRepo ? { repo: get().targetRepo! } : {}),
       });
       if (result.outcome === "needsDecision") {
         // core 没发过任何提交,等用户拍板

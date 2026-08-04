@@ -370,6 +370,9 @@ export interface InstalledSkillView {
   registryId: string;
   /** 来源已解析不出来(自定义源被移除等):可用可移除,但更新与回推没了去处。 */
   sourceRemoved: boolean;
+  /** 源还在,但这个技能库不在源的库列表里(M4)。去向与 sourceRemoved 相同,
+   *  但**说法不同**——源好好的,说成「来源已移除」是假话。 */
+  libraryRemoved: boolean;
   /** 上游(npx skills)装的、尚未认领:只有「认领」这一个动作可做。 */
   unclaimed: boolean;
   /** 技能本体是否还在。false = 残缺,界面要正面说出来。 */
@@ -488,6 +491,26 @@ export interface Submitted {
 }
 
 export const shareCandidates = () => call<ShareCandidate[]>("share_candidates");
+
+/**
+ * 分享会走哪条路的预告(M4 任务 2)。与 core 的 `share::SharePath` 一一对应。
+ *
+ * - `directPush` 改动立即生效;`reviewInRepo` 在技能库里开一份待审;
+ * - `reviewViaCopy` 先复制一份到自己名下再提交审核;
+ * - `maybeDirect` 有写权限但探不到审核规则(GitHub 的保护规则要管理员权限才读得到);
+ * - `unknown` 探不到,界面不显示预告。
+ *
+ * **它只是提示**:提交时刻的权限判定才是权威,预检失败绝不拦分享。
+ */
+export type SharePath =
+  | "directPush"
+  | "reviewInRepo"
+  | "reviewViaCopy"
+  | "maybeDirect"
+  | "unknown";
+
+export const sharePreview = (args: { registryId?: string; repo?: string } = {}) =>
+  call<SharePath>("share_preview", { args });
 
 export const skillShare = (args: {
   sourcePath: string;

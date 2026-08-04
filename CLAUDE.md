@@ -246,15 +246,15 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 - 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
   其余注册表 agent 尽力支持
 
-## 当前进度(2026-08-04,M4 任务 1 完成)
+## 当前进度(2026-08-04,M4 任务 1–2 完成)
 
 **M1 任务 1–13、M2 任务 1–6、M3 任务 1–6(含 5b)全部完成并提交**;**M4 已开工**
-(分解与拍板记录在 docs/M4-任务分解.md:任务 1 一源多仓 ✅ → 2 权限细分 → 4 新建技能向导
+(分解与拍板记录在 docs/M4-任务分解.md:任务 1 一源多仓 ✅ → 2 权限细分 ✅ → 4 新建技能向导
 → 5 收尾;**任务 3 安装量已摘除**,内网埋点服务落点未定,2026-08-04 用户拍板暂缓;
 C7 项目级 skill 不纳入 M4)。逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 386 + 前端 316 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
+- 本机:Rust 396 + 前端 322 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
   `pnpm dev` 启动冒烟通过(M4 任务 1 后带内网配置实测:商店读到真实库 28 个技能)
 - **双平台 CI**:**M4 任务 1 的两笔(`3857720` / `a7a1de3`)macOS + Windows 双 job 全绿**(2026-08-04 逐 job 实测);
   M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;`de7b233`/`2eb0595` 当时因账号计费
@@ -323,6 +323,25 @@ M4 任务 1 新增的 IPC:`registry_add_repo`/`registry_remove_repo`;
     去主库找同名技能——M3 起就静默存在,M4 任务 1 修掉。
   - **商店的库切换器在加载中/出错两档也要渲染**:早退分支把它挡掉后,用户切到
     连不上的库就再也点不回来(2026-08-04 真机视觉自查抓到,有测试钉住)。
+- **分享前的路径预告**(M4 任务 2,`share::preview_permission`):
+  - **`permissions.push` 单独用会说谎**——目标分支受保护时它仍是 true,而直推必然 403。
+    准确判据是 `GET /repos/{o}/{r}/branches/{branch}` 的 **`user_can_push`**
+    (合并了仓库写权限与该分支的保护规则,只读用户也读得到;管理员在受保护分支上
+    同样是 false)。两个字段合起来才分得出三条路,录制见
+    `tests/fixtures/gitea-permissions/NOTES.md`。
+  - **预检必须走带凭证的 client**(`share_source`,不是 `read_source`):匿名与只读的
+    `permissions` 完全相同,而内建源的读链路硬编码匿名——顺手复用就会让每次预检
+    都预告"无权限"。wiremock 用 `header_exists("authorization")` 钉住。
+  - **探不到一律 `Unknown`,绝不落进"无权限"档**(`permissions` 的 serde default 会把
+    读不到变成 `push:false`,方向恰好是反的);界面对 Unknown **整条不显示**。
+    预检失败绝不拦分享——它只是提示,提交时刻的权限矩阵仍是权威判定。
+  - **GitHub 的分支保护预检不到**(REST branch-protection 端点要 admin 权限),
+    有写权限时只给 `MaybeDirect`「可能直接生效」,**不假装知道**。
+  - core 返回枚举不返回中文句子:两道术语门都扫不到 core 里的散装文案
+    (`tests/terminology.rs` 只扒 `AppError::new`,前端守卫只扫 `src/`)。
+  - **「源没了」与「库不在源的列表里」是两句不同的话**(`commands::source_state`):
+    后者源好好的,说成"来源已移除"是假话(M3 `bind_source` 绑歪的存量条目会走到这档)。
+    两者都让「更新」按钮消失——摆出来就是引诱用户点一个必然报错的按钮。
 - **读链路对来源类型无感**(M3 任务 4):store/acquire/scheduler 只吃 `gitea::RepoSource`
   trait(branch_head + download_archive),分发在 `commands::read_source` 的 SourceClient
   枚举。**写链路(分享)刻意不进 trait**——两家提交/评审 API 形状完全不同,

@@ -128,6 +128,21 @@ pub struct RepoInfo {
     pub empty: bool,
 }
 
+/// `GET /repos/{o}/{r}/branches/{branch}` 里与权限有关的部分(M4 任务 2 录制)。
+///
+/// **字段名保持 snake_case,不加 `rename_all`**:Gitea 发的就是 `user_can_push`,
+/// 驼峰化后反序列化会去找 `userCanPush` 拿不到,配上 `serde(default)` 静默变成
+/// `false`——落进"无权限"档,方向恰好是反的(与 M3 的 `new_branch`→`newBranch` 同型)。
+#[derive(Debug, Clone, Deserialize)]
+pub struct BranchAccess {
+    #[serde(default)]
+    pub protected: bool,
+    /// 当前登录用户能否直推这个分支。**它把仓库写权限与分支保护合并成一个答案**,
+    /// 是预检唯一准确的判据(`permissions.push` 在受保护时仍是 true)。
+    /// 旧版 Gitea 没有这个字段,故用 `Option` 区分"说了 false"与"根本没说"。
+    pub user_can_push: Option<bool>,
+}
+
 /// 分支当前指向的提交。商店索引靠它判断"远端有没有变",避免每次都下载压缩包。
 /// git tree 里的一个文件:仓库相对路径 + blob sha。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -325,6 +340,21 @@ impl GiteaClient {
             .send(self.request(
                 reqwest::Method::GET,
                 self.api(&format!("/repos/{owner}/{repo}")),
+            ))
+            .await?;
+        parse_json(resp).await
+    }
+
+    /// 读分支的保护状态与"我能不能推"。只读用户也读得到(不像 `branch_protections`
+    /// 端点要 admin 权限)——录制结论见 `tests/fixtures/gitea-permissions/NOTES.md`。
+    pub async fn branch_access(&self, r: &RepoRef) -> Result<BranchAccess, AppError> {
+        let resp = self
+            .send(self.request(
+                reqwest::Method::GET,
+                self.api(&format!(
+                    "/repos/{}/{}/branches/{}",
+                    r.owner, r.repo, r.branch
+                )),
             ))
             .await?;
         parse_json(resp).await
