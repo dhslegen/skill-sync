@@ -248,6 +248,82 @@ describe("修复流程", () => {
   });
 });
 
+describe("分享改动的冲突档(M5 任务 1)", () => {
+  beforeEach(reset);
+
+  const modified = () => view({ localModified: true });
+
+  it("远端变过:进冲突档等拍板,不当成错误", async () => {
+    useMySkills.setState({ list: [modified()] });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_share_changes")
+        return { kind: "remoteChanged", historyUrl: "http://g/skills/skills/commits/x" };
+      if (cmd === "installed_list") return [modified()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().shareChanges("weekly-report");
+
+    const s = useMySkills.getState();
+    expect(s.shareConflict).toEqual({
+      dirSlug: "weekly-report",
+      historyUrl: "http://g/skills/skills/commits/x",
+    });
+    expect(s.shareError).toBeNull();
+    expect(s.shareDone).toBeNull();
+  });
+
+  it("确认后带 forceReview 重试,结果按「已提交审核」展示", async () => {
+    useMySkills.setState({
+      list: [modified()],
+      shareConflict: { dirSlug: "weekly-report", historyUrl: null },
+    });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_share_changes")
+        return { kind: "submitted", mode: "reviewRequested", commitSha: "n", reviewUrl: "http://x/pulls/7" };
+      if (cmd === "installed_list") return [modified()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().confirmShareReview();
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
+    expect((call?.[1] as { args: { forceReview?: boolean } }).args.forceReview).toBe(true);
+    const s = useMySkills.getState();
+    expect(s.shareConflict).toBeNull();
+    expect(s.shareDone).toEqual({ dirSlug: "weekly-report", mode: "reviewRequested" });
+  });
+
+  it("提交瞬间被人抢先(CONFLICT_STALE)进同一个冲突档", async () => {
+    // 前置检测过了、提交仍撞上 422:检测与提交之间被人抢先,语义相同,
+    // 不该退化成一句通用错误让用户干瞪眼
+    useMySkills.setState({ list: [modified()] });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_share_changes")
+        throw { code: "CONFLICT_STALE", message: "这个技能在你操作期间被其他人改过了,请重新确认后再提交" };
+      if (cmd === "installed_list") return [modified()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().shareChanges("weekly-report");
+
+    const s = useMySkills.getState();
+    expect(s.shareConflict).toEqual({ dirSlug: "weekly-report", historyUrl: null });
+    expect(s.shareError).toBeNull();
+  });
+
+  it("取消冲突档:不发第二跳,改动留在本地", async () => {
+    useMySkills.setState({
+      shareConflict: { dirSlug: "weekly-report", historyUrl: null },
+    });
+
+    useMySkills.getState().cancelShareConflict();
+
+    expect(useMySkills.getState().shareConflict).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("skill_share_changes", expect.anything());
+  });
+});
+
 describe("更新判定与更新动作", () => {
   beforeEach(reset);
 

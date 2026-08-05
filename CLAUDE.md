@@ -263,12 +263,12 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 - 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
   其余注册表 agent 尽力支持
 
-## 当前进度(2026-08-04,M4 任务 1–2、4、6a–6c 完成)
+## 当前进度(2026-08-05,M5 任务 1 完成)
 
-**M1 任务 1–13、M2 任务 1–6、M3 任务 1–6(含 5b)全部完成并提交**;**M4 已开工**
-(分解与拍板记录在 docs/M4-任务分解.md:任务 1 一源多仓 ✅ → 2 权限细分 ✅ → 4 新建技能向导 ✅
-→ 6a/6b/6c 体验修复 ✅(用户实测报的四个问题,见下)→ 5 收尾;**任务 3 安装量已摘除**,内网埋点服务落点未定,2026-08-04 用户拍板暂缓;
-C7 项目级 skill 不纳入 M4)。逐任务的产物与假设见 `git log`。远端 `origin` =
+**M1–M4 全部完成并提交,macOS 签名分发已打通**;**M5 已开工**(分解与七项拍板记录在
+docs/M5-任务分解.md:任务 1 多人协作冲突 ✅ → 2 「我的技能」分区展示 → 3 商店标签
+(一套多选 tag,`categories.json` 形状开工前另拍)→ 4 收尾 + 0.2.0 发版)。
+逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
 - 本机:Rust 426 + 前端 363 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
@@ -306,6 +306,24 @@ M4 后续新增的 IPC:`share_preview`(任务 2)、`skill_create`(任务 4)、
 ### 现役机制约束(动相关代码前必读)
 
 这些**都已实现**,列在这里是因为它们的不变量不看就会破坏。已完成的过程叙事在 git log。
+
+- **回推前必须过远端变更检测**(M5 任务 1,`share::share_installed`):
+  乐观锁(CONFLICT_STALE)只拦"拉 sha 与提交之间"的瞬间竞态——提交用的是**当前**
+  远端 blob sha,「A 基于旧版改、B 早已推新版」会拿最新 sha 通过校验**静默覆盖 B**。
+  检测判据 = 远端 zip 指纹 ≠ 账上 `content_hash`,**与本地改没改无关**(本地没改时
+  回推的是旧版,照样覆盖);命中即返回 `ShareInstalledOutcome::RemoteChanged`
+  (NeedsDecision 同款:不是错误,磁盘与远端零写入)。要点:
+  - 指纹路径必须拼 `archive.root`(entries 键带压缩包顶层目录)——不拼会**恒判冲突**,
+    而且冲突侧测试自己发现不了,要靠"远端一致应直通"的对照组;
+  - 基线(`content_hash`)为空跳过检测:空串与任何指纹都不等,不跳会恒拦;
+  - 确认后的第二跳带 `force_review: true`:跳过检测 + submit 矩阵**砍掉直推**
+    (其余分流不变),记账照旧一个字不动;**没有「强行覆盖」入口**(用户拍板);
+  - `CONFLICT_STALE`(检测与提交之间被抢先)在前端导入**同一个**冲突档;
+  - `install.ts` 的 `keepLocalAndShare` **恒带 forceReview**——那条路的前提就是
+    "远端有新版",直推等于覆盖对方,是同一缺陷的第三个入口;
+  - 检测走**读链路**(`read_source`,内建源匿名),提交走**写链路**(实名),不能省成一个;
+  - live 用例**直推 main 必须拿 `share_live.rs` 的 `MAIN_BRANCH_LOCK` 并自清理**:
+    并发直推同分支在真 Gitea 上撞车、残留技能打红 gitea_live 清单断言,两个都真实发生过。
 
 - **多源解析只有一个入口**(M3 任务 1):commands 一律经 `registry::resolve`
   (`BuiltinSource` 把编译期常量当参数传——测试构建不注入常量,直读会让测试只能测

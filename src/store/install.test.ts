@@ -151,13 +151,15 @@ describe("获取流程状态机", () => {
     expect(useInstall.getState().localKept).toBe(true);
   });
 
-  it("保留并分享:先 keepLocal 落稳,再把改动推回去", async () => {
+  it("保留并分享:先 keepLocal 落稳,再以提交审核方式推改动(绝不直推)", async () => {
+    // 这条路的前提就是"远端有新版":直推会把远端刚更新的版本顶掉——
+    // M5 任务 1 起恒带 forceReview,合并交给技能库的评审流程
     let installCalls = 0;
     invoke.mockImplementation(async (cmd) => {
       if (cmd === "agents_detected") return AGENTS;
       if (cmd === "installed_list") return [];
       if (cmd === "skill_share_changes")
-        return { mode: "pushed", commitSha: "new", reviewUrl: null };
+        return { kind: "submitted", mode: "reviewRequested", commitSha: "new", reviewUrl: "http://x/pulls/5" };
       installCalls += 1;
       return installCalls === 1
         ? { outcome: "needsDecision", precheck: { status: "locallyModified", installedSha: "aaa" } }
@@ -171,10 +173,11 @@ describe("获取流程状态机", () => {
     // keepLocal 的重试带了 resolution
     const second = invoke.mock.calls.filter(([cmd]) => cmd === "skill_install")[1];
     expect(second?.[1].args.resolution).toBe("keepLocal");
-    // 分享确实发生,且发生在保留之后
+    // 分享确实发生,且发生在保留之后,且带着 forceReview
     const shared = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
     expect(shared?.[1].args.dirSlug).toBe("weekly-report");
-    expect(useInstall.getState().shareResult).toEqual({ mode: "pushed" });
+    expect(shared?.[1].args.forceReview).toBe(true);
+    expect(useInstall.getState().shareResult).toEqual({ mode: "reviewRequested" });
     expect(useInstall.getState().phase).toBe("done");
   });
 

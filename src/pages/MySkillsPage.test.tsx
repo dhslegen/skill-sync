@@ -305,7 +305,7 @@ describe("我的技能页", () => {
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "installed_list") return [view({ localModified: true })];
       if (cmd === "skill_share_changes")
-        return { mode: "pushed", commitSha: "new", reviewUrl: null };
+        return { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null };
       return { agents: [], canonicalDir: "" };
     });
     render(<MySkillsPage />);
@@ -315,6 +315,26 @@ describe("我的技能页", () => {
     const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
     expect(call?.[1].args.dirSlug).toBe("weekly-report");
     expect(await screen.findByText(/改动已分享/)).toBeInTheDocument();
+  });
+
+  it("分享改动撞上他人的新版:进冲突档等拍板,不当错误展示", async () => {
+    seedIpc([view({ localModified: true })]);
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return [view({ localModified: true })];
+      if (cmd === "skill_share_changes")
+        return { kind: "remoteChanged", historyUrl: "http://g/skills/skills/commits/x" };
+      return { agents: [], canonicalDir: "" };
+    });
+    render(<MySkillsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "分享改动" }));
+
+    expect(useMySkills.getState().shareConflict).toEqual({
+      dirSlug: "weekly-report",
+      historyUrl: "http://g/skills/skills/commits/x",
+    });
+    expect(useMySkills.getState().shareError).toBeNull();
+    expect(screen.queryByText(/没能完成/)).not.toBeInTheDocument();
   });
 
   it("没改过的技能没有「分享改动」按钮", async () => {
@@ -329,7 +349,7 @@ describe("我的技能页", () => {
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "installed_list") return [view({ localModified: true })];
       if (cmd === "skill_share_changes")
-        return { mode: "reviewRequested", commitSha: "new", reviewUrl: "http://x/pulls/3" };
+        return { kind: "submitted", mode: "reviewRequested", commitSha: "new", reviewUrl: "http://x/pulls/3" };
       return { agents: [], canonicalDir: "" };
     });
     render(<MySkillsPage />);

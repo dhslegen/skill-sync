@@ -1518,6 +1518,9 @@ pub struct ShareChangesArgs {
     #[serde(default)]
     pub registry_id: Option<String>,
     pub dir_slug: String,
+    /// 冲突档确认后的第二跳:跳过远端变更检测,强制走「开分支 + 提交审核」。
+    #[serde(default)]
+    pub force_review: bool,
 }
 
 /// 回推目标仓的寻址键,取**账上**的来源坐标(M4 任务 1)。
@@ -1535,20 +1538,28 @@ fn installed_repo_key(state: &state::State, dir_slug: &str) -> Option<String> {
 }
 
 /// 把本 app 安装、用户改过的技能推回来源仓库(冲突弹窗承诺的那条路)。
+///
+/// 远端变更检测走**读链路**(内建源匿名),提交走**写链路**(实名)——
+/// 两个 client 的凭证策略不同,不能顺手复用一个。
 #[tauri::command]
-pub async fn skill_share_changes(args: ShareChangesArgs) -> Result<share::Submitted, AppError> {
+pub async fn skill_share_changes(
+    args: ShareChangesArgs,
+) -> Result<share::ShareInstalledOutcome, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
     let repo_key = installed_repo_key(&app_store()?.load_state()?.value, &args.dir_slug);
     let (source, repo) = share_source(registry_id, repo_key.as_deref()).await?;
+    let (read, _) = read_source(registry_id, repo_key.as_deref()).await?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
     share::share_installed(
         &source.as_share_client(),
+        &read,
         &registry,
         &SystemEnv,
         &store,
         &args.dir_slug,
         &repo.branch,
+        args.force_review,
         &now_iso8601(),
     )
     .await

@@ -44,6 +44,9 @@ pub fn api_base_for(base_url: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct GithubClient {
     api_base: String,
+    /// 网页地址(用户配置的源地址原样,只去尾斜杠)——历史页链接从它拼,
+    /// 不能从 api_base 反推(api.github.com 反推不回 github.com)。
+    web_base: String,
     token: Option<String>,
     http: reqwest::Client,
 }
@@ -52,9 +55,18 @@ impl GithubClient {
     pub fn new(base_url: &str, token: Option<String>, http: reqwest::Client) -> Self {
         Self {
             api_base: api_base_for(base_url),
+            web_base: base_url.trim_end_matches('/').to_string(),
             token,
             http,
         }
+    }
+
+    /// 该目录在目标分支上的提交历史页(web UI,回推冲突档的「查看对方改动」链接)。
+    pub fn history_url(&self, r: &RepoRef, path: &str) -> String {
+        format!(
+            "{}/{}/{}/commits/{}/{}",
+            self.web_base, r.owner, r.repo, r.branch, path
+        )
     }
 
     pub async fn branch_head(&self, r: &RepoRef) -> Result<BranchHead, AppError> {

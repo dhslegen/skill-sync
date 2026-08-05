@@ -14,6 +14,11 @@ use skillsync_lib::core::state::Store;
 
 const NOW: &str = "2026-07-31T10:00:00.000Z";
 
+/// 会**直推 main** 的用例必须拿这把锁:同一二进制内测试并行跑,并发直推同一
+/// 分支会在 Gitea 端撞车(M5 任务 1 加冲突用例时真实撞过——three_branches 的
+/// Fresh 直推被并发的另一笔顶掉)。fork/分支路径不碰 main,不需要。
+static MAIN_BRANCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct TmpEnv {
     home: PathBuf,
 }
@@ -64,6 +69,7 @@ fn write_skill(dir: &Path, name: &str, desc: &str) {
 /// 会互相踩(并行跑、共享远端状态),串成一个用例反而各阶段边界最清楚。
 #[tokio::test]
 async fn share_three_branches_and_race_against_a_real_gitea() {
+    let _main = MAIN_BRANCH_LOCK.lock().await;
     let Some(vars) = fixture_env() else {
         eprintln!("跳过:未找到 fixtures/.env.local,先跑 ./fixtures/init.sh");
         return;
@@ -327,5 +333,207 @@ async fn read_only_users_can_contribute_via_fork_for_real() {
     .unwrap();
     if let Some(number) = url.rsplit('/').next().and_then(|n| n.parse::<u64>().ok()) {
         let _ = admin.close_pull(&repo.owner, &repo.repo, number).await;
+    }
+}
+
+/// 真实双写方冲突(M5 任务 1):A(本 app)基于旧版改,B 先推了新版。
+///
+/// wiremock 矩阵验的是"我们怎么处理响应";这条验真实 Gitea 的三件事串起来通:
+/// ① 压缩包指纹与本地基线的比对真的认出"远端变过";
+/// ② history_url 的路由在真实 Gitea 上是活的(200);
+/// ③ 确认后的第二跳真的落成"开分支 + 提交审核",一笔直推都没有。
+#[tokio::test]
+async fn remote_conflict_detection_against_a_real_gitea() {
+    use skillsync_lib::core::fsops;
+    use skillsync_lib::core::state::{InstalledSkill, SkillSource};
+
+    let _main = MAIN_BRANCH_LOCK.lock().await;
+    let Some(vars) = fixture_env() else {
+        eprintln!("跳过:未找到 fixtures/.env.local,先跑 ./fixtures/init.sh");
+        return;
+    };
+    let need = [
+        "SKILLSYNC_FIXTURE_GITEA_URL",
+        "SKILLSYNC_FIXTURE_ORG",
+        "SKILLSYNC_FIXTURE_REPO",
+        "SKILLSYNC_FIXTURE_ADMIN_TOKEN",
+    ];
+    if let Some(missing) = need.iter().find(|k| !vars.contains_key(**k)) {
+        eprintln!("跳过:fixtures/.env.local 缺 {missing}");
+        return;
+    }
+    let repo = RepoRef {
+        owner: vars["SKILLSYNC_FIXTURE_ORG"].clone(),
+        repo: vars["SKILLSYNC_FIXTURE_REPO"].clone(),
+        branch: "main".into(),
+    };
+    let admin = GiteaClient::new(
+        vars["SKILLSYNC_FIXTURE_GITEA_URL"].clone(),
+        Some(vars["SKILLSYNC_FIXTURE_ADMIN_TOKEN"].clone()),
+    )
+    .unwrap();
+    if admin.branch_head(&repo).await.is_err() {
+        eprintln!("跳过:连不上 fixture Gitea");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().to_path_buf();
+    let env = TmpEnv { home: home.clone() };
+    let store = Store::new(home.join(".skillsync"));
+    let registry = AgentRegistry::builtin();
+
+    // 每轮独立目录名;分支名从 now 派生,同样用进程号扰动避免撞车
+    let stamp = format!("{:x}", std::process::id());
+    let name = format!("conflict-live-{stamp}");
+    let remote_path = format!("skills/{name}");
+    let now = format!(
+        "2026-08-05T10:00:{:02}.{:03}Z",
+        std::process::id() % 60,
+        std::process::id() % 1000
+    );
+
+    // ① "获取时刻"的基线:远端 v1,本地同字节 v1,按本地 dir hash 记账
+    //   (zip 指纹与 dir hash 的等式已有测试逐字节钉住,这里靠它)
+    let v1 = "---\nname: 冲突实测\ndescription: v1\n---\n正文\n";
+    admin
+        .change_files(
+            &repo.owner,
+            &repo.repo,
+            &ChangeFilesRequest {
+                branch: "main".into(),
+                new_branch: None,
+                message: "新增技能:冲突实测".into(),
+                files: vec![FileChange::create(format!("{remote_path}/SKILL.md"), v1.as_bytes())],
+            },
+        )
+        .await
+        .expect("灌入 v1 失败");
+    let dir = home.join(".agents").join("skills").join(&name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), v1).unwrap();
+    let mut state = store.load_state().unwrap().value;
+    state.installed.push(InstalledSkill {
+        name: name.clone(),
+        source: SkillSource {
+            registry_id: "fixture".into(),
+            owner: repo.owner.clone(),
+            repo: repo.repo.clone(),
+            path: remote_path.clone(),
+            git_ref: "base".into(),
+        },
+        commit_sha: "base".into(),
+        content_hash: fsops::dir_content_hash(&dir).unwrap(),
+        origin: None,
+        agents: vec![],
+        links: vec![],
+        installed_at: now.clone(),
+        updated_at: now.clone(),
+    });
+    store.save_state(&state).unwrap();
+
+    // ② 我本地改成 v2
+    std::fs::write(dir.join("SKILL.md"), "---\nname: 冲突实测\ndescription: 我的 v2\n---\n正文\n")
+        .unwrap();
+
+    // ③ B 抢先把远端推到 v3(更新要带 v1 的 blob sha)
+    let head = admin.branch_head(&repo).await.unwrap();
+    let sha = admin
+        .tree_files(&repo.owner, &repo.repo, &head.sha)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|f| f.path == format!("{remote_path}/SKILL.md"))
+        .expect("远端应有 v1")
+        .sha;
+    admin
+        .change_files(
+            &repo.owner,
+            &repo.repo,
+            &ChangeFilesRequest {
+                branch: "main".into(),
+                new_branch: None,
+                message: "更新技能:冲突实测".into(),
+                files: vec![FileChange::update(
+                    format!("{remote_path}/SKILL.md"),
+                    "---\nname: 冲突实测\ndescription: 别人的 v3\n---\n正文\n".as_bytes(),
+                    sha,
+                )],
+            },
+        )
+        .await
+        .expect("B 推 v3 失败");
+
+    // ④ 回推:必须认出远端变过,一个字节都不许写
+    let outcome = share::share_installed(
+        &share::ShareClient::Gitea(&admin),
+        &admin,
+        &registry,
+        &env,
+        &store,
+        &name,
+        "main",
+        false,
+        &now,
+    )
+    .await
+    .expect("冲突检测不该报错");
+    let share::ShareInstalledOutcome::RemoteChanged { history_url } = outcome else {
+        panic!("远端已是 v3,应进冲突档");
+    };
+    let url = history_url.expect("Gitea 源应给出历史链接");
+    let resp = reqwest::get(&url).await.expect("历史页请求失败");
+    assert_eq!(resp.status().as_u16(), 200, "历史页路由变了: {url}");
+
+    // ⑤ 确认后的第二跳:开分支 + 提交审核,绝不直推
+    let outcome = share::share_installed(
+        &share::ShareClient::Gitea(&admin),
+        &admin,
+        &registry,
+        &env,
+        &store,
+        &name,
+        "main",
+        true,
+        &now,
+    )
+    .await
+    .expect("确认后的提交失败");
+    let share::ShareInstalledOutcome::Submitted(submitted) = outcome else {
+        panic!("确认后应当提交");
+    };
+    assert_eq!(submitted.mode, ShareMode::ReviewRequested, "admin 可直推也必须走评审");
+    let review = submitted.review_url.expect("评审必须有链接");
+
+    // 远端 main 上仍是 B 的 v3——直推没有发生
+    let head = admin.branch_head(&repo).await.unwrap();
+    let files = admin.tree_files(&repo.owner, &repo.repo, &head.sha).await.unwrap();
+    assert!(files.iter().any(|f| f.path == format!("{remote_path}/SKILL.md")));
+
+    // 清理:关评审 + 把灌进 main 的技能删掉。留着会污染别的 live 断言
+    // (gitea_live 对技能清单的断言真被上一轮残留打红过)。
+    if let Some(number) = review.rsplit('/').next().and_then(|n| n.parse::<u64>().ok()) {
+        let _ = admin.close_pull(&repo.owner, &repo.repo, number).await;
+    }
+    let probe = format!("{remote_path}/SKILL.md");
+    if let Ok(Some(sha)) = admin.file_sha(&repo, &probe).await {
+        admin
+            .change_files(
+                &repo.owner,
+                &repo.repo,
+                &ChangeFilesRequest {
+                    branch: "main".into(),
+                    new_branch: None,
+                    message: "清理:冲突实测".into(),
+                    files: vec![skillsync_lib::core::gitea::FileChange {
+                        operation: skillsync_lib::core::gitea::FileOperation::Delete,
+                        path: probe,
+                        content: None,
+                        sha: Some(sha),
+                    }],
+                },
+            )
+            .await
+            .expect("清理失败——手动删掉 skills/conflict-live-* 后再跑");
     }
 }

@@ -671,6 +671,32 @@ async fn a_chinese_share_name_is_rejected_up_front() {
 
 // ============================================================ 回推已装技能的改动
 
+/// 远端压缩包:只含 weekly-report 一个技能,内容由调用方给。
+/// 顶层目录名任意(Gitea 的 zip 有一层仓库目录,解包时剥掉)。
+fn zip_of_weekly(md: &str) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut buf = Vec::new();
+    {
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let opts = zip::write::SimpleFileOptions::default();
+        w.start_file("repo/skills/weekly-report/SKILL.md", opts).unwrap();
+        w.write_all(md.as_bytes()).unwrap();
+        w.finish().unwrap();
+    }
+    buf
+}
+
+/// `write_skill(dir, "周报", "原版")` 落盘的同一份字节——远端与账上一致的场景用它。
+const WEEKLY_PRISTINE: &str = "---\nname: 周报\ndescription: 原版\n---\n正文\n";
+
+async fn mount_archive(server: &MockServer, zip: Vec<u8>) {
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/v1/repos/skills/skills/archive/main\.zip$"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(zip))
+        .mount(server)
+        .await;
+}
+
 fn install_record(c: &Ctx, dir: &Path) -> InstalledSkill {
     InstalledSkill {
         name: "weekly-report".into(),
@@ -720,12 +746,16 @@ async fn pushing_local_changes_back_updates_the_books() {
         })))
         .mount(&server)
         .await;
+    mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let submitted = share::share_installed(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, "weekly-report", "main", NOW)
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
         .await
         .unwrap();
 
+    let share::ShareInstalledOutcome::Submitted(submitted) = outcome else {
+        panic!("远端与账上一致,应当直接提交");
+    };
     assert_eq!(submitted.mode, ShareMode::Pushed);
     // 记账更新:contentHash = 当前本地(「已改动」消失),commitSha = 新提交
     let state = state_of(&c);
@@ -786,14 +816,202 @@ async fn review_requested_changes_do_not_touch_the_install_books() {
         })))
         .mount(&server)
         .await;
+    mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let submitted = share::share_installed(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, "weekly-report", "main", NOW)
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
         .await
         .unwrap();
 
+    let share::ShareInstalledOutcome::Submitted(submitted) = outcome else {
+        panic!("远端与账上一致,应当提交(走评审)");
+    };
     assert_eq!(submitted.mode, ShareMode::ReviewRequested);
     let after = state_of(&c).installed[0].clone();
     assert_eq!(after.commit_sha, before.commit_sha, "评审未合入就推进了版本记账");
     assert_eq!(after.content_hash, before.content_hash, "评审未合入就清了「已改动」标记");
+}
+
+// ============================================================ 回推前的远端变更检测(M5 任务 1)
+//
+// 乐观锁(CONFLICT_STALE)只拦"拉 sha 与提交之间"的瞬间竞态;提交用的是**当前**
+// 远端 blob sha,所以「我基于旧版改、别人早已推新版」会拿最新 sha 通过校验,
+// 静默覆盖对方改动。这一节钉住:远端在获取之后变过 → 一个写请求都不许发。
+
+#[tokio::test]
+async fn remote_changed_since_install_needs_decision_and_sends_nothing() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("weekly-report");
+    write_skill(&dir, "周报", "原版");
+    let mut state = state_of(&c);
+    state.installed.push(install_record(&c, &dir));
+    c.store.save_state(&state).unwrap();
+    // 我本地改过
+    std::fs::write(dir.join("SKILL.md"), "---\nname: 周报\ndescription: 我改过\n---\n").unwrap();
+
+    let server = MockServer::start().await;
+    // 远端也被别人改过:内容既不是账上那版,也不是我本地这版
+    mount_archive(&server, zip_of_weekly("---\nname: 周报\ndescription: 别人的新版\n---\n正文\n")).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+        .await
+        .unwrap();
+
+    let share::ShareInstalledOutcome::RemoteChanged { history_url } = outcome else {
+        panic!("远端变过,应当进冲突档而不是提交");
+    };
+    // Gitea 源给得出改动历史链接:指向该技能目录在目标分支上的提交历史
+    let url = history_url.expect("Gitea 源应给出历史链接");
+    assert!(url.starts_with(&server.uri()), "链接应指向来源 Gitea:{url}");
+    assert!(url.contains("/skills/skills/commits/"), "应是提交历史页:{url}");
+    assert!(url.contains("skills/weekly-report"), "应聚焦该技能目录:{url}");
+    // 守卫断言:一个写请求都没发,记账一个字没动
+    let posts = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .count();
+    assert_eq!(posts, 0, "冲突档不许发任何写请求");
+    let after = state_of(&c).installed[0].clone();
+    assert_eq!(after.commit_sha, "aaa", "冲突档不许动记账");
+}
+
+#[tokio::test]
+async fn remote_changed_blocks_even_when_local_is_pristine() {
+    // 本地没改、远端变了:回推的内容是旧版,照样会覆盖别人的新版。
+    // UI 上这个状态本就不显示「分享改动」按钮,core 侧保守方向仍是拦(假设:见分解文档)。
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("weekly-report");
+    write_skill(&dir, "周报", "原版");
+    let mut state = state_of(&c);
+    state.installed.push(install_record(&c, &dir));
+    c.store.save_state(&state).unwrap();
+
+    let server = MockServer::start().await;
+    mount_archive(&server, zip_of_weekly("---\nname: 周报\ndescription: 别人的新版\n---\n正文\n")).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(outcome, share::ShareInstalledOutcome::RemoteChanged { .. }),
+        "远端变过就该拦,与本地改没改无关"
+    );
+}
+
+#[tokio::test]
+async fn empty_baseline_skips_detection_and_submits() {
+    // 基线为空(损坏或手编的 state)时拿不准"远端变没变",空串与任何远端指纹
+    // 都不等,不跳过就会恒判冲突、回推永远走不通。宁可信提交时刻的乐观锁兜底。
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("weekly-report");
+    write_skill(&dir, "周报", "原版");
+    let mut state = state_of(&c);
+    let mut record = install_record(&c, &dir);
+    record.content_hash = String::new();
+    state.installed.push(record);
+    c.store.save_state(&state).unwrap();
+
+    let server = MockServer::start().await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/repos/skills/skills/branches/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "commit": { "id": "head1", "timestamp": "2026-07-31T08:00:00Z" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/api/v1/repos/skills/skills/git/trees/.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "tree": [], "truncated": false
+        })))
+        .mount(&server)
+        .await;
+    // 特意不挂 archive:基线为空连压缩包都不该去下
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(outcome, share::ShareInstalledOutcome::Submitted(_)),
+        "空基线应跳过检测直接提交"
+    );
+}
+
+#[tokio::test]
+async fn force_review_never_pushes_directly_even_with_permission() {
+    // 冲突档确认后的第二跳:有写权限、分支也没保护(平时会直推)——
+    // 用户拍板的是「走评审」,直推等于把别人的改动顶掉,恰恰是冲突档要防的事。
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("weekly-report");
+    write_skill(&dir, "周报", "原版");
+    let mut state = state_of(&c);
+    state.installed.push(install_record(&c, &dir));
+    c.store.save_state(&state).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: 周报\ndescription: 我改过\n---\n").unwrap();
+    let before = state_of(&c).installed[0].clone();
+
+    let server = MockServer::start().await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/repos/skills/skills/branches/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "commit": { "id": "head1", "timestamp": "2026-07-31T08:00:00Z" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/api/v1/repos/skills/skills/git/trees/.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "tree": [], "truncated": false
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/repos/skills/skills/pulls"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "html_url": "http://x/pulls/9", "number": 9
+        })))
+        .mount(&server)
+        .await;
+    // 特意不挂 archive:force_review 的语义是"已经拍过板",不再重复检测
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", true, NOW)
+        .await
+        .unwrap();
+
+    let share::ShareInstalledOutcome::Submitted(submitted) = outcome else {
+        panic!("确认后应当提交(走评审)");
+    };
+    assert_eq!(submitted.mode, ShareMode::ReviewRequested);
+    assert!(submitted.review_url.is_some(), "评审链接要带回给用户");
+    // 守卫断言:每一笔提交请求都开了新分支,没有一笔直推 main
+    let reqs = server.received_requests().await.unwrap();
+    let contents_posts: Vec<_> = reqs
+        .iter()
+        .filter(|r| r.method.as_str() == "POST" && r.url.path().ends_with("/contents"))
+        .collect();
+    assert!(!contents_posts.is_empty(), "应当发过提交请求");
+    for req in &contents_posts {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        assert!(
+            body.get("new_branch").and_then(|v| v.as_str()).is_some(),
+            "出现了不带 new_branch 的直推请求:{body}"
+        );
+    }
+    // 走了评审,记账一个字不动(现役不变量)
+    let after = state_of(&c).installed[0].clone();
+    assert_eq!(after.commit_sha, before.commit_sha);
+    assert_eq!(after.content_hash, before.content_hash);
 }

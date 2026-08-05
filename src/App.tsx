@@ -5,6 +5,7 @@ import { ConflictDialog } from "@/components/ConflictDialog";
 import { DetailPanel } from "@/components/DetailPanel";
 import { RemoveDialog } from "@/components/RemoveDialog";
 import { RepairDialog } from "@/components/RepairDialog";
+import { ShareConflictDialog } from "@/components/ShareConflictDialog";
 import { RetryLinkDialog } from "@/components/RetryLinkDialog";
 import { ShareTakenDialog } from "@/components/ShareTakenDialog";
 import { Sidebar } from "@/components/Sidebar";
@@ -86,6 +87,7 @@ export default function App() {
       <ConflictDialog />
       <RemoveDialog />
       <RepairDialog />
+      <ShareConflictDialog />
       <RetryLinkDialog />
       <ShareTakenDialog />
       <Wizard />

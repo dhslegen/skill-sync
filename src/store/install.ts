@@ -244,12 +244,19 @@ export const useInstall = create<InstallState>((set, get) => ({
     const dirSlug = get().dirSlug;
     if (!dirSlug) return;
     try {
-      const submitted = await skillShareChanges({
+      // 这条路的前提就是"远端有新版、你改过本体"(冲突弹窗只在那时出现),
+      // 用户点「保留并分享」已经拍过板——直接走提交审核(M5 任务 1)。
+      // 以前这里会直推:远端刚更新的版本被顶掉,正是冲突检测要防的静默覆盖。
+      const outcome = await skillShareChanges({
         dirSlug,
         registryId: get().registryId ?? undefined,
+        forceReview: true,
       });
-      set({ shareResult: { mode: submitted.mode } });
-      // 直推成功后 core 已把 contentHash 记平,卡片的「已改动」状态要跟上
+      // forceReview 跳过检测,结果必然是 submitted;收窄只为让类型闭合
+      if (outcome.kind === "submitted") {
+        set({ shareResult: { mode: outcome.mode } });
+      }
+      // 走了评审记账没动,「已改动」状态留着——改动确实还没进库
       await get().refreshInstalled();
     } catch (raw) {
       // 保留已经成功,分享失败只是"下一步没走成"——不能把整个结果画成失败

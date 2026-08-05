@@ -319,6 +319,17 @@ impl GiteaClient {
         format!("{}/api/v1{}", self.base_url, path)
     }
 
+    /// 该目录在目标分支上的提交历史页(web UI,回推冲突档的「查看对方改动」链接)。
+    ///
+    /// 路由 `/{owner}/{repo}/commits/branch/{branch}/{path}` 已对本地 docker
+    /// Gitea 1.25.3 实测(2026-08-05,curl 200;`commits/{branch}/…` 形式是 303 跳转)。
+    pub fn history_url(&self, r: &RepoRef, path: &str) -> String {
+        format!(
+            "{}/{}/{}/commits/branch/{}/{}",
+            self.base_url, r.owner, r.repo, r.branch, path
+        )
+    }
+
     fn request(&self, method: reqwest::Method, url: String) -> reqwest::RequestBuilder {
         let req = self.http.request(method, url);
         match &self.token {

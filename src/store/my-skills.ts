@@ -48,6 +48,12 @@ interface MySkillsState {
   shareBusy: string | null;
   shareDone: { dirSlug: string; mode: ShareMode } | null;
   shareError: AppError | null;
+  /**
+   * 冲突档(M5 任务 1):远端在获取之后被别人改过,core 一个字节没动就退了回来。
+   * 等用户拍板:提交审核(confirmShareReview)/ 先不动(cancelShareConflict)。
+   * 没有「强行覆盖」——覆盖别人的改动不该是一个按钮。
+   */
+  shareConflict: { dirSlug: string; historyUrl: string | null } | null;
 
   /** 「认领」(M3 任务 6):正在认领的技能 / 错误。 */
   claimBusy: string | null;
@@ -69,6 +75,11 @@ interface MySkillsState {
 
   /** 把改过的已装技能推回来源仓库(冲突弹窗承诺的"分享改动"通道)。 */
   shareChanges: (dirSlug: string) => Promise<void>;
+
+  /** 冲突档的确认:改动走提交审核(带 forceReview 的第二跳,绝不直推)。 */
+  confirmShareReview: () => Promise<void>;
+  /** 冲突档的取消:什么都不发,改动留在本地。 */
+  cancelShareConflict: () => void;
 
   /** 认领上游(npx skills)装的技能,成功后刷新列表。 */
   claim: (dirSlug: string) => Promise<void>;
@@ -100,6 +111,7 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   shareBusy: null,
   shareDone: null,
   shareError: null,
+  shareConflict: null,
   claimBusy: null,
   claimError: null,
 
@@ -194,21 +206,51 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   },
 
   shareChanges: async (dirSlug) => {
-    set({ shareBusy: dirSlug, shareDone: null, shareError: null });
-    try {
-      const registryId = get().list?.find((s) => s.dirSlug === dirSlug)?.registryId;
-      const submitted = await skillShareChanges({ dirSlug, registryId });
-      set({ shareDone: { dirSlug, mode: submitted.mode } });
-      // 直推成功后 core 已更新记账,「已改动」徽标随刷新消失;
-      // 走了评审则记账没动,徽标留着——改动确实还没进库
-      await get().load();
-    } catch (raw) {
-      set({ shareError: toAppError(raw) });
-    } finally {
-      set({ shareBusy: null });
-    }
+    await runShareChanges(dirSlug, false, set, get);
   },
+
+  confirmShareReview: async () => {
+    const conflict = get().shareConflict;
+    if (!conflict) return;
+    set({ shareConflict: null });
+    await runShareChanges(conflict.dirSlug, true, set, get);
+  },
+
+  cancelShareConflict: () => set({ shareConflict: null }),
 }));
+
+async function runShareChanges(
+  dirSlug: string,
+  forceReview: boolean,
+  set: (partial: Partial<MySkillsState>) => void,
+  get: () => MySkillsState,
+) {
+  set({ shareBusy: dirSlug, shareDone: null, shareError: null });
+  try {
+    const registryId = get().list?.find((s) => s.dirSlug === dirSlug)?.registryId;
+    const outcome = await skillShareChanges({ dirSlug, registryId, forceReview });
+    if (outcome.kind === "remoteChanged") {
+      // 别人改过:core 一个字节没动就退回来了,弹拍板而不是报错
+      set({ shareConflict: { dirSlug, historyUrl: outcome.historyUrl } });
+      return;
+    }
+    set({ shareDone: { dirSlug, mode: outcome.mode } });
+    // 直推成功后 core 已更新记账,「已改动」徽标随刷新消失;
+    // 走了评审则记账没动,徽标留着——改动确实还没进库
+    await get().load();
+  } catch (raw) {
+    const err = toAppError(raw);
+    if (err.code === "CONFLICT_STALE") {
+      // 检测与提交之间被人抢先:语义与冲突档相同,进同一个拍板弹窗
+      // (拿不到历史链接,降级为纯文案)
+      set({ shareConflict: { dirSlug, historyUrl: null } });
+      return;
+    }
+    set({ shareError: err });
+  } finally {
+    set({ shareBusy: null });
+  }
+}
 
 async function runRepair(
   dirSlug: string,

@@ -517,6 +517,15 @@ export interface Submitted {
   reviewUrl: string | null;
 }
 
+/**
+ * 回推的两种结局(M5 任务 1)。`remoteChanged` 不是错误:远端在获取之后被别人
+ * 改过,core 一个字节都没动就退回来,由前端弹确认(提交审核 / 先不动),
+ * 确认后带 `forceReview: true` 再来一次。
+ */
+export type ShareInstalledOutcome =
+  | ({ kind: "submitted" } & Submitted)
+  | { kind: "remoteChanged"; historyUrl: string | null };
+
 export interface CreateReport {
   dirSlug: string;
   /** 绝对路径,用于完成提示与「在访达中显示」。 */
@@ -569,5 +578,9 @@ export const skillShare = (args: {
   repo?: string;
 }) => call<ShareOutcome>("skill_share", { args });
 
-export const skillShareChanges = (args: { dirSlug: string; registryId?: string }) =>
-  call<Submitted>("skill_share_changes", { args });
+export const skillShareChanges = (args: {
+  dirSlug: string;
+  registryId?: string;
+  /** 冲突确认后的第二跳:跳过远端变更检测,强制走提交审核。 */
+  forceReview?: boolean;
+}) => call<ShareInstalledOutcome>("skill_share_changes", { args });

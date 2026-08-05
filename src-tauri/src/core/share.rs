@@ -22,7 +22,7 @@ use serde::Serialize;
 
 use crate::core::agents::{AgentEnv, AgentRegistry};
 use crate::core::fsops::{self, OnOccupied};
-use crate::core::gitea::{FileChange, ChangeFilesRequest, GiteaClient, RepoRef};
+use crate::core::gitea::{ChangeFilesRequest, FileChange, GiteaClient, RepoRef, RepoSource};
 use crate::core::github::GithubClient;
 use crate::core::skill_lock;
 use crate::core::skills::{parse_skill_md, sanitize_name};
@@ -421,6 +421,7 @@ pub async fn share(
         req.repo,
         &prefix,
         checked == SharePrecheck::Fresh,
+        false,
         files,
         &message,
         req.share_name,
@@ -461,20 +462,46 @@ pub async fn share(
 
 // ============================================================ 回推已装技能的改动
 
+/// 回推的两种结局:提交成功,或撞上"远端在获取之后被别人改过"的冲突档。
+///
+/// 冲突档对齐 [`ShareOutcome::NeedsDecision`] 的模式:**不是错误,是需要用户拍板**
+/// ——返回它时磁盘与远端一个字节都没动,前端弹确认(提交审核 / 先不动),
+/// 确认后带 `force_review: true` 重来。
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ShareInstalledOutcome {
+    Submitted(Submitted),
+    #[serde(rename_all = "camelCase")]
+    RemoteChanged {
+        /// 该技能目录在目标分支上的提交历史页;给不出时前端降级为纯文案。
+        history_url: Option<String>,
+    },
+}
+
 /// 把本 app 安装、用户改过的技能推回它的来源仓库。
 ///
 /// 这就是获取流程冲突弹窗里承诺的"分享功能开放后可以分享改动"那条路。
 /// 直推成功 → 更新 `contentHash`/`commitSha`,「已改动」标记消失;
 /// 走了评审 → **记账一个字不动**:改动还没进 main,标记消失等于把它藏起来。
+///
+/// M5 任务 1 起,提交前先比对远端当前内容与账上 `content_hash`(`read` 走读链路):
+/// 不相等 = 远端在获取之后被别人改过,回推等于覆盖对方——进 [`ShareInstalledOutcome::RemoteChanged`],
+/// 与本地改没改无关(本地没改时回推的是旧版,照样覆盖)。乐观锁(CONFLICT_STALE)
+/// 只拦"拉 sha 与提交之间"的瞬间竞态,防不了这一档,两者是互补关系。
+/// `force_review = true` = 用户已在冲突档拍板:跳过检测,强制走「开分支 + 提交审核」,
+/// 绝不直推(合并交给技能库的评审流程)。
+#[allow(clippy::too_many_arguments)]
 pub async fn share_installed(
     client: &ShareClient<'_>,
+    read: &impl RepoSource,
     registry: &AgentRegistry,
     env: &dyn AgentEnv,
     store: &Store,
     dir_slug: &str,
     branch: &str,
+    force_review: bool,
     now: &str,
-) -> Result<Submitted, AppError> {
+) -> Result<ShareInstalledOutcome, AppError> {
     let loaded = store.load_state()?;
     let Some(idx) = loaded.value.installed.iter().position(|s| s.name == dir_slug) else {
         return Err(AppError::new(
@@ -504,11 +531,30 @@ pub async fn share_installed(
         .with_detail(format!("missing: {}", source_dir.display())));
     }
 
+    // 远端变更检测:账上 content_hash = 上次与远端对齐时的内容指纹(本地改动、
+    // 走评审都不动它——现役不变量),远端当前指纹与它不等就是"别人改过"。
+    // 基线为空时跳过(拿不准基线就不冤枉远端,提交时刻的乐观锁仍在兜底)。
+    if !force_review && !record.content_hash.is_empty() {
+        let archive = read.download_archive(&repo).await?;
+        // entries 的键保留压缩包顶层目录,技能路径必须拼上 archive.root 才剥得到条目
+        // (store.rs 建索引时的 s.dir 天然带着它,这里的记账路径没有)
+        let remote_dir = format!("{}/{}", archive.root, record.source.path);
+        let remote_hash = crate::core::store::remote_content_hash(&archive, &remote_dir);
+        if remote_hash != record.content_hash {
+            let history_url = Some(match client {
+                ShareClient::Gitea(c) => c.history_url(&repo, &record.source.path),
+                ShareClient::Github(c) => c.history_url(&repo, &record.source.path),
+            });
+            return Ok(ShareInstalledOutcome::RemoteChanged { history_url });
+        }
+    }
+
     let prefix = format!("{}/", record.source.path.trim_end_matches('/'));
     let files = payload_files(&source_dir, &prefix)?;
     let message = format!("更新技能:{dir_slug}");
     // fresh=false:已装技能的回推,远端必然已有这组文件
-    let submitted = submit(client, &repo, &prefix, false, files, &message, dir_slug, now).await?;
+    let submitted =
+        submit(client, &repo, &prefix, false, force_review, files, &message, dir_slug, now).await?;
 
     if submitted.mode == ShareMode::Pushed {
         let mut next = loaded.value.clone();
@@ -517,7 +563,7 @@ pub async fn share_installed(
         next.installed[idx].updated_at = now.to_string();
         store.save_state(&next)?;
     }
-    Ok(submitted)
+    Ok(ShareInstalledOutcome::Submitted(submitted))
 }
 
 // ============================================================ 内部
@@ -530,13 +576,15 @@ pub struct Submitted {
     pub review_url: Option<String>,
 }
 
-/// 按来源类型分发提交。`fresh` = 远端还没有该技能(Gitea 路径可跳过拉取 blob sha)。
+/// 按来源类型分发提交。`fresh` = 远端还没有该技能(Gitea 路径可跳过拉取 blob sha);
+/// `force_review` = 冲突档确认后的第二跳,有直推权限也不许直推(直推正是冲突档要防的覆盖)。
 #[allow(clippy::too_many_arguments)]
 async fn submit(
     client: &ShareClient<'_>,
     repo: &RepoRef,
     prefix: &str,
     fresh: bool,
+    force_review: bool,
     files: Vec<(String, Vec<u8>)>,
     message: &str,
     share_name: &str,
@@ -563,18 +611,23 @@ async fn submit(
                     None => FileChange::create(path.clone(), &bytes),
                 })
                 .collect();
-            submit_gitea(c, repo, changes, message, share_name, now).await
+            submit_gitea(c, repo, force_review, changes, message, share_name, now).await
         }
-        ShareClient::Github(c) => submit_github(c, repo, files, message, share_name, now).await,
+        ShareClient::Github(c) => {
+            submit_github(c, repo, force_review, files, message, share_name, now).await
+        }
     }
 }
 
 /// Gitea 的权限矩阵(gitea.rs 模块头的实测矩阵):
 /// 可写 → 先直推,被分支保护挡下(403)→ 开分支 + 提交审核;
 /// 只读 → fork 到自己名下 → fork 上开分支 → 跨库提交审核。
+/// `force_review` 只砍掉"先直推"那一步,其余分流不变(只读的 fork 路径本就是评审)。
+#[allow(clippy::too_many_arguments)]
 async fn submit_gitea(
     client: &GiteaClient,
     repo: &RepoRef,
+    force_review: bool,
     files: Vec<FileChange>,
     message: &str,
     share_name: &str,
@@ -584,23 +637,25 @@ async fn submit_gitea(
     let branch_name = review_branch(share_name, now);
 
     if info.permissions.push {
-        let direct = ChangeFilesRequest {
-            branch: repo.branch.clone(),
-            new_branch: None,
-            message: message.to_string(),
-            files: files.clone(),
-        };
-        match client.change_files(&repo.owner, &repo.repo, &direct).await {
-            Ok(commit) => {
-                return Ok(Submitted {
-                    mode: ShareMode::Pushed,
-                    commit_sha: commit.sha,
-                    review_url: None,
-                })
+        if !force_review {
+            let direct = ChangeFilesRequest {
+                branch: repo.branch.clone(),
+                new_branch: None,
+                message: message.to_string(),
+                files: files.clone(),
+            };
+            match client.change_files(&repo.owner, &repo.repo, &direct).await {
+                Ok(commit) => {
+                    return Ok(Submitted {
+                        mode: ShareMode::Pushed,
+                        commit_sha: commit.sha,
+                        review_url: None,
+                    })
+                }
+                // 403 = 默认分支受保护(只读在上面已分流)。降级开分支走评审。
+                Err(e) if e.code == "REPO_FORBIDDEN" => {}
+                Err(e) => return Err(e),
             }
-            // 403 = 默认分支受保护(只读在上面已分流)。降级开分支走评审。
-            Err(e) if e.code == "REPO_FORBIDDEN" => {}
-            Err(e) => return Err(e),
         }
         let via_branch = ChangeFilesRequest {
             branch: repo.branch.clone(),
@@ -650,9 +705,12 @@ async fn submit_gitea(
 /// 有 push 但分支受保护(protected 先探,或提交撞上
 /// BRANCH_PROTECTION_RULE_VIOLATION)→ 开分支 + 提交审核;
 /// 无 push → fork 到自己名下(202 异步,轮询就绪)→ fork 上开分支 → 跨库提交审核。
+/// `force_review` 只砍掉"直接保存"那一步,其余分流不变。
+#[allow(clippy::too_many_arguments)]
 async fn submit_github(
     client: &GithubClient,
     repo: &RepoRef,
+    force_review: bool,
     files: Vec<(String, Vec<u8>)>,
     message: &str,
     share_name: &str,
@@ -664,7 +722,7 @@ async fn submit_github(
 
     if view.permissions.push {
         // protected 只是先探(保护规则可能只拦部分人),提交时的错误类型才是最终真相
-        if !client.branch_protected(repo).await? {
+        if !force_review && !client.branch_protected(repo).await? {
             let head = client.branch_head(repo).await?;
             match client
                 .create_commit_on_branch(&name_with_owner, &repo.branch, &head.sha, message, &files)

@@ -351,7 +351,7 @@ fn parse_curated(archive: &RepoArchive) -> Vec<String> {
 /// ①同一个 [`fsops::ContentHasher`];②同一份排除清单([`fsops::is_excluded_rel`]);
 /// ③同样按相对路径字典序喂入(entries 是 BTreeMap,天然有序),两边就一定一致。
 /// 有测试逐字节钉住这条等式——它一旦不成立,界面会永远显示"有更新"。
-fn remote_content_hash(archive: &RepoArchive, dir: &str) -> String {
+pub(crate) fn remote_content_hash(archive: &RepoArchive, dir: &str) -> String {
     let prefix = format!("{dir}/");
     let mut hasher = fsops::ContentHasher::new();
     for (full, entry) in &archive.entries {
