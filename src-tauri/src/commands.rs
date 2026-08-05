@@ -272,6 +272,9 @@ pub fn spawn_app_update_probe(app: tauri::AppHandle) {
         tokio::time::sleep(std::time::Duration::from_secs(20)).await;
         match app_update_check(app.clone()).await {
             Ok(AppUpdateStatus::Available { version }) => {
+                // 三个分支都要留痕:0.2.2 端到端验证时这里没日志,只能靠
+                // "既无已最新也无失败"反推出"检出了新版",不该让人这么猜
+                tracing::info!(%version, "启动检查:发现应用新版本");
                 let _ = app.emit("app-update://available", &version);
                 use tauri_plugin_notification::NotificationExt;
                 let body = format!("SkillSync {version} 已发布,可到「设置」页安装。");
