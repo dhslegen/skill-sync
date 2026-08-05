@@ -289,7 +289,13 @@ pub fn spawn_app_update_probe(app: tauri::AppHandle) {
                 tracing::info!("启动检查:应用已是最新");
             }
             Err(err) => {
-                tracing::warn!(code = %err.code, "启动时应用更新检查未完成");
+                // detail 必须进日志:0.2.0 之前只记 code,http 端点被 updater 拒绝
+                // 这种"配置问题"披着 NET_UPDATE 的皮装了很久的"网络问题"
+                tracing::warn!(
+                    code = %err.code,
+                    detail = err.detail.as_deref().unwrap_or(""),
+                    "启动时应用更新检查未完成"
+                );
             }
         }
     });

@@ -65,6 +65,15 @@ fn updater_artifacts_are_release_only() {
             text.contains("plugins") && text.contains("pubkey"),
             "{name} 必须把 updater 公钥注入构建期配置,否则出不了 .sig"
         );
+        // tauri updater 默认拒绝 http 端点(连请求都不发就报错,还被包成 NET_UPDATE
+        // 这种"看起来像网络问题"的文案)。内网 Gitea 是 http,不开这个口子,
+        // 发布出去的每一个包都永远收不到更新——2026-08-05 用 0.1.0 实测自更新
+        // 端到端时抓到,0.1.0 与第一版 0.2.0 都带着这个缺陷。完整性由 minisign
+        // 签名兜底,明文传输在内网可接受(build-release.sh 对 http 另有显式警告)。
+        assert!(
+            text.contains("dangerousInsecureTransportProtocol"),
+            "{name} 必须打开 dangerousInsecureTransportProtocol,否则 http 内网源的更新检查永远失败"
+        );
     }
 
     // 发布闸门:三个新变量在两条发布通道里都有校验

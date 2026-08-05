@@ -104,8 +104,10 @@ jobs:
         # pubkey 也必须在这里给:签名发生在**构建那一刻**,tauri 读的是
         # plugins.updater.pubkey,而主 conf 里按铁律 5 只有空占位,
         # 空字符串会报 `failed to decode pubkey: Missing comment in public key`。
+        # dangerousInsecureTransportProtocol:内网 Gitea 是 http,tauri updater 默认拒绝
+        # 明文端点,不开它发布包永远收不到更新(2026-08-05 端到端实测抓到)。
         run: |
-          CONFIG_JSON="$(python3 -c 'import json,os;print(json.dumps({"bundle":{"createUpdaterArtifacts":True},"plugins":{"updater":{"pubkey":os.environ["SKILLSYNC_UPDATE_PUBKEY"]}}}))')"
+          CONFIG_JSON="$(python3 -c 'import json,os;print(json.dumps({"bundle":{"createUpdaterArtifacts":True},"plugins":{"updater":{"pubkey":os.environ["SKILLSYNC_UPDATE_PUBKEY"],"dangerousInsecureTransportProtocol":True}}}))')"
           pnpm tauri build --config "$CONFIG_JSON"
 
       - name: 收集产物 (macOS)

@@ -83,11 +83,18 @@ echo "==> tauri build(附带 updater 产物:.sig 与压缩包)"
 # tauri.conf.json 的 plugins.updater.pubkey——按铁律 5 那里只有空占位,
 # 空字符串会报 `Missing decode pubkey: Missing comment in public key`。
 # 所以这里从环境变量拼进 --config(命令行参数,不落任何仓库文件)。
+# dangerousInsecureTransportProtocol:tauri updater 默认拒绝 http 端点(请求都不发
+# 就报错)。内网 Gitea 是 http,不开它,发布出去的包永远收不到更新——2026-08-05
+# 自更新端到端实测抓到,0.1.0 就带着这个缺陷。更新内容的完整性由 minisign 签名
+# 兜底(验签不过整个安装终止),明文传输在内网可接受;上面对 http 已有显式警告。
 CONFIG_JSON="$(python3 - <<'PYEOF'
 import json, os
 print(json.dumps({
     "bundle": {"createUpdaterArtifacts": True},
-    "plugins": {"updater": {"pubkey": os.environ["SKILLSYNC_UPDATE_PUBKEY"]}},
+    "plugins": {"updater": {
+        "pubkey": os.environ["SKILLSYNC_UPDATE_PUBKEY"],
+        "dangerousInsecureTransportProtocol": True,
+    }},
 }))
 PYEOF
 )"
