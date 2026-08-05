@@ -70,6 +70,13 @@ pub struct IndexedSkill {
     /// 逐技能问 commits 接口是另一条路,但那要每个目录一次请求,首屏撑不住(见模块头)。
     #[serde(default)]
     pub content_hash: String,
+    /// 技能库根 `tags.json` 里给这个技能打的标签(M5 任务 3,服务端管理、客户端只读)。
+    /// 键是 dirSlug(用户拍板,不对齐 curated 的显示名先例——目录名在 Gitea 页面上
+    /// 直接可见,且改显示名不掉标签)。旧缓存 serde default 补空,**不升缓存版本**:
+    /// tags.json 的任何改动都伴随库提交、head sha 一变缓存即重建,空标签的旧缓存
+    /// 与库的真实状态始终一致(与 `curated` 字段同一套推理)。
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// 有 SKILL.md 但没通过校验的目录。界面据此引导修复,而不是让技能凭空消失。
@@ -134,6 +141,8 @@ pub struct StoreSkillCard {
     /// 远端这一版的内容哈希,与已装记账的 contentHash 比即得"有无可用更新"。
     /// 见 [`IndexedSkill::content_hash`]:**不能用整库 HEAD sha 代替**。
     pub content_hash: String,
+    /// 标签(tags.json,服务端管理)。筛选 chip 与搜索匹配用。
+    pub tags: Vec<String>,
 }
 
 /// `store_index` 的返回。
@@ -171,6 +180,8 @@ pub struct SkillDetail {
     pub has_scripts: bool,
     pub commit_sha: String,
     pub committed_at: String,
+    /// 标签(tags.json,服务端管理)。详情面板元信息区展示。
+    pub tags: Vec<String>,
 }
 
 // ============================================================ 缓存读写
@@ -273,6 +284,7 @@ pub fn build_index(
 ) -> StoreIndex {
     let discovery = skills::discover_skills(&archive.tree, &archive.root, &DiscoverOptions::default());
     let root_prefix = format!("{}/", archive.root);
+    let mut tags_map = parse_tags(archive);
 
     let mut skills_out: Vec<IndexedSkill> = discovery
         .skills
@@ -285,6 +297,8 @@ pub fn build_index(
                 .read_file(&format!("{}/{}", s.dir, skills::SKILL_FILE))
                 .unwrap_or_default();
             IndexedSkill {
+                // 对不上任何技能的键留在 map 里自然丢弃——摆一个点了没结果的筛选项就是撒谎
+                tags: tags_map.remove(&dir_slug).unwrap_or_default(),
                 name: s.name,
                 dir_slug,
                 description: s.description,
@@ -320,6 +334,36 @@ pub fn build_index(
             })
             .collect(),
     }
+}
+
+/// 读技能库根目录的 `tags.json`(M5 任务 3):`{"tags": {"<dirSlug>": ["标签", …]}}`。
+///
+/// 与 `curated.json` 同一种宽容:没有、坏 JSON、值不是数组、项不是字符串,
+/// 一律按"没有标签"处理,**绝不让一个坏文件拉挂整个索引**;重复标签去重保序。
+/// 管理员侧的约定就是这个形状——改形状要连同这里的注释与部署指南一起改。
+fn parse_tags(archive: &RepoArchive) -> std::collections::HashMap<String, Vec<String>> {
+    let Some(raw) = archive.tree.read_file(&format!("{}/tags.json", archive.root)) else {
+        return Default::default();
+    };
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        tracing::warn!("tags.json 不是合法 JSON,忽略标签");
+        return Default::default();
+    };
+    let Some(map) = doc["tags"].as_object() else {
+        return Default::default();
+    };
+    map.iter()
+        .filter_map(|(slug, v)| {
+            let items = v.as_array()?;
+            let mut seen: Vec<String> = Vec::new();
+            for tag in items.iter().filter_map(|t| t.as_str()) {
+                if !seen.iter().any(|s| s == tag) {
+                    seen.push(tag.to_string());
+                }
+            }
+            Some((slug.clone(), seen))
+        })
+        .collect()
 }
 
 /// 读技能库根目录的 `curated.json`。没有、或格式不对都返回空——
@@ -407,6 +451,7 @@ impl StoreIndex {
                     has_scripts: s.has_scripts,
                     file_count: s.files.len(),
                     content_hash: s.content_hash.clone(),
+                    tags: s.tags.clone(),
                 })
                 .collect(),
             skipped: self.skipped.clone(),
@@ -437,6 +482,7 @@ impl StoreIndex {
             has_scripts: s.has_scripts,
             commit_sha: self.commit_sha.clone(),
             committed_at: self.committed_at.clone(),
+            tags: s.tags.clone(),
         })
     }
 }
@@ -588,6 +634,57 @@ mod tests {
         assert_eq!(index.commit_sha, "abc1234");
         assert_eq!(index.committed_at, "2026-07-30T10:00:00+08:00");
         assert_eq!(index.fetched_at, 1_753_800_000);
+    }
+
+    #[test]
+    fn tags_json_lands_on_matching_skills_and_tolerates_garbage() {
+        // M5 任务 3:技能库根 tags.json,键 = dirSlug(用户拍板,不对齐 curated 的
+        // 显示名先例——目录名管理员在 Gitea 页面上直接看得到,且改显示名不掉标签)。
+        // 宽容三连:对不上的键丢弃、值不是数组跳过、项不是字符串跳过。
+        let mut archive = archive_with(&["weekly-report", "docx-to-markdown", "no-tags"]);
+        put_text(
+            &mut archive,
+            "skills/tags.json",
+            r#"{"tags":{
+                "weekly-report":["办公","汇报","办公"],
+                "ghost-skill":["库里没有这个技能"],
+                "docx-to-markdown":"不是数组",
+                "no-tags":[42, "文档"]
+            }}"#,
+        );
+
+        let index = build_index("company", &repo(), &head("abc"), &archive, 0);
+        let by = |slug: &str| index.skills.iter().find(|s| s.dir_slug == slug).unwrap().clone();
+
+        // 重复标签去重保序
+        assert_eq!(by("weekly-report").tags, vec!["办公", "汇报"]);
+        // 值不是数组:这一个技能没标签,别的照常
+        assert_eq!(by("docx-to-markdown").tags, Vec::<String>::new());
+        // 非字符串项跳过,字符串项保留
+        assert_eq!(by("no-tags").tags, vec!["文档"]);
+    }
+
+    #[test]
+    fn missing_or_broken_tags_json_yields_no_tags_and_no_error() {
+        let archive = archive_with(&["weekly-report"]);
+        let index = build_index("company", &repo(), &head("abc"), &archive, 0);
+        assert_eq!(index.skills[0].tags, Vec::<String>::new());
+
+        let mut broken = archive_with(&["weekly-report"]);
+        put_text(&mut broken, "skills/tags.json", "{not json");
+        let index = build_index("company", &repo(), &head("abc"), &broken, 0);
+        assert_eq!(index.skills[0].tags, Vec::<String>::new());
+    }
+
+    #[test]
+    fn tags_survive_the_card_and_detail_views() {
+        let mut archive = archive_with(&["weekly-report"]);
+        put_text(&mut archive, "skills/tags.json", r#"{"tags":{"weekly-report":["办公"]}}"#);
+        let index = build_index("company", &repo(), &head("abc"), &archive, 0);
+
+        let view = index.to_view(false, false);
+        assert_eq!(view.skills[0].tags, vec!["办公"]);
+        assert_eq!(index.detail("weekly-report").unwrap().tags, vec!["办公"]);
     }
 
     #[test]

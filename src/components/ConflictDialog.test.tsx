@@ -103,7 +103,7 @@ describe("冲突对话框", () => {
       index: {
         registryId: "company", owner: "skills", repo: "skills", branch: "main",
         commitSha: "a", committedAt: "", fetchedAt: 0, skipped: [], fromCache: false, offline: false, curated: [],
-        skills: [{ name: "周报生成", dirSlug: "weekly-report", description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:a" }],
+        skills: [{ name: "周报生成", dirSlug: "weekly-report", description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:a", tags: [] }],
       },
     });
     conflict({ status: "locallyModified", installedSha: "aaa1111" });

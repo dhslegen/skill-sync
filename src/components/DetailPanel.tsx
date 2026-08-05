@@ -210,6 +210,10 @@ function PanelBody({ detail, repo }: { detail: SkillDetail; repo: string }) {
             label={t("detail.metaFiles")}
             value={t("detail.metaFilesValue", { count: detail.files.length })}
           />
+          {/* 标签来自技能库的 tags.json(服务端管理);没有就整栏不摆 */}
+          {detail.tags.length > 0 && (
+            <Meta label={t("detail.metaTags")} value={detail.tags.join(t("punct.listSeparator"))} />
+          )}
         </div>
       </div>
 

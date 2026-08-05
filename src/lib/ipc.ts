@@ -50,6 +50,8 @@ export interface StoreSkillCard {
   fileCount: number;
   /** 远端这一版的内容哈希。与已装记账的 contentHash 比,才是"有无可用更新"。 */
   contentHash: string;
+  /** 标签(技能库根 tags.json,服务端管理、客户端只读)。 */
+  tags: string[];
 }
 
 export interface SkippedEntry {
@@ -88,6 +90,8 @@ export interface SkillDetail {
   hasScripts: boolean;
   commitSha: string;
   committedAt: string;
+  /** 标签(tags.json)。详情面板元信息区展示。 */
+  tags: string[];
 }
 
 /** 本地技能定位:已装技能给 dirSlug(core 自行解析 canonical 目录),

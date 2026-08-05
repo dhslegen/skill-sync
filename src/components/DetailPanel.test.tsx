@@ -56,6 +56,7 @@ const detail = (over: Partial<SkillDetail> = {}): SkillDetail => ({
   hasScripts: true,
   commitSha: "a1b2c3d4e5f6",
   committedAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+  tags: [],
   ...over,
 });
 
@@ -247,7 +248,7 @@ describe("详情面板底部的获取区", () => {
     const d = open();
     useStoreIndex.setState({
       index: { ...useStoreIndex.getState().index!, skills: [
-        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:same" },
+        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:same", tags: [] },
       ] },
     });
     useInstall.setState({
@@ -262,7 +263,7 @@ describe("详情面板底部的获取区", () => {
     const d = open();
     useStoreIndex.setState({
       index: { ...useStoreIndex.getState().index!, skills: [
-        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:newer" },
+        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:newer", tags: [] },
       ] },
     });
     useInstall.setState({
@@ -352,5 +353,25 @@ describe("revealLabel", () => {
     expect(revealLabel("Mozilla (Macintosh; Mac OS X)")).toBe("在访达中打开");
     expect(revealLabel("Mozilla (Windows NT 10.0)")).toBe("在资源管理器中打开");
     expect(revealLabel("Mozilla (X11; Linux x86_64)")).toBe("在文件管理器中打开");
+  });
+});
+
+describe("标签展示(M5 任务 3)", () => {
+  beforeEach(() => {
+    // 上一个 describe 留下的本地详情 target 会让面板走本地分支,商店详情渲染不出来
+    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
+  });
+
+  it("有标签时在元信息区展示", () => {
+    open({ tags: ["办公", "汇报"] });
+    render(<DetailPanel />);
+    expect(screen.getByText("办公、汇报")).toBeInTheDocument();
+  });
+
+  it("没有标签时整栏不出现", () => {
+    open();
+    render(<DetailPanel />);
+    expect(screen.queryByText("标签")).not.toBeInTheDocument();
   });
 });

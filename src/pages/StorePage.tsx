@@ -19,7 +19,8 @@ const FILTERS: { id: StoreFilter; label: MessageKey }[] = [
 ];
 
 export function StorePage() {
-  const { index, status, error, query, filter, setFilter, openDetail, load } = useStoreIndex();
+  const { index, status, error, query, filter, setFilter, tagFilter, toggleTag, openDetail, load } =
+    useStoreIndex();
   const records = useInstall((s) => s.installed);
   // 已安装集合来自 installed_list(core 的 state.json),不再是恒空的占位
   const installed = useMemo(() => new Set(records.keys()), [records]);
@@ -32,9 +33,19 @@ export function StorePage() {
   }, [registries, loadRegistries]);
 
   const visible = useMemo(
-    () => (index ? filterSkills(index.skills, query, filter, installed) : []),
-    [index, query, filter, installed],
+    () => (index ? filterSkills(index.skills, query, filter, installed, tagFilter) : []),
+    [index, query, filter, installed, tagFilter],
   );
+
+  // 库里全部标签,去重保序(tags.json 由管理员维护,顺序即他排的顺序)。
+  // 一个标签都没有时整行不渲染——摆一排永远点不出结果的 chip 就是撒谎。
+  const allTags = useMemo(() => {
+    const seen: string[] = [];
+    for (const s of index?.skills ?? []) {
+      for (const tag of s.tags) if (!seen.includes(tag)) seen.push(tag);
+    }
+    return seen;
+  }, [index]);
 
   // 加载中与出错这两档也要留着库切换器(2026-08-04 视觉自查抓到):
   // 早退分支把它一起挡掉后,用户切到一个连不上的技能库就**再也点不回来**
@@ -115,6 +126,27 @@ export function StorePage() {
               })}
         </span>
       </div>
+
+      {allTags.length > 0 && (
+        <div className="-mt-2 mb-4 flex flex-wrap items-center gap-1.5">
+          {allTags.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              aria-pressed={tagFilter === tag}
+              onClick={() => toggleTag(tag)}
+              className={cn(
+                "rounded-full border px-2.5 py-[3px] text-[12px]",
+                tagFilter === tag
+                  ? "border-accent bg-accent-soft font-medium text-accent"
+                  : "border-border bg-surface-1 text-text-2 hover:border-border-strong hover:text-text",
+              )}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
 
       {visible.length === 0 ? (
         <p className="py-6 text-[12.5px] text-text-3">

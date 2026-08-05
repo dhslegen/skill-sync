@@ -118,6 +118,7 @@
   "detail.metaUpdated": "更新",
   "detail.metaVersion": "版本标识",
   "detail.metaFiles": "文件",
+  "detail.metaTags": "标签",
   "detail.metaFilesValue": "{count} 个",
   "detail.loading": "正在读取技能内容…",
   "detail.noBody": "这个技能没有写说明正文。",

@@ -18,6 +18,7 @@ const card = (over: Partial<StoreSkillCard>): StoreSkillCard => ({
   hasScripts: false,
   fileCount: 2,
   contentHash: "sha256:weekly",
+  tags: [],
   ...over,
 });
 
@@ -307,5 +308,65 @@ describe("库切换器(M4 一源多仓)", () => {
     render(<StorePage />);
     // 回退到 repo slug(design-skills),不是寻址键 design/design-skills
     expect(screen.getByRole("button", { name: "design-skills" })).toBeInTheDocument();
+  });
+});
+
+describe("标签筛选(M5 任务 3)", () => {
+  beforeEach(() => {
+    useInstall.setState({ installed: new Map() });
+    useRegistries.setState({ list: null });
+  });
+
+  const tagged = () =>
+    index({
+      skills: [
+        card({ tags: ["办公", "汇报"] }),
+        card({ name: "合同审查助手", dirSlug: "contract-review", tags: ["办公"] }),
+        card({ name: "数据看板搭建", dirSlug: "data-dashboard", tags: [] }),
+      ],
+    });
+
+  it("有标签时渲染标签 chip;点击过滤,再点取消", async () => {
+    seed({ index: tagged(), tagFilter: null });
+    render(<StorePage />);
+
+    // 去重后的标签各一枚 chip
+    const office = screen.getByRole("button", { name: "办公" });
+    expect(screen.getByRole("button", { name: "汇报" })).toBeInTheDocument();
+
+    await userEvent.click(office);
+    // 只剩带「办公」的两张卡
+    expect(screen.queryByText("数据看板搭建")).not.toBeInTheDocument();
+    expect(screen.getByText("周报生成")).toBeInTheDocument();
+    expect(screen.getByText("合同审查助手")).toBeInTheDocument();
+
+    // 再点同一枚取消筛选
+    await userEvent.click(screen.getByRole("button", { name: "办公" }));
+    expect(screen.getByText("数据看板搭建")).toBeInTheDocument();
+  });
+
+  it("单选:点另一枚直接切换,不做多选并集", async () => {
+    seed({ index: tagged(), tagFilter: "办公" });
+    render(<StorePage />);
+
+    await userEvent.click(screen.getByRole("button", { name: "汇报" }));
+
+    expect(useStoreIndex.getState().tagFilter).toBe("汇报");
+    expect(screen.queryByText("合同审查助手")).not.toBeInTheDocument();
+    expect(screen.getByText("周报生成")).toBeInTheDocument();
+  });
+
+  it("库里一个标签都没有时,不渲染标签行", () => {
+    seed(); // 默认 index 的技能全部无标签
+    render(<StorePage />);
+    expect(screen.queryByRole("button", { name: "办公" })).not.toBeInTheDocument();
+  });
+
+  it("切库清掉标签筛选——别的库没有这个标签,残留会把列表锁死成空", async () => {
+    seed({ index: tagged(), tagFilter: "办公" });
+
+    await useStoreIndex.getState().setRegistry("custom-1");
+
+    expect(useStoreIndex.getState().tagFilter).toBeNull();
   });
 });

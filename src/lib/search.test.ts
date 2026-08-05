@@ -11,13 +11,14 @@ const card = (over: Partial<StoreSkillCard>): StoreSkillCard => ({
   hasScripts: false,
   fileCount: 2,
   contentHash: "sha256:x",
+  tags: ["办公"],
   ...over,
 });
 
 const skills = [
   card({}),
-  card({ name: "合同审查助手", dirSlug: "contract-review", description: "逐条检查风险条款" }),
-  card({ name: "Word 转 Markdown", dirSlug: "docx-to-markdown", description: "高保真转换文档" }),
+  card({ name: "合同审查助手", dirSlug: "contract-review", description: "逐条检查风险条款", tags: [] }),
+  card({ name: "Word 转 Markdown", dirSlug: "docx-to-markdown", description: "高保真转换文档", tags: ["文档处理"] }),
 ];
 
 describe("matchesQuery", () => {
@@ -67,5 +68,31 @@ describe("filterSkills", () => {
     // M1 的 installed 恒为空集(获取流程还没接),这一档必须显示空而不是漏成全部
     expect(filterSkills(skills, "", "installed", new Set())).toHaveLength(0);
     expect(filterSkills(skills, "", "available", new Set())).toHaveLength(3);
+  });
+});
+
+describe("标签(M5 任务 3)", () => {
+  it("搜索同时匹配标签文本", () => {
+    expect(matchesQuery(card({ tags: ["文档处理"] }), "文档处理")).toBe(true);
+    expect(matchesQuery(card({ tags: [] }), "文档处理")).toBe(false);
+  });
+
+  it("标签筛选只留带这个标签的技能", () => {
+    const got = filterSkills(skills, "", "all", new Set(), "文档处理");
+    expect(got.map((s) => s.dirSlug)).toEqual(["docx-to-markdown"]);
+  });
+
+  it("标签筛选与安装状态、搜索三者叠加", () => {
+    const installed = new Set(["docx-to-markdown"]);
+    // 带「文档处理」标签且未安装 → 空
+    expect(filterSkills(skills, "", "available", installed, "文档处理")).toHaveLength(0);
+    // 带「办公」标签且搜索命中「周报」→ 只剩 weekly-report
+    expect(filterSkills(skills, "周报", "all", new Set(), "办公").map((s) => s.dirSlug)).toEqual([
+      "weekly-report",
+    ]);
+  });
+
+  it("不传标签(null)行为与旧签名完全一致", () => {
+    expect(filterSkills(skills, "", "all", new Set(), null)).toHaveLength(3);
   });
 });

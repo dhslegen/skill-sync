@@ -21,6 +21,8 @@ interface StoreIndexState {
   error: AppError | null;
   query: string;
   filter: StoreFilter;
+  /** 标签单选(M5 任务 3):null = 不按标签过滤。 */
+  tagFilter: string | null;
   /** 当前浏览的源(M3 多源)。默认内建。 */
   activeRegistry: string;
   /** 当前浏览的仓(M4 一源多仓):寻址键 `owner/repo`。null = 该源主仓。 */
@@ -39,6 +41,8 @@ interface StoreIndexState {
   setRegistry: (registryId: string, repo?: string | null) => Promise<void>;
   setQuery: (query: string) => void;
   setFilter: (filter: StoreFilter) => void;
+  /** 同一枚再点一次 = 取消(单选语义在这里收口,UI 只管把点击的标签传进来)。 */
+  toggleTag: (tag: string) => void;
   openDetail: (dirSlug: string) => Promise<void>;
   closeDetail: () => void;
 }
@@ -55,6 +59,7 @@ export const useStoreIndex = create<StoreIndexState>((set, get) => ({
   error: null,
   query: "",
   filter: "all",
+  tagFilter: null,
   activeRegistry: "company",
   activeRepo: null,
   installed: new Set(),
@@ -83,13 +88,22 @@ export const useStoreIndex = create<StoreIndexState>((set, get) => ({
 
   setRegistry: async (registryId, repo = null) => {
     if (get().activeRegistry === registryId && get().activeRepo === repo) return;
-    // 上一个库的索引立刻清掉:挂着旧库的列表却标着新库,等于对用户撒谎
-    set({ activeRegistry: registryId, activeRepo: repo, index: null, detailSlug: null, detail: null });
+    // 上一个库的索引立刻清掉:挂着旧库的列表却标着新库,等于对用户撒谎。
+    // 标签筛选一并清——别的库多半没有这个标签,残留会把新库的列表锁死成空
+    set({
+      activeRegistry: registryId,
+      activeRepo: repo,
+      index: null,
+      detailSlug: null,
+      detail: null,
+      tagFilter: null,
+    });
     await get().load();
   },
 
   setQuery: (query) => set({ query }),
   setFilter: (filter) => set({ filter }),
+  toggleTag: (tag) => set({ tagFilter: get().tagFilter === tag ? null : tag }),
 
   openDetail: async (dirSlug) => {
     set({ detailSlug: dirSlug, detail: null, detailError: null });

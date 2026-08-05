@@ -100,6 +100,7 @@ describe("分享改动的冲突弹窗", () => {
             hasScripts: false,
             fileCount: 1,
             contentHash: "h",
+            tags: [],
           },
         ],
       },
