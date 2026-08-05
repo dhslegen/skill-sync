@@ -48,11 +48,24 @@ fn updater_artifacts_are_release_only() {
     );
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
-    let overlay = r#"--config '{"bundle":{"createUpdaterArtifacts":true}}'"#;
     let script = std::fs::read_to_string(root.join("scripts/build-release.sh")).unwrap();
-    assert!(script.contains(overlay), "build-release.sh 必须以 overlay 打开 updater 产物");
     let workflow = std::fs::read_to_string(root.join(".github/workflows/release.yml")).unwrap();
-    assert!(workflow.contains(overlay), "release.yml 必须以 overlay 打开 updater 产物");
+
+    // 按**语义**断言而不是字面命令行:overlay 现在是动态拼的 JSON(要把 pubkey
+    // 从环境变量注进去,见下一条断言),写死整串会在合理重构时误报。
+    for (name, text) in [("build-release.sh", &script), ("release.yml", &workflow)] {
+        assert!(
+            text.contains("createUpdaterArtifacts"),
+            "{name} 必须以 overlay 打开 updater 产物"
+        );
+        // 签名发生在**构建那一刻**,读的是 plugins.updater.pubkey;主 conf 里按铁律 5
+        // 只有空占位,不在这里注入就会报 `Missing comment in public key`
+        // ——2026-08-05 本地发版时真撞上,当时 CI 这条通道也一样漏了。
+        assert!(
+            text.contains("plugins") && text.contains("pubkey"),
+            "{name} 必须把 updater 公钥注入构建期配置,否则出不了 .sig"
+        );
+    }
 
     // 发布闸门:三个新变量在两条发布通道里都有校验
     for name in ["SKILLSYNC_UPDATE_URL", "SKILLSYNC_UPDATE_PUBKEY", "TAURI_SIGNING_PRIVATE_KEY"] {

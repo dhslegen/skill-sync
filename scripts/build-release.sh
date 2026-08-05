@@ -78,10 +78,24 @@ pnpm install --frozen-lockfile
 echo "==> tauri build(附带 updater 产物:.sig 与压缩包)"
 # createUpdaterArtifacts 只在发布构建打开:主 tauri.conf.json 不放它,
 # 否则没有签名私钥的日常 pnpm tauri build 会直接失败。
+# 构建期需要 updater 公钥来生成 .sig。它**不能**只靠编译期常量:
+# 那个常量解决的是"运行时去哪查更新",而签名发生在构建那一刻,tauri 读的是
+# tauri.conf.json 的 plugins.updater.pubkey——按铁律 5 那里只有空占位,
+# 空字符串会报 `Missing decode pubkey: Missing comment in public key`。
+# 所以这里从环境变量拼进 --config(命令行参数,不落任何仓库文件)。
+CONFIG_JSON="$(python3 - <<'PYEOF'
+import json, os
+print(json.dumps({
+    "bundle": {"createUpdaterArtifacts": True},
+    "plugins": {"updater": {"pubkey": os.environ["SKILLSYNC_UPDATE_PUBKEY"]}},
+}))
+PYEOF
+)"
+
 # 额外参数透传:出 universal 包时需要 --target universal-apple-darwin
 # (Intel Mac 也能装。不透传的话参数被吞掉,只出当前架构的包,而这件事
 #  要到装机时才发现——2026-08-05 加)
-pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}' "$@"
+pnpm tauri build --config "$CONFIG_JSON" "$@"
 
 echo
 echo "构建完成。产物:"

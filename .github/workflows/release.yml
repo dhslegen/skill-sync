@@ -100,8 +100,13 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        # createUpdaterArtifacts 只在发布构建打开(主 conf 不放,日常构建无签名私钥会失败)
-        run: pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
+        # createUpdaterArtifacts 只在发布构建打开(主 conf 不放,日常构建无签名私钥会失败)。
+        # pubkey 也必须在这里给:签名发生在**构建那一刻**,tauri 读的是
+        # plugins.updater.pubkey,而主 conf 里按铁律 5 只有空占位,
+        # 空字符串会报 `failed to decode pubkey: Missing comment in public key`。
+        run: |
+          CONFIG_JSON="$(python3 -c 'import json,os;print(json.dumps({"bundle":{"createUpdaterArtifacts":True},"plugins":{"updater":{"pubkey":os.environ["SKILLSYNC_UPDATE_PUBKEY"]}}}))')"
+          pnpm tauri build --config "$CONFIG_JSON"
 
       - name: 收集产物 (macOS)
         if: runner.os == 'macOS'
