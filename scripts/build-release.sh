@@ -78,14 +78,15 @@ pnpm install --frozen-lockfile
 echo "==> tauri build(附带 updater 产物:.sig 与压缩包)"
 # createUpdaterArtifacts 只在发布构建打开:主 tauri.conf.json 不放它,
 # 否则没有签名私钥的日常 pnpm tauri build 会直接失败。
-pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
+# 额外参数透传:出 universal 包时需要 --target universal-apple-darwin
+# (Intel Mac 也能装。不透传的话参数被吞掉,只出当前架构的包,而这件事
+#  要到装机时才发现——2026-08-05 加)
+pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}' "$@"
 
 echo
-echo "构建完成。产物在 src-tauri/target/release/bundle/ 下:"
-if [[ "$(uname)" == "Darwin" ]]; then
-  ls -1 src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null || true
-  ls -1d src-tauri/target/release/bundle/macos/*.app 2>/dev/null || true
-else
-  ls -1 src-tauri/target/release/bundle/nsis/*.exe 2>/dev/null || true
-  ls -1 src-tauri/target/release/bundle/msi/*.msi 2>/dev/null || true
-fi
+echo "构建完成。产物:"
+# universal 构建落在 target/universal-apple-darwin/ 下,不是 target/release/,
+# 所以按模式找而不是写死一条路径
+find src-tauri/target -maxdepth 4 -path '*/release/bundle/*' \
+  \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.app.tar.gz' -o -name '*.sig' \) \
+  -newermt '-10 minutes' 2>/dev/null | sort || true
