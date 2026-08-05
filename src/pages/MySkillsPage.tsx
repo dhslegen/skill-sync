@@ -127,55 +127,76 @@ export function MySkillsPage() {
             : t("mine.shareChangesReview")}
         </p>
       )}
-      <div className="overflow-hidden rounded-card border border-border bg-surface-1">
-        {list.map((skill) =>
-          skill.localOnly ? (
-            <LocalOnlyRow
-              key={skill.dirSlug}
-              skill={skill}
-              name={nameOf(skill.dirSlug)}
-              onGoShare={() => setPage("share")}
-            />
-          ) : skill.unclaimed ? (
-            <UnclaimedRow
-              key={skill.dirSlug}
-              skill={skill}
-              name={nameOf(skill.dirSlug)}
-              claiming={claimBusy === skill.dirSlug}
-              onClaim={() => void claim(skill.dirSlug)}
-            />
-          ) : (
-          <Row
-            key={skill.dirSlug}
-            skill={skill}
-            name={nameOf(skill.dirSlug)}
-            agentNames={agentNames}
-            updateAvailable={hasUpdate(skill, index)}
-            updating={activeSlug === skill.dirSlug && installPhase === "running"}
-            repairing={repairBusy === skill.dirSlug}
-            sharing={shareBusy === skill.dirSlug}
-            onUpdate={() =>
-              // 更新带账上的来源坐标(M4 多仓):缺省会打到该源主仓,追加仓的技能就更新错了库
-              void useInstall
-                .getState()
-                .beginUpdate(
-                  skill.dirSlug,
-                  skill.agents,
-                  skill.registryId,
-                  `${skill.sourceOwner}/${skill.sourceRepo}`,
-                )
-            }
-            onRepair={() => void repair(skill.dirSlug)}
-            onShareChanges={() => void shareChanges(skill.dirSlug)}
-            onRemove={() => askRemove(skill.dirSlug)}
-            unclaiming={claimBusy === skill.dirSlug}
-            onUnclaim={() => void unclaim(skill.dirSlug)}
-          />
-          ),
-        )}
-      </div>
+      {/* 三分区,固定顺序:商店安装 → 本地创建 → npx skills 安装(M5 任务 2 用户拍板)。
+          归类判据全部来自 core:第 1 档是 state 记账且目录真实存在,第 2 档是文件系统
+          扫描(localOnly),第 3 档是 .skill-lock.json(unclaimed)。空分区不显示。 */}
+      {sectionsOf(list).map((sec) => (
+        <section key={sec.key} className="mt-3 first-of-type:mt-0">
+          <h3 className="pb-1.5 text-[11.5px] font-medium text-text-3">{sec.title}</h3>
+          <div className="overflow-hidden rounded-card border border-border bg-surface-1">
+            {sec.items.map((skill) =>
+              skill.localOnly ? (
+                <LocalOnlyRow
+                  key={skill.dirSlug}
+                  skill={skill}
+                  name={nameOf(skill.dirSlug)}
+                  onGoShare={() => setPage("share")}
+                />
+              ) : skill.unclaimed ? (
+                <UnclaimedRow
+                  key={skill.dirSlug}
+                  skill={skill}
+                  name={nameOf(skill.dirSlug)}
+                  claiming={claimBusy === skill.dirSlug}
+                  onClaim={() => void claim(skill.dirSlug)}
+                />
+              ) : (
+                <Row
+                  key={skill.dirSlug}
+                  skill={skill}
+                  name={nameOf(skill.dirSlug)}
+                  agentNames={agentNames}
+                  updateAvailable={hasUpdate(skill, index)}
+                  updating={activeSlug === skill.dirSlug && installPhase === "running"}
+                  repairing={repairBusy === skill.dirSlug}
+                  sharing={shareBusy === skill.dirSlug}
+                  onUpdate={() =>
+                    // 更新带账上的来源坐标(M4 多仓):缺省会打到该源主仓,追加仓的技能就更新错了库
+                    void useInstall
+                      .getState()
+                      .beginUpdate(
+                        skill.dirSlug,
+                        skill.agents,
+                        skill.registryId,
+                        `${skill.sourceOwner}/${skill.sourceRepo}`,
+                      )
+                  }
+                  onRepair={() => void repair(skill.dirSlug)}
+                  onShareChanges={() => void shareChanges(skill.dirSlug)}
+                  onRemove={() => askRemove(skill.dirSlug)}
+                  unclaiming={claimBusy === skill.dirSlug}
+                  onUnclaim={() => void unclaim(skill.dirSlug)}
+                />
+              ),
+            )}
+          </div>
+        </section>
+      ))}
     </div>
   );
+}
+
+/** 三分区的归类与顺序。空分区被滤掉,调用方不用再判。 */
+function sectionsOf(list: InstalledSkillView[]) {
+  return [
+    {
+      key: "store",
+      title: t("mine.sectionStore"),
+      items: list.filter((s) => !s.localOnly && !s.unclaimed),
+    },
+    { key: "local", title: t("mine.sectionLocal"), items: list.filter((s) => s.localOnly) },
+    { key: "npx", title: t("mine.sectionNpx"), items: list.filter((s) => s.unclaimed) },
+  ].filter((sec) => sec.items.length > 0);
 }
 
 /** 上游(npx skills)装的未认领行:只有「认领」可做,其余动作认领后开放。 */
@@ -200,11 +221,9 @@ function UnclaimedRow({
       >
         <SkillIcon name={name} className="size-[26px] rounded-[6px] text-[12px]" />
         <div className="min-w-0 flex-1">
+          {/* 归类徽标已撤(M5 任务 2):分区标题即区分,行内不再重复喊一遍 */}
           <div className="flex items-center gap-2">
             <span className="truncate text-[13px] font-[550] group-hover:text-accent">{name}</span>
-            <Badge tone="warn" title={t("mine.badgeUnclaimedHint")}>
-              {t("mine.badgeUnclaimed")}
-            </Badge>
           </div>
           <div className="mt-0.5 truncate text-[11.5px] text-text-3">
             {t("mine.source", {
@@ -254,11 +273,9 @@ function LocalOnlyRow({
       >
         <SkillIcon name={name} className="size-[26px] rounded-[6px] text-[12px]" />
         <div className="min-w-0 flex-1">
+          {/* 归类徽标已撤(M5 任务 2):分区标题即区分 */}
           <div className="flex items-center gap-2">
             <span className="truncate text-[13px] font-[550] group-hover:text-accent">{name}</span>
-            <Badge tone="neutral" title={t("mine.badgeLocalHint")}>
-              {t("mine.badgeLocal")}
-            </Badge>
           </div>
           <div className="mt-0.5 truncate text-[11.5px] text-text-3">{t("mine.localHint")}</div>
         </div>
@@ -330,29 +347,23 @@ function Row({
           {/* 每个徽标都要能说清"这是什么、我该做什么":其余徽标一直有 tooltip,
               这两个的文案早就写好却没接上,悬停什么也看不到 */}
           {skill.localModified && (
-            <Badge tone="warn" title={t("mine.badgeModifiedHint")}>
+            <Badge title={t("mine.badgeModifiedHint")}>
               {t("mine.badgeModified")}
             </Badge>
           )}
-          {!skill.bodyPresent && (
-            <Badge tone="danger" title={t("mine.badgeBodyMissingHint")}>
-              {t("mine.badgeBodyMissing")}
-            </Badge>
-          )}
           {skill.sourceRemoved && (
-            <Badge tone="warn" title={t("mine.badgeSourceRemovedHint")}>
+            <Badge title={t("mine.badgeSourceRemovedHint")}>
               {t("mine.badgeSourceRemoved")}
             </Badge>
           )}
           {/* 源在、库不在:与上面互斥(core 保证两者不同时为 true),但话不一样 */}
           {skill.libraryRemoved && (
-            <Badge tone="warn" title={t("mine.badgeLibraryRemovedHint")}>
+            <Badge title={t("mine.badgeLibraryRemovedHint")}>
               {t("mine.badgeLibraryRemoved")}
             </Badge>
           )}
           {issues.length > 0 && (
             <Badge
-              tone="warn"
               title={issues
                 .map(
                   (l) =>
@@ -385,7 +396,8 @@ function Row({
       </button>
 
       <div className="flex flex-none items-center gap-1.5">
-        {skill.localModified && skill.bodyPresent && !skill.sourceRemoved && !skill.libraryRemoved && (
+        {/* 目录已删的条目 core 不再返回(M5 任务 2),这里不必再判本体存在性 */}
+        {skill.localModified && !skill.sourceRemoved && !skill.libraryRemoved && (
           // 冲突弹窗承诺过的那条路:改动可以推回来源技能库;来源没了就没有去处
           <button
             type="button"
@@ -396,8 +408,7 @@ function Row({
             {sharing ? t("mine.sharingChanges") : t("mine.shareChanges")}
           </button>
         )}
-        {issues.length > 0 && skill.bodyPresent && (
-          // 本体不在时链接修不了(link_only 会拒绝),这时该走的是「更新」重新获取
+        {issues.length > 0 && (
           <button
             type="button"
             disabled={repairing}
@@ -443,27 +454,12 @@ function Row({
   );
 }
 
-function Badge({
-  tone,
-  title,
-  children,
-}: {
-  tone: "warn" | "danger" | "neutral";
-  title?: string;
-  children: React.ReactNode;
-}) {
+/** 状态徽标(已改动/来源已移除/关联异常)。归类徽标已撤,只剩警示这一种语气。 */
+function Badge({ title, children }: { title?: string; children: React.ReactNode }) {
   return (
     <span
       title={title}
-      className={[
-        "flex-none rounded-[4px] border px-1.5 py-px text-[10.5px] font-medium",
-        tone === "danger"
-          ? "border-[#c0392b]/40 text-[#c0392b] dark:border-[#e0705f]/40 dark:text-[#e0705f]"
-          : tone === "neutral"
-            // 本地创建不是问题,只是一个事实,不该用警示色喊出来
-            ? "border-border text-text-3"
-            : "border-[#b8860b]/40 text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]",
-      ].join(" ")}
+      className="flex-none rounded-[4px] border border-[#b8860b]/40 px-1.5 py-px text-[10.5px] font-medium text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]"
     >
       {children}
     </span>

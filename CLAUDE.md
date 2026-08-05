@@ -266,8 +266,11 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 ## 当前进度(2026-08-05,M5 任务 1 完成)
 
 **M1–M4 全部完成并提交,macOS 签名分发已打通**;**M5 已开工**(分解与七项拍板记录在
-docs/M5-任务分解.md:任务 1 多人协作冲突 ✅ → 2 「我的技能」分区展示 → 3 商店标签
+docs/M5-任务分解.md:任务 1 多人协作冲突 ✅ → 2 「我的技能」分区展示 ✅ → 3 商店标签
 (一套多选 tag,`categories.json` 形状开工前另拍)→ 4 收尾 + 0.2.0 发版)。
+任务 2 要点:「我的技能」按 商店安装/本地创建/npx skills 安装 三分区,归类徽标全撤;
+`installed_list` 只列 canonical 真实存在的目录(记账保留,重获取时 precheck 走 Fresh 对齐),
+`body_present` 字段已删——别再往 DTO 里加"存在性"字段,存在性由 core 过滤保证。
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 

@@ -385,7 +385,6 @@ export interface InstalledSkillView {
   /** 这条记账是认领来的,因而可以「取消认领」(只删记账,磁盘一个字节不动)。 */
   claimed: boolean;
   /** 技能本体是否还在。false = 残缺,界面要正面说出来。 */
-  bodyPresent: boolean;
   links: LinkHealthReport[];
 }
 

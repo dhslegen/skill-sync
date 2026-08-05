@@ -485,8 +485,7 @@ describe("已装记账的来源坐标(M4 一源多仓)", () => {
         registryId: "company",
         sourceRemoved: false,
         unclaimed: false,
-        bodyPresent: true,
-        links: [],
+              links: [],
       },
     ]);
 
@@ -533,7 +532,6 @@ function row(dirSlug: string) {
         unclaimed: false,
         localOnly: false,
         claimed: false,
-        bodyPresent: true,
-        links: [],
+              links: [],
   };
 }

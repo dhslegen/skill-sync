@@ -24,7 +24,6 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   unclaimed: false,
   localOnly: false,
   claimed: false,
-  bodyPresent: true,
   links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
   ...over,
 });

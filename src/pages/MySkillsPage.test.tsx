@@ -30,7 +30,6 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   unclaimed: false,
   localOnly: false,
   claimed: false,
-  bodyPresent: true,
   links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
   ...over,
 });
@@ -237,16 +236,54 @@ describe("我的技能页", () => {
     expect([...call![1].args.agentIds].sort()).toEqual(["claude-code", "cursor"]);
   });
 
+  it("三档按分区展示:商店安装 → 本地创建 → npx skills 安装,固定顺序", async () => {
+    // M5 任务 2(用户拍板):彻底放弃徽标归类,改为分区;归类判据在 core
+    // (localOnly 来自文件系统扫描、unclaimed 来自 lock 文件,均为文件系统真相)
+    seedIpc([
+      view(),
+      view({ dirSlug: "my-draft", localOnly: true, agents: [], links: [] }),
+      view({ dirSlug: "upstream-skill", unclaimed: true, agents: [], links: [] }),
+    ]);
+    render(<MySkillsPage />);
+
+    await screen.findByText("weekly-report");
+    const headings = screen.getAllByRole("heading").map((h) => h.textContent);
+    expect(headings).toEqual(["商店安装", "本地创建", "npx skills 安装"]);
+  });
+
+  it("空分区不显示标题", async () => {
+    seedIpc([view()]);
+    render(<MySkillsPage />);
+
+    await screen.findByText("weekly-report");
+    const headings = screen.getAllByRole("heading").map((h) => h.textContent);
+    expect(headings).toEqual(["商店安装"]);
+  });
+
+  it("归类徽标(含 npx 警示色)彻底撤掉,分区标题即区分", async () => {
+    seedIpc([
+      view({ dirSlug: "my-draft", localOnly: true, agents: [], links: [] }),
+      view({ dirSlug: "upstream-skill", unclaimed: true, agents: [], links: [] }),
+    ]);
+    render(<MySkillsPage />);
+
+    await screen.findByText("my-draft");
+    // 旧徽标靠 title 提示语辨认:它们不该再出现在任何行内
+    expect(
+      screen.queryByTitle("这个技能是在本机创建的,还没有分享到技能库。"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTitle("这个技能由命令行工具装入,认领后就能在这里更新、修复与移除。"),
+    ).not.toBeInTheDocument();
+    // 「本地创建」只出现一次(分区标题),不再有同文本的行内徽标
+    expect(screen.getAllByText("本地创建")).toHaveLength(1);
+    expect(screen.getAllByText("npx skills 安装")).toHaveLength(1);
+  });
+
   it("改过的技能带「已改动」徽标", async () => {
     seedIpc([view({ localModified: true })]);
     render(<MySkillsPage />);
     expect(await screen.findByText("已改动")).toBeInTheDocument();
-  });
-
-  it("本体丢失要正面说出来", async () => {
-    seedIpc([view({ bodyPresent: false })]);
-    render(<MySkillsPage />);
-    expect(await screen.findByText("本地文件缺失")).toBeInTheDocument();
   });
 
   it("关联异常按条数报,悬停给人话说明", async () => {
@@ -279,18 +316,6 @@ describe("我的技能页", () => {
     ]);
     render(<MySkillsPage />);
     expect(await screen.findByRole("button", { name: "修复" })).toBeInTheDocument();
-  });
-
-  it("本体丢失时不给「修复」—— 链接修不了,该走的是更新重新获取", async () => {
-    seedIpc([
-      view({
-        bodyPresent: false,
-        links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "broken" }],
-      }),
-    ]);
-    render(<MySkillsPage />);
-    await screen.findByText("本地文件缺失");
-    expect(screen.queryByRole("button", { name: "修复" })).not.toBeInTheDocument();
   });
 
   it("链接健康时没有「修复」按钮", async () => {

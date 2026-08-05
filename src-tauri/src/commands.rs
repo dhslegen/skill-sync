@@ -1151,8 +1151,6 @@ pub struct InstalledSkillView {
     pub local_only: bool,
     /// 这条记账是认领来的,因而可以**取消认领**(只删记账,磁盘一个字节不动)。
     pub claimed: bool,
-    /// 技能本体是否还在 canonical 目录里。不在 = 残缺,界面要正面说出来。
-    pub body_present: bool,
     /// 各关联目录的健康态(universal agent 不建链,不在此列)。
     pub links: Vec<installer::LinkHealthReport>,
 }
@@ -1203,11 +1201,20 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
         let mut views: Vec<InstalledSkillView> = state
             .installed
             .iter()
-            .map(|s| {
-                let canonical = installer.canonical_dir(&s.name)?;
+            .filter_map(|s| {
+                let canonical = match installer.canonical_dir(&s.name) {
+                    Ok(c) => c,
+                    Err(e) => return Some(Err(e)),
+                };
+                // 存在性以文件系统为准(M5 任务 2,用户拍板):目录被删就不占行。
+                // 记账**保留**——重新获取同名技能时 precheck 按 Fresh 走正常安装,
+                // 记账随之对齐(tests/acquire_flow.rs 有测试钉住),孤账无害。
+                if !canonical.is_dir() {
+                    return None;
+                }
                 // 认不出 mode 的记账进不了健康检查——那是移除时才需要面对的问题
                 let (recorded, _) = remove::state_links_to_recorded(&s.links);
-                Ok(InstalledSkillView {
+                Some(Ok(InstalledSkillView {
                     dir_slug: s.name.clone(),
                     commit_sha: s.commit_sha.clone(),
                     content_hash: s.content_hash.clone(),
@@ -1224,9 +1231,11 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                     unclaimed: false,
                     local_only: false,
                     claimed: acquire::is_claimed(s),
-                    body_present: canonical.is_dir(),
-                    links: installer.link_health(&s.name, &recorded)?,
-                })
+                    links: match installer.link_health(&s.name, &recorded) {
+                        Ok(l) => l,
+                        Err(e) => return Some(Err(e)),
+                    },
+                }))
             })
             .collect::<Result<_, AppError>>()?;
 
@@ -1254,7 +1263,6 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                 unclaimed: true,
                 local_only: false,
                 claimed: false,
-                body_present: true,
                 links: Vec::new(),
             });
         }
@@ -1285,7 +1293,6 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                 unclaimed: false,
                 local_only: true,
                 claimed: false,
-                body_present: true,
                 links: Vec::new(),
             });
         }

@@ -221,6 +221,28 @@ async fn a_fresh_install_immediately_reads_back_as_unmodified() {
 }
 
 #[tokio::test]
+async fn deleted_body_with_books_still_prechecks_as_fresh() {
+    // M5 任务 2:「我的技能」不再列出目录已被删掉的记账(存在性以文件系统为准),
+    // 于是"重新获取同名技能"成了这份孤账唯一的对齐路径。这条钉住:记账在而
+    // canonical 目录不在时,precheck 走 Fresh(正常安装),不被残留记账绊住。
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "正文").await;
+    let (c, env) = ctx();
+    run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+
+    // 用户在文件系统里手动删掉了技能目录,记账原样留着
+    let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
+    let canonical = installer.canonical_dir("weekly-report").unwrap();
+    std::fs::remove_dir_all(&canonical).unwrap();
+    let state = c.store.load_state().unwrap().value;
+    assert_eq!(state.installed.len(), 1, "记账应当还在");
+
+    let checked = acquire::precheck(&installer, &env, &state, "weekly-report", "bbb2222", Some(&repo_ref())).unwrap();
+
+    assert_eq!(checked, Precheck::Fresh);
+}
+
+#[tokio::test]
 async fn a_same_named_skill_from_another_library_needs_a_decision_not_a_silent_swap() {
     // M4 一源多仓最危险的一条:主库装了 weekly-report,用户没改过任何东西,
     // 切到同一个源的另一个技能库,那边也有一个 weekly-report——内容当然不一样。
