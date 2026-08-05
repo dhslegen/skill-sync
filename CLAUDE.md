@@ -524,24 +524,9 @@ M4 后续新增的 IPC:`share_preview`(任务 2)、`skill_create`(任务 4)、
   ——那比当前的问题更糟。要修得连带设计一次"hash 口径升级"(比如记 hash 版本号,
   版本不符时按"未知"处理而不是按"有更新")。同一份名单还被
   `store.rs` 建索引时用着,两侧必须同时改,否则等式一破就永远显示有更新。
-- 🔴 **「认领」没有撤销路径,而唯一的退出路径会毁掉 npx skills 的数据**
-  (2026-08-04 用户实测报的,汇报后修)。事实链:
-  - `acquire::claim` 是**纯记账**——全程只调一次 `save_state`,磁盘、npx 建的链接、
-    `.skill-lock.json` 一个字节都不动(CLAUDE.md 自己写着「认领读 lock 不写」,
-    理由正是"那是 npx skills 的数据")。
-  - 认领后没有「取消认领」,唯一能做的是「移除」,而 `remove::remove` 会
-    解链 → `remove_tree` 删本体 → 清账 → **从 `.skill-lock.json` 删掉该条目**。
-  - 于是:用户点一个零副作用的记账动作,反悔时唯一的按钮会把这个技能从
-    npx skills 那边一并毁掉。**无害的进入,破坏性的退出**——进入时那么克制,
-    退出时却直接删别人的数据,自相矛盾。
-  - 界面文案也只说了一半:「认领后就能在这里更新、修复与移除」说了能做什么,
-    没说不能撤销,更没说撤销会连带毁掉别的工具的安装。
-  - 修法:加 `unclaim` 作 `claim` 的**精确逆操作**——只从 `state.installed` 删这条记账,
-    磁盘/链接/lock 全不动,技能回到未认领状态重新挂回列表尾部。
-    判据(哪些能取消认领):商店获取的**不能**(文件是本 app 装的,只删账会留孤儿目录
-    与孤儿链接)。现成判据是 `commit_sha` 留空(claim 时特意留空的),但偏脆弱;
-    建议给 `InstalledSkill` 加 `origin`(serde default 兼容,不升 schemaVersion),
-    存量数据 fallback 到空 sha。
+- ~~「认领」没有撤销路径~~ **已修**(M4 任务 6a,`f217c1a`):`acquire::unclaim` 是
+  claim 的精确逆操作,只删记账,磁盘/链接/lock 一个字节不动。比测试更硬的保障是签名
+  ——它没有 Installer 也没有 AgentEnv,结构上拿不到 canonical 路径与 lock 落点。
 - ~~M3-5b:GitHub 分享写路径~~ **已完成**(2026-08-03):先对真实 GitHub 录制
   ground truth(`tests/fixtures/github-write/NOTES.md`,含端点拍板与错误形状),
   再实现 share.rs 的 `ShareClient` 枚举分发 + `submit_github` 权限矩阵
@@ -591,8 +576,33 @@ M4 后续新增的 IPC:`share_preview`(任务 2)、`skill_create`(任务 4)、
 - **任务 8 的性能数字来自 loopback docker,不是内网真机**:53 个技能冷启动 76.6ms、
   缓存命中 28.1ms(`cargo test --test store_live -- --nocapture`),远低于 DoD 的 2s/300ms,
   但真实内网要加网络往返与更大的压缩包。`tests/store_index.rs` 的 300ms 断言跑在 wiremock 上、进 CI。
-- **正式分发的外部条件**(完整清单见部署指南 §6):Apple Developer ID 证书 + 公证凭证、
-  Windows 内部 CA 签名或 IT 软件中心白名单、干净双平台真机 ≤5 分钟验收。
+- **正式分发的外部条件**(完整清单见部署指南 §6):~~Apple Developer ID 证书 + 公证凭证~~
+  **已具备并跑通**(2026-08-05,见下);仍缺 Windows 内部 CA 签名或 IT 软件中心白名单、
+  干净双平台真机 ≤5 分钟验收。
+
+### macOS 签名分发已打通(2026-08-05,踩了四个坑,下次发版直接照做)
+
+证书 `Developer ID Application: Wenhao Zhao (79H4J7GB4N)`;凭证在
+`fixtures/.env.apple.local`(`*.local` 已被 .gitignore 排除,权限 600)。
+minisign 密钥对在 `~/.tauri/skillsync.key`,更新源是内网 Gitea 的
+`skills/skillsync-releases` 发布仓(固定 `latest` 标签,URL 因此不变)。
+
+**发版命令**(两步,不能合成一步,理由见下):
+```
+./scripts/build-release.sh --target universal-apple-darwin --bundles app
+./scripts/make-dmg.sh
+```
+
+四个坑都已在脚本里修掉并写了注释,但**改这两个脚本前必须知道**:
+1. **构建期需要 updater 公钥**,编译期常量不顶用——签名发生在构建那一刻,
+   tauri 读的是 `plugins.updater.pubkey`,而主 conf 里按铁律 5 只有空占位。
+   现从环境变量拼进 `--config`。CI 的 `release.yml` 同理(它当时也漏了)。
+2. **不能让 tauri 打 dmg**:它的 `bundle_dmg.sh` 在造好 dmg **之后**才调
+   `hdiutil internet-enable`(macOS 10.15 已移除),非零退出 + `set -e` → tauri
+   判定失败并**清理整个 bundle 目录**,把刚公证好的 .app 一起删掉。
+3. `codesign -dv` **不打印 Authority 行**,判签名要 `--verbose=2`。
+4. `cmd | grep -q` 配 `set -o pipefail` 会因 SIGPIPE 拿到 141;
+   `spctl` 不带 `-vvv` 成功时**一个字都不打印**。两者都会把好包判成坏包。
 
 **本机环境**
 - Rust 走镜像:`RUSTUP_DIST_SERVER` 用清华、crates.io 用 rsproxy(已配在 `~/.cargo/config.toml`);
