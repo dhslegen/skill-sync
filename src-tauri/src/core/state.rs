@@ -144,7 +144,10 @@ impl Default for AutoUpdate {
         Self {
             skills: SkillAutoUpdate {
                 enabled: true,
-                interval_minutes: 4 * 60,
+                // 全新安装盯紧一点(2026-08-06 用户拍板):装上就能及时拿到技能库的新内容,
+                // 不用先摸进设置页找档位。老用户不受影响——他们的档位由 v1→v2 迁移
+                // 原样带过来(4 小时 → 240 分钟),不会被这个默认值覆盖。
+                interval_minutes: 5,
             },
             app: true,
         }
@@ -832,6 +835,8 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(cfg.schema_version, SCHEMA_VERSION);
         assert!(cfg.auto_update.skills.enabled);
-        assert_eq!(cfg.auto_update.skills.interval_minutes, 240);
+        // 全新安装默认盯得紧一点(2026-08-06 用户拍板):新人装上就能及时拿到
+        // 技能库的新内容,不用先去设置里找档位。老用户的档位由迁移原样带过来,不受影响。
+        assert_eq!(cfg.auto_update.skills.interval_minutes, 5);
     }
 }
