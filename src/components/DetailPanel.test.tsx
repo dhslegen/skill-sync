@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DetailPanel, revealLabel, stripFrontmatter } from "./DetailPanel";
+import { contributorsText, DetailPanel, revealLabel, stripFrontmatter } from "./DetailPanel";
 import type { LocalSkillDetail, SkillDetail } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
@@ -57,6 +57,7 @@ const detail = (over: Partial<SkillDetail> = {}): SkillDetail => ({
   commitSha: "a1b2c3d4e5f6",
   committedAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
   tags: [],
+  attribution: null,
   ...over,
 });
 
@@ -248,7 +249,7 @@ describe("详情面板底部的获取区", () => {
     const d = open();
     useStoreIndex.setState({
       index: { ...useStoreIndex.getState().index!, skills: [
-        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:same", tags: [] },
+        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:same", tags: [], author: null },
       ] },
     });
     useInstall.setState({
@@ -263,7 +264,7 @@ describe("详情面板底部的获取区", () => {
     const d = open();
     useStoreIndex.setState({
       index: { ...useStoreIndex.getState().index!, skills: [
-        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:newer", tags: [] },
+        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:newer", tags: [], author: null },
       ] },
     });
     useInstall.setState({
@@ -373,5 +374,42 @@ describe("标签展示(M5 任务 3)", () => {
     open();
     render(<DetailPanel />);
     expect(screen.queryByText("标签")).not.toBeInTheDocument();
+  });
+});
+
+describe("作者/贡献者展示(M7 任务 2)", () => {
+  beforeEach(() => {
+    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
+  });
+
+  it("有归因时元信息区展示作者与贡献者", () => {
+    open({ attribution: { author: "张三", contributors: ["李四", "王五"] } });
+    render(<DetailPanel />);
+    expect(screen.getByText("作者")).toBeInTheDocument();
+    expect(screen.getByText("张三")).toBeInTheDocument();
+    expect(screen.getByText("李四、王五")).toBeInTheDocument();
+  });
+
+  it("没有归因时作者与贡献者整栏都不出现——不摆比编造好", () => {
+    open();
+    render(<DetailPanel />);
+    expect(screen.queryByText("作者")).not.toBeInTheDocument();
+    expect(screen.queryByText("贡献者")).not.toBeInTheDocument();
+  });
+
+  it("贡献者为空时只摆作者栏", () => {
+    open({ attribution: { author: "张三", contributors: [] } });
+    render(<DetailPanel />);
+    expect(screen.getByText("张三")).toBeInTheDocument();
+    expect(screen.queryByText("贡献者")).not.toBeInTheDocument();
+  });
+
+  it("contributorsText:3 人以内全列,超出截断为前 3 + 等 N 人(N 为总数)", () => {
+    expect(contributorsText(["李四"])).toBe("李四");
+    expect(contributorsText(["李四", "王五", "赵六"])).toBe("李四、王五、赵六");
+    expect(contributorsText(["李四", "王五", "赵六", "孙七", "周八"])).toBe(
+      "李四、王五、赵六 等 5 人",
+    );
   });
 });

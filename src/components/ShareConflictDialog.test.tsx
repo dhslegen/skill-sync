@@ -101,6 +101,7 @@ describe("分享改动的冲突弹窗", () => {
             fileCount: 1,
             contentHash: "h",
             tags: [],
+            author: null,
           },
         ],
       },

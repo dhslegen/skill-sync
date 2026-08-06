@@ -36,8 +36,8 @@ const index = (curated: string[]): StoreIndexView => ({
   offline: false,
   curated,
   skills: [
-    { name: "周报生成", dirSlug: "weekly-report", description: "周报", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:a", tags: [] },
-    { name: "合同审查助手", dirSlug: "contract-review", description: "合同", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:b", tags: [] },
+    { name: "周报生成", dirSlug: "weekly-report", description: "周报", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:a", tags: [], author: null },
+    { name: "合同审查助手", dirSlug: "contract-review", description: "合同", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:b", tags: [], author: null },
   ],
 });
 

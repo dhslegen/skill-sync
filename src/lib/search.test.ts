@@ -12,6 +12,7 @@ const card = (over: Partial<StoreSkillCard>): StoreSkillCard => ({
   fileCount: 2,
   contentHash: "sha256:x",
   tags: ["办公"],
+  author: null,
   ...over,
 });
 

@@ -77,6 +77,7 @@ function seedIndex(remoteHash = "sha256:mine") {
           fileCount: 1,
           contentHash: remoteHash,
           tags: [],
+          author: null,
         },
       ],
     },

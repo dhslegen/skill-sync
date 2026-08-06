@@ -203,7 +203,12 @@ function PanelBody({ detail, repo }: { detail: SkillDetail; repo: string }) {
           </button>
         </div>
 
-        <div className="mt-3.5 flex gap-4 border-y border-border py-2.5">
+        <div className="mt-3.5 flex flex-wrap gap-4 border-y border-border py-2.5">
+          {/* 作者/贡献者来自技能库的 authors.json(服务端维护);没有就整栏不摆。
+              作者排第一,对齐 UI-Demo 的 p-meta 顺序 */}
+          {detail.attribution && (
+            <Meta label={t("detail.metaAuthor")} value={detail.attribution.author} />
+          )}
           <Meta label={t("detail.metaUpdated")} value={relativeTimeFromIso(detail.committedAt)} />
           <Meta label={t("detail.metaVersion")} value={shortSha(detail.commitSha)} mono />
           <Meta
@@ -213,6 +218,12 @@ function PanelBody({ detail, repo }: { detail: SkillDetail; repo: string }) {
           {/* 标签来自技能库的 tags.json(服务端管理);没有就整栏不摆 */}
           {detail.tags.length > 0 && (
             <Meta label={t("detail.metaTags")} value={detail.tags.join(t("punct.listSeparator"))} />
+          )}
+          {detail.attribution && detail.attribution.contributors.length > 0 && (
+            <Meta
+              label={t("detail.metaContributors")}
+              value={contributorsText(detail.attribution.contributors)}
+            />
           )}
         </div>
       </div>
@@ -328,6 +339,18 @@ function FileTree({
  * 缓存里存的是 SKILL.md 全文(详情要能离线打开),而 frontmatter 是给机器看的元数据,
  * 直接渲染会在正文顶部露出一段 `name:`/`description:`。
  */
+/** 贡献者展示文案:3 人以内全列,超出列前 3 并缀「等 N 人」(N = 总人数)。
+ *  元信息区是一行窄栏,十几个名字全列会把整行挤崩——截断是版式约束,不是隐藏信息,
+ *  完整名单在技能库页面上本来就查得到。 */
+export function contributorsText(names: string[]): string {
+  const MAX_SHOWN = 3;
+  if (names.length <= MAX_SHOWN) return names.join(t("punct.listSeparator"));
+  return t("detail.metaContributorsMore", {
+    names: names.slice(0, MAX_SHOWN).join(t("punct.listSeparator")),
+    count: names.length,
+  });
+}
+
 export function stripFrontmatter(raw: string): string {
   const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(raw);
   return match ? raw.slice(match[0].length) : raw;

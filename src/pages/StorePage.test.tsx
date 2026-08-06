@@ -19,6 +19,7 @@ const card = (over: Partial<StoreSkillCard>): StoreSkillCard => ({
   fileCount: 2,
   contentHash: "sha256:weekly",
   tags: [],
+  author: null,
   ...over,
 });
 
@@ -368,5 +369,28 @@ describe("标签筛选(M5 任务 3)", () => {
     await useStoreIndex.getState().setRegistry("custom-1");
 
     expect(useStoreIndex.getState().tagFilter).toBeNull();
+  });
+});
+
+describe("卡片作者展示(M7 任务 2)", () => {
+  beforeEach(() => {
+    useInstall.setState({ installed: new Map() });
+    useRegistries.setState({ list: null });
+  });
+
+  it("有作者时卡片底部显示作者名;没有则不摆", () => {
+    seed({
+      index: index({
+        skills: [
+          card({ author: "张三" }),
+          card({ name: "合同审查助手", dirSlug: "contract-review", author: null }),
+        ],
+      }),
+    });
+    render(<StorePage />);
+    expect(screen.getByText("张三")).toBeInTheDocument();
+    // 无作者的卡片不摆占位(界面上不会出现空短横或"未知")
+    expect(screen.queryByText("未知")).not.toBeInTheDocument();
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
   });
 });

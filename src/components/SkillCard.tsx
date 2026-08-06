@@ -68,7 +68,15 @@ export function SkillCard({
       </p>
 
       <div className="mt-auto flex items-center gap-2 text-[11.5px] text-text-3">
-        <span>{t("store.updatedAt", { when: updatedAt })}</span>
+        {/* 作者来自技能库的 authors.json(服务端维护);没有就不摆,不编造。
+            形态对齐 UI-Demo 卡片底部:作者名 + 2px 圆点分隔 + 更新时间 */}
+        {skill.author && (
+          <>
+            <span className="truncate">{skill.author}</span>
+            <span aria-hidden className="size-0.5 shrink-0 rounded-full bg-text-3" />
+          </>
+        )}
+        <span className="shrink-0">{t("store.updatedAt", { when: updatedAt })}</span>
         <div className="ml-auto">
           {/* 卡片上放不下 agent 多选,所以点这个按钮的归宿也是打开详情面板,
               在那儿看清会装到哪些工具再确认 —— 不做"点一下就动磁盘"。

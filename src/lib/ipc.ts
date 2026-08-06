@@ -52,6 +52,15 @@ export interface StoreSkillCard {
   contentHash: string;
   /** 标签(技能库根 tags.json,服务端管理、客户端只读)。 */
   tags: string[];
+  /** 作者(技能库根 authors.json,服务端维护)。null = 库里没这条,整栏不摆。 */
+  author: string | null;
+}
+
+/** 一个技能的作者与贡献者(技能库根 authors.json,服务端维护、客户端只读)。
+ *  契约里只有名字没有邮箱——core 的结构上就不存在 email 字段。 */
+export interface SkillAttribution {
+  author: string;
+  contributors: string[];
 }
 
 export interface SkippedEntry {
@@ -92,6 +101,8 @@ export interface SkillDetail {
   committedAt: string;
   /** 标签(tags.json)。详情面板元信息区展示。 */
   tags: string[];
+  /** 作者与贡献者(authors.json)。null = 库里没这条,整栏不摆、不编造。 */
+  attribution: SkillAttribution | null;
 }
 
 /** 本地技能定位:已装技能给 dirSlug(core 自行解析 canonical 目录),
