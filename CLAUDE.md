@@ -133,7 +133,12 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
 - 长任务通过 Tauri event 上报进度:`progress://{taskId}`
 
 ## 数据 Schema 要点(见交接包 3.4)
-- `config.json` / `state.json` 顶部必带 `"schemaVersion": 1`;启动时按版本链式迁移,未知更高版本→只读模式+提示升级 app,绝不写回破坏
+- `config.json` / `state.json` 顶部必带 `"schemaVersion"`,**当前是 2**(M6 收尾升的:
+  技能检查间隔从小时改成分钟,为了加「每 5 分钟」档)。启动时按版本链式迁移,
+  未知更高版本→只读模式+提示升级 app,绝不写回破坏。
+  **迁移发生在读取路径上,写回是惰性的**:load 之后内存里已是新结构,文件要等下一次
+  save 才被盖成新版本——真机实测过(v1 的 `intervalHours:4` 读成 240 分钟,
+  用户在设置页点一下档位才把文件落成 v2,期间 `ui`/`registries` 原样保留)。
 - `~/.agents/.skill-lock.json`(npx skills,schema v3)是**外部契约**:写入前探测 version 字段,非 3 则跳过双写并记日志,不得报错阻断主流程
 
 ## 测试要求
@@ -525,7 +530,7 @@ M6 的契约变更:新增事件 `app-update://ready`(载荷为版本号;探测�
   「保留并分享」是前端编排(先 `run("keepLocal")` 落稳再 `skill_share_changes`),core 的
   `Resolution` 仍只有两档。
 - **偏好落 `config.json` 的 `ui` 字段**(theme/accent/wizardDone,serde default 兼容,
-  schemaVersion 仍 1)。同步方向唯一:**config 有值则 config 赢**;localStorage 降为首帧防闪
+  schemaVersion 当时仍 1,现已随 v2 一起走)。同步方向唯一:**config 有值则 config 赢**;localStorage 降为首帧防闪
   与 IPC 不可用时的兜底。入口 `store/prefs.ts`:**未同步成功绝不反推 config**(不拿猜的值
   覆盖真数据)。agent 开关记在 `disabledAgents`(禁用名单而非启用白名单——注册表会新增 agent)。
 - **系统代理:一律直连**(任务 13):`gitea::app_http_client` 对全部请求 `.no_proxy()`
