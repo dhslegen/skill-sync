@@ -278,26 +278,31 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
   它就是这个项目的开发者文档。**别按全局规则把它加进 exclude 或重写历史**。
   仍然适用的部分:`docs/*`(除放行的两个)、`_*.md`、AI 流程产物一律不进版本控制。
 
-## 当前进度(2026-08-06,M5 全部完成 + v0.2.2 已发布并验证自更新)
+## 当前进度(2026-08-06,M6 全部完成,待发 v0.3.0)
 
-**M1–M5 全部完成并提交**(M5 分解与拍板见 docs/M5-任务分解.md:任务 1 多人协作冲突 ✅
-→ 2 「我的技能」分区展示 ✅ → 3 商店标签 ✅ → 4 收尾+发版 ✅)。
-**当前发布版本 v0.2.2**,内网发布仓 `skills/skillsync-releases` 上有 v0.2.1/v0.2.2 + latest 公告牌。
-**M6 候选范围见 docs/M6-候选范围.md**(用户 2026-08-06 提出五条,未拍板未分解)。
+**M1–M6 全部完成并提交**(M6 分解与拍板见 docs/M6-任务分解.md:任务 1 自更新静默就绪 ✅
+→ 2 左下角 pill ✅ → 3 侧边栏角标 ✅ → 4 「纳入管理」改名+绑定修复 ✅
+→ 5 分享闭环 ✅ → 6 收尾发版)。
+**已发布版本 v0.2.2**,内网发布仓 `skills/skillsync-releases` 上有 v0.2.1/v0.2.2 + latest 公告牌。
+**M6 候选五条的处置**:候选二(标签)当日提交 tags.json + curated.json 到真实库,
+用户已验证生效;候选一(更新提示)= 任务 1–3;候选四(认领语义)= 任务 4–5;
+候选三(作者/贡献者展示)**推迟到 M7**(要为它破一次"详情面板不联网"的例,设计问题最多,
+可行性已查证:Gitea `commits?path=` 一次请求即可)。
 
-任务 2 要点:「我的技能」按 商店安装/本地创建/npx skills 安装 三分区,归类徽标全撤;
+M5 任务 2 要点:「我的技能」三分区,归类徽标全撤;
 `installed_list` 只列 canonical 真实存在的目录(记账保留,重获取时 precheck 走 Fresh 对齐),
 `body_present` 字段已删——别再往 DTO 里加"存在性"字段,存在性由 core 过滤保证。
-任务 3 要点:技能库根 `tags.json`(`{"tags":{"<dirSlug>":["标签",…]}}`,管理员契约在
+M5 任务 3 要点:技能库根 `tags.json`(`{"tags":{"<dirSlug>":["标签",…]}}`,管理员契约在
 部署指南 §5)→ `store::parse_tags` 宽容解析进索引 → 商店 chip 单选(切库清筛选)+
 搜索匹配 + 详情展示。**缓存版本没升也不用升**:tags.json 改动必伴随库提交,head 一变
 缓存即重建,与 `curated` 同一套推理——候选文档"要升版本"的论断已被推翻,别再抄。
-⚠️ **真实内网技能库目前既没有 `tags.json` 也没有 `curated.json`**(2026-08-06 curl 实测双 404)
-——所以商店不显示标签行、向导没有"一键全装",**那是数据没配,不是功能坏了**。
+✅ **`tags.json` 与 `curated.json` 已于 2026-08-06 提交到真实内网技能库**(8 类标签 / 精选 7 项,
+用户已验证商店标签行与向导一键全装均生效)。此前"双 404"的记载已过期。
+**这条经验仍然成立**:界面什么都不显示时先查数据源存不存在,别当成功能坏了。
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 436 + 前端 385 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
+- 本机:Rust 448 + 前端 402 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
   `pnpm dev` 启动冒烟通过(带内网配置实测:商店读到真实库 30 个技能)
 - **双平台 CI**:**M4 任务 1 的两笔(`3857720` / `a7a1de3`)macOS + Windows 双 job 全绿**(2026-08-04 逐 job 实测);
   M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;`de7b233`/`2eb0595` 当时因账号计费
@@ -328,10 +333,54 @@ M4 后续新增的 IPC:`share_preview`(任务 2)、`skill_create`(任务 4)、
 `skill_unclaim`(任务 6a);新增事件 `local-skills://changed`(任务 6c,载荷为空,
 只是"去重新扫描一下"的信号,core 侧已滤掉本应用自己写盘引发的那些)。
 `InstalledSkillView` 新增 `localOnly` / `claimed` 两个字段(任务 6a 的第三档与取消认领)。
+M6 的契约变更:新增事件 `app-update://ready`(载荷为版本号;探测路径**不再发**
+`app-update://available`,前端那条监听已删);`AppUpdateStatus` 新增 `ready` 档;
+`InstalledSkillView` 新增 `claimBindable`;**没有**新增 command
+(原计划的 `skill_claim_preview` 已撤——判定并进了 `installed_list`,不留没人用的 API)。
 
 ### 现役机制约束(动相关代码前必读)
 
 这些**都已实现**,列在这里是因为它们的不变量不看就会破坏。已完成的过程叙事在 git log。
+
+- **术语:「认领」已于 M6 任务 4 改名为「纳入管理」**(反向 = 「移出管理」),
+  分区标题「npx skills 安装」→「其他工具装的」、「商店安装」→「由技能库管理」。
+  理由:"认领"的语义前提是"这东西暂时没主",而技能就在用户自己电脑上——词与事实相反。
+  **代码里的标识符仍叫 claim/unclaim/claimed**(ID 用英文,只有用户可见文案改了)。
+
+- **App 自更新是"静默装好 + 提示重启"**(M6 任务 1–2,对齐 Cursor/Claude 桌面端):
+  检出新版 → 直接下载安装(不重启)→ emit `app-update://ready` → 左下角 pill。
+  - 就绪记账在**进程内**(`core/app_update.rs` 的 `ReadyState`),不落盘:
+    tauri updater 的 `check()` 永远拿**运行中进程**的版本比远端,装好等重启这件事
+    只有我们自己记得。重启后状态天然作废,所以也不需要"忽略此版本"的记忆;
+  - **窗口可见就不发系统通知**(pill 已经在),缩托盘才发——同一件事只打扰一次;
+  - App 检查**寄生在技能检查的节奏上**(scheduler 每轮顺带查),不新增设置档位;
+    技能档位设"手动"时 App 也只有启动后 20 秒那一次。
+  - 这条链路的**最终验收只能靠两连发**(0.3.0 → 0.3.1),纯逻辑全绿证明不了它。
+
+- **更新提示的三处出口口径一致**(M6 任务 3):侧边栏「我的技能」角标 = `updateCount`,
+  它**逐条走 `hasUpdate`**,不另写判定——角标与页内徽标是同一件事的两个说法,
+  口径一漂就是"角标说 3、点进去只有 1"。`attachReportListener` 在 `status === "checked"`
+  时**连索引一起重载**:检查发现新内容但因本地改动跳过时,磁盘与账上都没变、
+  变的是远端,不重载索引就会一起装作无事发生。
+
+- **来源绑定只有一份实现 `acquire::resolve_binding`**(M6 任务 4),两条判据:
+  `sourceUrl` 是 URL → 同源 + 该库在源的库列表里;不是 URL → 按 owner/repo 找、
+  **唯一命中才绑**(多个源有同名库时绑谁都是猜)。
+  - **内建源必须显式传进去**(`BindingSources`):它锁定且不落 `config.registries`,
+    只传 config 的话公司库技能绝无可能绑上——M3 起"认领对主线场景从来没生效过"就是这个根因;
+  - `installed_list` 给未纳入管理的行带 `claimBindable`(同一份判定),界面据此摆
+    「纳入管理」或「分享到技能库」。**绑不上就不摆那个按钮——不摆比解释好**。
+
+- **写 `.skill-lock.json` 的 sourceUrl 必须是完整 URL、sourceType 必须是真实类型**
+  (M6 任务 6 修):此前写的是 `"owner/repo"`、类型一律写死 `gitea`,与自己录的
+  ground truth(`tests/fixtures/upstream-skill-lock.json`)不符,也让上面那条同源判据
+  对本 app 自己装的技能整个失效。载体是 `acquire::SourceMeta`(registry_id + kind +
+  base_url),`acquire` / `acquire_batch` / `scheduler::run_check` 都收它。
+
+- **分享直推进库后自动纳入管理**(M6 任务 5,`share::adopt_into_management`),四道闸:
+  只认直推(走评审的还没进库)/ 只认 canonical / **本地目录名必须等于远端目录名**
+  (中文名技能另起 ASCII 远端名,两者不同时记账键对不上)/ 已有记账不覆盖。
+  `origin` 记 `claimed`——文件是用户自己的,必须留着「移出管理」这条无损退路。
 
 - **回推前必须过远端变更检测**(M5 任务 1,`share::share_installed`):
   乐观锁(CONFLICT_STALE)只拦"拉 sha 与提交之间"的瞬间竞态——提交用的是**当前**
@@ -560,6 +609,10 @@ M4 后续新增的 IPC:`share_preview`(任务 2)、`skill_create`(任务 4)、
 ### 待处理
 
 **功能缺口**
+- **存量 lock 条目仍是旧形状**(M6 任务 6 顺带发现,不打算修):`sourceUrl` 的写入已
+  改成完整 URL,但 v0.3.0 之前装的技能,lock 里留的还是 `"owner/repo"`。它们的
+  「纳入管理」只能退回按 owner/repo 唯一匹配那条弱判据(同源判据用不上)。
+  重新获取一次就会被覆写成新形状,不值得为它写迁移。
 - **`.DS_Store` 会参与 `dir_content_hash`**(M4 任务 6c 顺带发现,未修):
   `fsops` 的排除名单只有 `metadata.json` / `.git` / `__pycache__` / `__pypackages__`。
   于是在访达里打开过某个技能目录、macOS 生成 `.DS_Store` 之后,该技能的内容 hash

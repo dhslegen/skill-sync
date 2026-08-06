@@ -140,7 +140,11 @@ async fn run(server: &MockServer, c: &Ctx, env: &TmpEnv) -> CheckReport {
         &c.registry,
         env,
         &c.store,
-        REGISTRY,
+        skillsync_lib::core::acquire::SourceMeta {
+            registry_id: REGISTRY,
+            kind: "gitea",
+            base_url: &server.uri(),
+        },
         &repo_ref(),
         NOW,
         1_753_900_000,

@@ -127,9 +127,13 @@ export function MySkillsPage() {
             : t("mine.shareChangesReview")}
         </p>
       )}
-      {/* 三分区,固定顺序:商店安装 → 本地创建 → 其他工具装的(M5 任务 2 用户拍板)。
+      {/* 三分区,固定顺序:由技能库管理 → 本地创建 → 其他工具装的(M5 任务 2 用户拍板)。
           归类判据全部来自 core:第 1 档是 state 记账且目录真实存在,第 2 档是文件系统
-          扫描(localOnly),第 3 档是 .skill-lock.json(unclaimed)。空分区不显示。 */}
+          扫描(localOnly),第 3 档是 .skill-lock.json(unclaimed)。空分区不显示。
+
+          第 1 档的标题不叫「商店安装」(M6 任务 6):经「纳入管理」收进来的、
+          以及分享进库后自动纳入的技能都在这一档,它们不是从商店装的
+          ——按来路命名就会有几行名不副实,按"谁在管它"命名才对得上全部三条来路。 */}
       {sectionsOf(list).map((sec) => (
         <section key={sec.key} className="mt-3 first-of-type:mt-0">
           <h3 className="pb-1.5 text-[11.5px] font-medium text-text-3">{sec.title}</h3>

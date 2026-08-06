@@ -193,7 +193,7 @@
   "mine.updating": "正在更新…",
   "mine.badgeModified": "已改动",
   "mine.badgeModifiedHint": "本地内容与获取时不同。分享功能开放后可以把改动分享到公司技能库。",
-  "mine.sectionStore": "商店安装",
+  "mine.sectionStore": "由技能库管理",
   "mine.sectionLocal": "本地创建",
   "mine.sectionNpx": "其他工具装的",
   "mine.badgeLinkIssue": "{count} 处关联异常",

@@ -91,7 +91,11 @@ async fn installs_a_real_skill_from_the_fixture_registry() {
         &env,
         &store,
         AcquireRequest {
-            registry_id: "fixture",
+            source: acquire::SourceMeta {
+                registry_id: "fixture",
+                kind: "gitea",
+                base_url: &env_vars["SKILLSYNC_FIXTURE_GITEA_URL"],
+            },
             repo: &repo,
             dir_slug: "with-scripts",
             agent_names: &["claude-code".to_string()],

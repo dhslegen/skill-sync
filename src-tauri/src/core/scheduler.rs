@@ -79,11 +79,12 @@ pub async fn run_check(
     registry: &AgentRegistry,
     env: &dyn AgentEnv,
     store: &Store,
-    registry_id: &str,
+    source: crate::core::acquire::SourceMeta<'_>,
     repo: &RepoRef,
     now: &str,
     fetched_at: i64,
 ) -> Result<CheckReport, AppError> {
+    let registry_id = source.registry_id;
     let state = store.load_state()?.value;
     let mine: Vec<String> = state
         .installed
@@ -118,7 +119,7 @@ pub async fn run_check(
         registry,
         env,
         store,
-        registry_id,
+        source,
         repo,
         &mine,
         BatchAgents::FromAccount,

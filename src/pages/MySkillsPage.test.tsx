@@ -262,7 +262,7 @@ describe("我的技能页", () => {
     expect([...call![1].args.agentIds].sort()).toEqual(["claude-code", "cursor"]);
   });
 
-  it("三档按分区展示:商店安装 → 本地创建 → 其他工具装的,固定顺序", async () => {
+  it("三档按分区展示:由技能库管理 → 本地创建 → 其他工具装的,固定顺序", async () => {
     // M5 任务 2(用户拍板):彻底放弃徽标归类,改为分区;归类判据在 core
     // (localOnly 来自文件系统扫描、unclaimed 来自 lock 文件,均为文件系统真相)
     seedIpc([
@@ -274,7 +274,7 @@ describe("我的技能页", () => {
 
     await screen.findByText("weekly-report");
     const headings = screen.getAllByRole("heading").map((h) => h.textContent);
-    expect(headings).toEqual(["商店安装", "本地创建", "其他工具装的"]);
+    expect(headings).toEqual(["由技能库管理", "本地创建", "其他工具装的"]);
   });
 
   it("空分区不显示标题", async () => {
@@ -283,7 +283,7 @@ describe("我的技能页", () => {
 
     await screen.findByText("weekly-report");
     const headings = screen.getAllByRole("heading").map((h) => h.textContent);
-    expect(headings).toEqual(["商店安装"]);
+    expect(headings).toEqual(["由技能库管理"]);
   });
 
   it("归类徽标(含 npx 警示色)彻底撤掉,分区标题即区分", async () => {

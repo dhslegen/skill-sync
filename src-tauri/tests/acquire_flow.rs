@@ -144,7 +144,11 @@ async fn run(
         env,
         &c.store,
         AcquireRequest {
-            registry_id: REGISTRY,
+            source: acquire::SourceMeta {
+                registry_id: REGISTRY,
+                kind: "gitea",
+                base_url: &server.uri(),
+            },
             repo: &repo_ref(),
             dir_slug: slug,
             agent_names: agents,
@@ -282,7 +286,11 @@ async fn a_same_named_skill_from_another_library_needs_a_decision_not_a_silent_s
         &env,
         &c.store,
         AcquireRequest {
-            registry_id: REGISTRY,
+            source: acquire::SourceMeta {
+                registry_id: REGISTRY,
+                kind: "gitea",
+                base_url: &server.uri(),
+            },
             repo: &other,
             dir_slug: "weekly-report",
             agent_names: &[],
@@ -346,7 +354,7 @@ async fn batch_skips_a_same_named_skill_from_another_library_with_a_readable_rea
         &c.registry,
         &env,
         &c.store,
-        REGISTRY,
+        acquire::SourceMeta { registry_id: REGISTRY, kind: "gitea", base_url: &server.uri() },
         &other,
         &["weekly-report".to_string()],
         acquire::BatchAgents::Uniform(&[]),
@@ -384,6 +392,12 @@ async fn writes_the_external_lock_contract() {
     assert_eq!(entry["skillPath"], "skills/weekly-report");
     // 非 GitHub 源填空串(上游对 well-known 源就是这么填的)
     assert_eq!(entry["skillFolderHash"], "");
+    // sourceUrl 必须是**完整 URL**(录制的 ground truth 就是这个形状)。
+    // 曾经写的是 "owner/repo",于是 `acquire::resolve_binding` 的同源判据整个失效
+    // ——脱管后重新纳入管理只能退回按 owner/repo 猜(M6 任务 6 修)。
+    assert_eq!(entry["sourceUrl"], format!("{}/skills/skills", server.uri()));
+    // sourceType 要说实话:此前不论来源是什么都写死 gitea
+    assert_eq!(entry["sourceType"], "gitea");
 }
 
 // ============================================================ contentHash 守卫
@@ -589,7 +603,11 @@ async fn progress_reports_every_stage_in_order() {
         &env,
         &c.store,
         AcquireRequest {
-            registry_id: REGISTRY,
+            source: acquire::SourceMeta {
+                registry_id: REGISTRY,
+                kind: "gitea",
+                base_url: &server.uri(),
+            },
             repo: &repo_ref(),
             dir_slug: "weekly-report",
             agent_names: &[],

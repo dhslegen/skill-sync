@@ -381,13 +381,13 @@ async fn run_all_sources_check() -> Option<scheduler::CheckReport> {
 
     let mut reports = Vec::new();
     for (id, repo_key) in targets {
-        if registry::resolve(&builtin_src, &registries_cfg, &builtin_extra, &id, repo_key.as_deref())
-            .is_err()
-        {
+        let Ok(resolved) =
+            registry::resolve(&builtin_src, &registries_cfg, &builtin_extra, &id, repo_key.as_deref())
+        else {
             // 内建未注入配置的开发构建每轮都走到这:记 debug 免得刷日志
             tracing::debug!(registry_id = %id, "定时检查跳过该源(解析失败)");
             continue;
-        }
+        };
         let round = async {
             let (client, repo) = read_source(&id, repo_key.as_deref()).await?;
             scheduler::run_check(
@@ -395,7 +395,11 @@ async fn run_all_sources_check() -> Option<scheduler::CheckReport> {
                 &registry,
                 &SystemEnv,
                 &store,
-                &id,
+                acquire::SourceMeta {
+                    registry_id: &id,
+                    kind: resolved.kind.as_str(),
+                    base_url: &resolved.base_url,
+                },
                 &repo,
                 &now_iso8601(),
                 auth::now_unix(),
@@ -664,6 +668,16 @@ impl BrowserOpener for SystemBrowser {
 
 /// 解析某个源的某个技能库(不限 kind,github 的闸门由各调用方按需加)。
 /// `repo_key = None` 落主仓——登录等仓无关的调用方都走这一档。
+/// 写 `.skill-lock.json` 要用的来源标识(kind 与 base_url 都取自解析结果,不猜)。
+/// 返回**拥有所有权**的两段字符串,调用方再借出去组 [`acquire::SourceMeta`]。
+fn source_meta_parts(
+    registry_id: &str,
+    repo_key: Option<&str>,
+) -> Result<(&'static str, String), AppError> {
+    let r = resolve_registry(registry_id, repo_key)?;
+    Ok((r.kind.as_str(), r.base_url))
+}
+
 fn resolve_registry(
     registry_id: &str,
     repo_key: Option<&str>,
@@ -1122,6 +1136,7 @@ pub async fn skill_install(
 ) -> Result<acquire::AcquireOutcome, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
     let (client, repo) = read_source(registry_id, args.repo.as_deref()).await?;
+    let (kind, base_url) = source_meta_parts(registry_id, args.repo.as_deref())?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
 
@@ -1137,7 +1152,7 @@ pub async fn skill_install(
         &SystemEnv,
         &store,
         acquire::AcquireRequest {
-            registry_id,
+            source: acquire::SourceMeta { registry_id, kind, base_url: &base_url },
             repo: &repo,
             dir_slug: &args.dir_slug,
             agent_names: &args.agent_ids,
@@ -1448,6 +1463,7 @@ pub async fn skill_install_batch(
 ) -> Result<Vec<acquire::BatchItem>, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
     let (client, repo) = read_source(registry_id, args.repo.as_deref()).await?;
+    let (kind, base_url) = source_meta_parts(registry_id, args.repo.as_deref())?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
 
@@ -1456,7 +1472,7 @@ pub async fn skill_install_batch(
         &registry,
         &SystemEnv,
         &store,
-        registry_id,
+        acquire::SourceMeta { registry_id, kind, base_url: &base_url },
         &repo,
         &args.dir_slugs,
         acquire::BatchAgents::Uniform(&args.agent_ids),

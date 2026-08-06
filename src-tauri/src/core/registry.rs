@@ -55,6 +55,14 @@ pub enum RegistryKind {
 }
 
 impl RegistryKind {
+    /// 写外部契约(`.skill-lock.json` 的 sourceType)时用的字符串,与 config 同一套值。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Gitea => "gitea",
+            Self::Github => "github",
+        }
+    }
+
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "gitea" => Some(Self::Gitea),

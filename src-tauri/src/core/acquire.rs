@@ -200,8 +200,29 @@ pub enum AcquireOutcome {
     },
 }
 
-pub struct AcquireRequest<'a> {
+/// 写 `.skill-lock.json` 时要用的来源标识(M6 任务 6)。
+///
+/// 外部契约要的是**完整 URL 与真实类型**——录制的 ground truth
+/// (`tests/fixtures/upstream-skill-lock.json`)里 `sourceUrl` 就是完整 URL。
+/// 此前这里写的是 `"owner/repo"`、`sourceType` 一律写死 `gitea`,于是
+/// `acquire::resolve_binding` 的同源判据对本 app 自己装的技能整个失效。
+#[derive(Debug, Clone, Copy)]
+pub struct SourceMeta<'a> {
     pub registry_id: &'a str,
+    /// `gitea` | `github`。
+    pub kind: &'a str,
+    /// 源地址,与 `owner/repo` 拼成 `sourceUrl`。
+    pub base_url: &'a str,
+}
+
+impl SourceMeta<'_> {
+    fn source_url(&self, repo: &RepoRef) -> String {
+        format!("{}/{}/{}", self.base_url.trim_end_matches('/'), repo.owner, repo.repo)
+    }
+}
+
+pub struct AcquireRequest<'a> {
+    pub source: SourceMeta<'a>,
     pub repo: &'a RepoRef,
     /// 技能库中的技能目录名。
     pub dir_slug: &'a str,
@@ -265,8 +286,8 @@ pub async fn acquire(
     let archive = client.download_archive(req.repo).await?;
 
     // 压缩包已经在手上,顺带把索引缓存刷新到同一版本:一次下载服务两处。
-    let index = store_index::build_index(req.registry_id, req.repo, &head, &archive, fetched_at);
-    let cache = store_index::cache_path(store.dir(), req.registry_id, req.repo);
+    let index = store_index::build_index(req.source.registry_id, req.repo, &head, &archive, fetched_at);
+    let cache = store_index::cache_path(store.dir(), req.source.registry_id, req.repo);
     if let Err(err) = store_index::save_cache(&cache, &index) {
         eprintln!("[acquire] 刷新索引缓存失败(不影响安装): {err}");
     }
@@ -415,7 +436,7 @@ pub async fn acquire_batch(
     registry: &AgentRegistry,
     env: &dyn AgentEnv,
     store: &Store,
-    registry_id: &str,
+    source: SourceMeta<'_>,
     repo: &RepoRef,
     dir_slugs: &[String],
     agents: BatchAgents<'_>,
@@ -427,8 +448,8 @@ pub async fn acquire_batch(
     let _quiet = crate::core::watcher::app_write();
     let head = client.branch_head(repo).await?;
     let archive = client.download_archive(repo).await?;
-    let index = store_index::build_index(registry_id, repo, &head, &archive, fetched_at);
-    let cache = store_index::cache_path(store.dir(), registry_id, repo);
+    let index = store_index::build_index(source.registry_id, repo, &head, &archive, fetched_at);
+    let cache = store_index::cache_path(store.dir(), source.registry_id, repo);
     if let Err(err) = store_index::save_cache(&cache, &index) {
         eprintln!("[acquire] 刷新索引缓存失败(不影响安装): {err}");
     }
@@ -440,7 +461,7 @@ pub async fn acquire_batch(
             &installer,
             env,
             store,
-            registry_id,
+            source,
             repo,
             &index,
             &archive,
@@ -463,7 +484,7 @@ fn install_one_from_archive(
     installer: &Installer<'_>,
     env: &dyn AgentEnv,
     store: &Store,
-    registry_id: &str,
+    source: SourceMeta<'_>,
     repo: &RepoRef,
     index: &store_index::StoreIndex,
     archive: &RepoArchive,
@@ -539,7 +560,7 @@ fn install_one_from_archive(
             &report,
             skill,
             AcquireRequest {
-                registry_id,
+                source,
                 repo,
                 dir_slug,
                 agent_names,
@@ -627,8 +648,8 @@ fn record(
             &report.dir_name,
             &LockEntry {
                 source: format!("{}/{}", req.repo.owner, req.repo.repo),
-                source_type: "gitea".into(),
-                source_url: format!("{}/{}", req.repo.owner, req.repo.repo),
+                source_type: req.source.kind.to_string(),
+                source_url: req.source.source_url(req.repo),
                 git_ref: Some(req.repo.branch.clone()),
                 skill_path: Some(skill.path.clone()),
                 // 非 GitHub 源填空串——上游对 well-known 源就是这么填的(add.ts:916)
@@ -771,7 +792,7 @@ pub fn link_agents(
 
 fn source_of(req: &AcquireRequest<'_>, skill: &IndexedSkill, sha: &str) -> SkillSource {
     SkillSource {
-        registry_id: req.registry_id.to_string(),
+        registry_id: req.source.registry_id.to_string(),
         owner: req.repo.owner.clone(),
         repo: req.repo.repo.clone(),
         path: skill.path.clone(),

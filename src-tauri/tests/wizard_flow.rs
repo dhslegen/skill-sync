@@ -121,7 +121,7 @@ async fn run_batch(
         &c.registry,
         env,
         &c.store,
-        REGISTRY,
+        acquire::SourceMeta { registry_id: REGISTRY, kind: "gitea", base_url: &server.uri() },
         &repo_ref(),
         &slugs,
         acquire::BatchAgents::Uniform(&["claude-code".to_string()]),

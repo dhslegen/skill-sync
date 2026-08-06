@@ -83,7 +83,11 @@ async fn browses_and_installs_a_real_skill_from_github() {
         &env,
         &store_db,
         AcquireRequest {
-            registry_id,
+            source: acquire::SourceMeta {
+                registry_id,
+                kind: "github",
+                base_url: "https://github.com",
+            },
             repo: &repo,
             dir_slug: &target,
             agent_names: &[],
