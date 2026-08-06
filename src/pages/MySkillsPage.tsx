@@ -127,7 +127,7 @@ export function MySkillsPage() {
             : t("mine.shareChangesReview")}
         </p>
       )}
-      {/* 三分区,固定顺序:商店安装 → 本地创建 → npx skills 安装(M5 任务 2 用户拍板)。
+      {/* 三分区,固定顺序:商店安装 → 本地创建 → 其他工具装的(M5 任务 2 用户拍板)。
           归类判据全部来自 core:第 1 档是 state 记账且目录真实存在,第 2 档是文件系统
           扫描(localOnly),第 3 档是 .skill-lock.json(unclaimed)。空分区不显示。 */}
       {sectionsOf(list).map((sec) => (
@@ -149,6 +149,7 @@ export function MySkillsPage() {
                   name={nameOf(skill.dirSlug)}
                   claiming={claimBusy === skill.dirSlug}
                   onClaim={() => void claim(skill.dirSlug)}
+                  onGoShare={() => setPage("share")}
                 />
               ) : (
                 <Row
@@ -199,17 +200,27 @@ function sectionsOf(list: InstalledSkillView[]) {
   ].filter((sec) => sec.items.length > 0);
 }
 
-/** 上游(npx skills)装的未认领行:只有「认领」可做,其余动作认领后开放。 */
+/**
+ * 其他工具装的、尚未纳入管理的行。
+ *
+ * **摆哪个按钮由 `claimBindable` 决定**(M6 任务 4,判定在 core):
+ * - 绑得上某个技能库 → 「纳入管理」:此后更新/修复关联/分享改动/移除都通;
+ * - 绑不上 → **不摆「纳入管理」**,改摆「分享到技能库」。绑不上的纳入只多出
+ *   "修复关联"与"移除"两个动作,让用户点一个换不来任何东西的按钮就是在耍他;
+ *   真正的出路是把技能推进公司库,之后走正常的"获取 → 更新"闭环。
+ */
 function UnclaimedRow({
   skill,
   name,
   claiming,
   onClaim,
+  onGoShare,
 }: {
   skill: InstalledSkillView;
   name: string;
   claiming: boolean;
   onClaim: () => void;
+  onGoShare: () => void;
 }) {
   return (
     <div className="flex items-center gap-3 border-t border-border px-3.5 py-2.5 first:border-t-0">
@@ -235,14 +246,24 @@ function UnclaimedRow({
         </div>
       </button>
       <div className="flex flex-none items-center">
-        <button
-          type="button"
-          disabled={claiming}
-          onClick={onClaim}
-          className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
-        >
-          {claiming ? t("mine.claiming") : t("mine.claim")}
-        </button>
+        {skill.claimBindable ? (
+          <button
+            type="button"
+            disabled={claiming}
+            onClick={onClaim}
+            className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+          >
+            {claiming ? t("mine.claiming") : t("mine.claim")}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onGoShare}
+            className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+          >
+            {t("mine.goShare")}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -428,8 +449,8 @@ function Row({
             {updating ? t("mine.updating") : t("mine.update")}
           </button>
         )}
-        {/* 认领来的才给「取消认领」:它只删记账、磁盘一个字节不动,是认领的逆操作。
-            在它之前,认领后唯一的退路是「移除」,而移除会连 npx skills 那边的
+        {/* 纳入管理来的才给「移出管理」:它只删记账、磁盘一个字节不动,是纳入的逆操作。
+            在它之前,纳入后唯一的退路是「移除」,而移除会连 npx skills 那边的
             安装一起毁掉——无害的进入,破坏性的退出。 */}
         {skill.claimed && (
           <button

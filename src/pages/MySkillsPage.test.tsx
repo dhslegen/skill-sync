@@ -28,6 +28,7 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   sourceRemoved: false,
   libraryRemoved: false,
   unclaimed: false,
+  claimBindable: false,
   localOnly: false,
   claimed: false,
   links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
@@ -154,7 +155,7 @@ describe("我的技能页", () => {
     expect(screen.queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
   });
 
-  it("上游装的未认领技能:标签 + 认领按钮,点击走 skill_claim", async () => {
+  it("其他工具装的、绑得上技能库:摆「纳入管理」,点了就纳入(M6 任务 4)", async () => {
     const calls: string[] = [];
     invoke.mockImplementation(async (cmd: string) => {
       calls.push(cmd);
@@ -163,27 +164,51 @@ describe("我的技能页", () => {
           view({
             dirSlug: "upstream-skill",
             unclaimed: true,
+            claimBindable: true,
             sourceOwner: "vercel-labs",
             sourceRepo: "skills",
             agents: [],
             links: [],
           }),
         ];
-      if (cmd === "skill_claim") return { dirSlug: "upstream-skill", adoptedLinks: 1, bound: false };
+      if (cmd === "skill_claim") return { dirSlug: "upstream-skill", adoptedLinks: 1, bound: true };
       if (cmd === "agents_detected") return { agents: [], canonicalDir: "~/.agents/skills" };
       return [];
     });
     seedIndex();
     render(<MySkillsPage />);
 
-    await screen.findByText("npx skills 安装");
-    // 未认领:更新/移除/分享改动都不该出现
+    await screen.findByText("其他工具装的");
+    // 尚未纳入管理:更新/移除/分享改动都不该出现
     expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
-    const claimButton = screen.getByRole("button", { name: "认领" });
+    const claimButton = screen.getByRole("button", { name: "纳入管理" });
     await userEvent.click(claimButton);
     await vi.waitFor(() => {
       expect(calls).toContain("skill_claim");
     });
+
+  });
+
+  it("其他工具装的、绑不上技能库:不摆「纳入管理」,给「分享到技能库」(M6 任务 4)", async () => {
+    // 绑不上时纳入管理只多出"修复关联"与"移除",换不来更新也换不来分享改动
+    // ——摆出来就是引诱用户点一个没有意义的按钮。真正的出路是先推进公司库。
+    seedIpc([
+      view({
+        dirSlug: "from-github",
+        unclaimed: true,
+        claimBindable: false,
+        sourceOwner: "vercel-labs",
+        sourceRepo: "skills",
+        agents: [],
+        links: [],
+      }),
+    ]);
+    render(<MySkillsPage />);
+
+    await screen.findByText("其他工具装的");
+    expect(screen.queryByRole("button", { name: "纳入管理" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "分享到技能库" }));
+    expect(useUi.getState().page).toBe("share");
   });
 
   it("来源已移除:亮出徽标,且更新与分享改动都不再提供", async () => {
@@ -200,7 +225,7 @@ describe("我的技能页", () => {
   });
 
   it("技能库不在列表里:说的是这句话,不是「来源已移除」(M4 任务 2)", async () => {
-    // 源好好的,只是这个技能库不在你的库列表里(M3 认领绑歪的存量条目,
+    // 源好好的,只是这个技能库不在你的库列表里(M3 绑歪的存量条目,
     // 或用户后来把库移除了)。去向与来源已移除相同,但**说法必须不同**
     // ——说"来源已移除"是假话,而且会把用户引去查一个根本没问题的来源。
     seedIndex("sha256:newer");
@@ -237,7 +262,7 @@ describe("我的技能页", () => {
     expect([...call![1].args.agentIds].sort()).toEqual(["claude-code", "cursor"]);
   });
 
-  it("三档按分区展示:商店安装 → 本地创建 → npx skills 安装,固定顺序", async () => {
+  it("三档按分区展示:商店安装 → 本地创建 → 其他工具装的,固定顺序", async () => {
     // M5 任务 2(用户拍板):彻底放弃徽标归类,改为分区;归类判据在 core
     // (localOnly 来自文件系统扫描、unclaimed 来自 lock 文件,均为文件系统真相)
     seedIpc([
@@ -249,7 +274,7 @@ describe("我的技能页", () => {
 
     await screen.findByText("weekly-report");
     const headings = screen.getAllByRole("heading").map((h) => h.textContent);
-    expect(headings).toEqual(["商店安装", "本地创建", "npx skills 安装"]);
+    expect(headings).toEqual(["商店安装", "本地创建", "其他工具装的"]);
   });
 
   it("空分区不显示标题", async () => {
@@ -274,11 +299,11 @@ describe("我的技能页", () => {
       screen.queryByTitle("这个技能是在本机创建的,还没有分享到技能库。"),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByTitle("这个技能由命令行工具装入,认领后就能在这里更新、修复与移除。"),
+      screen.queryByTitle("这个技能由命令行工具装入,纳入管理后就能在这里更新、修复与移除。"),
     ).not.toBeInTheDocument();
     // 「本地创建」只出现一次(分区标题),不再有同文本的行内徽标
     expect(screen.getAllByText("本地创建")).toHaveLength(1);
-    expect(screen.getAllByText("npx skills 安装")).toHaveLength(1);
+    expect(screen.getAllByText("其他工具装的")).toHaveLength(1);
   });
 
   it("改过的技能带「已改动」徽标", async () => {
@@ -421,7 +446,7 @@ describe("我的技能页", () => {
     expect(useLocalDetail.getState().target).toBeNull();
   });
 
-  it("未认领行同样能点开详情", async () => {
+  it("尚未纳入管理的行同样能点开详情", async () => {
     useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
     seedIpc([view({ unclaimed: true, sourceOwner: "vercel-labs", sourceRepo: "skills" })]);
     render(<MySkillsPage />);
@@ -446,26 +471,26 @@ describe("我的技能页", () => {
     expect(screen.queryByRole("button", { name: "分享改动" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
     // 能做的是去分享——那正是这类技能的下一步
-    expect(screen.getByRole("button", { name: "去分享" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "分享到技能库" })).toBeInTheDocument();
   });
 
-  it("认领来的才给「取消认领」,获取来的不给", async () => {
+  it("纳入管理来的才给「移出管理」,获取来的不给", async () => {
     seedIpc([view({ claimed: true })]);
     const { unmount } = render(<MySkillsPage />);
-    expect(await screen.findByRole("button", { name: "取消认领" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "移出管理" })).toBeInTheDocument();
     unmount();
 
     seedIpc([view({ claimed: false })]);
     render(<MySkillsPage />);
     expect(await screen.findByRole("button", { name: "移除" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "取消认领" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "移出管理" })).not.toBeInTheDocument();
   });
 
-  it("点「取消认领」走的是 skill_unclaim,不是破坏性的 skill_remove", async () => {
+  it("点「移出管理」走的是 skill_unclaim,不是破坏性的 skill_remove", async () => {
     seedIpc([view({ claimed: true })]);
     render(<MySkillsPage />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "取消认领" }));
+    await userEvent.click(await screen.findByRole("button", { name: "移出管理" }));
 
     expect(invoke).toHaveBeenCalledWith("skill_unclaim", { args: { dirSlug: "weekly-report" } });
     expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_remove")).toBe(false);

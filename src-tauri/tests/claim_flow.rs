@@ -100,6 +100,56 @@ fn upstream_install(ctx: &Ctx, slug: &str) {
     std::fs::write(&lock, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
 }
 
+/// 模拟一次**本 app 自己**的安装留下的痕迹,然后把 state 抹掉
+/// ——等价于重装 app / 换机器 / state.json 损坏之后的现场:
+/// canonical 有文件、lock 有条目(sourceType gitea、sourceUrl 是 "owner/repo" 不是 URL),
+/// 但本 app 的账上什么都没有。
+fn company_install(ctx: &Ctx, slug: &str) {
+    let canonical = ctx.home.join(".agents/skills").join(slug);
+    std::fs::create_dir_all(&canonical).unwrap();
+    std::fs::write(
+        canonical.join("SKILL.md"),
+        format!("---\nname: 公司技能\ndescription: 说明\n---\n{slug}\n"),
+    )
+    .unwrap();
+
+    let lock = ctx.home.join(".agents/.skill-lock.json");
+    let mut doc: serde_json::Value = std::fs::read_to_string(&lock)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({ "version": 3, "skills": {} }));
+    doc["skills"][slug] = serde_json::json!({
+        // 与 acquire.rs 写 lock 时逐字一致:sourceUrl 就是 "owner/repo",不是 URL
+        "source": "skills/skills",
+        "sourceType": "gitea",
+        "sourceUrl": "skills/skills",
+        "skillFolderHash": "",
+        "installedAt": "2026-07-01T00:00:00.000Z",
+        "updatedAt": "2026-07-01T00:00:00.000Z"
+    });
+    std::fs::write(&lock, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+}
+
+/// 内建源 = 公司库 `skills/skills`(测试构建不注入编译期常量,所以显式给坐标)。
+fn company_sources(custom: &[RegistryConfig]) -> acquire::BindingSources<'_> {
+    acquire::BindingSources {
+        builtin_base_url: Some("http://gitea.internal.example"),
+        builtin_repo: Some(("skills", "skills")),
+        builtin_extra: &[],
+        custom,
+    }
+}
+
+/// 只有自定义源、没有内建源(内建坐标未注入的构建)。
+fn custom_only(custom: &[RegistryConfig]) -> acquire::BindingSources<'_> {
+    acquire::BindingSources {
+        builtin_base_url: None,
+        builtin_repo: None,
+        builtin_extra: &[],
+        custom,
+    }
+}
+
 fn github_registry() -> RegistryConfig {
     RegistryConfig {
         id: "custom-7".into(),
@@ -129,7 +179,7 @@ fn claims_an_upstream_skill_adopting_links_without_touching_the_lock() {
         &ctx.registry,
         &env,
         &ctx.store,
-        &[github_registry()],
+        &custom_only(&[github_registry()]),
         "weekly-report",
         NOW,
     )
@@ -183,7 +233,7 @@ fn without_a_matching_registry_the_claim_is_local_only() {
         &ctx.registry,
         &env,
         &ctx.store,
-        &[ghe],
+        &custom_only(&[ghe]),
         "weekly-report",
         NOW,
     )
@@ -220,7 +270,7 @@ fn same_origin_but_a_different_repo_is_not_bound() {
         &ctx_a.registry,
         &env_a,
         &ctx_a.store,
-        std::slice::from_ref(&other_repo),
+        &custom_only(std::slice::from_ref(&other_repo)),
         "weekly-report",
         NOW,
     )
@@ -249,7 +299,7 @@ fn same_origin_but_a_different_repo_is_not_bound() {
         &ctx_b.registry,
         &env_b,
         &ctx_b.store,
-        &[with_repo],
+        &custom_only(&[with_repo]),
         "weekly-report",
         NOW,
     )
@@ -261,6 +311,110 @@ fn same_origin_but_a_different_repo_is_not_bound() {
     );
 }
 
+/// 本 app 自己装的技能写进 lock 的是 `sourceType: gitea` + `sourceUrl: "owner/repo"`
+/// (不是 URL),而内建源**不在 config.registries 里**(坐标是编译期常量)。
+/// 两件事叠起来:公司库装的技能一旦脱管(重装 app / 换机器 / state.json 丢了),
+/// 认领回来一律绑不上——M3 起就是这样,认领对主线场景从来没生效过(M6 任务 4 修)。
+#[test]
+fn a_company_library_skill_rebinds_to_the_builtin_source_when_reclaimed() {
+    let (ctx, env) = ctx();
+    company_install(&ctx, "weekly-report");
+    let installer = Installer::new(&ctx.registry, &env);
+
+    let report = acquire::claim(
+        &installer,
+        &ctx.registry,
+        &env,
+        &ctx.store,
+        &company_sources(&[]),
+        "weekly-report",
+        NOW,
+    )
+    .unwrap();
+
+    assert!(report.bound, "公司库装的技能脱管后必须能绑回内建源");
+    let src = ctx.store.load_state().unwrap().value.installed[0].source.clone();
+    assert_eq!(
+        (src.registry_id.as_str(), src.owner.as_str(), src.repo.as_str()),
+        ("company", "skills", "skills"),
+    );
+}
+
+/// 说不清是哪个库就不绑:`sourceUrl` 不是 URL 时只能按 owner/repo 找,
+/// 两个源都有同名库时绑谁都是猜——宁可不绑(与"任一侧指纹缺失按没有更新处理"同一姿态)。
+#[test]
+fn an_ambiguous_owner_repo_is_left_unbound() {
+    let (ctx, env) = ctx();
+    company_install(&ctx, "weekly-report");
+    let installer = Installer::new(&ctx.registry, &env);
+
+    // 自定义源里也有一个 skills/skills
+    let twin = RegistryConfig {
+        id: "custom-3".into(),
+        name: "另一个 Gitea".into(),
+        kind: "gitea".into(),
+        base_url: "https://gitea.example.com".into(),
+        builtin: false,
+        repos: vec![RepoConfig {
+            owner: "skills".into(),
+            repo: "skills".into(),
+            branch: "main".into(),
+            name: None,
+        }],
+    };
+
+    let report = acquire::claim(
+        &installer,
+        &ctx.registry,
+        &env,
+        &ctx.store,
+        &company_sources(std::slice::from_ref(&twin)),
+        "weekly-report",
+        NOW,
+    )
+    .unwrap();
+
+    assert!(!report.bound, "两个源都有同名库,绑谁都是猜");
+    assert_eq!(ctx.store.load_state().unwrap().value.installed[0].source.registry_id, "");
+}
+
+/// 未认领清单要顺带给出绑定结论:界面靠它决定摆「认领」还是摆「分享到技能库」
+/// ——绑不上的认领只多出"修复关联"与"移除",摆出来就是引诱用户点一个没有意义的按钮。
+#[test]
+fn the_unclaimed_listing_reports_whether_each_one_would_bind() {
+    let (ctx, env) = ctx();
+    // upstream_install 是整份覆写 lock,company_install 是合并——顺序不能反
+    upstream_install(&ctx, "from-github"); // github.com/vercel-labs/skills:没配那个源
+    company_install(&ctx, "from-company"); // 内建库来的:绑得上
+
+    let installer = Installer::new(&ctx.registry, &env);
+    let st = ctx.store.load_state().unwrap().value;
+    let list = acquire::unclaimed_skills(&env, &installer, &st, &company_sources(&[]));
+
+    let binding = |slug: &str| {
+        list.iter()
+            .find(|u| u.dir_slug == slug)
+            .unwrap_or_else(|| panic!("{slug} 不在未认领清单里"))
+            .binding
+            .clone()
+    };
+    assert!(matches!(binding("from-company"), acquire::SourceBinding::Bound { .. }));
+    assert!(matches!(binding("from-github"), acquire::SourceBinding::NoSource));
+
+    // 与真认领的结论一致——清单说能绑,认领就必须真绑上(两套判定各写一份必然漂移)
+    let report = acquire::claim(
+        &installer,
+        &ctx.registry,
+        &env,
+        &ctx.store,
+        &company_sources(&[]),
+        "from-company",
+        NOW,
+    )
+    .unwrap();
+    assert!(report.bound);
+}
+
 #[test]
 fn claim_refuses_managed_missing_and_non_upstream() {
     let (ctx, env) = ctx();
@@ -269,21 +423,21 @@ fn claim_refuses_managed_missing_and_non_upstream() {
 
     // 本体不在:lock 有条目但目录已删
     std::fs::remove_dir_all(ctx.home.join(".agents/skills/weekly-report")).unwrap();
-    let err = acquire::claim(&installer, &ctx.registry, &env, &ctx.store, &[], "weekly-report", NOW)
+    let err = acquire::claim(&installer, &ctx.registry, &env, &ctx.store, &custom_only(&[]), "weekly-report", NOW)
         .unwrap_err();
     assert_eq!(err.code, "FS_NOT_CLAIMABLE");
 
     // 不是上游装的:目录在但 lock 没条目
     let stray = ctx.home.join(".agents/skills/hand-made");
     std::fs::create_dir_all(&stray).unwrap();
-    let err = acquire::claim(&installer, &ctx.registry, &env, &ctx.store, &[], "hand-made", NOW)
+    let err = acquire::claim(&installer, &ctx.registry, &env, &ctx.store, &custom_only(&[]), "hand-made", NOW)
         .unwrap_err();
     assert_eq!(err.code, "FS_NOT_CLAIMABLE");
 
     // 已在管理中:state 里有记账
     std::fs::create_dir_all(ctx.home.join(".agents/skills/weekly-report")).unwrap();
-    acquire::claim(&installer, &ctx.registry, &env, &ctx.store, &[], "weekly-report", NOW).unwrap();
-    let err = acquire::claim(&installer, &ctx.registry, &env, &ctx.store, &[], "weekly-report", NOW)
+    acquire::claim(&installer, &ctx.registry, &env, &ctx.store, &custom_only(&[]), "weekly-report", NOW).unwrap();
+    let err = acquire::claim(&installer, &ctx.registry, &env, &ctx.store, &custom_only(&[]), "weekly-report", NOW)
         .unwrap_err();
     assert_eq!(err.code, "CONFLICT_ALREADY_MANAGED");
 }
@@ -298,7 +452,7 @@ fn removal_after_claim_cleans_adopted_links_and_the_lock_entry() {
         &ctx.registry,
         &env,
         &ctx.store,
-        &[github_registry()],
+        &custom_only(&[github_registry()]),
         "weekly-report",
         NOW,
     )
@@ -339,10 +493,10 @@ fn unclaimed_listing_skips_managed_and_missing_bodies() {
     }
     std::fs::write(&lock_path, serde_json::to_string(&doc).unwrap()).unwrap();
     std::fs::create_dir_all(ctx.home.join(".agents/skills/managed-skill")).unwrap();
-    acquire::claim(&installer, &ctx.registry, &env, &ctx.store, &[], "managed-skill", NOW).unwrap();
+    acquire::claim(&installer, &ctx.registry, &env, &ctx.store, &custom_only(&[]), "managed-skill", NOW).unwrap();
 
     let st = ctx.store.load_state().unwrap().value;
-    let unclaimed = acquire::unclaimed_skills(&env, &installer, &st);
+    let unclaimed = acquire::unclaimed_skills(&env, &installer, &st, &custom_only(&[]));
     assert_eq!(unclaimed.len(), 1, "已管理与本体缺失的都不该列");
     assert_eq!(unclaimed[0].dir_slug, "weekly-report");
     assert_eq!(unclaimed[0].source, "vercel-labs/skills");
@@ -378,7 +532,7 @@ fn unclaim_restores_everything_exactly_as_it_was_before_the_claim() {
     let installer = Installer::new(&ctx.registry, &env);
     acquire::claim(
         &installer, &ctx.registry, &env, &ctx.store,
-        &[github_registry()], "weekly-report", NOW,
+        &custom_only(&[github_registry()]), "weekly-report", NOW,
     )
     .expect("认领应当成功");
     assert_eq!(ctx.store.load_state().unwrap().value.installed.len(), 1);
@@ -410,7 +564,7 @@ fn unclaimed_skill_shows_up_again_and_can_be_reclaimed() {
     let claim_once = || {
         acquire::claim(
             &installer, &ctx.registry, &env, &ctx.store,
-            &[github_registry()], "weekly-report", NOW,
+            &custom_only(&[github_registry()]), "weekly-report", NOW,
         )
     };
 
@@ -418,7 +572,7 @@ fn unclaimed_skill_shows_up_again_and_can_be_reclaimed() {
     acquire::unclaim(&ctx.store, "weekly-report").unwrap();
 
     let st = ctx.store.load_state().unwrap().value;
-    let pending = acquire::unclaimed_skills(&env, &installer, &st);
+    let pending = acquire::unclaimed_skills(&env, &installer, &st, &custom_only(&[]));
     assert_eq!(pending.len(), 1, "该回到未认领那一档");
     assert_eq!(pending[0].dir_slug, "weekly-report");
 

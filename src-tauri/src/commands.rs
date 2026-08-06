@@ -1184,8 +1184,13 @@ pub struct InstalledSkillView {
     /// 或用户后来把这个库从源里移除了。它与 `source_removed` 的去向相同
     /// (更新/回推没有去处),但**说法不同**——把它说成"来源已移除"是假话,源好好的。
     pub library_removed: bool,
-    /// 上游(npx skills)装的、尚未认领:只有「认领」这一个动作可做(M3 任务 6)。
+    /// 其他工具装的、**尚未纳入管理**(M3 任务 6;M6 任务 4 改名,原称"认领")。
     pub unclaimed: bool,
+    /// 仅对 `unclaimed` 有意义:纳入管理后绑不绑得上某个技能库(M6 任务 4)。
+    ///
+    /// false 时界面**不摆「纳入管理」**——绑不上的纳入只多出"修复关联"与"移除",
+    /// 那不值得让用户点。改摆「分享到技能库」,那才是他真正想要的出路。
+    pub claim_bindable: bool,
     /// **本地技能**:自己新建的、或手放进 canonical 的。既不在 `state.installed`,
     /// 也不在 `.skill-lock.json` 里,因此没有来源、没有关联记账(M4 任务 6a)。
     ///
@@ -1210,6 +1215,23 @@ pub struct InstalledSkillView {
 /// 列表里"——M3 的 `bind_source` 只比同源不校验库,存量条目会走到这一档,
 /// 说成"来源已移除"是假话。
 ///
+/// 把「内建源 + 自定义源」摊给 core 做来源绑定(M6 任务 4)。
+///
+/// **内建源必须显式带上**:它锁定且不落 `config.registries`(坐标是编译期常量),
+/// 只传 `config.registries` 的话公司库来的技能永远绑不上——那正是"纳入管理没意义"
+/// 的根因,M3 起就存在。
+fn binding_sources<'a>(
+    builtin: &'a registry::BuiltinSource,
+    config: &'a state::Config,
+) -> acquire::BindingSources<'a> {
+    acquire::BindingSources {
+        builtin_base_url: builtin.base_url,
+        builtin_repo: builtin.repo,
+        builtin_extra: &config.builtin_extra_repos,
+        custom: &config.registries,
+    }
+}
+
 /// 提成纯函数是为了可测:`installed_list` 要 app_store,测不了
 /// ——只测两个 helper 而不测这里的组合方式,注入把两者对调也照样绿(实撞过)。
 fn source_state(
@@ -1277,6 +1299,7 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                     source_removed: source_state(&builtin_src, &config, &s.source).0,
                     library_removed: source_state(&builtin_src, &config, &s.source).1,
                     unclaimed: false,
+                    claim_bindable: false,
                     local_only: false,
                     claimed: acquire::is_claimed(s),
                     links: match installer.link_health(&s.name, &recorded) {
@@ -1287,8 +1310,11 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
             })
             .collect::<Result<_, AppError>>()?;
 
-        // 上游装的未认领技能挂在列表尾部:只有「认领」可做,其余字段按"未知"如实留空
-        for u in acquire::unclaimed_skills(&SystemEnv, &installer, &state) {
+        // 其他工具装的、尚未纳入管理的挂在列表尾部:其余字段按"未知"如实留空。
+        // `claim_bindable` 决定界面摆「纳入管理」还是「分享到技能库」(M6 任务 4)。
+        for u in
+            acquire::unclaimed_skills(&SystemEnv, &installer, &state, &binding_sources(&builtin_src, &config))
+        {
             let (owner, repo) = u
                 .source
                 .split_once('/')
@@ -1309,6 +1335,7 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                 source_removed: false,
                 library_removed: false,
                 unclaimed: true,
+                claim_bindable: matches!(u.binding, acquire::SourceBinding::Bound { .. }),
                 local_only: false,
                 claimed: false,
                 links: Vec::new(),
@@ -1339,6 +1366,7 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
                 source_removed: false,
                 library_removed: false,
                 unclaimed: false,
+                claim_bindable: false,
                 local_only: true,
                 claimed: false,
                 links: Vec::new(),
@@ -1685,13 +1713,13 @@ pub async fn skill_claim(args: SkillClaimArgs) -> Result<acquire::ClaimReport, A
         let store = app_store()?;
         let registry = AgentRegistry::builtin();
         let installer = Installer::new(&registry, &SystemEnv);
-        let registries = store.load_config()?.value.registries;
+        let config = store.load_config()?.value;
         acquire::claim(
             &installer,
             &registry,
             &SystemEnv,
             &store,
-            &registries,
+            &binding_sources(&registry::BuiltinSource::from_build(), &config),
             &args.dir_slug,
             &now_iso8601(),
         )

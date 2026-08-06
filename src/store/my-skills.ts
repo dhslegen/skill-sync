@@ -81,11 +81,15 @@ interface MySkillsState {
   /** 冲突档的取消:什么都不发,改动留在本地。 */
   cancelShareConflict: () => void;
 
-  /** 认领上游(npx skills)装的技能,成功后刷新列表。 */
+  /**
+   * 纳入管理(M3 任务 6 的"认领",M6 任务 4 改名):把其他工具装的技能交给本 app 管。
+   * **界面只在 `claimBindable` 为真时摆这个动作**——绑不上技能库的话纳入只多出
+   * "修复关联"与"移除",那不值得让用户点(判定在 core,见 acquire::resolve_binding)。
+   */
   claim: (dirSlug: string) => Promise<void>;
 
   /**
-   * 取消认领:认领的精确逆操作,只删记账,磁盘一个字节不动。
+   * 移出管理:纳入管理的精确逆操作,只删记账,磁盘一个字节不动。
    * 不需要二次确认——它无损,而弹窗会让人以为要删东西。
    */
   unclaim: (dirSlug: string) => Promise<void>;
@@ -182,7 +186,7 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     try {
       await skillClaim({ dirSlug });
       await get().load();
-      // 认领后它成了正式的已装技能,商店卡片状态也要跟上
+      // 纳入管理后它成了正式的已装技能,商店卡片状态也要跟上
       await useInstall.getState().refreshInstalled();
     } catch (raw) {
       set({ claimError: toAppError(raw) });

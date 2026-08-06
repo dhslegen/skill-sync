@@ -25,6 +25,7 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   sourceRemoved: false,
   libraryRemoved: false,
   unclaimed: false,
+  claimBindable: false,
   localOnly: false,
   claimed: false,
   links: [],

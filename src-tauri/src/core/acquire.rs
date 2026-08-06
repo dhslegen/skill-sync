@@ -801,6 +801,13 @@ pub struct UnclaimedSkill {
     pub dir_slug: String,
     /// 上游记账的来源(如 `owner/repo`),仅展示。
     pub source: String,
+    /// 纳入管理之后绑不绑得上某个技能库(M6 任务 4)。
+    ///
+    /// 界面靠它决定摆「纳入管理」还是「分享到技能库」:绑不上的纳入只多出
+    /// "修复关联"与"移除",摆出来就是引诱用户点一个没有意义的按钮。
+    /// **与 [`claim`] 是同一份判定**([`resolve_binding`]),不会出现
+    /// "清单说能绑、纳入后却标着来源已移除"。
+    pub binding: SourceBinding,
 }
 
 /// 扫出「上游装的、本体还在、我们没记账」的技能。
@@ -809,6 +816,7 @@ pub fn unclaimed_skills(
     env: &dyn AgentEnv,
     installer: &Installer,
     st: &state::State,
+    sources: &BindingSources,
 ) -> Vec<UnclaimedSkill> {
     let Some(lock) = skill_lock::lock_path(env) else {
         return Vec::new();
@@ -822,9 +830,13 @@ pub fn unclaimed_skills(
                 .map(|p| p.is_dir())
                 .unwrap_or(false)
         })
-        .map(|e| UnclaimedSkill {
-            dir_slug: e.key,
-            source: e.source,
+        .map(|e| {
+            let (binding, _, _) = resolve_binding(&e, sources);
+            UnclaimedSkill {
+                dir_slug: e.key,
+                source: e.source,
+                binding,
+            }
         })
         .collect()
 }
@@ -898,16 +910,34 @@ pub fn unclaim(store: &Store, dir_slug: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn claim(
+/// 上游来源与已配置源的对应关系。
+///
+/// **`NoSource` 与 `RepoNotListed` 是两句不同的话**:后者来源好好的,只是这个技能库
+/// 不在它的列表里,说成"来源没了"会让用户去找一个根本没丢的东西
+/// (`commands::source_state` 早就踩过同一个坑)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum SourceBinding {
+    /// 绑得上:认领后「更新」与「分享改动」都有去处。
+    Bound {
+        registry_id: String,
+        owner: String,
+        repo: String,
+    },
+    /// 没有能对上的来源(一个源都没配 / 不同源 / 来源类型无从判定)。
+    NoSource,
+    /// 有同源的来源,但这个技能库不在它的库列表里。
+    RepoNotListed,
+}
+
+/// 认领的三道前置闸。
+fn claimable(
     installer: &Installer,
-    registry: &AgentRegistry,
     env: &dyn AgentEnv,
     store: &Store,
-    registries: &[state::RegistryConfig],
     dir_slug: &str,
-    now: &str,
-) -> Result<ClaimReport, AppError> {
-    let mut st = store.load_state()?.value;
+) -> Result<(skill_lock::UpstreamEntry, std::path::PathBuf), AppError> {
+    let st = store.load_state()?.value;
     if st.installed.iter().any(|s| s.name == dir_slug) {
         return Err(AppError::new(
             "CONFLICT_ALREADY_MANAGED",
@@ -921,9 +951,8 @@ pub fn claim(
             "本地已没有这个技能的文件,无法认领",
         ));
     }
-    let lock = skill_lock::lock_path(env).ok_or_else(|| {
-        AppError::new("FS_NO_HOME", "找不到用户主目录,无法保存本地数据")
-    })?;
+    let lock = skill_lock::lock_path(env)
+        .ok_or_else(|| AppError::new("FS_NO_HOME", "找不到用户主目录,无法保存本地数据"))?;
     let entry = skill_lock::read_entries(&lock)
         .into_iter()
         .find(|e| e.key == dir_slug)
@@ -933,18 +962,23 @@ pub fn claim(
                 "这个技能不是由 npx skills 安装的,可以在分享页把它收编进来",
             )
         })?;
+    Ok((entry, canonical))
+}
 
-    let (registry_id, owner, repo) = bind_source(&entry, registries);
-    let content_hash = fsops::dir_content_hash(&canonical)?;
-
-    // 收编 npx 建的链接。只认「确实指向这个 canonical 的链接」;实体目录(npx 的
-    // 降级复制)与用户自己的目录无从区分,不敢认——那正是"凭猜测动用户文件"。
+/// 收编 npx 建的链接。只认「确实指向这个 canonical 的链接」;实体目录(npx 的
+/// 降级复制)与用户自己的目录无从区分,不敢认——那正是"凭猜测动用户文件"。
+fn adoptable_links(
+    installer: &Installer,
+    registry: &AgentRegistry,
+    canonical: &std::path::Path,
+    dir_slug: &str,
+) -> Result<(Vec<LinkRecord>, std::collections::BTreeSet<String>), AppError> {
     let all_names: Vec<String> = registry.agents().iter().map(|a| a.name.clone()).collect();
     let mut links = Vec::new();
     let mut agent_names = std::collections::BTreeSet::new();
     for target in installer.link_targets(&all_names)? {
         let link = target.dir.join(dir_slug);
-        if let fsops::LinkState::Linked(kind) = fsops::link_state(&link, &canonical) {
+        if let fsops::LinkState::Linked(kind) = fsops::link_state(&link, canonical) {
             links.push(LinkRecord {
                 dir: target.dir.to_string_lossy().into_owned(),
                 mode: kind.as_str().to_string(),
@@ -952,6 +986,24 @@ pub fn claim(
             agent_names.extend(target.agents.iter().cloned());
         }
     }
+    Ok((links, agent_names))
+}
+
+pub fn claim(
+    installer: &Installer,
+    registry: &AgentRegistry,
+    env: &dyn AgentEnv,
+    store: &Store,
+    sources: &BindingSources,
+    dir_slug: &str,
+    now: &str,
+) -> Result<ClaimReport, AppError> {
+    let (entry, canonical) = claimable(installer, env, store, dir_slug)?;
+    let mut st = store.load_state()?.value;
+
+    let (registry_id, owner, repo) = bind_source(&entry, sources);
+    let content_hash = fsops::dir_content_hash(&canonical)?;
+    let (links, agent_names) = adoptable_links(installer, registry, &canonical, dir_slug)?;
 
     let report = ClaimReport {
         dir_slug: dir_slug.to_string(),
@@ -981,30 +1033,113 @@ pub fn claim(
     Ok(report)
 }
 
-/// 上游来源 ↔ 已配置源的绑定。GitHub 条目按 `sourceUrl` 与源地址同源比对;
-/// 绑不上就只留展示用的 owner/repo,registry_id 空(更新与回推没有去处)。
+/// 找"这个技能属于哪个已配置的技能库"时要看的全部坐标。
+///
+/// **内建源必须单独传**:它锁定且不落 `config.registries`(坐标是编译期常量),
+/// 光传 `config.registries` 的话公司库来的技能永远绑不上——M3 起认领对主线场景
+/// 从来没生效过,根因就是这里少了一份坐标(M6 任务 4 修)。
+pub struct BindingSources<'a> {
+    pub builtin_base_url: Option<&'a str>,
+    pub builtin_repo: Option<(&'a str, &'a str)>,
+    /// 内建源的追加库(M4 任务 1,落在 `config.builtinExtraRepos`)。
+    pub builtin_extra: &'a [state::RepoConfig],
+    pub custom: &'a [state::RegistryConfig],
+}
+
+/// 一个候选库:`(源 id, 源地址, owner, repo)`。
+type Candidate<'a> = (&'a str, &'a str, &'a str, &'a str);
+
+impl BindingSources<'_> {
+    /// 摊平成候选库清单,内建与自定义一视同仁。
+    fn candidates(&self) -> Vec<Candidate<'_>> {
+        let mut out: Vec<Candidate<'_>> = Vec::new();
+        if let (Some(base), Some((o, r))) = (self.builtin_base_url, self.builtin_repo) {
+            out.push((crate::core::registry::BUILTIN_REGISTRY_ID, base, o, r));
+            for c in self.builtin_extra {
+                out.push((
+                    crate::core::registry::BUILTIN_REGISTRY_ID,
+                    base,
+                    &c.owner,
+                    &c.repo,
+                ));
+            }
+        }
+        for reg in self.custom {
+            for c in &reg.repos {
+                out.push((&reg.id, &reg.base_url, &c.owner, &c.repo));
+            }
+        }
+        out
+    }
+}
+
+/// 上游来源 ↔ 已配置源的绑定。绑不上就只留展示用的 owner/repo,
+/// registry_id 空(更新与回推没有去处)。
 fn bind_source(
     entry: &skill_lock::UpstreamEntry,
-    registries: &[state::RegistryConfig],
+    sources: &BindingSources,
 ) -> (String, String, String) {
+    match resolve_binding(entry, sources) {
+        (SourceBinding::Bound { registry_id, .. }, owner, repo) => (registry_id, owner, repo),
+        (_, owner, repo) => (String::new(), owner, repo),
+    }
+}
+
+/// 绑定解析的唯一实现。返回 `(结论, owner, repo)`——owner/repo 无论绑不绑得上都要留,
+/// 界面靠它显示"这个技能来自哪里"。
+///
+/// 两条判据,按可信度排序:
+/// 1. **`sourceUrl` 是 URL** → 要求同源 + 这个库在该源的库列表里(M4 任务 1 的老规矩:
+///    同源还不够,源里没有这个库时更新只会去主库找同名技能——找不到就报错,
+///    找到就装错内容)。
+/// 2. **`sourceUrl` 不是 URL** → 只能按 `owner/repo` 找,**唯一命中才绑**。
+///    本 app 自己写的 lock 条目就是这一档(`sourceUrl` 存的是 `"owner/repo"`)。
+///    多个源都有同名库时绑谁都是猜,宁可不绑——与"任一侧指纹缺失按没有更新处理"同一姿态。
+fn resolve_binding(
+    entry: &skill_lock::UpstreamEntry,
+    sources: &BindingSources,
+) -> (SourceBinding, String, String) {
     let (owner, repo) = entry
         .source
         .split_once('/')
         .map(|(o, r)| (o.to_string(), r.to_string()))
         .unwrap_or_else(|| (entry.source.clone(), String::new()));
-    if entry.source_type == "github" {
-        if let Some(m) = registries.iter().find(|r| {
-            r.kind == "github"
-                && crate::core::gitea::is_same_origin(&r.base_url, &entry.source_url)
-                // 同源还不够,**这个技能库本身也得在源的库列表里**(M4 任务 1):
-                // 绑上去等于对用户承诺"能从这个来源更新它",而源里没有这个库时,
-                // 更新只会去该源的主库找同名技能——找不到就报错,找到就装错内容。
-                && r.repos.iter().any(|c| c.owner == owner && c.repo == repo)
-        }) {
-            return (m.id.clone(), owner, repo);
+    let bound = |id: &str| {
+        (
+            SourceBinding::Bound {
+                registry_id: id.to_string(),
+                owner: owner.clone(),
+                repo: repo.clone(),
+            },
+            owner.clone(),
+            repo.clone(),
+        )
+    };
+    let candidates = sources.candidates();
+
+    if url::Url::parse(&entry.source_url).is_ok() {
+        let same_origin: Vec<&Candidate> = candidates
+            .iter()
+            .filter(|(_, base, _, _)| crate::core::gitea::is_same_origin(base, &entry.source_url))
+            .collect();
+        if let Some((id, _, _, _)) = same_origin
+            .iter()
+            .find(|(_, _, o, r)| *o == owner && *r == repo)
+        {
+            return bound(id);
         }
+        // 源好好的,只是这个技能库不在它的列表里——与"没有来源"是两句不同的话
+        if !same_origin.is_empty() {
+            return (SourceBinding::RepoNotListed, owner, repo);
+        }
+        return (SourceBinding::NoSource, owner, repo);
     }
-    (String::new(), owner, repo)
+
+    let mut hits = candidates.iter().filter(|(_, _, o, r)| *o == owner && *r == repo);
+    match (hits.next(), hits.next()) {
+        (Some((id, _, _, _)), None) => bound(id),
+        _ => (SourceBinding::NoSource, owner, repo),
+    }
 }
 
 #[cfg(test)]
