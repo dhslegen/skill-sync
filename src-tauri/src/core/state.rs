@@ -15,7 +15,11 @@ use crate::core::agents::AgentEnv;
 use crate::error::AppError;
 
 /// 当前 schema 版本。加新版本时:提升此值,并在 `migrate` 里补一段 `n => n+1` 的搬运。
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// **v2**(2026-08-06):技能检查间隔的单位从**小时**换成**分钟**——加 5 分钟档时
+/// 小时字段表达不了。这是本项目第一次真的走迁移链;`migrate` 的形态一直备着,
+/// 就是为了这一天不用临时造轮子。
+pub const SCHEMA_VERSION: u32 = 2;
 
 const APP_DIR: &str = ".skillsync";
 const CONFIG_FILE: &str = "config.json";
@@ -131,7 +135,8 @@ pub struct AutoUpdate {
 #[serde(rename_all = "camelCase")]
 pub struct SkillAutoUpdate {
     pub enabled: bool,
-    pub interval_hours: u32,
+    /// 检查间隔(**分钟**)。v1 存的是 `intervalHours`,读取路径上换算过来。
+    pub interval_minutes: u32,
 }
 
 impl Default for AutoUpdate {
@@ -139,7 +144,7 @@ impl Default for AutoUpdate {
         Self {
             skills: SkillAutoUpdate {
                 enabled: true,
-                interval_hours: 4,
+                interval_minutes: 4 * 60,
             },
             app: true,
         }
@@ -296,12 +301,12 @@ impl Store {
 
     /// 自动更新配置写回(load-modify-save,同 save_ui_prefs 的只读闸门策略)。
     pub fn save_auto_update(&self, auto_update: &AutoUpdate) -> Result<(), AppError> {
-        if auto_update.skills.interval_hours == 0 {
+        if auto_update.skills.interval_minutes == 0 {
             return Err(AppError::new(
                 "STATE_INVALID_CONFIG",
                 "自动更新的时间间隔不合法,请重新选择",
             )
-            .with_detail("intervalHours must be >= 1"));
+            .with_detail("intervalMinutes must be >= 1"));
         }
         let mut config = self.load_config()?.value;
         config.auto_update = auto_update.clone();
@@ -383,14 +388,27 @@ where
 /// 目前只有第 1 版,链上没有任何一段;新增 v2 时在此补 `1 => {...}` 并提升 [`SCHEMA_VERSION`]。
 /// 保留这个函数形态而不是等到那天再引入,是为了让"迁移发生在读取路径上"这件事现在就成立。
 fn migrate(mut raw: serde_json::Value, from: u32) -> Result<serde_json::Value, AppError> {
-    if from < SCHEMA_VERSION {
-        // 当前 SCHEMA_VERSION == 1,且"缺字段"已在调用处按 v1 处理,故这一支实际不可达。
-        // 新增 v2 时在此按 from 分档搬运字段,一档一档往上走。
+    if from > SCHEMA_VERSION {
+        // 调用处已经拦过更高版本(只读模式),这里只是兜底
         return Err(AppError::new(
             "STATE_MIGRATE_UNSUPPORTED",
-            "本地数据来自不受支持的旧版本,请联系 IT 协助处理",
+            "本地数据来自更高版本的应用,请升级后再用",
         )
         .with_detail(format!("no migration path from v{from}")));
+    }
+    if from < 2 {
+        // v1 → v2:技能检查间隔换算成分钟。config.json 才有 autoUpdate,
+        // state.json 走同一条链但没有这一节,原样跳过(只补版本号)。
+        if let Some(skills) = raw
+            .get_mut("autoUpdate")
+            .and_then(|a| a.get_mut("skills"))
+            .and_then(|s| s.as_object_mut())
+        {
+            let hours = skills.remove("intervalHours").and_then(|v| v.as_u64());
+            if let Some(h) = hours {
+                skills.insert("intervalMinutes".into(), (h * 60).into());
+            }
+        }
     }
     if let Some(obj) = raw.as_object_mut() {
         obj.insert("schemaVersion".into(), SCHEMA_VERSION.into());
@@ -510,7 +528,10 @@ mod tests {
 
         let text = std::fs::read_to_string(s.dir().join("state.json")).unwrap();
 
-        assert!(text.starts_with("{\n  \"schemaVersion\": 1"), "{text}");
+        assert!(
+            text.starts_with(&format!("{{\n  \"schemaVersion\": {SCHEMA_VERSION}")),
+            "{text}"
+        );
     }
 
     #[test]
@@ -625,12 +646,59 @@ mod tests {
 
         let loaded = s.load_config().unwrap();
 
-        assert!(matches!(loaded.access, Access::ReadWrite), "serde default 兼容,不该升版本或降只读");
+        assert!(matches!(loaded.access, Access::ReadWrite), "能迁移就不该降只读");
         assert_eq!(loaded.value.schema_version, SCHEMA_VERSION);
         assert!(loaded.value.ui.is_none());
-        // 顺带确认旧字段没被 default 吃掉
+        // 顺带确认旧值没被 default 吃掉(8 小时 → 480 分钟,v2 迁移)
         assert!(!loaded.value.auto_update.skills.enabled);
-        assert_eq!(loaded.value.auto_update.skills.interval_hours, 8);
+        assert_eq!(loaded.value.auto_update.skills.interval_minutes, 480);
+    }
+
+    /// v1 的 `intervalHours` 要在读取路径上换算成 v2 的 `intervalMinutes`
+    /// ——加 5 分钟档必须让间隔有分钟精度(2026-08-06 用户要求),
+    /// 而**小时字段没法表达 5 分钟**,只能升一版把单位换掉。
+    /// 这是本项目第一次真的走迁移链;`migrate` 的形态早就备在那里了。
+    #[test]
+    fn a_v1_config_migrates_its_hourly_interval_into_minutes() {
+        let (_tmp, s) = store();
+        std::fs::create_dir_all(s.dir()).unwrap();
+        std::fs::write(
+            s.dir().join("config.json"),
+            r#"{"schemaVersion":1,"registries":[],"autoUpdate":{"skills":{"enabled":true,"intervalHours":4},"app":true}}"#,
+        )
+        .unwrap();
+
+        let loaded = s.load_config().unwrap();
+
+        assert!(matches!(loaded.access, Access::ReadWrite), "能迁移就不该降只读");
+        assert_eq!(loaded.value.schema_version, SCHEMA_VERSION);
+        // 4 小时 = 240 分钟:档位语义一个字不变,只是单位换了
+        assert_eq!(loaded.value.auto_update.skills.interval_minutes, 240);
+        assert!(loaded.value.auto_update.skills.enabled);
+
+        // 写回之后文件里只剩新字段——留着旧字段就是两份真相
+        s.save_auto_update(&loaded.value.auto_update).unwrap();
+        let raw = std::fs::read_to_string(s.dir().join("config.json")).unwrap();
+        assert!(raw.contains("intervalMinutes"), "{raw}");
+        assert!(!raw.contains("intervalHours"), "旧字段该随写回消失: {raw}");
+    }
+
+    /// 迁移只认识 `autoUpdate` 这一处;state.json 走同一条链,不该被误伤。
+    #[test]
+    fn migrating_state_json_only_stamps_the_version() {
+        let (_tmp, s) = store();
+        std::fs::create_dir_all(s.dir()).unwrap();
+        std::fs::write(
+            s.dir().join("state.json"),
+            r#"{"schemaVersion":1,"installed":[],"shared":[]}"#,
+        )
+        .unwrap();
+
+        let loaded = s.load_state().unwrap();
+
+        assert!(matches!(loaded.access, Access::ReadWrite));
+        assert_eq!(loaded.value.schema_version, SCHEMA_VERSION);
+        assert!(loaded.value.installed.is_empty());
     }
 
     #[test]
@@ -678,7 +746,7 @@ mod tests {
                 name: None,
             }],
         });
-        config.auto_update.skills.interval_hours = 24;
+        config.auto_update.skills.interval_minutes = 24 * 60;
         s.save_config(&config).unwrap();
 
         s.save_ui_prefs(&sample_prefs()).unwrap();
@@ -686,7 +754,7 @@ mod tests {
 
         assert_eq!(back.registries.len(), 1, "save_ui_prefs 整份覆盖了 config");
         assert_eq!(back.registries[0].id, "company");
-        assert_eq!(back.auto_update.skills.interval_hours, 24);
+        assert_eq!(back.auto_update.skills.interval_minutes, 24 * 60);
         assert_eq!(back.ui, Some(sample_prefs()));
     }
 
@@ -736,7 +804,7 @@ mod tests {
         let before = std::fs::read_to_string(s.dir().join("config.json")).unwrap();
 
         let bad = AutoUpdate {
-            skills: SkillAutoUpdate { enabled: true, interval_hours: 0 },
+            skills: SkillAutoUpdate { enabled: true, interval_minutes: 0 },
             app: true,
         };
         let err = s.save_auto_update(&bad).unwrap_err();
@@ -748,13 +816,13 @@ mod tests {
         );
 
         let ok = AutoUpdate {
-            skills: SkillAutoUpdate { enabled: false, interval_hours: 24 },
+            skills: SkillAutoUpdate { enabled: false, interval_minutes: 24 * 60 },
             app: false,
         };
         s.save_auto_update(&ok).unwrap();
         let back = s.load_config().unwrap().value;
         assert!(!back.auto_update.skills.enabled);
-        assert_eq!(back.auto_update.skills.interval_hours, 24);
+        assert_eq!(back.auto_update.skills.interval_minutes, 24 * 60);
         assert!(!back.auto_update.app);
         assert_eq!(back.disabled_agents, vec!["trae".to_string()], "写更新配置不该动禁用名单");
     }
@@ -764,6 +832,6 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(cfg.schema_version, SCHEMA_VERSION);
         assert!(cfg.auto_update.skills.enabled);
-        assert_eq!(cfg.auto_update.skills.interval_hours, 4);
+        assert_eq!(cfg.auto_update.skills.interval_minutes, 240);
     }
 }

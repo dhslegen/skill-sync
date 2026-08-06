@@ -52,8 +52,8 @@ interface SettingsState {
   appUpdate: AppUpdatePhase;
   load: () => Promise<void>;
   toggleAgent: (name: string) => Promise<void>;
-  /** 三档之一:手动(enabled=false,频率保留)/ 每 4 小时 / 每天。 */
-  setSkillsUpdate: (next: { enabled: boolean; intervalHours?: number }) => Promise<void>;
+  /** 四档之一:手动(enabled=false,频率保留)/ 每 5 分钟 / 每 4 小时 / 每天。 */
+  setSkillsUpdate: (next: { enabled: boolean; intervalMinutes?: number }) => Promise<void>;
   setAppUpdate: (app: boolean) => Promise<void>;
   checkNow: () => Promise<void>;
   /** 启动时挂一次:检查结果落进 store(设置页与后续的通知都从这拿)。 */
@@ -92,7 +92,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
     }
   },
 
-  setSkillsUpdate: async ({ enabled, intervalHours }) => {
+  setSkillsUpdate: async ({ enabled, intervalMinutes }) => {
     const { autoUpdate } = get();
     if (!autoUpdate) return;
     const next: AutoUpdate = {
@@ -100,7 +100,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
       skills: {
         enabled,
         // 「手动」只关开关不动频率——用户回头再打开时,原来的档位还在
-        intervalHours: intervalHours ?? autoUpdate.skills.intervalHours,
+        intervalMinutes: intervalMinutes ?? autoUpdate.skills.intervalMinutes,
       },
     };
     set({ autoUpdate: next, error: null });

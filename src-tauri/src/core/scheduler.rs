@@ -246,14 +246,15 @@ pub fn notification_copy(report: &CheckReport) -> Option<(String, String)> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cadence {
     pub enabled: bool,
-    pub interval_hours: u32,
+    /// 检查间隔(**分钟**,v2 起)。最短一档是 5 分钟(用户要的"急着验新版")。
+    pub interval_minutes: u32,
 }
 
 /// 下一次检查的延迟。关掉了就是 `None`(睡到有命令为止)。
 pub fn next_delay(cadence: Cadence) -> Option<Duration> {
     cadence
         .enabled
-        .then(|| Duration::from_secs(u64::from(cadence.interval_hours.max(1)) * 3600))
+        .then(|| Duration::from_secs(u64::from(cadence.interval_minutes.max(1)) * 60))
 }
 
 /// 发给调度循环的命令。
@@ -466,14 +467,19 @@ mod tests {
     #[test]
     fn next_delay_reflects_the_switch_and_interval() {
         assert_eq!(
-            next_delay(Cadence { enabled: true, interval_hours: 4 }),
+            next_delay(Cadence { enabled: true, interval_minutes: 240 }),
             Some(Duration::from_secs(4 * 3600))
         );
-        assert_eq!(next_delay(Cadence { enabled: false, interval_hours: 4 }), None);
-        // 0 不可能通过 save_auto_update 的校验,但手改 config 的兜底:钳到 1 小时
+        assert_eq!(next_delay(Cadence { enabled: false, interval_minutes: 240 }), None);
+        // 最短那一档:5 分钟(用户要的"急着验新版",2026-08-06)
         assert_eq!(
-            next_delay(Cadence { enabled: true, interval_hours: 0 }),
-            Some(Duration::from_secs(3600))
+            next_delay(Cadence { enabled: true, interval_minutes: 5 }),
+            Some(Duration::from_secs(300))
+        );
+        // 0 不可能通过 save_auto_update 的校验,但手改 config 的兜底:钳到 1 分钟
+        assert_eq!(
+            next_delay(Cadence { enabled: true, interval_minutes: 0 }),
+            Some(Duration::from_secs(60))
         );
     }
 
@@ -481,13 +487,13 @@ mod tests {
     async fn the_loop_fires_on_cadence_and_reschedules_immediately() {
         let hits = Arc::new(AtomicUsize::new(0));
         let (tx, rx) = mpsc::unbounded_channel();
-        let interval = Arc::new(AtomicUsize::new(4));
+        let interval = Arc::new(AtomicUsize::new(240)); // 分钟(= 4 小时)
         let interval_for_loop = interval.clone();
         tokio::spawn(run_loop(
             rx,
             move || Cadence {
                 enabled: true,
-                interval_hours: interval_for_loop.load(Ordering::SeqCst) as u32,
+                interval_minutes: interval_for_loop.load(Ordering::SeqCst) as u32,
             },
             counter_check(hits.clone()),
             Duration::from_secs(10),
@@ -502,7 +508,7 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 2, "第二轮该在一个间隔后触发");
 
         // 改成 1 小时并重排:下一轮 1 小时后到,而不是仍按旧的 4 小时
-        interval.store(1, Ordering::SeqCst);
+        interval.store(60, Ordering::SeqCst);
         tx.send(Command::Reschedule).unwrap();
         tokio::time::sleep(Duration::from_secs(3600 + 5)).await;
         assert_eq!(hits.load(Ordering::SeqCst), 3, "重排后新频率立刻生效");
@@ -514,7 +520,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(run_loop(
             rx,
-            || Cadence { enabled: false, interval_hours: 4 },
+            || Cadence { enabled: false, interval_minutes: 240 },
             counter_check(hits.clone()),
             Duration::from_secs(10),
         ));

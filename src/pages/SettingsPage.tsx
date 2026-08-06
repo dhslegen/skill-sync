@@ -588,10 +588,13 @@ function AgentsSection() {
   );
 }
 
-const FREQ_OPTIONS: { label: MessageKey; enabled: boolean; intervalHours?: number }[] = [
+// 间隔单位是**分钟**(schema v2 起)。5 分钟那一档是给"急着验刚发的新版"用的
+// ——0.3.x 那几轮自更新验证反复证明:等 4 小时等于没有自动更新。
+const FREQ_OPTIONS: { label: MessageKey; enabled: boolean; intervalMinutes?: number }[] = [
   { label: "settings.freqManual", enabled: false },
-  { label: "settings.freqEvery4h", enabled: true, intervalHours: 4 },
-  { label: "settings.freqDaily", enabled: true, intervalHours: 24 },
+  { label: "settings.freqEvery5m", enabled: true, intervalMinutes: 5 },
+  { label: "settings.freqEvery4h", enabled: true, intervalMinutes: 240 },
+  { label: "settings.freqDaily", enabled: true, intervalMinutes: 1440 },
 ];
 
 function UpdatesSection() {
@@ -602,7 +605,7 @@ function UpdatesSection() {
 
   const active = (opt: (typeof FREQ_OPTIONS)[number]) =>
     opt.enabled === autoUpdate.skills.enabled &&
-    (!opt.enabled || opt.intervalHours === autoUpdate.skills.intervalHours);
+    (!opt.enabled || opt.intervalMinutes === autoUpdate.skills.intervalMinutes);
 
   return (
     <Section title="settings.sectionUpdates">
@@ -619,7 +622,7 @@ function UpdatesSection() {
               type="button"
               aria-pressed={active(opt)}
               onClick={() =>
-                void setSkillsUpdate({ enabled: opt.enabled, intervalHours: opt.intervalHours })
+                void setSkillsUpdate({ enabled: opt.enabled, intervalMinutes: opt.intervalMinutes })
               }
               className={cn(
                 "border-l border-border px-2.5 py-[3px] text-[12px] text-text-2 first:border-l-0",

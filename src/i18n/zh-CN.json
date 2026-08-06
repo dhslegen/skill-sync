@@ -54,6 +54,7 @@
   "settings.autoSkills": "自动更新技能",
   "settings.autoSkillsHint": "有新版本时自动同步并通知",
   "settings.freqManual": "手动",
+  "settings.freqEvery5m": "每 5 分钟",
   "settings.freqEvery4h": "每 4 小时",
   "settings.freqDaily": "每天",
   "settings.autoApp": "自动更新应用",

@@ -23,7 +23,7 @@ const AGENTS = {
   canonicalDir: "~/.agents/skills",
 };
 
-const AUTO: AutoUpdate = { skills: { enabled: true, intervalHours: 4 }, app: true };
+const AUTO: AutoUpdate = { skills: { enabled: true, intervalMinutes: 240 }, app: true };
 
 function seed() {
   invoke.mockImplementation(async (cmd: string) => {
@@ -100,17 +100,17 @@ describe("设置 store", () => {
     await useSettings.getState().setSkillsUpdate({ enabled: false });
 
     expect(invoke).toHaveBeenCalledWith("auto_update_set", {
-      args: { autoUpdate: { skills: { enabled: false, intervalHours: 4 }, app: true } },
+      args: { autoUpdate: { skills: { enabled: false, intervalMinutes: 240 }, app: true } },
     });
   });
 
-  it("切「每天」写入 24 小时档", async () => {
+  it("切「每天」写入 1440 分钟档", async () => {
     await useSettings.getState().load();
 
-    await useSettings.getState().setSkillsUpdate({ enabled: true, intervalHours: 24 });
+    await useSettings.getState().setSkillsUpdate({ enabled: true, intervalMinutes: 1440 });
 
     expect(invoke).toHaveBeenCalledWith("auto_update_set", {
-      args: { autoUpdate: { skills: { enabled: true, intervalHours: 24 }, app: true } },
+      args: { autoUpdate: { skills: { enabled: true, intervalMinutes: 1440 }, app: true } },
     });
   });
 
@@ -120,7 +120,7 @@ describe("设置 store", () => {
     await useSettings.getState().setAppUpdate(false);
 
     expect(invoke).toHaveBeenCalledWith("auto_update_set", {
-      args: { autoUpdate: { skills: { enabled: true, intervalHours: 4 }, app: false } },
+      args: { autoUpdate: { skills: { enabled: true, intervalMinutes: 240 }, app: false } },
     });
   });
 

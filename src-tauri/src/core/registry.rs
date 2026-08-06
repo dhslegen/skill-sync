@@ -808,8 +808,8 @@ mod tests {
         // load-modify-save 只动 registries,其余字段原样
         assert_eq!(back.auto_update.skills.enabled, auto_before.skills.enabled);
         assert_eq!(
-            back.auto_update.skills.interval_hours,
-            auto_before.skills.interval_hours
+            back.auto_update.skills.interval_minutes,
+            auto_before.skills.interval_minutes
         );
     }
 

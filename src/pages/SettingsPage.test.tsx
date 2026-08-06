@@ -24,7 +24,7 @@ function reset() {
   invoke.mockReset();
   invoke.mockImplementation(async (cmd: string) => {
     if (cmd === "agents_detected") return AGENTS;
-    if (cmd === "auto_update_get") return { skills: { enabled: true, intervalHours: 4 }, app: true };
+    if (cmd === "auto_update_get") return { skills: { enabled: true, intervalMinutes: 240 }, app: true };
     return undefined;
   });
   localStorage.clear();
@@ -156,7 +156,17 @@ describe("设置页 · 更新区", () => {
     await userEvent.click(await screen.findByRole("button", { name: "每天" }));
 
     expect(invoke).toHaveBeenCalledWith("auto_update_set", {
-      args: { autoUpdate: { skills: { enabled: true, intervalHours: 24 }, app: true } },
+      args: { autoUpdate: { skills: { enabled: true, intervalMinutes: 1440 }, app: true } },
+    });
+  });
+
+  it("点「每 5 分钟」写入 5 分钟档 —— 急着验新版时用的那一档", async () => {
+    render(<SettingsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "每 5 分钟" }));
+
+    expect(invoke).toHaveBeenCalledWith("auto_update_set", {
+      args: { autoUpdate: { skills: { enabled: true, intervalMinutes: 5 }, app: true } },
     });
   });
 
@@ -166,7 +176,7 @@ describe("设置页 · 更新区", () => {
     await userEvent.click(await screen.findByRole("switch", { name: "自动更新应用" }));
 
     expect(invoke).toHaveBeenCalledWith("auto_update_set", {
-      args: { autoUpdate: { skills: { enabled: true, intervalHours: 4 }, app: false } },
+      args: { autoUpdate: { skills: { enabled: true, intervalMinutes: 240 }, app: false } },
     });
   });
 
@@ -181,7 +191,7 @@ describe("设置页 · 更新区", () => {
   it("App 自更新:点检查 → 亮出新版本号 → 按钮变成下载并安装", async () => {
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "agents_detected") return AGENTS;
-      if (cmd === "auto_update_get") return { skills: { enabled: true, intervalHours: 4 }, app: true };
+      if (cmd === "auto_update_get") return { skills: { enabled: true, intervalMinutes: 240 }, app: true };
       if (cmd === "app_update_check") return { status: "available", version: "0.3.0" };
       return undefined;
     });

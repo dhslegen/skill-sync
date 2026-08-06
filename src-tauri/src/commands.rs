@@ -476,7 +476,7 @@ pub fn spawn_scheduler(app: tauri::AppHandle) -> Option<scheduler::Scheduler> {
             .unwrap_or_default();
         scheduler::Cadence {
             enabled: auto.skills.enabled,
-            interval_hours: auto.skills.interval_hours,
+            interval_minutes: auto.skills.interval_minutes,
         }
     };
 

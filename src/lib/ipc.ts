@@ -128,7 +128,8 @@ export const uiPrefsSet = (prefs: UiPrefs) => call<void>("ui_prefs_set", { args:
 
 /** 与 core::state::AutoUpdate 的 serde 契约一一对应。 */
 export interface AutoUpdate {
-  skills: { enabled: boolean; intervalHours: number };
+  /** 检查间隔(**分钟**,schema v2 起)。档位:5 / 240 / 1440。 */
+  skills: { enabled: boolean; intervalMinutes: number };
   app: boolean;
 }
 
