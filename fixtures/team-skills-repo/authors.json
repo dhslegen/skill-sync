@@ -1,0 +1,8 @@
+{
+  "$comment": "作者/贡献者展示(M7)。scripts/gen-authors.mjs 从 git 历史生成;此处为 fixture 样例,ghost 条目用来验证对不上的目录必须被丢弃",
+  "authors": {
+    "good-skill": { "author": "张三", "contributors": ["李四", "王五"] },
+    "with-scripts": { "author": "效率平台组" },
+    "ghost-skill-不存在": { "author": "这一条用来验证:对不上的技能目录必须被丢弃" }
+  }
+}
