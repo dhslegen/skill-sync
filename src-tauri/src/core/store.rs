@@ -77,6 +77,25 @@ pub struct IndexedSkill {
     /// 与库的真实状态始终一致(与 `curated` 字段同一套推理)。
     #[serde(default)]
     pub tags: Vec<String>,
+    /// 作者/贡献者(库根 `authors.json`,M7 任务 1,服务端维护、客户端只读)。
+    /// 键 = dirSlug,宽容解析、缓存失效推理都与 `tags` 完全同款;
+    /// 旧缓存 serde default 补 None,同样**不升缓存版本**。
+    #[serde(default)]
+    pub attribution: Option<SkillAttribution>,
+}
+
+/// 一个技能的作者与贡献者(库根 `authors.json`)。
+///
+/// 数据由库侧脚本/管理员维护,本 app 只读展示。文件契约里只有名字**没有邮箱**
+/// ——隐私在数据源头掐掉,这个结构里根本不存在 email 字段。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillAttribution {
+    /// 作者 = 该技能最早那条提交的作者(语义由库侧生成脚本保证)。
+    pub author: String,
+    /// 贡献者 = 其余提交的作者去重(不含作者本人),顺序由库侧决定(约定按提交次数降序)。
+    #[serde(default)]
+    pub contributors: Vec<String>,
 }
 
 /// 有 SKILL.md 但没通过校验的目录。界面据此引导修复,而不是让技能凭空消失。
@@ -143,6 +162,8 @@ pub struct StoreSkillCard {
     pub content_hash: String,
     /// 标签(tags.json,服务端管理)。筛选 chip 与搜索匹配用。
     pub tags: Vec<String>,
+    /// 作者(authors.json,服务端维护)。卡片只摆作者;没有条目就是 None,整栏不摆。
+    pub author: Option<String>,
 }
 
 /// `store_index` 的返回。
@@ -182,6 +203,8 @@ pub struct SkillDetail {
     pub committed_at: String,
     /// 标签(tags.json,服务端管理)。详情面板元信息区展示。
     pub tags: Vec<String>,
+    /// 作者与贡献者(authors.json,服务端维护)。None = 库里没这条,整栏不摆、不编造。
+    pub attribution: Option<SkillAttribution>,
 }
 
 // ============================================================ 缓存读写
@@ -285,6 +308,7 @@ pub fn build_index(
     let discovery = skills::discover_skills(&archive.tree, &archive.root, &DiscoverOptions::default());
     let root_prefix = format!("{}/", archive.root);
     let mut tags_map = parse_tags(archive);
+    let mut authors_map = parse_authors(archive);
 
     let mut skills_out: Vec<IndexedSkill> = discovery
         .skills
@@ -299,6 +323,7 @@ pub fn build_index(
             IndexedSkill {
                 // 对不上任何技能的键留在 map 里自然丢弃——摆一个点了没结果的筛选项就是撒谎
                 tags: tags_map.remove(&dir_slug).unwrap_or_default(),
+                attribution: authors_map.remove(&dir_slug),
                 name: s.name,
                 dir_slug,
                 description: s.description,
@@ -362,6 +387,46 @@ fn parse_tags(archive: &RepoArchive) -> std::collections::HashMap<String, Vec<St
                 }
             }
             Some((slug.clone(), seen))
+        })
+        .collect()
+}
+
+/// 读技能库根目录的 `authors.json`(M7 任务 1):
+/// `{"authors": {"<dirSlug>": {"author": "名字", "contributors": ["名字", …]}}}`。
+///
+/// 与 tags.json 同一种宽容:没有、坏 JSON、条目形状不对,一律按"没有归因"处理,
+/// **绝不让一个坏文件拉挂整个索引**。逐条规则:
+/// - `author` 缺失/非字符串/空白 → 该条目整个忽略(没有作者的归因是残缺数据,不摆);
+/// - `contributors` 缺失按空;非字符串项、空白项跳过;去重保序;与 author 重复的剔除。
+///
+/// 管理员侧的约定就是这个形状(scripts/gen-authors 产出、部署指南 §5)——
+/// 改形状要连同这里的注释、脚本与部署指南一起改。
+fn parse_authors(archive: &RepoArchive) -> std::collections::HashMap<String, SkillAttribution> {
+    let Some(raw) = archive.tree.read_file(&format!("{}/authors.json", archive.root)) else {
+        return Default::default();
+    };
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        tracing::warn!("authors.json 不是合法 JSON,忽略作者信息");
+        return Default::default();
+    };
+    let Some(map) = doc["authors"].as_object() else {
+        return Default::default();
+    };
+    map.iter()
+        .filter_map(|(slug, v)| {
+            let author = v["author"].as_str()?.trim();
+            if author.is_empty() {
+                return None;
+            }
+            let mut contributors: Vec<String> = Vec::new();
+            if let Some(items) = v["contributors"].as_array() {
+                for name in items.iter().filter_map(|c| c.as_str()).map(str::trim) {
+                    if !name.is_empty() && name != author && !contributors.iter().any(|s| s == name) {
+                        contributors.push(name.to_string());
+                    }
+                }
+            }
+            Some((slug.clone(), SkillAttribution { author: author.to_string(), contributors }))
         })
         .collect()
 }
@@ -452,6 +517,7 @@ impl StoreIndex {
                     file_count: s.files.len(),
                     content_hash: s.content_hash.clone(),
                     tags: s.tags.clone(),
+                    author: s.attribution.as_ref().map(|a| a.author.clone()),
                 })
                 .collect(),
             skipped: self.skipped.clone(),
@@ -483,6 +549,7 @@ impl StoreIndex {
             commit_sha: self.commit_sha.clone(),
             committed_at: self.committed_at.clone(),
             tags: s.tags.clone(),
+            attribution: s.attribution.clone(),
         })
     }
 }
@@ -685,6 +752,95 @@ mod tests {
         let view = index.to_view(false, false);
         assert_eq!(view.skills[0].tags, vec!["办公"]);
         assert_eq!(index.detail("weekly-report").unwrap().tags, vec!["办公"]);
+    }
+
+    #[test]
+    fn authors_json_lands_on_matching_skills_and_tolerates_garbage() {
+        // M7 任务 1:技能库根 authors.json,键 = dirSlug(与 tags 同口径)。
+        // 宽容规则:author 缺失/非字符串/空白 → 条目整个忽略;contributors 非字符串项
+        // 跳过、去重保序、与 author 重复的剔除;对不上库里技能的键丢弃。
+        let mut archive = archive_with(&["weekly-report", "docx-to-markdown", "no-author", "half-broken"]);
+        put_text(
+            &mut archive,
+            "skills/authors.json",
+            r#"{"authors":{
+                "weekly-report":{"author":"张三","contributors":["李四","张三","李四","  ","王五"]},
+                "docx-to-markdown":{"author":"赵六"},
+                "no-author":{"contributors":["没有author字段"]},
+                "half-broken":{"author":42},
+                "ghost-skill":{"author":"库里没有这个技能"}
+            }}"#,
+        );
+
+        let index = build_index("company", &repo(), &head("abc"), &archive, 0);
+        let by = |slug: &str| index.skills.iter().find(|s| s.dir_slug == slug).unwrap().clone();
+
+        let wr = by("weekly-report").attribution.unwrap();
+        assert_eq!(wr.author, "张三");
+        // 去重保序、剔除 author 本人与空白项
+        assert_eq!(wr.contributors, vec!["李四", "王五"]);
+        // contributors 缺失按空,不算残缺
+        let dm = by("docx-to-markdown").attribution.unwrap();
+        assert_eq!(dm.author, "赵六");
+        assert_eq!(dm.contributors, Vec::<String>::new());
+        // author 缺失/非字符串:该条目整个不摆,别的照常
+        assert_eq!(by("no-author").attribution, None);
+        assert_eq!(by("half-broken").attribution, None);
+    }
+
+    #[test]
+    fn missing_or_broken_authors_json_yields_none_and_no_error() {
+        let archive = archive_with(&["weekly-report"]);
+        let index = build_index("company", &repo(), &head("abc"), &archive, 0);
+        assert_eq!(index.skills[0].attribution, None);
+
+        let mut broken = archive_with(&["weekly-report"]);
+        put_text(&mut broken, "skills/authors.json", "{not json");
+        let index = build_index("company", &repo(), &head("abc"), &broken, 0);
+        assert_eq!(index.skills[0].attribution, None);
+    }
+
+    #[test]
+    fn attribution_survives_the_card_and_detail_views() {
+        let mut archive = archive_with(&["weekly-report", "no-entry"]);
+        put_text(
+            &mut archive,
+            "skills/authors.json",
+            r#"{"authors":{"weekly-report":{"author":"张三","contributors":["李四"]}}}"#,
+        );
+        let index = build_index("company", &repo(), &head("abc"), &archive, 0);
+        let view = index.to_view(false, false);
+        let card = |slug: &str| view.skills.iter().find(|s| s.dir_slug == slug).unwrap();
+
+        // 卡片只透传作者;详情拿完整归因
+        assert_eq!(card("weekly-report").author.as_deref(), Some("张三"));
+        let detail = index.detail("weekly-report").unwrap().attribution.unwrap();
+        assert_eq!(detail.author, "张三");
+        assert_eq!(detail.contributors, vec!["李四"]);
+        // 没条目的技能两个视图都是 None——整栏不摆,不编造
+        assert_eq!(card("no-entry").author, None);
+        assert_eq!(index.detail("no-entry").unwrap().attribution, None);
+    }
+
+    #[test]
+    fn attribution_round_trips_through_cache_and_old_cache_reads_back_as_none() {
+        // 缓存往返:归因字段不能在落盘/读回时丢(serde 字段名拼错这类缺陷在这里拦)
+        let mut archive = archive_with(&["weekly-report"]);
+        put_text(
+            &mut archive,
+            "skills/authors.json",
+            r#"{"authors":{"weekly-report":{"author":"张三","contributors":["李四"]}}}"#,
+        );
+        let index = build_index("company", &repo(), &head("abc"), &archive, 0);
+        let json = serde_json::to_string(&index).unwrap();
+        let back: StoreIndex = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.skills[0].attribution, index.skills[0].attribution);
+
+        // 旧缓存(没有 attribution 字段)serde default 补 None,不升缓存版本的前提
+        let old = r#"{"name":"技能","dirSlug":"weekly-report","description":"","path":"p",
+            "skillMd":"","files":[],"hasScripts":false}"#;
+        let skill: IndexedSkill = serde_json::from_str(old).unwrap();
+        assert_eq!(skill.attribution, None);
     }
 
     #[test]

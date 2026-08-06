@@ -1181,6 +1181,7 @@ mod tests {
             has_scripts: false,
             content_hash: String::new(),
             tags: Vec::new(),
+            attribution: None,
         }
     }
 
