@@ -158,8 +158,11 @@ export type CheckReport =
 /** 触发一轮更新检查(即发即忘,结果经 `scheduler://report` 事件回来)。 */
 export const updateCheckNow = () => call<void>("update_check_now");
 
-/** 与 core 的 AppUpdateStatus serde 契约一一对应。 */
-export type AppUpdateStatus = { status: "upToDate" } | { status: "available"; version: string };
+/** 与 core 的 AppUpdateStatus serde 契约一一对应。ready = 已在后台装好,重启即生效。 */
+export type AppUpdateStatus =
+  | { status: "upToDate" }
+  | { status: "available"; version: string }
+  | { status: "ready"; version: string };
 
 export const appUpdateCheck = () => call<AppUpdateStatus>("app_update_check");
 export const appUpdateInstall = () => call<void>("app_update_install");

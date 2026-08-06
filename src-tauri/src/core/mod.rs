@@ -2,6 +2,7 @@
 
 pub mod acquire;
 pub mod agents;
+pub mod app_update;
 pub mod auth;
 pub mod builtin;
 pub mod create;

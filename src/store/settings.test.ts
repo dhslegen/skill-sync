@@ -174,6 +174,16 @@ describe("设置 store", () => {
     expect(useSettings.getState().appUpdate).toEqual({ phase: "upToDate" });
   });
 
+  it("App 自更新:后台已静默装好 → 检查直接提示重启,不谎报已最新", async () => {
+    invoke.mockImplementation(async (cmd: string) =>
+      cmd === "app_update_check" ? { status: "ready", version: "0.3.0" } : undefined,
+    );
+
+    await useSettings.getState().checkAppUpdate();
+
+    expect(useSettings.getState().appUpdate).toEqual({ phase: "installed" });
+  });
+
   it("App 自更新:安装失败保持当前版本并亮错误", async () => {
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "app_update_check") return { status: "available", version: "0.3.0" };

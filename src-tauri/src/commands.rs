@@ -6,6 +6,7 @@ use tauri::{Emitter, Manager};
 
 use crate::core::acquire;
 use crate::core::agents::{AgentRegistry, DetectedAgent, SystemEnv};
+use crate::core::app_update::{self, AppUpdateStatus, ReadyState};
 use crate::core::auth::{self, CredentialStore, KeyringStore, OAuthConfig};
 use crate::core::builtin;
 use crate::core::create;
@@ -139,46 +140,71 @@ fn update_err(e: tauri_plugin_updater::Error) -> AppError {
         .with_detail(e.to_string())
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase", tag = "status")]
-pub enum AppUpdateStatus {
-    UpToDate,
-    Available { version: String },
+/// 进程内唯一的就绪记账(重启后天然作废,见 core::app_update 模块头)。
+fn ready_state() -> &'static ReadyState {
+    static READY: std::sync::OnceLock<ReadyState> = std::sync::OnceLock::new();
+    READY.get_or_init(ReadyState::default)
 }
 
 #[tauri::command]
 pub async fn app_update_check(app: tauri::AppHandle) -> Result<AppUpdateStatus, AppError> {
-    match app_updater(&app)?.check().await.map_err(update_err)? {
-        Some(update) => Ok(AppUpdateStatus::Available {
-            version: update.version.clone(),
-        }),
-        None => Ok(AppUpdateStatus::UpToDate),
-    }
+    let remote = app_updater(&app)?
+        .check()
+        .await
+        .map_err(update_err)?
+        .map(|u| u.version.clone());
+    Ok(ready_state().classify(remote.as_deref()))
 }
 
-/// 下载并安装新版本。签名校验在插件内完成:校验不过整个安装终止,不会落半个字节。
+/// 一轮"下载安装"的结果(不含重启)。
+enum Staged {
+    /// 远端没有新版。
+    NoUpdate,
+    /// 这一轮真装好了——只有它需要提示用户。
+    Fresh(String),
+    /// 之前就装好等重启了,或另一轮正在下载:都不是这一轮的成果,别重复提示。
+    AlreadyHandled,
+}
+
+/// 下载并安装新版本(公共体)。签名校验在插件内完成:校验不过整个安装终止,不会落半个字节。
 /// 安装完成**不自动重启**——用户可能正开着别的操作,由前端提示后调 `app_restart`。
-#[tauri::command]
-pub async fn app_update_install(app: tauri::AppHandle) -> Result<(), AppError> {
-    let Some(update) = app_updater(&app)?.check().await.map_err(update_err)? else {
-        return Err(AppError::new("UPDATE_GONE", "当前已是最新版本,无需安装"));
+/// 就绪与互斥记账走 `ready_state()`:同版本装过不重复下载,并发轮次只放行一个。
+async fn stage_app_update(app: &tauri::AppHandle) -> Result<Staged, AppError> {
+    let Some(update) = app_updater(app)?.check().await.map_err(update_err)? else {
+        return Ok(Staged::NoUpdate);
     };
-    let channel = "app-update://progress";
-    update
+    let version = update.version.clone();
+    if !ready_state().begin_stage(&version) {
+        return Ok(Staged::AlreadyHandled);
+    }
+    let result = update
         .download_and_install(
             |_chunk, _total| {},
             || {
                 // 下载完成、开始安装(阶段级进度,与获取流程同一诚实粒度)
             },
         )
-        .await
-        .map_err(|e| {
+        .await;
+    if let Err(e) = result {
+        ready_state().abort_stage();
+        return Err(
             AppError::new("UPDATE_INSTALL_FAILED", "应用更新安装失败,已保持当前版本")
-                .with_detail(e.to_string())
-        })?;
-    let _ = app.emit(channel, "installed");
-    tracing::info!(version = %update.version, "应用更新已安装,等待重启生效");
-    Ok(())
+                .with_detail(e.to_string()),
+        );
+    }
+    ready_state().finish_stage(&version);
+    let _ = app.emit("app-update://progress", "installed");
+    tracing::info!(%version, "应用更新已安装,等待重启生效");
+    Ok(Staged::Fresh(version))
+}
+
+#[tauri::command]
+pub async fn app_update_install(app: tauri::AppHandle) -> Result<(), AppError> {
+    match stage_app_update(&app).await? {
+        Staged::NoUpdate => Err(AppError::new("UPDATE_GONE", "当前已是最新版本,无需安装")),
+        // 设置页手动点装:后台已就绪或正在装都算"这事有人管了",不报错
+        Staged::Fresh(_) | Staged::AlreadyHandled => Ok(()),
+    }
 }
 
 #[tauri::command]
@@ -256,7 +282,10 @@ pub fn spawn_watcher(app: tauri::AppHandle) {
     });
 }
 
-pub fn spawn_app_update_probe(app: tauri::AppHandle) {
+/// 一轮完整的 App 自更新:检查 → 静默下载安装 → 提示(M6 任务 1,Cursor 式体验)。
+/// 启动探测与 scheduler 的每轮技能检查共用它;开关与配置**每轮现读**,
+/// 对齐 `spawn_scheduler` 的 cadence 姿态——设置页改完,下一轮立刻生效。
+pub async fn run_app_update_round(app: &tauri::AppHandle) {
     if !builtin::update_configured() {
         return;
     }
@@ -267,40 +296,47 @@ pub fn spawn_app_update_probe(app: tauri::AppHandle) {
     if !enabled {
         return;
     }
-    tauri::async_runtime::spawn(async move {
-        // 错开 skill 检查的首轮(10s),也给网络起身时间
-        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-        match app_update_check(app.clone()).await {
-            Ok(AppUpdateStatus::Available { version }) => {
-                // 三个分支都要留痕:0.2.2 端到端验证时这里没日志,只能靠
-                // "既无已最新也无失败"反推出"检出了新版",不该让人这么猜
-                tracing::info!(%version, "启动检查:发现应用新版本");
-                let _ = app.emit("app-update://available", &version);
+    // 三个分支都要留痕:0.2.2 端到端验证时这里没日志,只能靠
+    // "既无已最新也无失败"反推出"检出了新版",不该让人这么猜
+    match stage_app_update(app).await {
+        Ok(Staged::Fresh(version)) => {
+            tracing::info!(%version, "应用新版本已在后台就绪,等待重启");
+            let _ = app.emit("app-update://ready", &version);
+            // 窗口可见时左下角 pill 已经在,系统通知只给缩进托盘的场景(2026-08-06 拍板)
+            let visible = app
+                .get_webview_window("main")
+                .map(|w| w.is_visible().unwrap_or(false));
+            if app_update::should_notify(visible) {
                 use tauri_plugin_notification::NotificationExt;
-                let body = format!("SkillSync {version} 已发布,可到「设置」页安装。");
-                if let Err(err) = app
-                    .notification()
-                    .builder()
-                    .title("应用更新")
-                    .body(&body)
-                    .show()
-                {
+                let (title, body) = app_update::ready_notification(&version);
+                if let Err(err) = app.notification().builder().title(&title).body(&body).show() {
                     tracing::warn!(error = %err, "应用更新通知发送失败");
                 }
             }
-            Ok(AppUpdateStatus::UpToDate) => {
-                tracing::info!("启动检查:应用已是最新");
-            }
-            Err(err) => {
-                // detail 必须进日志:0.2.0 之前只记 code,http 端点被 updater 拒绝
-                // 这种"配置问题"披着 NET_UPDATE 的皮装了很久的"网络问题"
-                tracing::warn!(
-                    code = %err.code,
-                    detail = err.detail.as_deref().unwrap_or(""),
-                    "启动时应用更新检查未完成"
-                );
-            }
         }
+        Ok(Staged::AlreadyHandled) => {
+            tracing::debug!("应用更新:已就绪或正在下载,本轮不重复处理");
+        }
+        Ok(Staged::NoUpdate) => {
+            tracing::info!("应用更新检查:已是最新");
+        }
+        Err(err) => {
+            // detail 必须进日志:0.2.0 之前只记 code,http 端点被 updater 拒绝
+            // 这种"配置问题"披着 NET_UPDATE 的皮装了很久的"网络问题"
+            tracing::warn!(
+                code = %err.code,
+                detail = err.detail.as_deref().unwrap_or(""),
+                "应用更新轮次未完成"
+            );
+        }
+    }
+}
+
+pub fn spawn_app_update_probe(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        // 错开 skill 检查的首轮(10s),也给网络起身时间
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        run_app_update_round(&app).await;
     });
 }
 
@@ -395,6 +431,9 @@ pub fn spawn_scheduler(app: tauri::AppHandle) -> Option<scheduler::Scheduler> {
     let check = move || -> scheduler::BoxFuture {
         let app = app.clone();
         Box::pin(async move {
+            // App 自更新顺带每轮技能检查的节奏(M6 任务 1 拍板:不为它新增档位)。
+            // 放在技能检查前:它自带 update_configured / auto_update.app 双闸,轻且幂等。
+            run_app_update_round(&app).await;
             let Some(report) = run_all_sources_check().await else {
                 return;
             };

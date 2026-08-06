@@ -155,7 +155,10 @@ export const useSettings = create<SettingsState>((set, get) => ({
         appUpdate:
           status.status === "available"
             ? { phase: "available", version: status.version }
-            : { phase: "upToDate" },
+            : status.status === "ready"
+              ? // 后台已静默装好:对设置页而言等价于"装完了,提示重启"
+                { phase: "installed" }
+              : { phase: "upToDate" },
       });
     } catch (raw) {
       set({ appUpdate: { phase: "failed", error: toAppError(raw) } });
