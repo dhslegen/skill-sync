@@ -83,6 +83,22 @@ pub fn should_notify(window_visible: Option<bool>) -> bool {
     window_visible != Some(true)
 }
 
+/// App 自更新的检查间隔。
+///
+/// 半小时:用户要的是"一旦有新版本就静默装好并提示",内网每 30 分钟一个
+/// latest.json 的 GET 可以忽略不计。
+pub const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// 下一次 App 自更新检查要不要排、隔多久。
+///
+/// **与技能检查的档位彻底无关**(M6 任务 6 修,原设计是错的):此前 App 检查寄生在
+/// 技能检查那一拍上,于是技能设「手动」时 `scheduler::next_delay` 返回 `None`、
+/// 调度循环根本不 tick,App 自更新就只剩"启动后 20 秒"那一次
+/// ——0.3.1 在那之后才发布,用户等到的是"什么都没发生"(2026-08-06 实测)。
+pub fn next_check_delay(app_auto_update: bool) -> Option<std::time::Duration> {
+    app_auto_update.then_some(CHECK_INTERVAL)
+}
+
 /// 就绪通知文案(标题, 正文)。
 pub fn ready_notification(version: &str) -> (String, String) {
     (
@@ -142,6 +158,18 @@ mod tests {
         assert!(!should_notify(Some(true)), "窗口开着:pill 已经在,不双重打扰");
         assert!(should_notify(Some(false)), "缩进托盘:通知是唯一入口");
         assert!(should_notify(None), "窗口句柄都没了:照发,宁多勿漏");
+    }
+
+    #[test]
+    fn the_check_cadence_does_not_depend_on_the_skills_cadence() {
+        // 关掉「自动更新应用」才不查;技能档位(含「手动」)一概管不着它
+        assert_eq!(next_check_delay(true), Some(CHECK_INTERVAL));
+        assert_eq!(next_check_delay(false), None);
+        // 半小时级:间隔大到一天就等于没有"一旦有新版本"这回事
+        assert!(
+            CHECK_INTERVAL <= std::time::Duration::from_secs(3600),
+            "间隔超过一小时,用户等不到自动提示",
+        );
     }
 
     #[test]

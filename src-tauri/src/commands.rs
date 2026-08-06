@@ -200,11 +200,17 @@ async fn stage_app_update(app: &tauri::AppHandle) -> Result<Staged, AppError> {
 
 #[tauri::command]
 pub async fn app_update_install(app: tauri::AppHandle) -> Result<(), AppError> {
-    match stage_app_update(&app).await? {
-        Staged::NoUpdate => Err(AppError::new("UPDATE_GONE", "当前已是最新版本,无需安装")),
-        // 设置页手动点装:后台已就绪或正在装都算"这事有人管了",不报错
-        Staged::Fresh(_) | Staged::AlreadyHandled => Ok(()),
+    let staged = stage_app_update(&app).await?;
+    if matches!(staged, Staged::NoUpdate) {
+        return Err(AppError::new("UPDATE_GONE", "当前已是最新版本,无需安装"));
     }
+    // 手动装完也发同一个就绪信号:pill 挂在它上面,只有自动轮次发的话,
+    // 从设置页装的那条路永远不出 pill——同一件事两条路两种表现(2026-08-06 实测)。
+    // 设置页手动点装:后台已就绪或正在装都算"这事有人管了",不报错。
+    if let Some(version) = ready_state().ready_version() {
+        let _ = app.emit("app-update://ready", &version);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -332,11 +338,27 @@ pub async fn run_app_update_round(app: &tauri::AppHandle) {
     }
 }
 
+/// App 自更新的常驻循环:启动后 20 秒查一次,之后每 [`app_update::CHECK_INTERVAL`] 一次。
+///
+/// **不再寄生技能检查的节拍**(2026-08-06 实测教训):原来 App 检查跟着技能那一拍走,
+/// 于是技能档位设「手动」时调度循环根本不 tick,自动检查就只剩启动那一次;
+/// 0.3.1 恰好在启动探测之后才发布,用户等到的是"什么都没发生"。
+/// 开关每轮现读(`next_check_delay` 只看 `auto_update.app`),设置里关掉就停在下一轮。
 pub fn spawn_app_update_probe(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         // 错开 skill 检查的首轮(10s),也给网络起身时间
         tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-        run_app_update_round(&app).await;
+        loop {
+            run_app_update_round(&app).await;
+            let enabled = app_store()
+                .and_then(|s| s.load_config())
+                .map(|l| l.value.auto_update.app)
+                .unwrap_or(true);
+            // 关掉时不退出循环:用户可能在设置里再打开,退出了就要重启应用才恢复
+            let delay = app_update::next_check_delay(enabled)
+                .unwrap_or(app_update::CHECK_INTERVAL);
+            tokio::time::sleep(delay).await;
+        }
     });
 }
 
