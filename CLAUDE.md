@@ -96,6 +96,8 @@ src-tauri/src/
                      不建链/不写 lock/不进 state;slug 必须是 sanitize_name 的不动点
   core/watcher.rs    本地技能目录的文件监听:app_write 静音守卫 + 防抖 + 变更过滤
   core/local_detail.rs 本地技能详情(守卫只放行含 SKILL.md 的真实目录)
+  core/app_update.rs App 自更新的纯逻辑:进程内就绪记账 + 检查节拍 + 通知判定 +
+                     macOS 包路径推导(重启要走 LaunchServices)
   core/registry.rs   多源解析层:BuiltinSource(编译期常量经参数传入)+ resolve/list/
                      add/remove/url_allowed/auth_config;内建源锁定不落 config
   core/github.rs     GitHub client:读链路(branches/zipball,RepoSource trait)+
@@ -179,6 +181,8 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
 - **注入脚本恢复现场必须用"先备份、后回拷",禁用 `git checkout <file>`**:
   工作区带着未提交的修复时,checkout 会连修复一起抹掉(任务 9 收尾时真实发生过一次,
   靠上下文里留存的完整代码才恢复回来)。
+- **GitHub API 对无 User-Agent 的请求一律 403**:live 测试必须用
+  `app_http_client_proxied()`,不能用裸 reqwest Client(2026-08-03 撞过,已修并注释)。
 - Rust 侧也有术语守卫(`tests/terminology.rs`):把所有 `AppError::new` 的 message 抠出来,
   过与 src/i18n/index.test.ts 同一份禁词表,并要求 message 必须是中文——它是用户可见文案的
   第二条通道,前端守卫扫不到。
@@ -283,12 +287,14 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
   它就是这个项目的开发者文档。**别按全局规则把它加进 exclude 或重写历史**。
   仍然适用的部分:`docs/*`(除放行的两个)、`_*.md`、AI 流程产物一律不进版本控制。
 
-## 当前进度(2026-08-06,M6 全部完成,待发 v0.3.0)
+## 当前进度(2026-08-06,M6 全部完成,现役 v0.3.7)
 
-**M1–M6 全部完成并提交**(M6 分解与拍板见 docs/M6-任务分解.md:任务 1 自更新静默就绪 ✅
-→ 2 左下角 pill ✅ → 3 侧边栏角标 ✅ → 4 「纳入管理」改名+绑定修复 ✅
-→ 5 分享闭环 ✅ → 6 收尾发版)。
-**已发布版本 v0.2.2**,内网发布仓 `skills/skillsync-releases` 上有 v0.2.1/v0.2.2 + latest 公告牌。
+**M1–M6 全部完成并提交**(M6 分解与拍板见 docs/M6-任务分解.md;任务 4/5 中途被用户
+推翻重做过,经过在 git log)。
+**现役版本 v0.3.7**(公告牌实测指向它)。0.3.1–0.3.7 是**为了验证自更新链路连发的**
+——改更新机制天然要两跳:一跳把机制送到用户机器上,一跳才能让它自己跑起来。
+自更新新链路(静默装好 → 左下角 pill → 重启生效)与 macOS 重启激活修复
+**都已真机端到端验过**(见下面的现役机制约束)。
 **M6 候选五条的处置**:候选二(标签)当日提交 tags.json + curated.json 到真实库,
 用户已验证生效;候选一(更新提示)= 任务 1–3;候选四(认领语义)= 任务 4–5;
 候选三(作者/贡献者展示)**推迟到 M7**(要为它破一次"详情面板不联网"的例,设计问题最多,
@@ -307,7 +313,7 @@ M5 任务 3 要点:技能库根 `tags.json`(`{"tags":{"<dirSlug>":["标签",…]
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 448 + 前端 402 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
+- 本机:Rust 452 + 前端 403 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
   `pnpm dev` 启动冒烟通过(带内网配置实测:商店读到真实库 30 个技能)
 - **双平台 CI**:**M4 任务 1 的两笔(`3857720` / `a7a1de3`)macOS + Windows 双 job 全绿**(2026-08-04 逐 job 实测);
   M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;`de7b233`/`2eb0595` 当时因账号计费
@@ -643,23 +649,6 @@ M6 的契约变更:新增事件 `app-update://ready`(载荷为版本号;探测�
   ——那比当前的问题更糟。要修得连带设计一次"hash 口径升级"(比如记 hash 版本号,
   版本不符时按"未知"处理而不是按"有更新")。同一份名单还被
   `store.rs` 建索引时用着,两侧必须同时改,否则等式一破就永远显示有更新。
-- ~~「认领」没有撤销路径~~ **已修**(M4 任务 6a,`f217c1a`):`acquire::unclaim` 是
-  claim 的精确逆操作,只删记账,磁盘/链接/lock 一个字节不动。比测试更硬的保障是签名
-  ——它没有 Installer 也没有 AgentEnv,结构上拿不到 canonical 路径与 lock 落点。
-- ~~M3-5b:GitHub 分享写路径~~ **已完成**(2026-08-03):先对真实 GitHub 录制
-  ground truth(`tests/fixtures/github-write/NOTES.md`,含端点拍板与错误形状),
-  再实现 share.rs 的 `ShareClient` 枚举分发 + `submit_github` 权限矩阵
-  (直推 / protected 走评审 / 无权限 fork+跨库评审),wiremock 矩阵 7 测 +
-  真实 GitHub 端到端。**用户侧收尾**:作废录制用 PAT、删掉 fork 产物
-  `dhslegen/skillsync-fork-timing-lab`;测试仓 skillsync-write-lab 可留作以后复验。
-- ~~GitHub device flow 的真实联调~~ **已完成**(2026-08-03):用户注册 OAuth App 后,
-  `tests/device_flow_live.rs` 对真实 GitHub 走完 发码→浏览器授权→轮询换令牌→
-  current_user(身份 dhslegen);过期分支(AUTH_DEVICE_EXPIRED)也真实验证过。
-  坑:GitHub API 对无 User-Agent 的请求一律 403——live 测试必须用
-  `app_http_client_proxied()`,不能用裸 reqwest Client(已修并注释)。
-- ~~分享页的「新建技能」向导没做~~ **已完成**(M4 任务 4,2026-08-04):
-  先录上游 `npx skills@1.5.20 init` 的 ground truth(`tests/fixtures/skills-init/NOTES.md`),
-  再实现 `core/create.rs`。**有意只做一半**——见下面这条推迟项。
 - **给本地技能建关联的能力仍然没有**(M4 任务 4 显式推迟,不是遗漏):
   新建的技能只落 canonical,`skillsDir` 等于 `.agents/skills` 的工具(Cursor / Codex /
   universal 那六个)立刻读得到,**Claude Code 与 Trae 读不到**,要走「分享到技能库 →
