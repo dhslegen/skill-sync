@@ -21,6 +21,7 @@ import {
   type SharePath,
 } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
+import { useMySkills } from "@/store/my-skills";
 import { useStoreIndex } from "@/store/store-index";
 
 export type SharePhase = "idle" | "form" | "busy" | "taken" | "done";
@@ -175,6 +176,9 @@ export const useShare = create<ShareState>((set, get) => ({
       await get().load();
       void useStoreIndex.getState().load(true);
       void useInstall.getState().refreshInstalled();
+      // 「我的技能」也要刷:直推进库的技能会当场被 core 纳入管理(M6 任务 5 的闭环),
+      // 不刷的话它仍挂在"其他工具装的"那一档、继续劝你去分享,侧边栏角标也算不对
+      void useMySkills.getState().load();
     } catch (raw) {
       const error = toAppError(raw);
       if (error.code === "CONFLICT_STALE") {

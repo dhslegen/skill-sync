@@ -445,10 +445,12 @@ pub async fn share(
         last_pushed_sha: submitted.commit_sha.clone(),
         content_hash: fsops::dir_content_hash(&source_dir)?,
     };
+    let content_hash = entry.content_hash.clone();
     match next.shared.iter().position(|s| s.name == req.share_name) {
         Some(idx) => next.shared[idx] = entry,
         None => next.shared.push(entry),
     }
+    adopt_into_management(&mut next, &req, &source_dir, &submitted, content_hash, now);
     store.save_state(&next)?;
 
     Ok(ShareOutcome::Shared {
@@ -458,6 +460,66 @@ pub async fn share(
         adopted,
         share_name: req.share_name.to_string(),
     })
+}
+
+/// 分享的闭环(M6 任务 5):**直推进库**之后把这个技能纳入管理。
+///
+/// 不这么做的话它永远停在「其他工具装的 / 本地创建」那一档,界面一直劝你
+/// "分享到技能库"——而你已经分享过了。纳入之后它就是一个正常的库技能:
+/// 有更新检查、改动走「分享改动」(那条路带远端变更检测,比再分享一次安全)。
+///
+/// 四道闸,少一道就会撒谎:
+/// 1. **只认直推**(`Pushed`)。走了提交审核的改动还在评审分支上,库里根本没有这个
+///    技能,记成已入库会让「更新」去找一个不存在的东西,用户还会以为已经生效;
+/// 2. **只认 canonical 里的技能**。agent 目录下的实体目录不是安装位置,
+///    记进去会让 `installer::canonical_dir` 指向一个空位;
+/// 3. **本地目录名必须与远端目录名相同**。中文名技能分享时会另起 ASCII 远端名
+///    (share.rs 模块头),两者不同时记账的键就对不上——更新会往另一个目录装,
+///    凭空多出一份;
+/// 4. **已有记账不覆盖**。回推改动走的是 `share_installed`,不经过这里;
+///    真走到这里说明是另一条路,覆盖账本会把 commit_sha 等既有事实抹掉。
+///
+/// `origin` 记 `claimed`:文件是用户自己的,本 app 只是记了账,所以必须留着
+/// 「移出管理」这条无损退路——否则退路只剩会删文件的「移除」。
+fn adopt_into_management(
+    next: &mut state::State,
+    req: &ShareRequest,
+    source_dir: &Path,
+    submitted: &Submitted,
+    content_hash: String,
+    now: &str,
+) {
+    if submitted.mode != ShareMode::Pushed {
+        return;
+    }
+    let Some(dir_name) = source_dir.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    if dir_name != req.share_name {
+        return;
+    }
+    if next.installed.iter().any(|s| s.name == dir_name) {
+        return;
+    }
+    next.installed.push(state::InstalledSkill {
+        name: dir_name.to_string(),
+        source: SkillSource {
+            registry_id: req.registry_id.to_string(),
+            owner: req.repo.owner.clone(),
+            repo: req.repo.repo.clone(),
+            path: format!("skills/{}", req.share_name),
+            git_ref: req.repo.branch.clone(),
+        },
+        commit_sha: submitted.commit_sha.clone(),
+        // 基线取刚推上去的内容:不等就会立刻误报"有可用更新 / 有未分享的改动"
+        content_hash,
+        origin: Some(crate::core::acquire::ORIGIN_CLAIMED.to_string()),
+        // 关联没建过就如实留空——这里只记账,一个字节都不动磁盘
+        agents: Vec::new(),
+        links: Vec::new(),
+        installed_at: now.to_string(),
+        updated_at: now.to_string(),
+    });
 }
 
 // ============================================================ 回推已装技能的改动

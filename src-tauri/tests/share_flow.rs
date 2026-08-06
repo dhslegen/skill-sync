@@ -378,6 +378,125 @@ async fn fresh_share_pushes_creates_and_records_the_books() {
     assert_eq!(state.shared[0].content_hash, fsops::dir_content_hash(&dir).unwrap());
 }
 
+/// 分享的闭环(M6 任务 5):直推进库之后,这个技能就该像库里其他技能一样被管起来
+/// ——否则它永远停在「其他工具装的 / 本地创建」那一档,界面一直劝你"分享到技能库",
+/// 而你已经分享过了。
+#[tokio::test]
+async fn a_skill_pushed_straight_into_the_library_becomes_managed() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "我的笔记", "记点东西");
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", false).await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+        .await
+        .unwrap();
+
+    let state = state_of(&c);
+    assert_eq!(state.installed.len(), 1, "直推成功后应自动纳入管理");
+    let s = &state.installed[0];
+    assert_eq!(s.name, "my-notes");
+    assert_eq!(
+        (s.source.registry_id.as_str(), s.source.owner.as_str(), s.source.repo.as_str()),
+        ("company", "skills", "skills"),
+        "来源坐标要记成刚推进去的那个库,更新与回推才有去处",
+    );
+    assert_eq!(s.commit_sha, "newsha1");
+    assert_eq!(
+        s.content_hash,
+        fsops::dir_content_hash(&dir).unwrap(),
+        "基线取刚推上去的内容——不等就会立刻误报「有可用更新」",
+    );
+    // 文件是用户自己的,本 app 只记了账 → 必须允许「移出管理」(不然退路只剩会删文件的移除)
+    assert_eq!(s.origin.as_deref(), Some("claimed"));
+}
+
+/// 中文名技能分享时会另起 ASCII 远端名(share.rs 模块头),本地目录名不改。
+/// 这时**不能**纳入管理:`state.installed[].name` 是 canonical 目录名,
+/// 记成远端名会让更新往另一个目录装,凭空多出一份;记成本地名又与库里的技能对不上。
+#[tokio::test]
+async fn a_skill_shared_under_a_different_remote_name_is_not_recorded() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("周报生成器");
+    write_skill(&dir, "周报生成器", "汇总一周");
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "weekly-report", false).await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    let outcome = share::share(
+        &share::ShareClient::Gitea(&client),
+        &c.registry,
+        &env,
+        &c.store,
+        share_req(&repo, &dir, "weekly-report"),
+        NOW,
+    )
+    .await
+    .unwrap();
+
+    let ShareOutcome::Shared { mode, .. } = outcome else { panic!("应当分享成功") };
+    assert_eq!(mode, ShareMode::Pushed);
+    // 分享本身照常成功、shared 记账照常有;只是不纳入管理
+    assert_eq!(state_of(&c).shared.len(), 1);
+    assert!(
+        state_of(&c).installed.is_empty(),
+        "本地目录名与远端目录名不同,纳入管理的记账键就对不上",
+    );
+}
+
+/// 走了提交审核就**不能**记成已入库:改动还在评审分支上,库里根本没有这个技能。
+/// 记了的话「更新」会去库里找一个不存在的技能,而且用户会以为已经生效了。
+#[tokio::test]
+async fn a_skill_that_went_to_review_is_not_recorded_as_managed() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "我的笔记", "记点东西");
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", false).await;
+    mount_repo_info(&server, true).await;
+    // main 受保护:第一次直推 403,之后带 new_branch 成功 → 走提交审核
+    Mock::given(method("POST"))
+        .and(path("/api/v1/repos/skills/skills/contents"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "message": "user should have a permission to write to the target branch"
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    mount_commit_ok(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/repos/skills/skills/pulls"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "html_url": "http://x/pulls/7", "number": 7
+        })))
+        .mount(&server)
+        .await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+        .await
+        .unwrap();
+
+    let ShareOutcome::Shared { mode, .. } = outcome else { panic!("应当分享成功") };
+    assert_eq!(mode, ShareMode::ReviewRequested);
+    assert!(
+        state_of(&c).installed.is_empty(),
+        "还没进库就纳入管理 = 对用户撒谎",
+    );
+}
+
 #[tokio::test]
 async fn taken_without_confirmation_sends_nothing() {
     let (c, env) = ctx();

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useShare, validShareName } from "./share";
+import { useMySkills } from "@/store/my-skills";
 import { useStoreIndex } from "@/store/store-index";
 import type { ShareCandidate } from "@/lib/ipc";
 
@@ -212,6 +213,24 @@ describe("分享流程状态机", () => {
     // 必须是强制刷新:不带 force 会命中缓存,刚分享的技能仍然看不见
     const call = invoke.mock.calls.find(([c]) => c === "store_index");
     expect(call![1].args.force).toBe(true);
+  });
+
+  it("分享成功后「我的技能」也要刷新——直推进库的技能会当场变成受管技能(M6 任务 5)", async () => {
+    // core 在直推成功后把它记进 state.installed(分享的闭环)。不刷这一份的话,
+    // 它在「我的技能」里仍挂在"其他工具装的"那一档,界面继续劝你去分享——
+    // 而侧边栏角标也是从这份清单算的。
+    const mySkillsLoad = vi.fn(async () => {});
+    useMySkills.setState({ load: mySkillsLoad });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_share") return SHARED_OK;
+      if (cmd === "share_candidates") return [];
+      return null;
+    });
+
+    useShare.getState().begin(candidate());
+    await useShare.getState().submit();
+
+    await vi.waitFor(() => expect(mySkillsLoad).toHaveBeenCalled());
   });
 
   it("「看看对方的版本」打开商店详情", () => {
