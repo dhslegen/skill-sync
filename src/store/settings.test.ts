@@ -200,18 +200,6 @@ describe("设置 store", () => {
     expect(s.appUpdate.phase === "failed" && s.appUpdate.error.message).toContain("保持当前版本");
   });
 
-  it("启动探测发现新版本时同步到设置页,但不打断正在进行的安装", async () => {
-    await useSettings.getState().attachAppUpdateListener();
-
-    listeners.get("app-update://available")?.({ payload: "0.4.0" });
-    expect(useSettings.getState().appUpdate).toEqual({ phase: "available", version: "0.4.0" });
-
-    // 正在安装时事件不该把状态打回"可用"——那会让按钮从"正在安装"跳回"下载并安装"
-    useSettings.setState({ appUpdate: { phase: "installing", version: "0.4.0" } });
-    listeners.get("app-update://available")?.({ payload: "0.4.0" });
-    expect(useSettings.getState().appUpdate).toEqual({ phase: "installing", version: "0.4.0" });
-  });
-
   it("命令失败时复位检查中并亮错误", async () => {
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "update_check_now")

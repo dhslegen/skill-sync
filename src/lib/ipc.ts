@@ -168,9 +168,9 @@ export const appUpdateCheck = () => call<AppUpdateStatus>("app_update_check");
 export const appUpdateInstall = () => call<void>("app_update_install");
 export const appRestart = () => call<void>("app_restart");
 
-/** 启动探测发现新版本(payload = 版本号)。 */
-export function listenAppUpdateAvailable(onVersion: (v: string) => void): Promise<UnlistenFn> {
-  return listen<string>("app-update://available", (e) => onVersion(e.payload));
+/** App 新版已在后台静默装好、等重启生效(payload = 版本号)。 */
+export function listenAppUpdateReady(onVersion: (v: string) => void): Promise<UnlistenFn> {
+  return listen<string>("app-update://ready", (e) => onVersion(e.payload));
 }
 
 /** 订阅定时检查结果。 */

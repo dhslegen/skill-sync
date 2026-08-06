@@ -14,7 +14,6 @@ import {
   autoUpdateGet,
   autoUpdateSet,
   isAppError,
-  listenAppUpdateAvailable,
   listenSchedulerReport,
   updateCheckNow,
   type AppError,
@@ -61,8 +60,6 @@ interface SettingsState {
   checkAppUpdate: () => Promise<void>;
   installAppUpdate: () => Promise<void>;
   restartApp: () => Promise<void>;
-  /** 启动时挂一次:启动探测发现新版本时,设置页同步亮出来。 */
-  attachAppUpdateListener: () => Promise<() => void>;
 }
 
 export const useSettings = create<SettingsState>((set, get) => ({
@@ -183,15 +180,6 @@ export const useSettings = create<SettingsState>((set, get) => ({
     });
   },
 
-  attachAppUpdateListener: () => {
-    return listenAppUpdateAvailable((version) => {
-      // 用黑名单而不是白名单:除了"正在装/装完"这两个不能被打断的状态,
-      // 其余(含上一次检查失败)都该让位给"有新版本可用"——白名单会漏掉
-      // 以后新增的中间态,让事件悄悄失效。
-      const { phase } = get().appUpdate;
-      if (phase !== "installing" && phase !== "installed") {
-        set({ appUpdate: { phase: "available", version } });
-      }
-    });
-  },
+  // 后台就绪事件(app-update://ready)由全局的 update-prompt store 监听并回写本状态机
+  // ——设置页从它派生,别在这再挂一份重复订阅。
 }));

@@ -20,6 +20,7 @@ import { SharePage } from "@/pages/SharePage";
 import { StorePage } from "@/pages/StorePage";
 import { useInstall } from "@/store/install";
 import { useSettings } from "@/store/settings";
+import { useUpdatePrompt } from "@/store/update-prompt";
 import { useWizard } from "@/store/wizard";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
@@ -47,12 +48,12 @@ export default function App() {
     void call<AppInfo>("app_info").then(setInfo).catch(() => {});
     // 首次启动:没有完成标记才会真的打开
     void useWizard.getState().maybeOpen();
-    // 常驻监听:定时检查结果(设置页摘要)与启动探测发现的 App 新版本
+    // 常驻监听:定时检查结果(设置页摘要)与后台静默装好的 App 新版(左下角 pill)
     const detachReport = useSettings.getState().attachReportListener();
-    const detachAppUpdate = useSettings.getState().attachAppUpdateListener();
+    const detachReady = useUpdatePrompt.getState().attach();
     return () => {
       void detachReport.then((f) => f());
-      void detachAppUpdate.then((f) => f());
+      void detachReady.then((f) => f());
     };
   }, []);
 

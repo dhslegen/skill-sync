@@ -1,6 +1,7 @@
 import { LayoutGrid, Check, Share2, Settings, LogIn } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
+import { UpdatePill } from "@/components/UpdatePill";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { skillGlyph } from "@/lib/tint";
@@ -67,8 +68,11 @@ export function Sidebar({ version }: { version: string }) {
         </div>
       ))}
 
-      <div className="mt-auto border-t border-border pt-2.5">
-        <AccountRow />
+      <div className="mt-auto">
+        <UpdatePill />
+        <div className="border-t border-border pt-2.5">
+          <AccountRow />
+        </div>
       </div>
     </aside>
   );
