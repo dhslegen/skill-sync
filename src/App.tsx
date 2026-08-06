@@ -19,6 +19,7 @@ import { SettingsPage } from "@/pages/SettingsPage";
 import { SharePage } from "@/pages/SharePage";
 import { StorePage } from "@/pages/StorePage";
 import { useInstall } from "@/store/install";
+import { useMySkills } from "@/store/my-skills";
 import { useSettings } from "@/store/settings";
 import { useUpdatePrompt } from "@/store/update-prompt";
 import { useWizard } from "@/store/wizard";
@@ -45,6 +46,9 @@ export default function App() {
     void useStoreIndex.getState().load();
     void useSession.getState().refresh();
     void useInstall.getState().refreshInstalled();
+    // 侧边栏角标要在任何页面都算得出来,所以已装清单在启动时就拉一次,
+    // 不再等用户点进「我的技能」(M6 任务 3)
+    void useMySkills.getState().load();
     void call<AppInfo>("app_info").then(setInfo).catch(() => {});
     // 首次启动:没有完成标记才会真的打开
     void useWizard.getState().maybeOpen();

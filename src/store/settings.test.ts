@@ -145,6 +145,37 @@ describe("设置 store", () => {
     expect(s.lastReport).toEqual(report);
   });
 
+  it("检查发现新内容但跳过了:索引与列表照样刷新,角标才看得见那条更新", async () => {
+    // 定时检查因本地改动跳过时,磁盘没变、账上也没变,变的是**远端**。
+    // 不重载索引的话缓存里还是旧指纹,侧边栏角标与页内徽标一起装作无事发生。
+    await useSettings.getState().attachReportListener();
+    invoke.mockClear();
+
+    listeners.get("scheduler://report")?.({
+      payload: {
+        status: "checked",
+        headSha: "sha-2",
+        updated: [],
+        skipped: [{ dirSlug: "beta", reason: "已安装且有你的本地改动,未覆盖" }],
+        failed: [],
+      },
+    });
+    await Promise.resolve();
+
+    expect(invoke).toHaveBeenCalledWith("store_index", expect.anything());
+    expect(invoke).toHaveBeenCalledWith("installed_list", undefined);
+  });
+
+  it("例行的「全部已最新」轮次不触发刷新", async () => {
+    await useSettings.getState().attachReportListener();
+    invoke.mockClear();
+
+    listeners.get("scheduler://report")?.({ payload: { status: "upToDate", headSha: "sha-1" } });
+    await Promise.resolve();
+
+    expect(invoke).not.toHaveBeenCalledWith("store_index", expect.anything());
+  });
+
   it("App 自更新:检查到新版本 → 安装 → 提示重启", async () => {
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "app_update_check") return { status: "available", version: "0.3.0" };

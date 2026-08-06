@@ -23,6 +23,7 @@ import {
 } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useMySkills } from "@/store/my-skills";
+import { useStoreIndex } from "@/store/store-index";
 
 function toAppError(raw: unknown): AppError {
   return isAppError(raw)
@@ -135,9 +136,13 @@ export const useSettings = create<SettingsState>((set, get) => ({
   attachReportListener: () => {
     return listenSchedulerReport((report) => {
       set({ lastReport: report, checking: false });
-      // 定时检查真装了东西时,界面上的记账已经过时:不刷新的话「我的技能」还挂着
-      // 「有新版本」、商店卡片还停在"更新"档,而磁盘上早就是新版了。
-      if (report.status === "checked" && report.updated.length > 0) {
+      // status=checked 意味着**远端确实有新内容**(否则是 upToDate)。两种去向都要刷新:
+      // - 真装了:磁盘已是新版,不刷新的话「我的技能」还挂着「有新版本」、商店卡片
+      //   还停在"更新"档;
+      // - 跳过了(本地改动/外来目录):磁盘与账上都没变,变的是远端——不重载索引,
+      //   缓存里还是旧指纹,侧边栏角标与页内徽标会一起装作无事发生(M6 任务 3)。
+      if (report.status === "checked") {
+        void useStoreIndex.getState().load();
         void useInstall.getState().refreshInstalled();
         void useMySkills.getState().load();
       }

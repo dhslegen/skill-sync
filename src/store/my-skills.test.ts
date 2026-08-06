@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { hasUpdate, useMySkills } from "./my-skills";
+import { hasUpdate, updateCount, useMySkills } from "./my-skills";
 import { useInstall } from "@/store/install";
 import type { InstalledSkillView } from "@/lib/ipc";
 
@@ -341,6 +341,48 @@ describe("更新判定与更新动作", () => {
     expect(hasUpdate(view(), idx("sha256:newer", "custom-1"))).toBe(false);
     // 来源已移除:更新没有去处,绝不能亮"有新版本"
     expect(hasUpdate(view({ sourceRemoved: true }), idx("sha256:newer"))).toBe(false);
+  });
+
+  it("角标计数与逐条判定同口径,不亮更新的三档不计入", () => {
+    const index = {
+      registryId: "company",
+      owner: "skills",
+      repo: "skills",
+      skills: [
+        { dirSlug: "weekly-report", contentHash: "sha256:newer" },
+        { dirSlug: "code-review", contentHash: "sha256:newer" },
+        { dirSlug: "local-thing", contentHash: "sha256:newer" },
+        { dirSlug: "from-npx", contentHash: "sha256:newer" },
+        { dirSlug: "orphan", contentHash: "sha256:newer" },
+      ],
+    };
+    const list = [
+      view({ dirSlug: "weekly-report" }),
+      view({ dirSlug: "code-review" }),
+      // 下面三档都没有更新去处,摆进角标就是虚报
+      view({ dirSlug: "local-thing", localOnly: true }),
+      view({ dirSlug: "from-npx", unclaimed: true }),
+      view({ dirSlug: "orphan", sourceRemoved: true }),
+      // 已经是最新的那个不计
+      view({ dirSlug: "up-to-date", contentHash: "sha256:newer" }),
+    ];
+
+    expect(updateCount(list, index)).toBe(2);
+    // 索引还没加载出来:不猜,报 0
+    expect(updateCount(list, null)).toBe(0);
+    expect(updateCount(null, index)).toBe(0);
+  });
+
+  it("角标必须比到技能库,不能按源比(同源两库有同名技能)", () => {
+    // 按源比会把设计库的同名技能算成主库那个的更新——与 hasUpdate 同一条护栏,
+    // 角标另写一套判定的话这里就是它唯一的拦截点
+    const designIndex = {
+      registryId: "company",
+      owner: "design",
+      repo: "design-skills",
+      skills: [{ dirSlug: "weekly-report", contentHash: "sha256:design-version" }],
+    };
+    expect(updateCount([view()], designIndex)).toBe(0);
   });
 
   it("同一个源、另一个技能库的索引不能用来判定(M4 一源多仓)", () => {

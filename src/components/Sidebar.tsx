@@ -5,7 +5,9 @@ import { UpdatePill } from "@/components/UpdatePill";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { skillGlyph } from "@/lib/tint";
+import { updateCount, useMySkills } from "@/store/my-skills";
 import { useSession } from "@/store/session";
+import { useStoreIndex } from "@/store/store-index";
 import { useUi, type PageId } from "@/store/ui";
 
 const NAV: { group: MessageKey; items: { id: PageId; label: MessageKey; icon: typeof LayoutGrid }[] }[] = [
@@ -27,6 +29,11 @@ const NAV: { group: MessageKey; items: { id: PageId; label: MessageKey; icon: ty
 export function Sidebar({ version }: { version: string }) {
   const page = useUi((s) => s.page);
   const setPage = useUi((s) => s.setPage);
+  // 「我的技能」角标:与页内逐条徽标同一份判定(updateCount 内部走 hasUpdate),
+  // 免得出现"角标说 3、点进去只有 1"
+  const list = useMySkills((s) => s.list);
+  const index = useStoreIndex((s) => s.index);
+  const updates = updateCount(list, index);
 
   return (
     <aside className="flex flex-col border-r border-border bg-[var(--sidebar-bg)] px-2 pb-2.5 backdrop-blur-[20px]">
@@ -63,6 +70,14 @@ export function Sidebar({ version }: { version: string }) {
             >
               <Icon icon={item.icon} />
               {t(item.label)}
+              {item.id === "mine" && updates > 0 ? (
+                <span
+                  data-testid="nav-badge"
+                  className="ml-auto min-w-[17px] rounded-full bg-accent px-1 text-center font-mono text-[10px] leading-[17px] text-white"
+                >
+                  {updates}
+                </span>
+              ) : null}
             </button>
           ))}
         </div>

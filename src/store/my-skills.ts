@@ -312,3 +312,18 @@ export function hasUpdate(
   if (!remote || !skill.contentHash) return false;
   return remote !== skill.contentHash;
 }
+
+/**
+ * 侧边栏角标的计数(M6 任务 3)。
+ *
+ * **必须逐条走 `hasUpdate`**,不另写一套判定——角标与页内徽标是同一件事的两个说法,
+ * 口径一漂就会出现"角标说 3、点进去只有 1"。本地新建/未认领/来源已移除三档由
+ * `hasUpdate` 统一判掉:它们没有更新去处,计进角标就是虚报。
+ */
+export function updateCount(
+  list: InstalledSkillView[] | null | undefined,
+  index: Parameters<typeof hasUpdate>[1],
+): number {
+  if (!list) return 0;
+  return list.filter((skill) => hasUpdate(skill, index)).length;
+}
