@@ -106,6 +106,7 @@ src-tauri/src/
   commands.rs        Tauri IPC command 定义(薄壳,逻辑在 core)+ 托盘/updater 接线在 lib.rs
 resources/agents.json  75-agent 注册表(移植自 vercel-labs/skills v1.5.20,MIT,保留出处注释)
 scripts/           维护脚本(verify-*.mjs 跑上游源码生成 ground-truth fixture;
+                   gen-authors.mjs 从技能库 git 历史生成 authors.json,库侧维护工具;
                    build-release.sh / make-dmg.sh / publish-release.sh 发版三件套)
 fixtures/          docker Gitea 测试环境 + 样例技能仓库(含 curated.json / tags.json 样例)
 docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,**默认不进版本控制**
@@ -291,7 +292,13 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
   它就是这个项目的开发者文档。**别按全局规则把它加进 exclude 或重写历史**。
   仍然适用的部分:`docs/*`(除放行的两个)、`_*.md`、AI 流程产物一律不进版本控制。
 
-## 当前进度(2026-08-06,M6 全部完成,现役 v0.3.7)
+## 当前进度(2026-08-07,M7 完成待发版,现役 v0.3.7)
+
+**M7 = 作者/贡献者展示**(M6 候选三,方案在拍板过程中被用户推翻两次,终稿是
+tags/curated 同款的库侧静态文件,分解在 docs/M7-任务分解.md,只在本地):
+任务 1 parse_authors 进索引 → 任务 2 卡片/详情展示(全离线)→ 任务 3 gen-authors
+脚本 + 部署指南 §5 契约 → 任务 4 本节与 README 的承诺同步。细节见「关键事实」
+的作者条目与 git log。
 
 **M1–M6 全部完成并提交**(M6 分解与拍板见 docs/M6-任务分解.md;任务 4/5 中途被用户
 推翻重做过,经过在 git log)。
@@ -301,8 +308,9 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 **都已真机端到端验过**(见下面的现役机制约束)。
 **M6 候选五条的处置**:候选二(标签)当日提交 tags.json + curated.json 到真实库,
 用户已验证生效;候选一(更新提示)= 任务 1–3;候选四(认领语义)= 任务 4–5;
-候选三(作者/贡献者展示)**推迟到 M7**(要为它破一次"详情面板不联网"的例,设计问题最多,
-可行性已查证:Gitea `commits?path=` 一次请求即可)。
+候选三(作者/贡献者展示)= **M7 已做**,且没按当初"详情面板破例联网"的思路——
+方案两次被用户推翻后落在 authors.json 静态文件上,"详情面板不联网"的例一次都没破
+(见「关键事实」的作者条目)。
 
 M5 任务 2 要点:「我的技能」三分区,归类徽标全撤;
 `installed_list` 只列 canonical 真实存在的目录(记账保留,重获取时 precheck 走 Fresh 对齐),
@@ -317,7 +325,7 @@ M5 任务 3 要点:技能库根 `tags.json`(`{"tags":{"<dirSlug>":["标签",…]
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 452 + 前端 403 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
+- 本机:Rust 456 + 前端 408 测试通过(M7 起),clippy(**--all-targets**)/eslint/tsc 干净,
   `pnpm dev` 启动冒烟通过(带内网配置实测:商店读到真实库 30 个技能)
 - **双平台 CI**:**M4 任务 1 的两笔(`3857720` / `a7a1de3`)macOS + Windows 双 job 全绿**(2026-08-04 逐 job 实测);
   M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;`de7b233`/`2eb0595` 当时因账号计费
@@ -577,9 +585,15 @@ M6 的契约变更:新增事件 `app-update://ready`(载荷为版本号;探测�
   于是卡片显示"更新"、点进去按钮是禁用的「已启用」,点了没反应)。
   任一侧指纹为空时按"没有更新"处理:宁可漏报,不误报。
 - **索引缓存版本已升到 2**:旧缓存没有逐技能指纹,留着会让判定退化成"未知"。
-- **商店卡片上没有作者、也没有安装量**(`core/store.rs` 模块头):frontmatter 只有
-  name/description/metadata.internal,逐技能的提交人归因要对每个目录各发一次 commits 请求,
-  50 个技能撑不住首屏 <2s。UI-Demo 里那两栏因此留空——**不编造**。安装量是 C5 预留字段,等 M4。
+- **作者/贡献者来自库根 `authors.json`,不是现场归因**(M7 任务 1–3,推翻了
+  "商店卡片上没有作者"的旧结论):frontmatter 没有作者字段,逐技能问 commits 接口
+  又撑不住首屏 <2s——M7 的解法是 tags.json 同款的库侧静态文件
+  (`scripts/gen-authors.mjs` 从 git 历史生成:作者 = 最早提交人,贡献者 = 其余提交人
+  按次数降序),App 只读展示、**零新增请求**,旧缓存 serde default 补 None 不升缓存版本。
+  没有条目整栏不摆(卡片与详情都是)——仍然**不编造**。库侧自动化基线是管理员手动/
+  定期跑脚本;Actions 模板在部署指南 §5,但内网技能库仓库级 runner 实测为 0,
+  **没确认有 runner 前别把维护押在 Actions 上**(会静默排队,又一个"从没生效过")。
+  安装量仍没有(C5 预留,埋点服务落点未定)。
 - **UI-Demo 的分类 chip 换成了"全部/未安装/已安装"**:SKILL.md 里没有分类字段,
   硬造分类等于在界面上撒谎。要分类得技能库侧先约定 frontmatter 字段。
 - **「我的技能」有三档,`installed_list` 返回的不等于 `state.installed`**(M4 任务 6a)。
