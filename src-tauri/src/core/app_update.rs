@@ -83,11 +83,11 @@ pub fn should_notify(window_visible: Option<bool>) -> bool {
     window_visible != Some(true)
 }
 
-/// App 自更新的检查间隔。
+/// App 自更新的检查间隔(用户拍板:1 分钟)。
 ///
-/// 半小时:用户要的是"一旦有新版本就静默装好并提示",内网每 30 分钟一个
-/// latest.json 的 GET 可以忽略不计。
-pub const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// 一个 latest.json 的 GET 而已,内网每分钟一次可以忽略不计;换来的是
+/// "发版之后一分钟内,用户那边就自己装好并提示重启"。
+pub const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// 下一次 App 自更新检查要不要排、隔多久。
 ///
@@ -97,6 +97,31 @@ pub const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3
 /// ——0.3.1 在那之后才发布,用户等到的是"什么都没发生"(2026-08-06 实测)。
 pub fn next_check_delay(app_auto_update: bool) -> Option<std::time::Duration> {
     app_auto_update.then_some(CHECK_INTERVAL)
+}
+
+/// 从可执行文件路径推出它所属的 `.app` 包(macOS 重启用)。
+///
+/// **为什么需要它**:`tauri::AppHandle::restart()` 是直接 spawn 包内的可执行文件,
+/// 绕开了 LaunchServices。macOS 上这样起的新进程,在父进程随即退出时**拿不到激活权**
+/// ——窗口建出来了却沉在所有应用后面,用户看到的是"重启完没有界面,
+/// 点一下程序坞图标才出来"(2026-08-06 实测,对照组见下)。
+///
+/// 实测对照(旧实例在新实例起来后立刻退出,与 restart 同一时序):
+/// - 直接跑 `SkillSync.app/Contents/MacOS/skillsync` → `frontmost: false`
+/// - `open -n -a SkillSync.app`(走 LaunchServices)→ `frontmost: true`
+///
+/// 认不出 `.app` 结构就返回 `None`(dev 构建就是这一档),调用方回退到 `restart()`。
+pub fn macos_bundle_path(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let macos_dir = exe.parent()?;
+    if macos_dir.file_name()? != "MacOS" {
+        return None;
+    }
+    let contents = macos_dir.parent()?;
+    if contents.file_name()? != "Contents" {
+        return None;
+    }
+    let bundle = contents.parent()?;
+    (bundle.extension()? == "app").then(|| bundle.to_path_buf())
 }
 
 /// 就绪通知文案(标题, 正文)。
@@ -165,11 +190,26 @@ mod tests {
         // 关掉「自动更新应用」才不查;技能档位(含「手动」)一概管不着它
         assert_eq!(next_check_delay(true), Some(CHECK_INTERVAL));
         assert_eq!(next_check_delay(false), None);
-        // 半小时级:间隔大到一天就等于没有"一旦有新版本"这回事
+        // 分钟级:间隔一大,"一旦有新版本就提示"这件事就不成立了(用户拍板 1 分钟)
         assert!(
-            CHECK_INTERVAL <= std::time::Duration::from_secs(3600),
-            "间隔超过一小时,用户等不到自动提示",
+            CHECK_INTERVAL <= std::time::Duration::from_secs(300),
+            "间隔超过 5 分钟,用户等不到自动提示",
         );
+    }
+
+    #[test]
+    fn only_a_real_app_bundle_yields_a_relaunch_target() {
+        use std::path::Path;
+        assert_eq!(
+            macos_bundle_path(Path::new("/Applications/SkillSync.app/Contents/MacOS/skillsync")),
+            Some(Path::new("/Applications/SkillSync.app").to_path_buf()),
+        );
+        // dev 构建不在 .app 里:必须回退到 tauri 自己的 restart,不能瞎拼一个路径
+        assert_eq!(macos_bundle_path(Path::new("/repo/target/debug/skillsync")), None);
+        // 层级对不上的一律不认(少一层 Contents / 目录名不是 MacOS / 不以 .app 结尾)
+        assert_eq!(macos_bundle_path(Path::new("/A/X.app/MacOS/bin")), None);
+        assert_eq!(macos_bundle_path(Path::new("/A/X.app/Contents/Helpers/bin")), None);
+        assert_eq!(macos_bundle_path(Path::new("/A/X/Contents/MacOS/bin")), None);
     }
 
     #[test]

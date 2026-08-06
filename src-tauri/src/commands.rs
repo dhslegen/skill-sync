@@ -213,8 +213,34 @@ pub async fn app_update_install(app: tauri::AppHandle) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 重启应用让新版本生效。
+///
+/// **macOS 上不能直接用 `app.restart()`**:它 spawn 包内可执行文件、绕开 LaunchServices,
+/// 新进程在父进程随即退出时拿不到激活权——窗口建出来了却沉在所有应用后面,
+/// 用户看到的是"重启完没有界面,点程序坞图标才出来"(2026-08-06 实测,对照见
+/// `app_update::macos_bundle_path` 的文档)。改走 `open -n -a <bundle>`。
+///
+/// 认不出 `.app`(dev 构建)或 `open` 起不来时,回退到 `app.restart()`
+/// ——重启不成比激活不了严重得多。
 #[tauri::command]
 pub fn app_restart(app: tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| app_update::macos_bundle_path(&exe))
+    {
+        match std::process::Command::new("open").arg("-n").arg("-a").arg(&bundle).spawn() {
+            Ok(_) => {
+                tracing::info!(bundle = %bundle.display(), "重启:已交给 LaunchServices 拉起新实例");
+                // code=Some(0):防退出只挡 code=None,这一条走得通(见 lib.rs 的 ExitRequested)
+                app.exit(0);
+                return;
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "open 拉起失败,回退到 tauri restart");
+            }
+        }
+    }
     app.restart();
 }
 
@@ -457,9 +483,8 @@ pub fn spawn_scheduler(app: tauri::AppHandle) -> Option<scheduler::Scheduler> {
     let check = move || -> scheduler::BoxFuture {
         let app = app.clone();
         Box::pin(async move {
-            // App 自更新顺带每轮技能检查的节奏(M6 任务 1 拍板:不为它新增档位)。
-            // 放在技能检查前:它自带 update_configured / auto_update.app 双闸,轻且幂等。
-            run_app_update_round(&app).await;
+            // App 自更新**不再挂在这一拍上**(2026-08-06 用户拍板解耦):它有自己的
+            // 常驻循环(spawn_app_update_probe,每分钟一轮),与技能档位互不影响。
             let Some(report) = run_all_sources_check().await else {
                 return;
             };
