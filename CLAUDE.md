@@ -31,7 +31,9 @@
 ```
 pnpm dev            # tauri dev
 pnpm build          # tauri build(无签名变量时产出未签名包,仅内部测试)
-./scripts/build-release.sh   # 发布构建:强校验编译期内网配置,缺任一变量拒绝出包
+./scripts/publish-release.sh 0.2.3   # **发版就跑它**:改版本号→构建签名公证→打 dmg
+                                     # →传内网发布仓→更新 latest 公告牌→验收(见「发版」一节)
+./scripts/build-release.sh   # 只出包不发布(publish-release.sh 内部调它);强校验编译期内网配置
 pnpm test           # 前端 vitest
 cargo test --workspace   # Rust 单测(在 src-tauri/ 下)
 pnpm lint           # eslint
@@ -101,10 +103,15 @@ src-tauri/src/
                      createCommitOnBranch、git/refs、pulls、fork+就绪轮询)
   commands.rs        Tauri IPC command 定义(薄壳,逻辑在 core)+ 托盘/updater 接线在 lib.rs
 resources/agents.json  75-agent 注册表(移植自 vercel-labs/skills v1.5.20,MIT,保留出处注释)
-scripts/           维护脚本(verify-*.mjs 跑上游源码生成 ground-truth fixture;build-release.sh)
-fixtures/          docker Gitea 测试环境 + 样例技能仓库
-docs/              ⚠️ 设计方案/交接包/UI 规范/UI-Demo/任务分解/交接提示词 **不进版本控制**
-                   (在 .git/info/exclude 中);只有 terminology.md 与 部署分发指南.md 受版本控制
+scripts/           维护脚本(verify-*.mjs 跑上游源码生成 ground-truth fixture;
+                   build-release.sh / make-dmg.sh / publish-release.sh 发版三件套)
+fixtures/          docker Gitea 测试环境 + 样例技能仓库(含 curated.json / tags.json 样例)
+docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,**默认不进版本控制**
+                   ——设计方案/交接包/UI 规范/任务分解/候选范围/交接提示词都只在本地。
+                   **实测唯一例外是 `docs/terminology.md`**(exclude 里有 `!` 放行)。
+                   ⚠️ `docs/部署分发指南.md` 此前被本文件描述成"受版本控制",**实为未提交**
+                   (2026-08-06 `git ls-files` 核实);它内容里全是占位符、没有真实内网地址,
+                   技术上可以公开,但要不要推进公开仓需用户拍板,别自行 git add。
 ```
 
 
@@ -263,11 +270,13 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 - 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
   其余注册表 agent 尽力支持
 
-## 当前进度(2026-08-05,M5 任务 1 完成)
+## 当前进度(2026-08-06,M5 全部完成 + v0.2.2 已发布并验证自更新)
 
-**M1–M4 全部完成并提交,macOS 签名分发已打通**;**M5 已开工**(分解与拍板记录在
-docs/M5-任务分解.md:任务 1 多人协作冲突 ✅ → 2 「我的技能」分区展示 ✅ → 3 商店标签 ✅
-→ 4 收尾 + 0.2.0 发版)。
+**M1–M5 全部完成并提交**(M5 分解与拍板见 docs/M5-任务分解.md:任务 1 多人协作冲突 ✅
+→ 2 「我的技能」分区展示 ✅ → 3 商店标签 ✅ → 4 收尾+发版 ✅)。
+**当前发布版本 v0.2.2**,内网发布仓 `skills/skillsync-releases` 上有 v0.2.1/v0.2.2 + latest 公告牌。
+**M6 候选范围见 docs/M6-候选范围.md**(用户 2026-08-06 提出五条,未拍板未分解)。
+
 任务 2 要点:「我的技能」按 商店安装/本地创建/npx skills 安装 三分区,归类徽标全撤;
 `installed_list` 只列 canonical 真实存在的目录(记账保留,重获取时 precheck 走 Fresh 对齐),
 `body_present` 字段已删——别再往 DTO 里加"存在性"字段,存在性由 core 过滤保证。
@@ -275,11 +284,13 @@ docs/M5-任务分解.md:任务 1 多人协作冲突 ✅ → 2 「我的技能」
 部署指南 §5)→ `store::parse_tags` 宽容解析进索引 → 商店 chip 单选(切库清筛选)+
 搜索匹配 + 详情展示。**缓存版本没升也不用升**:tags.json 改动必伴随库提交,head 一变
 缓存即重建,与 `curated` 同一套推理——候选文档"要升版本"的论断已被推翻,别再抄。
+⚠️ **真实内网技能库目前既没有 `tags.json` 也没有 `curated.json`**(2026-08-06 curl 实测双 404)
+——所以商店不显示标签行、向导没有"一键全装",**那是数据没配,不是功能坏了**。
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 426 + 前端 363 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
-  `pnpm dev` 启动冒烟通过(M4 任务 1 后带内网配置实测:商店读到真实库 28 个技能)
+- 本机:Rust 436 + 前端 385 测试通过,clippy(**--all-targets**)/eslint/tsc 干净,
+  `pnpm dev` 启动冒烟通过(带内网配置实测:商店读到真实库 30 个技能)
 - **双平台 CI**:**M4 任务 1 的两笔(`3857720` / `a7a1de3`)macOS + Windows 双 job 全绿**(2026-08-04 逐 job 实测);
   M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;`de7b233`/`2eb0595` 当时因账号计费
   被拒,仓库转公开后 2026-08-03 rerun 双 job 全绿(任务 6 的 claim_flow junction 路径
@@ -593,41 +604,48 @@ M4 后续新增的 IPC:`share_preview`(任务 2)、`skill_create`(任务 4)、
   托盘「打开」把窗口从 0 恢复到 1、Cmd+Q 正常退出)。
 - **托盘图标外观没能目视确认**:本机菜单栏状态项过多把它挤进了溢出区。
 - **系统通知未验**:要真实内网源才触发,macOS 首次还需授权。
-- **App 自更新的端到端联调**:代码侧与发布通道已就绪,但要真验"旧版本 → 检出 → 装上 →
-  重启后版本变了",需要 minisign 密钥对 + 内网静态更新源落点 + 一次真实的双版本发布。
-  步骤见部署指南 §7.4。已自动验证的部分:未注入更新源时报 `UPDATE_NOT_CONFIGURED`、
-  发布通道 overlay 与三个新变量的闸门、前端状态机(装完不自动重启/安装中不被事件打断/
-  失败不吞成成功)。
 - **任务 8 的性能数字来自 loopback docker,不是内网真机**:53 个技能冷启动 76.6ms、
   缓存命中 28.1ms(`cargo test --test store_live -- --nocapture`),远低于 DoD 的 2s/300ms,
   但真实内网要加网络往返与更大的压缩包。`tests/store_index.rs` 的 300ms 断言跑在 wiremock 上、进 CI。
-- **正式分发的外部条件**(完整清单见部署指南 §6):~~Apple Developer ID 证书 + 公证凭证~~
-  **已具备并跑通**(2026-08-05,见下);仍缺 Windows 内部 CA 签名或 IT 软件中心白名单、
+- **正式分发的外部条件**(完整清单见部署指南 §6):macOS 侧(证书+公证+发布+自更新)
+  **已全部跑通**(见下);仍缺 Windows 内部 CA 签名或 IT 软件中心白名单、
   干净双平台真机 ≤5 分钟验收。
 
-### macOS 签名分发已打通(2026-08-05,踩了四个坑,下次发版直接照做)
+### 发版:一条命令(2026-08-06 起;macOS 全链路已跑通并验证自更新)
 
 证书 `Developer ID Application: Wenhao Zhao (79H4J7GB4N)`;凭证在
-`fixtures/.env.apple.local`(`*.local` 已被 .gitignore 排除,权限 600)。
-minisign 密钥对在 `~/.tauri/skillsync.key`,更新源是内网 Gitea 的
-`skills/skillsync-releases` 发布仓(固定 `latest` 标签,URL 因此不变)。
+`fixtures/.env.apple.local`、发布仓令牌在 `fixtures/.env.release.local`
+(`*.local` 已被 .gitignore 排除,权限 600)。minisign 密钥对在 `~/.tauri/skillsync.key`
+(**丢了这批已发出去的包永远收不到更新**)。更新源 = 内网 Gitea 发布仓
+`skills/skillsync-releases` 的固定 `latest` 标签(URL 因此恒定)。
 
-**发版命令**(两步,不能合成一步,理由见下):
-```
-./scripts/build-release.sh --target universal-apple-darwin --bundles app
-./scripts/make-dmg.sh
-```
+**发版 = `./scripts/publish-release.sh <版本号>`**(完整环境变量与一次性准备见
+部署指南 §7.4)。它包办:改三处版本号 → 构建(签名+公证)→ 打 dmg → 建版本 release
+传三个产物 → 重建 latest 公告牌 → curl 验收。跑完 `git commit` 版本号改动即可。
 
-四个坑都已在脚本里修掉并写了注释,但**改这两个脚本前必须知道**:
+**已实测的发布终态**(2026-08-06):发布仓有 v0.2.1/v0.2.2,latest 公告牌指向 0.2.2;
+**自更新端到端第一次真跑通**——0.2.1 检出 0.2.2 → 下载验签安装 → 重启后版本变了
+(日志 `应用更新已安装,等待重启生效 version=0.2.2`)。
+
+**改这三个脚本前必须知道的五个坑**(都已修在脚本里并写了注释):
 1. **构建期需要 updater 公钥**,编译期常量不顶用——签名发生在构建那一刻,
    tauri 读的是 `plugins.updater.pubkey`,而主 conf 里按铁律 5 只有空占位。
    现从环境变量拼进 `--config`。CI 的 `release.yml` 同理(它当时也漏了)。
-2. **不能让 tauri 打 dmg**:它的 `bundle_dmg.sh` 在造好 dmg **之后**才调
+2. **tauri updater 默认拒绝 http 端点**,而内网 Gitea 就是 http:不在构建期 overlay 里
+   开 `dangerousInsecureTransportProtocol`,`endpoints()` 直接报错、**一个请求都不发**,
+   还被 `update_err` 包成 `NET_UPDATE`"请确认已接入公司内网"——一个配置问题
+   披着网络问题的皮。**v0.1.0 与第一版 v0.2.0 都带着这个缺陷发了出去**(v0.2.0 已下架),
+   靠自更新端到端实测才抓到。完整性由 minisign 验签兜底,明文传输在内网可接受。
+   `tests/bundle_config.rs` 现在钉住两条发布通道都要有它。
+3. **不能让 tauri 打 dmg**:它的 `bundle_dmg.sh` 在造好 dmg **之后**才调
    `hdiutil internet-enable`(macOS 10.15 已移除),非零退出 + `set -e` → tauri
    判定失败并**清理整个 bundle 目录**,把刚公证好的 .app 一起删掉。
-3. `codesign -dv` **不打印 Authority 行**,判签名要 `--verbose=2`。
-4. `cmd | grep -q` 配 `set -o pipefail` 会因 SIGPIPE 拿到 141;
+4. `codesign -dv` **不打印 Authority 行**,判签名要 `--verbose=2`。
+5. `cmd | grep -q` 配 `set -o pipefail` 会因 SIGPIPE 拿到 141;
    `spctl` 不带 `-vvv` 成功时**一个字都不打印**。两者都会把好包判成坏包。
+
+**苹果公证偶发超时**(`HTTPClientError.deadlineExceeded`)不是脚本缺陷,重跑即可
+——已编译产物会复用,第二次快得多。
 
 **本机环境**
 - Rust 走镜像:`RUSTUP_DIST_SERVER` 用清华、crates.io 用 rsproxy(已配在 `~/.cargo/config.toml`);

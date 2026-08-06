@@ -30,6 +30,7 @@ Rust 集成测试读取该文件;文件不存在时相关测试自动跳过,不�
 | `skills/taken-name` | 验证分享时的同名冲突预检 |
 | `skills/bad-frontmatter` | 缺 description,验证跳过该目录且不影响同仓库其他技能 |
 | `curated.json` | 首次启动向导的团队精选清单 |
+| `tags.json` | 商店标签(M5 任务 3)。故意留了一个对不上任何目录的键,验证"多余条目被丢弃" |
 
 ## 版本说明
 
