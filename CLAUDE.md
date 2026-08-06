@@ -658,3 +658,9 @@ M4 后续新增的 IPC:`share_preview`(任务 2)、`skill_create`(任务 4)、
 **本机环境**
 - Rust 走镜像:`RUSTUP_DIST_SERVER` 用清华、crates.io 用 rsproxy(已配在 `~/.cargo/config.toml`);
   `~/.cargo/bin` 不在非交互 shell 的 PATH 中,跑 cargo 前需 `export PATH="$HOME/.cargo/bin:$PATH"`。
+- Node 版本以 `.nvmrc`(22,与 CI 一致)为准;本机 Homebrew 的 node 已升到 26。
+  Node 26 在 globalThis 上自带 localStorage accessor(getter 返回 undefined),曾让 45 个
+  前端测试假红而 CI 全绿——`src/test/setup.ts` 已补内存级 shim 兜底,任何 Node 版本都能跑,
+  但日常仍建议 `export PATH="$HOME/.nvm/versions/node/v22.21.1/bin:$PATH"` 与 CI 对齐。
+- vitest 与 cargo test **别并发跑**:互抢 CPU 会让 vitest 的 5 秒超时用例偶发假红
+  (实测 environment 阶段被拖到 566s)。
