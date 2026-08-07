@@ -166,9 +166,19 @@ enum Staged {
     AlreadyHandled,
 }
 
-/// 下载并安装新版本(公共体)。签名校验在插件内完成:校验不过整个安装终止,不会落半个字节。
-/// 安装完成**不自动重启**——用户可能正开着别的操作,由前端提示后调 `app_restart`。
-/// 就绪与互斥记账走 `ready_state()`:同版本装过不重复下载,并发轮次只放行一个。
+/// 把新版本准备到"点一下就能生效"的状态(公共体)。
+/// 签名校验在插件内完成:校验不过整个流程终止,不会落半个字节。
+/// **全程不重启、不退出**——用户可能正开着别的操作,由前端提示后调 `app_restart`。
+/// 就绪与互斥记账走 `ready_state()`:同版本处理过不重复下载,并发轮次只放行一个。
+///
+/// **两个平台在这里必须分开走,因为"安装"的语义根本不同**(2026-08-07 Windows 真机暴露):
+/// - macOS:安装 = 替换 `.app` 目录包,应用可以照常运行 → 直接装好,等重启生效;
+/// - Windows:替换不了正在运行的 exe,tauri 的 `install()` 会**先把应用杀掉**
+///   (`std::process::exit(0)`)再跑安装程序 → 在自动轮次里装,等于"用着用着应用
+///   自己没了"。所以只**下载**、把字节留着,等用户按下重启按钮时才装。
+///
+/// 两条路对外的语义是**一致的**:`ready` = 新版内容已备好、点一下就生效,
+/// 因此前端那个 pill 与 `app-update://ready` 事件一个字都不用改。
 async fn stage_app_update(app: &tauri::AppHandle) -> Result<Staged, AppError> {
     let Some(update) = app_updater(app)?.check().await.map_err(update_err)? else {
         return Ok(Staged::NoUpdate);
@@ -177,24 +187,50 @@ async fn stage_app_update(app: &tauri::AppHandle) -> Result<Staged, AppError> {
     if !ready_state().begin_stage(&version) {
         return Ok(Staged::AlreadyHandled);
     }
-    let result = update
-        .download_and_install(
-            |_chunk, _total| {},
-            || {
-                // 下载完成、开始安装(阶段级进度,与获取流程同一诚实粒度)
-            },
-        )
-        .await;
-    if let Err(e) = result {
-        ready_state().abort_stage();
-        return Err(
-            AppError::new("UPDATE_INSTALL_FAILED", "应用更新安装失败,已保持当前版本")
-                .with_detail(e.to_string()),
-        );
+
+    #[cfg(target_os = "windows")]
+    {
+        let result = update.download(|_chunk, _total| {}, || {}).await;
+        match result {
+            Ok(bytes) => {
+                let size = bytes.len();
+                ready_state().finish_download(&version, bytes);
+                let _ = app.emit("app-update://progress", "installed");
+                tracing::info!(%version, size, "应用更新已下载,等待用户确认后安装");
+            }
+            Err(e) => {
+                ready_state().abort_stage();
+                return Err(AppError::new(
+                    "UPDATE_INSTALL_FAILED",
+                    "应用更新下载失败,已保持当前版本",
+                )
+                .with_detail(e.to_string()));
+            }
+        }
     }
-    ready_state().finish_stage(&version);
-    let _ = app.emit("app-update://progress", "installed");
-    tracing::info!(%version, "应用更新已安装,等待重启生效");
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let result = update
+            .download_and_install(
+                |_chunk, _total| {},
+                || {
+                    // 下载完成、开始安装(阶段级进度,与获取流程同一诚实粒度)
+                },
+            )
+            .await;
+        if let Err(e) = result {
+            ready_state().abort_stage();
+            return Err(
+                AppError::new("UPDATE_INSTALL_FAILED", "应用更新安装失败,已保持当前版本")
+                    .with_detail(e.to_string()),
+            );
+        }
+        ready_state().finish_stage(&version);
+        let _ = app.emit("app-update://progress", "installed");
+        tracing::info!(%version, "应用更新已安装,等待重启生效");
+    }
+
     Ok(Staged::Fresh(version))
 }
 
@@ -222,8 +258,33 @@ pub async fn app_update_install(app: tauri::AppHandle) -> Result<(), AppError> {
 ///
 /// 认不出 `.app`(dev 构建)或 `open` 起不来时,回退到 `app.restart()`
 /// ——重启不成比激活不了严重得多。
+///
+/// **Windows 上这里还兼着"安装"**:新版只下载了没装(见 `stage_app_update` 的说明),
+/// 用户按下重启按钮才是安装时机。`install()` 成功的话进程在它内部就退出了,
+/// 后面的重启代码根本执行不到——这是 tauri 的既定行为,不是漏写。
 #[tauri::command]
-pub fn app_restart(app: tauri::AppHandle) {
+pub async fn app_restart(app: tauri::AppHandle) {
+    // Windows:先把下载好的新版装上。装的过程会退出应用,由 NSIS 接手。
+    #[cfg(target_os = "windows")]
+    if let Some(bytes) = ready_state().take_pending_install() {
+        // install 要 Update 对象,而下载那一轮的对象早就 drop 了;重新 check 一次拿回来
+        // (内网一次轻量请求)。拿不到就照常重启旧版——不能因为更新装不上就不让用户重启。
+        match app_updater(&app) {
+            Ok(updater) => match updater.check().await {
+                Ok(Some(update)) => {
+                    tracing::info!("重启:先安装已下载的新版(安装程序会接管并退出本进程)");
+                    if let Err(err) = update.install(bytes) {
+                        // 走到这说明没退出成:装失败了。不把用户卡住,照常重启旧版。
+                        tracing::warn!(error = %err, "新版安装失败,按普通重启继续");
+                    }
+                }
+                Ok(None) => tracing::warn!("重启前远端已无更新信息,按普通重启继续"),
+                Err(err) => tracing::warn!(error = %err, "重启前查更新失败,按普通重启继续"),
+            },
+            Err(err) => tracing::warn!(code = %err.code, "重启前拿不到 updater,按普通重启继续"),
+        }
+    }
+
     #[cfg(target_os = "macos")]
     if let Some(bundle) = std::env::current_exe()
         .ok()

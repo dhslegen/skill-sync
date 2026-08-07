@@ -28,6 +28,9 @@ struct Inner {
     ready: Option<String>,
     /// 有一轮下载正在进行(启动探测与 scheduler 轮可能同时到)。
     in_flight: bool,
+    /// **已下载、但还没安装**的安装包字节(Windows 专用,见 `finish_download` 的说明)。
+    /// macOS 走"下载即安装",这里永远是 None。
+    pending_install: Option<Vec<u8>>,
 }
 
 /// 进程内的就绪记账。不落盘:重启之后运行的就是新版,这份状态天然作废。
@@ -55,10 +58,40 @@ impl ReadyState {
         inner.in_flight = false;
     }
 
-    /// 装失败:只放开互斥,不记就绪。
+    /// **下载完但没安装**:记下就绪版本并留住安装包字节,放开互斥。
+    ///
+    /// 只有 Windows 走这条。原因是平台硬限制:Windows replacing 不了正在运行的 exe,
+    /// tauri 的 `install()` 会**先 `std::process::exit(0)` 把应用杀掉**再跑安装程序
+    /// (见 tauri-plugin-updater 的 `on_before_exit` 注释)。
+    /// 所以"静默装好 + 提示重启"这个模型在 Windows 上根本不成立——"装好"就等于
+    /// "应用已经没了"。2026-08-07 用户在 Windows 真机上问的正是这个:
+    /// 应用用着用着自己退出并更新,而不是像 macOS 那样静默备好、由他挑时机。
+    ///
+    /// 改成:下载完只**留住字节**(内容确实已备好,`ready` 语义与 macOS 一致,
+    /// 前端那个 pill 一个字都不用改),等用户点了重启才 `install()`。
+    /// 代价是安装包字节常驻内存到用户点击为止(Windows 包约 5MB),
+    /// 换来的是"退出这件事由用户按下按钮触发",不再打断正在做的事。
+    pub fn finish_download(&self, version: &str, bytes: Vec<u8>) {
+        let mut inner = self.inner.lock().expect("app_update 状态锁不该中毒");
+        inner.ready = Some(version.to_string());
+        inner.pending_install = Some(bytes);
+        inner.in_flight = false;
+    }
+
+    /// 取出待安装的字节(**取走即清空**)。
+    ///
+    /// 清空是防重复安装的关键:`install()` 在 Windows 上不返回(进程直接退出),
+    /// 但万一它失败了并返回,重启流程会继续往下走——这时若字节还在,
+    /// 下一次点重启会拿着同一份包再装一次。
+    pub fn take_pending_install(&self) -> Option<Vec<u8>> {
+        self.inner.lock().expect("app_update 状态锁不该中毒").pending_install.take()
+    }
+
+    /// 装失败:只放开互斥,不记就绪。半份下载的字节一并丢掉,不留给下一轮用。
     pub fn abort_stage(&self) {
         let mut inner = self.inner.lock().expect("app_update 状态锁不该中毒");
         inner.in_flight = false;
+        inner.pending_install = None;
     }
 
     pub fn ready_version(&self) -> Option<String> {
@@ -154,6 +187,43 @@ mod tests {
         s.abort_stage();
         assert_eq!(s.ready_version(), None, "失败不算就绪");
         assert!(s.begin_stage("0.3.1"), "失败后下一轮可以重试同版本");
+    }
+
+    /// Windows 那条路:下载完只留字节不安装,对外的就绪语义与 macOS 完全一致
+    /// (前端那个 pill 因此一个字都不用改)。
+    #[test]
+    fn downloaded_but_not_installed_still_counts_as_ready() {
+        let s = ReadyState::default();
+        assert!(s.begin_stage("0.3.12"));
+        s.finish_download("0.3.12", vec![1, 2, 3]);
+        assert_eq!(s.ready_version().as_deref(), Some("0.3.12"), "下载完就算就绪");
+        assert!(!s.begin_stage("0.3.12"), "已就绪同版本,不再重复下载");
+        assert_eq!(
+            s.classify(Some("0.3.12")),
+            AppUpdateStatus::Ready { version: "0.3.12".into() },
+            "远端与就绪版本一致时应报 Ready"
+        );
+    }
+
+    /// **取走即清空**:`install()` 在 Windows 上正常情况下不返回(进程直接退出),
+    /// 但万一它失败并返回,重启流程会继续往下走——字节还留着的话,
+    /// 下次点重启会拿同一份包再装一次。
+    #[test]
+    fn pending_install_bytes_are_consumed_exactly_once() {
+        let s = ReadyState::default();
+        s.finish_download("0.3.12", vec![7, 7, 7]);
+        assert_eq!(s.take_pending_install(), Some(vec![7, 7, 7]), "第一次拿得到");
+        assert_eq!(s.take_pending_install(), None, "第二次必须为空,否则会重复安装");
+    }
+
+    /// 下载失败时半份字节不能留给下一轮用。
+    #[test]
+    fn abort_discards_any_downloaded_bytes() {
+        let s = ReadyState::default();
+        assert!(s.begin_stage("0.3.12"));
+        s.finish_download("0.3.12", vec![9, 9]);
+        s.abort_stage();
+        assert_eq!(s.take_pending_install(), None, "中止后不得留下半份安装包");
     }
 
     #[test]

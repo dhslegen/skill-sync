@@ -400,8 +400,23 @@ M7 的契约变更:`StoreSkillCard` 新增 `author`(`string | null`)、`SkillDet
   理由:"认领"的语义前提是"这东西暂时没主",而技能就在用户自己电脑上——词与事实相反。
   **代码里的标识符仍叫 claim/unclaim/claimed**(ID 用英文,只有用户可见文案改了)。
 
-- **App 自更新是"静默装好 + 提示重启"**(M6 任务 1–2,对齐 Cursor/Claude 桌面端):
-  检出新版 → 直接下载安装(不重启)→ emit `app-update://ready` → 左下角 pill。
+- **App 自更新是"静默备好 + 提示重启"**(M6 任务 1–2,对齐 Cursor/Claude 桌面端):
+  检出新版 → 后台准备好(不重启)→ emit `app-update://ready` → 左下角 pill。
+  - ⚠️ **"备好"在两个平台是两件事,`stage_app_update` 必须分平台走**
+    (2026-08-07 Windows 真机暴露,用户问"为什么 Windows 是自动更新的"):
+    macOS 上安装 = 替换 `.app` 目录包,应用照常运行,所以**下载即安装**;
+    Windows 上**替换不了正在运行的 exe**,tauri 的 `install()` 会先
+    `std::process::exit(0)` 把应用杀掉再跑 NSIS——在自动轮次里装,用户看到的就是
+    "用着用着应用自己没了"(每分钟检查一次,新版一发出去就会撞上)。
+    所以 Windows 只**下载**、把字节留在 `ReadyState.pending_install`,
+    等用户点了 pill 才在 `app_restart` 里 `install()`。
+    - 对外语义**刻意保持一致**:`ready` = 新版内容已备好、点一下就生效,
+      因此 `app-update://ready` 事件与前端 pill **一个字都不用改**;
+    - `take_pending_install` **取走即清空**:`install()` 正常情况下不返回(进程已退出),
+      万一失败返回了,字节还留着就会在下次点重启时重复安装;
+    - install 要 `Update` 对象而下载那轮的早已 drop,`app_restart` 里**重新 check 一次**
+      拿回来;拿不到(网络断)就照常重启旧版——不能因为更新装不上就不让用户重启;
+    - Windows 分支在 macOS 上**根本不编译**,本地测不到,靠 CI 的 windows job 把关。
   - 就绪记账在**进程内**(`core/app_update.rs` 的 `ReadyState`),不落盘:
     tauri updater 的 `check()` 永远拿**运行中进程**的版本比远端,装好等重启这件事
     只有我们自己记得。重启后状态天然作废,所以也不需要"忽略此版本"的记忆;
