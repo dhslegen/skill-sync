@@ -308,9 +308,12 @@ tags/curated 同款的库侧静态文件,分解在 docs/M7-任务分解.md,只�
 ——仓库是 PUBLIC,Actions artifact 对任何 GitHub 用户可下载,而包里编译进了内网地址,
 违反「安装包只走内部渠道」。现状是安全的(secrets 一个没配,`guard` 会拦;
 公开 release v0.1.0 零附件),**别为了省事把 secrets 配上去**。
-macOS 上交叉编译也不通(aws-lc-sys 要 Windows SDK),所以只能本地 Windows 环境
-或内网 runner 构建;⚠️ 本机是 Apple Silicon,VM 里的 Windows 是 **ARM64**,
-而同事的 PC 多为 x64,**能否交叉出 x64 包必须先实测**,别发个装不上的包出去。
+macOS 上交叉编译也不通(aws-lc-sys 要 Windows SDK),所以只能在 Windows 上构建
+——**用用户自己那台公司 Windows 机**(2026-08-07 拍板)。
+⚠️ **顺序陷阱:先验收,再搭构建环境**。那台机器现在是干净的普通员工机器,
+正是「Windows 普通权限真机」唯一合格的验收环境;一旦装上 VS Build Tools/Rust,
+它就再也回答不了"普通同事能不能装上、能不能用"——装包/junction/Claude Code 读到/
+GUI 行为这几条**必须在装任何开发工具之前做完**。
 
 **M1–M6 全部完成并提交**(M6 分解与拍板见 docs/M6-任务分解.md;任务 4/5 中途被用户
 推翻重做过,经过在 git log)。
