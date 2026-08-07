@@ -631,6 +631,9 @@ M7 的契约变更:`StoreSkillCard` 新增 `author`(`string | null`)、`SkillDet
 - **托盘与退出**:关窗 = 缩到托盘(用户拍板),「退出」只在托盘菜单。
   **`ExitRequested{code: None}` 的防退出不挡 Cmd+Q**——macOS 的退出走 `app.exit`(code=Some),
   这条特意实测过,别照 tauri 文档"code 是 None 就是用户交互"的字面去推翻它。
+  **它同样不挡「重启」**(2026-08-07 查 tauri 2.11.5 源码确认):`app.restart()` 从非主线程
+  调用时走 `request_exit(RESTART_EXIT_CODE)`,code 也是 `Some`。两条重启路径
+  (macOS 的 `app.exit(0)`、Windows 的 `restart()`)都退得出去,不必担心与防退出打架。
   macOS 托盘用 template image(`icons/tray-template.png`,单色只吃 alpha);图标加载失败
   只记日志不拦托盘——没有托盘就彻底没入口了。
 - **通知只在有实际动作时发**(更新成功或失败),纯"已最新/全部跳过"的例行轮次不打扰;
