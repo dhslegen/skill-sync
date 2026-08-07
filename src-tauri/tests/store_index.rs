@@ -138,6 +138,44 @@ async fn unchanged_sha_serves_cache_without_downloading_again() {
     );
 }
 
+/// **旧版本用最新 head 建的缓存必须被丢弃重建**(2026-08-07 真机踩到的缺陷)。
+///
+/// 场景:库里先提交了 authors.json,用户机器上**还没升级的旧版本**照常刷新,
+/// 用最新 head 写下一份**没有归因字段**的缓存;之后新版本装上,`refresh_index`
+/// 只比 `commit_sha == head.sha`,判定"缓存还新鲜"→ 永远命中那份缺字段的缓存
+/// → 作者栏永不出现。手动「重新获取」能出来,正说明数据与解析都没问题、缓存挡着。
+///
+/// 判据不是"数据会不会变",而是"**建这份缓存的代码有没有解析它的能力**"
+/// ——head 只反映数据新鲜度。因此往索引里加压缩包解析出来的新字段,
+/// **必须同时升 `INDEX_SCHEMA_VERSION`**。
+#[tokio::test]
+async fn a_cache_written_by_an_older_app_is_rebuilt_even_when_the_sha_matches() {
+    let server = MockServer::start().await;
+    mount_branch(&server, "aaa1111").await;
+    mount_archive(&server, &slugs(3)).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
+
+    // 先正常建一次缓存,再把它改成"上一个版本写的"——head 保持最新
+    refresh(&server, &cache, false).await;
+    let mut stale: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cache).unwrap()).unwrap();
+    stale["schemaVersion"] = serde_json::json!(store::INDEX_SCHEMA_VERSION - 1);
+    std::fs::write(&cache, serde_json::to_string(&stale).unwrap()).unwrap();
+    let hits_before = archive_hits(&server).await;
+
+    let (index, outcome) = refresh(&server, &cache, false).await;
+
+    assert!(!outcome.from_cache, "旧版本写的缓存不能因为 sha 相同就复用");
+    assert_eq!(archive_hits(&server).await, hits_before + 1, "必须重新下载压缩包重建");
+    assert_eq!(index.skills.len(), 3);
+    assert_eq!(
+        store::load_cache(&cache).unwrap().schema_version,
+        store::INDEX_SCHEMA_VERSION,
+        "重建后缓存要落成当前版本,否则每次启动都白下载一遍"
+    );
+}
+
 #[tokio::test]
 async fn changed_sha_refetches_and_replaces_the_cache() {
     let server = MockServer::start().await;

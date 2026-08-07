@@ -33,7 +33,16 @@ use crate::core::skills::{self, DiscoverOptions, SkillTree};
 use crate::error::AppError;
 
 /// 索引缓存的结构版本。缓存是可丢弃的派生数据,版本不符即重建,不做迁移。
-pub const INDEX_SCHEMA_VERSION: u32 = 2;
+///
+/// **加"从压缩包里解析出来的新字段"时必须升它**,哪怕该字段的数据源改动必然
+/// 伴随库提交。判据不是"数据会不会变",而是"**建这份缓存的代码有没有解析它的能力**"
+/// ——`refresh_index` 只比 `commit_sha == head.sha`,而 head 只反映数据新鲜度。
+/// 3 = M7 的 `attribution`(2026-08-07 真机踩到:authors.json 先提交进库,
+/// 还没升级的旧版本用**最新 head** 建了一份没有归因的缓存;新版本装上后
+/// head 比对相同 → 永远命中那份缺字段的缓存 → 作者栏永不出现,
+/// 而"重新获取"能出来正说明数据与解析都没问题、只是缓存挡着)。
+/// 2 = 逐技能内容指纹(同一个道理,当时的记载是"旧缓存没有指纹,判定会退化成未知")。
+pub const INDEX_SCHEMA_VERSION: u32 = 3;
 
 // ============================================================ 缓存结构
 
@@ -959,6 +968,44 @@ mod tests {
         let path = cache_path(tmp.path(), "company", &repo());
         std::fs::write(&path, "{ 这不是 json").unwrap();
         assert!(load_cache(&path).is_none(), "损坏的索引必须当作没有缓存,而不是报错锁死商店");
+    }
+
+    /// **加字段就要在这里撞一次墙**——这道门存在的唯一目的是把"往缓存里加了
+    /// 新字段"和"要不要升 `INDEX_SCHEMA_VERSION`"这两件事绑在一起。
+    ///
+    /// 2026-08-07 的真机缺陷:M7 给 `IndexedSkill` 加了 `attribution`,却按
+    /// "authors.json 改动必伴随库提交、head 一变缓存即重建"的推理**没有升版本**。
+    /// 那条推理漏了一种情况——**旧版本用最新 head 建了缓存**:head 是新的,
+    /// 但写它的代码不认识 authors.json。新版本装上后 head 比对相同,
+    /// 于是永远命中那份缺字段的缓存,作者栏永不出现。
+    /// 判据不是"数据会不会变",而是"**建缓存的代码有没有解析它的能力**"。
+    ///
+    /// 这条断言红了说明你刚动了缓存的结构:**先判断要不要升版本**,再改这份键清单。
+    /// 断言键的**完整集合**而不是"某个键存在"——后者放过新增字段,等于空转
+    /// (CLAUDE.md 空转测试模式 #2)。
+    #[test]
+    fn changing_the_cached_skill_shape_forces_a_version_decision() {
+        let index = build_index("company", &repo(), &head("abc"), &archive_with(&["a"]), 0);
+        let json = serde_json::to_value(&index.skills[0]).unwrap();
+        let mut keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "attribution",
+                "contentHash",
+                "description",
+                "dirSlug",
+                "files",
+                "hasScripts",
+                "name",
+                "path",
+                "skillMd",
+                "tags",
+            ],
+            "缓存里每个技能的字段集合变了 —— 先决定 INDEX_SCHEMA_VERSION 要不要升(见它的文档注释),再更新这份清单"
+        );
+        assert_eq!(INDEX_SCHEMA_VERSION, 3, "升过版本就同步这里,让下一个人看到当前值");
     }
 
     #[test]
