@@ -190,10 +190,13 @@ pub fn run() {
         // 窗口全部隐藏/关闭也不退出——托盘常驻;只有显式 app.exit(托盘「退出」)才走
         .run(|_app, event| {
             match event {
-                tauri::RunEvent::ExitRequested { api, code, .. } => {
-                    if code.is_none() {
-                        api.prevent_exit();
-                    }
+                // `code: None` 直接写进模式:只有"没给退出码"的那种退出请求才拦
+                // (关窗、点红叉)。`app.exit(0)` 与 restart 都带 Some,不受影响
+                // ——见 CLAUDE.md「托盘与退出」。写成 `if code.is_none()` 的话,
+                // Windows 上 clippy 会报 collapsible_match(那边没有 Reopen 分支,
+                // match 形状不同),而 macOS 本地是绿的,只有 CI 拦得住。
+                tauri::RunEvent::ExitRequested { api, code: None, .. } => {
+                    api.prevent_exit();
                 }
                 // **点程序坞图标要能把窗口叫回来**(2026-08-07 用户提)。
                 // macOS 上关窗只是隐藏、应用仍在程序坞里,系统此时发的是

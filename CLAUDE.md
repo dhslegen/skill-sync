@@ -54,6 +54,13 @@ eslint 也不管,只有 `tsc` 会拦。M2 任务 6 就因为只跑了 test+lint,
 **clippy 必带 `--all-targets`**(M4 任务 1 起):不带它**只查 lib**,`tests/` 下的
 集成测试一行都不过 clippy。M1–M3 全程漏查,攒下三处告警(两个未用导入 + 一处文档缩进)
 一直没人发现——测试代码也是代码,同一把尺子量。
+(ci.yml 的 clippy 直到 M8 任务 3 才补上 `--all-targets`,此前 CI 侧一直只查 lib。)
+
+⚠️ **本机 clippy 绿 ≠ 另一个平台绿**(M8 任务 3 实测):有 `#[cfg(target_os = ...)]`
+分支时,两个平台看到的代码形状不同,lint 结论也可能不同。真撞过一次:
+`RunEvent` 的 match 在 macOS 上多一条 `Reopen` 分支,Windows 上没有,于是同一段
+`if code.is_none()` 只在 Windows 触发 `collapsible_match`——**本地怎么跑都是绿的,
+只有 CI 的 windows job 拦得住**。动带 cfg 的代码后,别把本地绿当成过关。
 
 ## 目录结构
 
