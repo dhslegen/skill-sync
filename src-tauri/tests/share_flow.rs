@@ -378,6 +378,147 @@ async fn fresh_share_pushes_creates_and_records_the_books() {
     assert_eq!(state.shared[0].content_hash, fsops::dir_content_hash(&dir).unwrap());
 }
 
+// ============================================================ 归因维护(M7 任务 5)
+
+async fn mount_current_user(server: &MockServer) {
+    // full_name 优先于 login 的口径靠这份 fixture 钉住:两个字段故意不同值
+    Mock::given(method("GET"))
+        .and(path("/api/v1/user"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "login": "lisi", "full_name": "李四"
+        })))
+        .mount(server)
+        .await;
+}
+
+async fn mount_authors_json(server: &MockServer, existing: Option<&str>) {
+    use base64::Engine;
+    let m = Mock::given(method("GET")).and(path("/api/v1/repos/skills/skills/contents/authors.json"));
+    match existing {
+        Some(text) => {
+            m.respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "sha": "authsha",
+                "encoding": "base64",
+                "content": base64::engine::general_purpose::STANDARD.encode(text)
+            })))
+            .mount(server)
+            .await;
+        }
+        None => {
+            m.respond_with(
+                ResponseTemplate::new(404)
+                    .set_body_json(serde_json::json!({"message": "GetContentsOrList"})),
+            )
+            .mount(server)
+            .await;
+        }
+    }
+}
+
+/// 从提交请求体里挑出 authors.json 那个条目并解码内容。
+fn authors_change(body: &serde_json::Value) -> Option<(String, serde_json::Value)> {
+    use base64::Engine;
+    let f = body["files"].as_array()?.iter().find(|f| f["path"] == "authors.json")?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(f["content"].as_str()?)
+        .unwrap();
+    let doc = serde_json::from_slice(&bytes).unwrap();
+    Some((f["operation"].as_str().unwrap().to_string(), doc))
+}
+
+/// M7 任务 5:归因跟着分享动作走——条目已存在时分享者进 contributors,author 一个字不动,
+/// 其余条目原样保住;修订与技能文件在**同一笔提交**里。
+#[tokio::test]
+async fn share_appends_sharer_as_contributor_in_the_same_commit() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "我的笔记", "记点东西");
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", false).await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    mount_current_user(&server).await;
+    mount_authors_json(
+        &server,
+        Some(r#"{"authors":{"other-skill":{"author":"张三"},"my-notes":{"author":"张三"}}}"#),
+    )
+    .await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+        .await
+        .unwrap();
+
+    let reqs = server.received_requests().await.unwrap();
+    let posted: Vec<_> = reqs.iter().filter(|r| r.method.as_str() == "POST").collect();
+    assert_eq!(posted.len(), 1, "归因修订必须在同一笔提交里,不另发请求");
+    let body: serde_json::Value = serde_json::from_slice(&posted[0].body).unwrap();
+    let (op, doc) = authors_change(&body).expect("提交里必须带 authors.json");
+    assert_eq!(op, "update");
+    // author 一个字不动;分享者(full_name 优先,不是 login)进 contributors
+    assert_eq!(doc["authors"]["my-notes"]["author"], "张三");
+    assert_eq!(doc["authors"]["my-notes"]["contributors"][0], "李四");
+    // 其他条目原样保住
+    assert_eq!(doc["authors"]["other-skill"]["author"], "张三");
+}
+
+/// 库里还没有 authors.json:新增分享创建它,author = 分享者。
+#[tokio::test]
+async fn share_creates_authors_json_when_library_has_none() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "我的笔记", "记点东西");
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", false).await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    mount_current_user(&server).await;
+    mount_authors_json(&server, None).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+        .await
+        .unwrap();
+
+    let reqs = server.received_requests().await.unwrap();
+    let posted: Vec<_> = reqs.iter().filter(|r| r.method.as_str() == "POST").collect();
+    let body: serde_json::Value = serde_json::from_slice(&posted[0].body).unwrap();
+    let (op, doc) = authors_change(&body).expect("提交里必须带 authors.json");
+    assert_eq!(op, "create");
+    assert_eq!(doc["authors"]["my-notes"]["author"], "李四");
+}
+
+/// 归因是锦上添花:身份/文件读不到(此处连 /user 都没 mock,404)绝不拦分享,
+/// 提交里也不夹带半个 authors.json。上面 fresh 用例的 files.len()==2 断言
+/// 是这条纪律的另一道护栏。
+#[tokio::test]
+async fn attribution_failure_never_blocks_the_share() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "我的笔记", "记点东西");
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", false).await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, ShareOutcome::Shared { .. }));
+
+    let reqs = server.received_requests().await.unwrap();
+    let posted: Vec<_> = reqs.iter().filter(|r| r.method.as_str() == "POST").collect();
+    let body: serde_json::Value = serde_json::from_slice(&posted[0].body).unwrap();
+    assert!(authors_change(&body).is_none(), "拿不到身份就不该动 authors.json");
+}
+
 /// 分享的闭环(M6 任务 5):直推进库之后,这个技能就该像库里其他技能一样被管起来
 /// ——否则它永远停在「其他工具装的 / 本地创建」那一档,界面一直劝你"分享到技能库",
 /// 而你已经分享过了。

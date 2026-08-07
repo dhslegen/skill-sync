@@ -91,6 +91,7 @@ keyring = { version = "4.1.5", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+base64 = "0.23.0"
 tempfile = "3.24.0"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "test-util"] }
 toml = "1.1.4"

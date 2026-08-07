@@ -666,17 +666,148 @@ async fn submit(
                     .map(|f| (f.path, f.sha))
                     .collect()
             };
-            let changes = files
+            let mut changes: Vec<FileChange> = files
                 .into_iter()
                 .map(|(path, bytes)| match remote_shas.get(&path) {
                     Some(sha) => FileChange::update(path.clone(), &bytes, sha.clone()),
                     None => FileChange::create(path.clone(), &bytes),
                 })
                 .collect();
+            // M7 任务 5:归因跟着分享动作走。在这里(三条路分流之前)追加,
+            // 直推/开分支/fork 提交里天然都带上;authors.json 在库根,
+            // 不会与上面按 prefix 过滤的技能文件撞路径。GitHub 臂刻意不做
+            // ——authors.json 是公司库契约,GitHub 源本来就不展示归因。
+            if let Some(fc) = attribution_file_change(c, repo, share_name).await {
+                changes.push(fc);
+            }
             submit_gitea(c, repo, force_review, changes, message, share_name, now).await
         }
         ShareClient::Github(c) => {
             submit_github(c, repo, force_review, files, message, share_name, now).await
+        }
+    }
+}
+
+// ============================================================ 归因维护(M7 任务 5)
+
+/// 归因修订的三种结果。`Untouchable` = 文件在但形状不对,**一个字节都不动**
+/// ——重建会抹掉其他条目,修复交给管理员(scripts/gen-authors.mjs 或手改)。
+#[derive(Debug, PartialEq, Eq)]
+enum AttributionUpsert {
+    Unchanged,
+    Updated(String),
+    Untouchable(&'static str),
+}
+
+/// 对库根 authors.json 做归因 upsert(纯逻辑,喂现值、吐新文本)。
+///
+/// 规则(M7 任务 5,用户拍板;与 store::parse_authors 的宽容读取是同一契约的两端):
+/// - 条目不存在 → `author` = 分享者:"新增分享的那一刻"是"谁的技能"最真实的时刻;
+/// - **条目已存在绝不改 author**:分享者非 author 且不在 contributors → 追加进
+///   contributors(覆盖他人技能、回推改动都是这一档);已是 author / 已在列表 → 不动;
+/// - 文件坏 JSON、顶层/authors/条目/contributors 形状不对 → `Untouchable`;
+///   条目缺 author 同理——App 不猜残缺数据的语义,不动它。
+///
+/// serde_json 开着 preserve_order:其余条目与键序原样保住,diff 只有这一处。
+fn upsert_attribution(existing: Option<&str>, dir_slug: &str, sharer: &str) -> AttributionUpsert {
+    use serde_json::{json, Map, Value};
+    let mut doc: Value = match existing {
+        None => json!({ "authors": {} }),
+        Some(text) => match serde_json::from_str(text) {
+            Ok(v) => v,
+            Err(_) => return AttributionUpsert::Untouchable("authors.json 不是合法 JSON"),
+        },
+    };
+    let Some(root) = doc.as_object_mut() else {
+        return AttributionUpsert::Untouchable("authors.json 顶层不是对象");
+    };
+    let authors = root
+        .entry("authors")
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Some(map) = authors.as_object_mut() else {
+        return AttributionUpsert::Untouchable("authors 字段不是对象");
+    };
+    match map.get_mut(dir_slug) {
+        None => {
+            map.insert(dir_slug.to_string(), json!({ "author": sharer }));
+        }
+        Some(entry) => {
+            let Some(obj) = entry.as_object_mut() else {
+                return AttributionUpsert::Untouchable("该技能的归因条目不是对象");
+            };
+            match obj.get("author").and_then(|v| v.as_str()) {
+                None => return AttributionUpsert::Untouchable("该技能的归因条目缺 author"),
+                Some(author) if author == sharer => return AttributionUpsert::Unchanged,
+                Some(_) => {
+                    let contributors = obj
+                        .entry("contributors")
+                        .or_insert_with(|| Value::Array(Vec::new()));
+                    let Some(arr) = contributors.as_array_mut() else {
+                        return AttributionUpsert::Untouchable("contributors 不是数组");
+                    };
+                    if arr.iter().any(|v| v.as_str() == Some(sharer)) {
+                        return AttributionUpsert::Unchanged;
+                    }
+                    arr.push(Value::String(sharer.to_string()));
+                }
+            }
+        }
+    }
+    match serde_json::to_string_pretty(&doc) {
+        // 尾随换行与 scripts/gen-authors.mjs 的产出一致,两种维护方式不打无谓的格式仗
+        Ok(text) => AttributionUpsert::Updated(format!("{text}\n")),
+        Err(_) => AttributionUpsert::Untouchable("序列化失败"),
+    }
+}
+
+/// 取分享者展示名 + 库根 authors.json 现值,算出要并进本次提交的归因修订。
+///
+/// **任何一步失败都返回 None(跳过维护),绝不拦分享**——归因是锦上添花,
+/// 分享才是用户此刻要办的事。走评审的路径下这个 FileChange 与技能文件在同一分支里,
+/// 合并才一起进 main,不会给未合并的分享提前记账。
+/// fork 路径的 blob sha 取自上游:fork 是即时全量副本,同一文件的 blob sha 相同。
+async fn attribution_file_change(
+    client: &GiteaClient,
+    repo: &RepoRef,
+    dir_slug: &str,
+) -> Option<FileChange> {
+    const AUTHORS_FILE: &str = "authors.json";
+    let user = match client.current_user().await {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!(code = %e.code, "取不到分享者身份,本次跳过归因维护");
+            return None;
+        }
+    };
+    // 展示名口径(用户拍板):full_name 优先,空则 login
+    let sharer = if user.full_name.trim().is_empty() { user.login } else { user.full_name };
+    let existing = match client.file_content(repo, AUTHORS_FILE).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(code = %e.code, "读不到库根 authors.json,本次跳过归因维护");
+            return None;
+        }
+    };
+    match existing {
+        None => match upsert_attribution(None, dir_slug, &sharer) {
+            AttributionUpsert::Updated(text) => Some(FileChange::create(AUTHORS_FILE, text.as_bytes())),
+            _ => None,
+        },
+        Some((sha, bytes)) => {
+            let Ok(text) = std::str::from_utf8(&bytes) else {
+                tracing::warn!("authors.json 不是 UTF-8,不动它");
+                return None;
+            };
+            match upsert_attribution(Some(text), dir_slug, &sharer) {
+                AttributionUpsert::Updated(next) => {
+                    Some(FileChange::update(AUTHORS_FILE, next.as_bytes(), sha))
+                }
+                AttributionUpsert::Unchanged => None,
+                AttributionUpsert::Untouchable(reason) => {
+                    tracing::warn!(reason, "authors.json 形状不对,本次跳过归因维护");
+                    None
+                }
+            }
         }
     }
 }
@@ -974,5 +1105,103 @@ fn yaml_scalar(s: &str) -> String {
         format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{upsert_attribution, AttributionUpsert};
+
+    fn updated(r: AttributionUpsert) -> String {
+        match r {
+            AttributionUpsert::Updated(text) => text,
+            other => panic!("预期 Updated,实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn upsert_creates_document_when_repo_has_no_authors_json() {
+        let text = updated(upsert_attribution(None, "weekly-report", "张三"));
+        let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(doc["authors"]["weekly-report"]["author"], "张三");
+        // 与 gen-authors.mjs 的产出一致:尾随换行
+        assert!(text.ends_with('\n'));
+    }
+
+    #[test]
+    fn upsert_appends_new_entry_and_preserves_existing_ones_verbatim() {
+        let existing = r#"{
+  "$comment": "管理员手写的注释要原样保住",
+  "authors": {
+    "zulu-first": { "author": "王五" },
+    "alpha-second": { "author": "李四", "contributors": ["赵六"] }
+  }
+}"#;
+        let text = updated(upsert_attribution(Some(existing), "weekly-report", "张三"));
+        let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(doc["$comment"], "管理员手写的注释要原样保住");
+        assert_eq!(doc["authors"]["zulu-first"]["author"], "王五");
+        assert_eq!(doc["authors"]["alpha-second"]["contributors"][0], "赵六");
+        assert_eq!(doc["authors"]["weekly-report"]["author"], "张三");
+        // preserve_order:原有键序不得被重排成字母序(zulu 在 alpha 前面)
+        let zulu = text.find("zulu-first").unwrap();
+        let alpha = text.find("alpha-second").unwrap();
+        assert!(zulu < alpha, "键序被重排了");
+    }
+
+    #[test]
+    fn upsert_never_rewrites_author_of_existing_entry() {
+        // 覆盖他人技能/回推他人技能:分享者进 contributors,author 一个字不动
+        let existing = r#"{"authors":{"weekly-report":{"author":"张三"}}}"#;
+        let text = updated(upsert_attribution(Some(existing), "weekly-report", "李四"));
+        let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(doc["authors"]["weekly-report"]["author"], "张三");
+        assert_eq!(doc["authors"]["weekly-report"]["contributors"][0], "李四");
+    }
+
+    #[test]
+    fn upsert_is_a_no_op_for_author_or_known_contributor() {
+        let existing = r#"{"authors":{"weekly-report":{"author":"张三","contributors":["李四"]}}}"#;
+        assert_eq!(
+            upsert_attribution(Some(existing), "weekly-report", "张三"),
+            AttributionUpsert::Unchanged
+        );
+        assert_eq!(
+            upsert_attribution(Some(existing), "weekly-report", "李四"),
+            AttributionUpsert::Unchanged
+        );
+    }
+
+    #[test]
+    fn upsert_refuses_to_touch_malformed_files_or_entries() {
+        // 坏 JSON:重建会抹掉其他条目,一个字节都不动
+        assert!(matches!(
+            upsert_attribution(Some("{not json"), "s", "张三"),
+            AttributionUpsert::Untouchable(_)
+        ));
+        // 顶层不是对象
+        assert!(matches!(
+            upsert_attribution(Some("[]"), "s", "张三"),
+            AttributionUpsert::Untouchable(_)
+        ));
+        // authors 不是对象
+        assert!(matches!(
+            upsert_attribution(Some(r#"{"authors":"nope"}"#), "s", "张三"),
+            AttributionUpsert::Untouchable(_)
+        ));
+        // 条目缺 author:残缺数据的语义不猜
+        assert!(matches!(
+            upsert_attribution(Some(r#"{"authors":{"s":{"contributors":["x"]}}}"#), "s", "张三"),
+            AttributionUpsert::Untouchable(_)
+        ));
+        // contributors 不是数组
+        assert!(matches!(
+            upsert_attribution(
+                Some(r#"{"authors":{"s":{"author":"别人","contributors":"nope"}}}"#),
+                "s",
+                "张三"
+            ),
+            AttributionUpsert::Untouchable(_)
+        ));
     }
 }

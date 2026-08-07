@@ -297,8 +297,9 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 **M7 = 作者/贡献者展示**(M6 候选三,方案在拍板过程中被用户推翻两次,终稿是
 tags/curated 同款的库侧静态文件,分解在 docs/M7-任务分解.md,只在本地):
 任务 1 parse_authors 进索引 → 任务 2 卡片/详情展示(全离线)→ 任务 3 gen-authors
-脚本 + 部署指南 §5 契约 → 任务 4 本节与 README 的承诺同步。细节见「关键事实」
-的作者条目与 git log。
+脚本 + 部署指南 §5 契约 → 任务 4 本节与 README 的承诺同步 → 任务 5(追加拍板)
+分享链路自动维护 authors.json(起因:git 历史把代传技能都算到上传者头上,
+"谁分享的"比"谁提交的"更接近真相)。细节见「关键事实」的作者条目与 git log。
 
 **M1–M6 全部完成并提交**(M6 分解与拍板见 docs/M6-任务分解.md;任务 4/5 中途被用户
 推翻重做过,经过在 git log)。
@@ -325,7 +326,7 @@ M5 任务 3 要点:技能库根 `tags.json`(`{"tags":{"<dirSlug>":["标签",…]
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 456 + 前端 408 测试通过(M7 起),clippy(**--all-targets**)/eslint/tsc 干净,
+- 本机:Rust 464 + 前端 408 测试通过(M7 起),clippy(**--all-targets**)/eslint/tsc 干净,
   `pnpm dev` 启动冒烟通过(带内网配置实测:商店读到真实库 30 个技能)
 - **双平台 CI**:**M4 任务 1 的两笔(`3857720` / `a7a1de3`)macOS + Windows 双 job 全绿**(2026-08-04 逐 job 实测);
   M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;`de7b233`/`2eb0595` 当时因账号计费
@@ -590,9 +591,15 @@ M6 的契约变更:新增事件 `app-update://ready`(载荷为版本号;探测�
   又撑不住首屏 <2s——M7 的解法是 tags.json 同款的库侧静态文件
   (`scripts/gen-authors.mjs` 从 git 历史生成:作者 = 最早提交人,贡献者 = 其余提交人
   按次数降序),App 只读展示、**零新增请求**,旧缓存 serde default 补 None 不升缓存版本。
-  没有条目整栏不摆(卡片与详情都是)——仍然**不编造**。库侧自动化基线是管理员手动/
-  定期跑脚本;Actions 模板在部署指南 §5,但内网技能库仓库级 runner 实测为 0,
-  **没确认有 runner 前别把维护押在 Actions 上**(会静默排队,又一个"从没生效过")。
+  没有条目整栏不摆(卡片与详情都是)——仍然**不编造**。
+  **归因由分享链路自动维护**(M7 任务 5,`share.rs` 的 `attribution_file_change` /
+  `upsert_attribution`):新增分享记分享者为 author(展示名 full_name 优先、空则 login,
+  用户拍板),更新/覆盖他人技能追加进 contributors;**已有条目的 author 绝不改写**;
+  修订与技能文件在**同一笔提交**里,走评审随分支合并才生效;身份/文件读不到、
+  文件形状不对 → 跳过维护**绝不拦分享**(锦上添花不挡正事)。GitHub 臂刻意不做。
+  ⚠️ gen-authors.mjs 是**一次性引导/修复工具**:按 git 历史整份重算,会把代传技能
+  算到上传者头上、冲掉 App 维护的语义数据——产出须人工核对,App 接管后别定期跑
+  (最初设想的 Actions/cron 自动化已废弃,理由之一:内网技能库 runner 实测为 0)。
   安装量仍没有(C5 预留,埋点服务落点未定)。
 - **UI-Demo 的分类 chip 换成了"全部/未安装/已安装"**:SKILL.md 里没有分类字段,
   硬造分类等于在界面上撒谎。要分类得技能库侧先约定 frontmatter 字段。

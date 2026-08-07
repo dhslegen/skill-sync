@@ -435,6 +435,50 @@ impl GiteaClient {
         Ok(Some(content.sha))
     }
 
+    /// 读单个文件的内容与 blob sha(contents API)。404 → None。
+    ///
+    /// M7 任务 5:分享时要拿库根 authors.json 的现值做归因修订——
+    /// `tree_files` 只给 sha 不给内容,`download_archive` 又是整库 zip,按单文件取最省。
+    pub async fn file_content(
+        &self,
+        r: &RepoRef,
+        path: &str,
+    ) -> Result<Option<(String, Vec<u8>)>, AppError> {
+        #[derive(Deserialize)]
+        struct Content {
+            sha: String,
+            #[serde(default)]
+            content: String,
+            #[serde(default)]
+            encoding: String,
+        }
+        let url = self.api(&format!(
+            "/repos/{}/{}/contents/{}?ref={}",
+            r.owner, r.repo, path, r.branch
+        ));
+        let resp = self
+            .http_send(self.request(reqwest::Method::GET, url))
+            .await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let resp = check_status(resp).await?;
+        let content: Content = parse_json(resp).await?;
+        if content.encoding != "base64" {
+            return Err(AppError::new("REPO_BAD_RESPONSE", "技能库返回了无法识别的文件编码")
+                .with_detail(format!("encoding={}", content.encoding)));
+        }
+        // Gitea 的 base64 带换行分段,解码前先剥掉空白
+        let compact: String = content.content.chars().filter(|c| !c.is_whitespace()).collect();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(compact.as_bytes())
+            .map_err(|e| {
+                AppError::new("REPO_BAD_RESPONSE", "技能库返回的文件内容无法解码")
+                    .with_detail(e.to_string())
+            })?;
+        Ok(Some((content.sha, bytes)))
+    }
+
     /// 多文件单次提交。`new_branch` 非空时会先开分支——走提交审核的路径。
     pub async fn change_files(
         &self,
