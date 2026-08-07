@@ -219,6 +219,23 @@ if [[ -n "$WIN_EXE" ]]; then
   curl -sSfI "$WIN_URL" >/dev/null || { echo "❌ Windows 包下载地址不可达:$WIN_URL" >&2; exit 1; }
 fi
 
+# ---------- 清理公开 CI 上的 artifact(2026-08-07 用户拍板)----------
+# 分发实际走内网发布仓,GitHub 上那份副本没有任何人用,却带着编译进去的内网配置
+# 在公开仓挂 90 天(删 tag **不会**删 artifact,要按 artifact id 逐个删)。
+# 放在全部成功之后:中途任何失败 artifact 都还在,便于排查与重跑。
+# 删不掉只警告——发版已经成功了,清理失败不该让脚本以非零退出吓人。
+if [[ -n "${RUN_ID:-}" ]]; then
+  echo "==> 清理 GitHub CI artifact(run $RUN_ID)"
+  for AID in $(gh api "repos/dhslegen/skill-sync/actions/runs/$RUN_ID/artifacts" \
+                 -q '.artifacts[].id' 2>/dev/null || true); do
+    if gh api -X DELETE "repos/dhslegen/skill-sync/actions/artifacts/$AID" >/dev/null 2>&1; then
+      echo "   已删 artifact $AID"
+    else
+      echo "   ⚠️ artifact $AID 删除失败,手动清理:gh api -X DELETE repos/dhslegen/skill-sync/actions/artifacts/$AID" >&2
+    fi
+  done
+fi
+
 echo
 echo "✅ v$VERSION 发布完成"
 echo "   新用户安装包:$GITEA/skills/skillsync-releases/releases  (发 dmg / x64-setup.exe 链接到内网群即可)"
