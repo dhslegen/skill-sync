@@ -52,7 +52,11 @@ jobs:
         run: pnpm build:web
 
       - name: Rust clippy
-        run: cargo clippy --workspace -- -D warnings
+        # --all-targets 必带:不带它**只查 lib**,tests/ 下的集成测试一行都不过 clippy
+        # (CLAUDE.md 的本地纪律早就要求带,这里一直漏了)。
+        # 对 `#![cfg(windows)]` 的测试尤其要命——那种文件在 macOS 上根本不编译,
+        # CI 是唯一能检查它的地方,而这道闸恰好把它跳过了。
+        run: cargo clippy --workspace --all-targets -- -D warnings
         working-directory: src-tauri
 
       - name: Rust 测试
