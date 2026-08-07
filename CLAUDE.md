@@ -31,8 +31,10 @@
 ```
 pnpm dev            # tauri dev
 pnpm build          # tauri build(无签名变量时产出未签名包,仅内部测试)
-./scripts/publish-release.sh 0.2.3   # **发版就跑它**:改版本号→构建签名公证→打 dmg
-                                     # →传内网发布仓→更新 latest 公告牌→验收(见「发版」一节)
+./scripts/publish-release.sh 0.2.3   # **发版就跑它**:改版本号→commit+tag+push(触发
+                                     # GitHub CI 出 Windows 包)→本地构建 macOS 签名公证
+                                     # →打 dmg→等 CI 下载 exe 补签→传内网发布仓
+                                     # →更新三平台 latest 公告牌→验收(见「发版」一节)
 ./scripts/build-release.sh   # 只出包不发布(publish-release.sh 内部调它);强校验编译期内网配置
 pnpm test           # 前端 vitest
 cargo test --workspace   # Rust 单测(在 src-tauri/ 下)
@@ -742,9 +744,10 @@ M7 的契约变更:`StoreSkillCard` 新增 `author`(`string | null`)、`SkillDet
 **只能在真机/真实环境验的**
 > ⚠️ 下面前三条(Windows 真机 / cfg(unix) 测试 / Windows GUI)**已归入 M8**,
 > 见 docs/M8-任务分解.md 任务 3;它们欠的不是代码,是一台 x64 Windows 机器。
-> Windows 发布链路本身还缺两块:`latest.json` **没有 `windows-x86_64` 条目**
-> (Windows 用户装上后收不到自更新,v0.1.0/v0.2.0 的坑不能重演)、
-> `publish-release.sh` 全是 macOS 路径。
+> Windows 发布链路两个缺口(latest.json 无 windows 条目、发版脚本只发 macOS)
+> **已于 M8 任务 1-2 补齐**(2026-08-07):CI 出 exe → 本地补签 → 三平台公告牌,
+> 守卫在 `bundle_config.rs::publish_script_feeds_all_three_platforms`;
+> **但还没真发过一版 Windows**,首个含 windows 条目的版本发出后此句才可删。
 
 - **Windows 普通权限真机**(任务 6 欠的最后一档):CI 已验 Windows runner 上 junction
   建链/摘链真实通过,且断言"必须是 junction 而不是 symlink"(C11 的提权假阳性有护栏);
@@ -774,8 +777,12 @@ M7 的契约变更:`StoreSkillCard` 新增 `author`(`string | null`)、`SkillDet
 `skills/skillsync-releases` 的固定 `latest` 标签(URL 因此恒定)。
 
 **发版 = `./scripts/publish-release.sh <版本号>`**(完整环境变量与一次性准备见
-部署指南 §7.4)。它包办:改三处版本号 → 构建(签名+公证)→ 打 dmg → 建版本 release
-传三个产物 → 重建 latest 公告牌 → curl 验收。跑完 `git commit` 版本号改动即可。
+部署指南 §7.4)。它包办:改三处版本号 → **commit + tag + push**(tag 触发 GitHub CI
+出 Windows 包,与本地构建并行;版本号必须先进 tag,这步没法留给人)→ 本地构建
+macOS(签名+公证)→ 打 dmg → 等 CI → 下载 exe 本地补签(私钥不进公开 CI)→
+建版本 release 传五个产物 → 重建**三平台** latest 公告牌 → curl 验收。
+版本号 commit 已由脚本推送,跑完不用再手动 commit。应急开关 `SKIP_WINDOWS=1`
+只发 macOS(公告牌将没有 windows 条目,Windows 用户收不到那版更新)。
 
 **已实测的发布终态**(2026-08-06):发布仓有 v0.2.1/v0.2.2,latest 公告牌指向 0.2.2;
 **自更新端到端第一次真跑通**——0.2.1 检出 0.2.2 → 下载验签安装 → 重启后版本变了

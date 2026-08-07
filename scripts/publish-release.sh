@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# SkillSync 一条命令发版:改版本号 → 构建(签名+公证)→ 打 dmg → 传内网 Gitea 发布仓
-#                        → 更新 latest.json(老用户的 app 由此收到自动更新)。
+# SkillSync 一条命令发版:改版本号 → commit+tag+push(触发 GitHub CI 出 Windows 包)
+#                        → 本地构建 macOS(签名+公证)→ 打 dmg → 等 CI → 下载 exe 补签
+#                        → 全部产物传内网 Gitea 发布仓 → 更新 latest.json(三平台)。
 #
 # 用法:
 #   set -a; . fixtures/.env.gitea.local; . fixtures/.env.apple.local; . fixtures/.env.release.local; set +a
@@ -10,13 +11,25 @@
 #   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 #   ./scripts/publish-release.sh 0.2.0
 #
+#   应急开关 SKIP_WINDOWS=1:CI 不可用时只发 macOS。后果:公告牌没有 windows-x86_64
+#   条目,Windows 老用户查更新会一直"已最新",停在旧版——补发时用同流程发下一个版本号。
+#
+# Windows 段(M8 任务 2,2026-08-07 拍板「直接用公开 GitHub CI」):
+#   - 版本号 commit + tag v<版本> 由本脚本**自动推送**——CI checkout 的是 tag 指向的
+#     commit,版本号必须先进 tag,这一步没法留给人;与本地 macOS 构建并行,总时长不变。
+#   - CI 产物**没有 .sig**(minisign 私钥绝不进公开仓,见 release.yml guard 注释),
+#     exe 下载回本机后用 `pnpm tauri signer sign` 补签——私钥全程不离开这台机器。
+#   - 等 CI 放在内网 release 创建**之前**:CI 失败时内网零写入,修好重跑即可
+#     (版本号 commit 与 tag 已推也无妨,重跑会沿用)。
+#
 # 前置(一次性):
 #   - fixtures/.env.release.local 里放 SKILLSYNC_RELEASE_TOKEN=<内网 Gitea 个人访问令牌>
 #     (Gitea 右上角头像 → 设置 → 应用 → 生成令牌,勾 repository 读写;*.local 不进 git)
 #   - 内网 Gitea 建好发布仓 skills/skillsync-releases(勾"初始化仓库"即可,内容无所谓)
+#   - gh CLI 已登录 github.com(下载 CI artifact 用)
 #
 # 发布仓布局(每次发版后):
-#   release v0.2.0  ← dmg + tar.gz + sig(版本存档,tar.gz 是自动更新真正下载的东西)
+#   release v0.2.0  ← dmg + tar.gz + sig + x64-setup.exe + exe.sig(版本存档)
 #   release latest  ← latest.json(地址永远不变,app 编译时记的就是它)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -39,6 +52,14 @@ for var in SKILLSYNC_BUILTIN_GITEA_URL SKILLSYNC_OAUTH_CLIENT_ID SKILLSYNC_BUILT
   fi
 done
 [[ $fail -ne 0 ]] && exit 1
+
+SKIP_WINDOWS="${SKIP_WINDOWS:-}"
+if [[ -z "$SKIP_WINDOWS" ]]; then
+  command -v gh >/dev/null 2>&1 || {
+    echo "❌ 缺 gh CLI(Windows 包要从 GitHub CI 下载);应急可 SKIP_WINDOWS=1 只发 macOS" >&2
+    exit 1
+  }
+fi
 
 GITEA="${SKILLSYNC_BUILTIN_GITEA_URL%/}"
 REPO_API="$GITEA/api/v1/repos/skills/skillsync-releases"
@@ -77,6 +98,16 @@ assert s2 != s or f'version = "{v}"' in s, "Cargo.toml 版本没改动"
 open(p, "w").write(s2)
 PYEOF
 
+# ---------- 提交版本号并打 tag:tag push 触发 release.yml 出 Windows 包,
+#            与下面的本地 macOS 构建并行(CI 6-10 分钟,mac 构建+公证更久)----------
+if [[ -z "$SKIP_WINDOWS" ]]; then
+  echo "==> 提交版本号并推 tag v$VERSION(触发 GitHub CI 构建 Windows 包)"
+  git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+  git diff --cached --quiet || git commit -m "发版 v$VERSION: 版本号三处对齐"
+  git tag "v$VERSION" 2>/dev/null || echo "   tag v$VERSION 已存在,沿用(重跑场景)"
+  git push origin HEAD "refs/tags/v$VERSION"
+fi
+
 # ---------- 构建(签名+公证)+ 打 dmg:沿用已打通的两步,坑都修在那两个脚本里 ----------
 echo "==> 构建 universal 包(约 5-10 分钟)"
 ./scripts/build-release.sh --target universal-apple-darwin --bundles app
@@ -90,28 +121,77 @@ for f in "$TARBALL" "$SIGFILE" "$DMG"; do
   [[ -f "$f" ]] || { echo "❌ 缺产物 $f" >&2; exit 1; }
 done
 
+# ---------- 等 CI 出 Windows 包并本地补签(放在内网 release 创建之前:
+#            CI 失败时内网零写入,修好重跑即可)----------
+WIN_EXE=""; WIN_SIG=""; WIN_URL=""
+if [[ -z "$SKIP_WINDOWS" ]]; then
+  echo "==> 等 GitHub CI 出 Windows 包(release.yml,通常 6-10 分钟)"
+  RUN_ID=""
+  for _ in $(seq 1 30); do
+    RUN_ID="$(gh run list --workflow=release.yml --json databaseId,headBranch \
+      -q "[.[] | select(.headBranch == \"v$VERSION\")][0].databaseId" 2>/dev/null || true)"
+    [[ -n "$RUN_ID" && "$RUN_ID" != "null" ]] && break
+    sleep 10
+  done
+  [[ -n "$RUN_ID" && "$RUN_ID" != "null" ]] || {
+    echo "❌ 等了 5 分钟没见到 tag v$VERSION 触发的 Release workflow——tag 推上去了吗?" >&2
+    exit 1
+  }
+  for _ in $(seq 1 60); do
+    [[ "$(gh run view "$RUN_ID" --json status -q .status)" == "completed" ]] && break
+    sleep 30
+  done
+  CONCLUSION="$(gh run view "$RUN_ID" --json conclusion -q .conclusion)"
+  [[ "$CONCLUSION" == "success" ]] || {
+    echo "❌ GitHub CI 构建失败或超时(run $RUN_ID,conclusion=$CONCLUSION)。" >&2
+    echo "   gh run view $RUN_ID --log-failed 看原因;应急:SKIP_WINDOWS=1 重跑只发 macOS" >&2
+    exit 1
+  }
+  WINDIR="$(mktemp -d)"
+  gh run download "$RUN_ID" -n skillsync-Windows -D "$WINDIR"
+  WIN_EXE="$WINDIR/SkillSync_${VERSION}_x64-setup.exe"
+  [[ -f "$WIN_EXE" ]] || {
+    echo "❌ CI artifact 里没有 SkillSync_${VERSION}_x64-setup.exe——tag 指向的版本号对不上?" >&2
+    exit 1
+  }
+  echo "==> 本地补签 Windows 包(私钥不进公开 CI,.sig 只能在这里出)"
+  pnpm tauri signer sign "$WIN_EXE" >/dev/null
+  WIN_SIG="$WIN_EXE.sig"
+  [[ -f "$WIN_SIG" ]] || { echo "❌ 补签没产出 $WIN_SIG" >&2; exit 1; }
+  WIN_URL="$GITEA/skills/skillsync-releases/releases/download/v$VERSION/SkillSync_${VERSION}_x64-setup.exe"
+fi
+
 # ---------- 传版本 release:dmg 给人装,tar.gz+sig 给自动更新下载 ----------
 echo "==> 创建 release v$VERSION 并上传产物"
 RELEASE_ID="$(api POST "/releases" -H "Content-Type: application/json" \
-  -d "{\"tag_name\":\"v$VERSION\",\"name\":\"SkillSync $VERSION\",\"body\":\"内部发布。新用户装 dmg;tar.gz 与 sig 是自动更新用的,不用手动下载。\"}" \
+  -d "{\"tag_name\":\"v$VERSION\",\"name\":\"SkillSync $VERSION\",\"body\":\"内部发布。macOS 装 dmg,Windows 装 x64-setup.exe;tar.gz 与 sig 是自动更新用的,不用手动下载。\"}" \
   | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")"
 api POST "/releases/$RELEASE_ID/assets?name=SkillSync_${VERSION}_universal.dmg" -F "attachment=@$DMG" >/dev/null
 api POST "/releases/$RELEASE_ID/assets?name=SkillSync.app.tar.gz" -F "attachment=@$TARBALL" >/dev/null
 api POST "/releases/$RELEASE_ID/assets?name=SkillSync.app.tar.gz.sig" -F "attachment=@$SIGFILE" >/dev/null
+if [[ -n "$WIN_EXE" ]]; then
+  api POST "/releases/$RELEASE_ID/assets?name=SkillSync_${VERSION}_x64-setup.exe" -F "attachment=@$WIN_EXE" >/dev/null
+  api POST "/releases/$RELEASE_ID/assets?name=SkillSync_${VERSION}_x64-setup.exe.sig" -F "attachment=@$WIN_SIG" >/dev/null
+fi
 
-# ---------- 更新公告牌 latest.json(地址恒定;universal 包同时喂两种芯片的 Mac) ----------
+# ---------- 更新公告牌 latest.json(地址恒定;universal 包同时喂两种芯片的 Mac,
+#            windows-x86_64 指向 NSIS exe——tauri v2 的 Windows 更新工件就是安装包本身)----------
 echo "==> 更新 latest 公告牌"
 TARBALL_URL="$GITEA/skills/skillsync-releases/releases/download/v$VERSION/SkillSync.app.tar.gz"
-python3 - "$VERSION" "$TARBALL_URL" "$SIGFILE" <<'PYEOF'
+python3 - "$VERSION" "$TARBALL_URL" "$SIGFILE" "$WIN_URL" "${WIN_SIG:-}" <<'PYEOF'
 import json, sys, datetime
-v, url, sigfile = sys.argv[1:4]
+v, url, sigfile, win_url, win_sigfile = sys.argv[1:6]
 sig = open(sigfile).read().strip()
 entry = {"signature": sig, "url": url}
+# universal 包,两种芯片的 Mac 都指向同一个文件
+platforms = {"darwin-aarch64": entry, "darwin-x86_64": entry}
+# SKIP_WINDOWS 时不写 windows 条目(Windows 老用户会一直"已最新",见脚本头部说明)
+if win_url and win_sigfile:
+    platforms["windows-x86_64"] = {"signature": open(win_sigfile).read().strip(), "url": win_url}
 doc = {
     "version": v,
     "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    # universal 包,两种芯片的 Mac 都指向同一个文件
-    "platforms": {"darwin-aarch64": entry, "darwin-x86_64": entry},
+    "platforms": platforms,
 }
 open("/tmp/skillsync-latest.json", "w").write(json.dumps(doc, indent=2) + "\n")
 PYEOF
@@ -130,9 +210,22 @@ if [[ "$GOT" != "$VERSION" ]]; then
   echo "❌ 公告牌上的版本是 $GOT,不是刚发的 $VERSION——检查 SKILLSYNC_UPDATE_URL 是否指向发布仓的 latest" >&2
   exit 1
 fi
+if [[ -n "$WIN_EXE" ]]; then
+  PLATS="$(curl -sSf "$SKILLSYNC_UPDATE_URL" | python3 -c "import json,sys;print(','.join(sorted(json.load(sys.stdin)['platforms'])))")"
+  if [[ "$PLATS" != "darwin-aarch64,darwin-x86_64,windows-x86_64" ]]; then
+    echo "❌ 公告牌平台条目不对:$PLATS(应为三平台齐全)" >&2
+    exit 1
+  fi
+  curl -sSfI "$WIN_URL" >/dev/null || { echo "❌ Windows 包下载地址不可达:$WIN_URL" >&2; exit 1; }
+fi
 
 echo
 echo "✅ v$VERSION 发布完成"
-echo "   新用户安装包:$GITEA/skills/skillsync-releases/releases  (发 dmg 链接到内网群即可)"
+echo "   新用户安装包:$GITEA/skills/skillsync-releases/releases  (发 dmg / x64-setup.exe 链接到内网群即可)"
 echo "   老用户:app 内「设置 → 检查应用更新」立即可见;自动检查按各自设置的频率触发"
-echo "   别忘了:git add -A && git commit -m '发版 v$VERSION' && git push"
+if [[ -z "$SKIP_WINDOWS" ]]; then
+  echo "   版本号 commit 与 tag v$VERSION 已由脚本推送,无需再手动 commit"
+else
+  echo "   ⚠️ SKIP_WINDOWS 模式:公告牌没有 windows 条目,Windows 用户收不到这版更新"
+  echo "   别忘了:git add -A && git commit -m '发版 v$VERSION' && git push"
+fi

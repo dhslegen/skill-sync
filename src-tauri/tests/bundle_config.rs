@@ -115,6 +115,35 @@ fn public_ci_never_requires_the_signing_private_key() {
     );
 }
 
+/// 发版脚本的 latest.json 必须三平台齐全(M8 任务 2)。
+///
+/// 公告牌是**整份重建**的:漏掉任何一个平台键,那个平台的老用户从此查更新永远
+/// "已最新"、停在旧版——v0.1.0/v0.2.0 在 macOS 上踩过的坑,不能在 Windows 上重演。
+/// 同时钉住 CI artifact 名的两侧接口:release.yml 上传 `skillsync-${{ runner.os }}`,
+/// 发版脚本按 `skillsync-Windows` 下载,任一侧改名另一侧就断。
+#[test]
+fn publish_script_feeds_all_three_platforms() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+    let script = std::fs::read_to_string(root.join("scripts/publish-release.sh")).unwrap();
+    let workflow = std::fs::read_to_string(root.join(".github/workflows/release.yml")).unwrap();
+
+    for key in ["darwin-aarch64", "darwin-x86_64", "windows-x86_64"] {
+        assert!(script.contains(key), "publish-release.sh 的 latest.json 缺平台键 {key}");
+    }
+    assert!(
+        script.contains("skillsync-Windows"),
+        "publish-release.sh 不再按 skillsync-Windows 下载 CI artifact——与 release.yml 的接口断了"
+    );
+    assert!(
+        workflow.contains("skillsync-${{ runner.os }}"),
+        "release.yml 的 artifact 命名变了——publish-release.sh 按 skillsync-Windows 下载会 404"
+    );
+    assert!(
+        script.contains("x64-setup.exe"),
+        "publish-release.sh 丢了 NSIS exe 的产物名——Windows 包传不上发布仓"
+    );
+}
+
 #[test]
 fn windows_installer_must_not_require_admin() {
     // DoD:非研发配置的 Windows 机、普通用户、零命令行。
