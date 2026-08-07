@@ -60,7 +60,10 @@ pub async fn login_oauth(
     let state = auth::generate_state();
 
     let url = auth::authorize_url(cfg, &redirect_uri, &state, &pkce.challenge)?;
+    // redirect_uri 只含 127.0.0.1 与端口,不敏感;授权 URL 整串不记(带 client_id 与 challenge)
+    tracing::info!(account, %redirect_uri, "准备打开系统浏览器完成授权");
     opener.open(&url)?;
+    tracing::info!("系统浏览器已打开(若未弹出,说明浏览器调起失败)");
 
     // 等回调是阻塞操作,挪到专用阻塞线程池,别占住异步运行时的工作线程
     let wait_state = state.clone();
@@ -70,8 +73,14 @@ pub async fn login_oauth(
             AppError::new("AUTH_LOOPBACK", "登录流程异常中断,请重试").with_detail(e.to_string())
         })??;
 
-    let creds = auth::exchange_code(http, cfg, &callback.code, &pkce.verifier, &redirect_uri).await?;
-    finish_login(http, cfg, store, account, creds).await
+    tracing::info!("开始用授权码换取令牌");
+    let creds = auth::exchange_code(http, cfg, &callback.code, &pkce.verifier, &redirect_uri)
+        .await
+        .inspect_err(|e| tracing::warn!(code = %e.code, "换取令牌失败"))?;
+    tracing::info!("令牌已取得,正在读取账号信息");
+    let user = finish_login(http, cfg, store, account, creds).await?;
+    tracing::info!("登录完成");
+    Ok(user)
 }
 
 /// 个人令牌登录(备用通道):校验令牌有效性后存下来。

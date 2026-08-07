@@ -232,6 +232,7 @@
   "wizard.next": "继续",
   "wizard.signInIntro": "登录后可以把自己的技能分享给团队。只是获取技能的话,可以先跳过。",
   "wizard.signInAction": "登录",
+  "wizard.signInWaiting": "请在浏览器中完成登录…",
   "wizard.signedInAs": "已登录:{name}",
   "wizard.skip": "先跳过",
   "wizard.curatedIntro": "团队为新同事准备了这些精选技能,勾选后一键装上:",

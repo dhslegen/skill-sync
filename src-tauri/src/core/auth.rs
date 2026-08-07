@@ -8,6 +8,16 @@
 //! - 回调按 RFC 8252 走 `http://127.0.0.1:{随机端口}`(用 IP 而非 localhost,
 //!   后者可能解析到 IPv6 或被 hosts 改写)。
 //! - access_token 过期用 refresh_token 静默续期,续期失败才引导重新登录。
+//!
+//! **诊断日志(2026-08-07 加)**:这条链路横跨"本机监听 / 系统浏览器 / 授权服务器 /
+//! 企业网络策略"四方,任一环断掉在界面上都长成同一句"没反应",而此前**整条链路
+//! 一行日志都没有**——Windows 首个真机版就撞上登录失败且无从判断断在哪。
+//! 现在每个组件边界都有一条 info,关键是 `收到回调连接`:
+//! **它出现 = 浏览器的回调确实到达了本机**(此后的失败在解析/换令牌);
+//! **它不出现 = 回调根本没回来**(代理把 127.0.0.1 也代理走了、防火墙、
+//! 或授权服务器压根没重定向)。
+//! ⚠️ 日志**绝不记 code / token / verifier / state 的值**——日志文件会被随手发出来
+//! 排障,授权码与令牌一旦进去就等于泄漏。只记长度、参数名集合与匹配与否。
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -131,6 +141,7 @@ impl LoopbackServer {
         let listener =
             TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).map_err(loopback_err)?;
         let port = listener.local_addr().map_err(loopback_err)?.port();
+        tracing::info!(port, "登录回调端口已监听");
         Ok(Self { listener, port })
     }
 
@@ -158,9 +169,16 @@ impl LoopbackServer {
         self.listener.set_nonblocking(true).map_err(|e| {
             AppError::new("AUTH_LOOPBACK", "登录回调异常").with_detail(e.to_string())
         })?;
+        tracing::info!(port = self.port, timeout_secs = timeout.as_secs(), "开始等待登录回调");
 
         loop {
             if std::time::Instant::now() >= deadline {
+                // 这条是最有诊断价值的一行:等到超时却一次连接都没收到,说明浏览器的
+                // 回调根本没回到本机——去查代理是否把 127.0.0.1 也代理走了
+                tracing::warn!(
+                    port = self.port,
+                    "登录等待超时,期间未收到有效回调(回调没回到本机:检查浏览器代理是否绕过 127.0.0.1)"
+                );
                 return Err(AppError::new(
                     "AUTH_TIMEOUT",
                     "登录等待超时。请重新点击登录,并在打开的浏览器页面中完成登录",
@@ -168,6 +186,7 @@ impl LoopbackServer {
             }
             match self.listener.accept() {
                 Ok((stream, _)) => {
+                    tracing::info!(port = self.port, "收到回调连接");
                     stream.set_nonblocking(false).ok();
                     match handle_callback_request(stream, expected_state)? {
                         // 浏览器可能先来一个 /favicon.ico 之类的请求,忽略继续等
@@ -207,6 +226,14 @@ fn handle_callback_request(
         url::form_urlencoded::parse(query.as_bytes())
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect();
+    // 只记参数**名**:值里有授权码,日志会被随手发出来排障
+    let mut names: Vec<&str> = params.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    tracing::info!(
+        path = target.split('?').next().unwrap_or("/"),
+        params = names.join(","),
+        "回调请求已解析"
+    );
 
     if let Some(error) = params.get("error") {
         respond(
@@ -228,6 +255,7 @@ fn handle_callback_request(
     };
 
     if state != expected_state {
+        tracing::warn!("回调的 state 与本次登录不匹配,已拒绝");
         respond(
             &mut stream,
             &page("登录未完成", "登录校验未通过,请回到应用重新登录。"),
@@ -238,6 +266,7 @@ fn handle_callback_request(
         );
     }
 
+    tracing::info!(code_len = code.len(), "回调校验通过,已取得授权码");
     respond(
         &mut stream,
         &page("登录成功", "已完成登录,可以关闭此页面回到 SkillSync。"),
@@ -408,6 +437,75 @@ pub trait CredentialStore: Send + Sync {
     fn delete(&self, account: &str) -> Result<(), AppError>;
 }
 
+/// 单个钥匙串条目允许的 UTF-16 码元数上限。
+///
+/// **这个数字来自 Windows,不是我们定的**:Windows 凭据管理器的 `CredentialBlob`
+/// 硬上限是 `CRED_MAX_CREDENTIAL_BLOB_SIZE = 5*512 = 2560` **字节**,而
+/// `windows-native-keyring-store` 写入前会把密码转成 **UTF-16**
+/// (`utils.rs`:`blob = vec![0; blob_u16.len() * 2]`,超了返回 `Error::TooLong`)。
+/// 于是实际能存的只有 **1280 个 ASCII 字符**。
+///
+/// 而 Gitea 的一对 JWT 令牌序列化出来约 1778 字符(实测:access 859、refresh 859,
+/// 加上 JSON 结构)——**每次登录必然超限**,macOS 钥匙串没有这个限制,
+/// 所以只有 Windows 中招。2026-08-07 Windows 首个真机版(v0.3.10)登录失败的根因就是它。
+///
+/// 取 1200 而不是顶格 1280:留出余量,令牌长度由 Gitea 决定、随配置浮动,
+/// 贴着上限写等于把"下次 Gitea 多发几十个字符"变成同一个故障。
+const MAX_UTF16_UNITS_PER_CHUNK: usize = 1200;
+
+/// 主条目在**新格式**下存的清单。旧格式主条目直接就是 `Credentials` 的 JSON。
+#[derive(Debug, Serialize, Deserialize)]
+struct ChunkManifest {
+    /// 分片数量;分片存在 `{account}.part{i}`
+    chunks: usize,
+}
+
+/// 把凭证 JSON 切成若干片,**保证每片编码成 UTF-16 后不超过 Windows 的上限**。
+///
+/// 按 `char` 边界切并按 `len_utf16()` 累计——不能按字节数切:UTF-8 的字节数与
+/// UTF-16 的码元数没有固定比例(ASCII 1:1,中文 3:1,BMP 外 4:2),
+/// 按字节估会在非 ASCII 内容上估错方向。
+fn split_secret(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut units = 0usize;
+    for ch in s.chars() {
+        let n = ch.len_utf16();
+        if units + n > MAX_UTF16_UNITS_PER_CHUNK && !cur.is_empty() {
+            parts.push(std::mem::take(&mut cur));
+            units = 0;
+        }
+        cur.push(ch);
+        units += n;
+    }
+    // 空串也要留一片,否则清单里 chunks=0,读回来拼不出东西
+    if !cur.is_empty() || parts.is_empty() {
+        parts.push(cur);
+    }
+    parts
+}
+
+/// 主条目内容的两种可能形态。
+///
+/// **旧格式必须继续读得出来**:v0.3.10 及更早在 macOS 上写进钥匙串的凭证就是
+/// 整份 `Credentials` JSON,升级后不该把已登录用户踢下线。
+enum StoredForm {
+    /// 整份凭证就在主条目里(旧格式)
+    Legacy(Box<Credentials>),
+    /// 主条目是清单,内容在 `{account}.part{i}`(新格式)
+    Chunked(usize),
+}
+
+fn parse_primary(raw: &str) -> Option<StoredForm> {
+    // 先试旧格式:它有 accessToken 字段,而清单没有,两者不会互相误判
+    if let Ok(creds) = serde_json::from_str::<Credentials>(raw) {
+        return Some(StoredForm::Legacy(Box::new(creds)));
+    }
+    serde_json::from_str::<ChunkManifest>(raw)
+        .ok()
+        .map(|m| StoredForm::Chunked(m.chunks))
+}
+
 /// 系统钥匙串(macOS Keychain / Windows 凭据管理器)。凭证不落明文盘。
 pub struct KeyringStore;
 
@@ -418,6 +516,24 @@ impl KeyringStore {
                 .with_detail(e.to_string())
         })
     }
+
+    fn part_key(account: &str, i: usize) -> String {
+        format!("{account}.part{i}")
+    }
+
+    /// 删掉所有分片。从 0 连续删到第一个不存在的为止——写入是连续的,不会有空洞。
+    fn delete_parts(account: &str) {
+        for i in 0.. {
+            let Ok(entry) = Self::entry(&Self::part_key(account, i)) else {
+                return;
+            };
+            match entry.delete_credential() {
+                Ok(()) => continue,
+                // 删到头了,或这台机器上根本没有分片
+                Err(_) => return,
+            }
+        }
+    }
 }
 
 impl CredentialStore for KeyringStore {
@@ -425,21 +541,52 @@ impl CredentialStore for KeyringStore {
         let json = serde_json::to_string(creds).map_err(|e| {
             AppError::new("AUTH_KEYRING", "凭据保存失败").with_detail(e.to_string())
         })?;
-        Self::entry(account)?.set_password(&json).map_err(|e| {
-            AppError::new("AUTH_KEYRING", "凭据保存失败,请重试").with_detail(e.to_string())
-        })
+        let parts = split_secret(&json);
+        let save_err = |e: keyring::Error| {
+            AppError::new("AUTH_KEYRING", "凭据保存失败,请重新登录").with_detail(e.to_string())
+        };
+
+        // 先清旧分片:上一次可能存了更多片,残留会让下次读到拼接错误的内容
+        Self::delete_parts(account);
+        for (i, part) in parts.iter().enumerate() {
+            Self::entry(&Self::part_key(account, i))?
+                .set_password(part)
+                .map_err(save_err)?;
+        }
+        // 分片全部写成功后才更新主条目——反过来的话中途失败会留下指向半份内容的清单
+        let manifest = serde_json::to_string(&ChunkManifest { chunks: parts.len() })
+            .map_err(|e| AppError::new("AUTH_KEYRING", "凭据保存失败").with_detail(e.to_string()))?;
+        Self::entry(account)?.set_password(&manifest).map_err(save_err)
     }
 
     fn load(&self, account: &str) -> Result<Option<Credentials>, AppError> {
-        match Self::entry(account)?.get_password() {
-            Ok(json) => Ok(serde_json::from_str(&json).ok()),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(AppError::new("AUTH_KEYRING", "无法读取已保存的登录信息")
-                .with_detail(e.to_string())),
+        let raw = match Self::entry(account)?.get_password() {
+            Ok(raw) => raw,
+            Err(keyring::Error::NoEntry) => return Ok(None),
+            Err(e) => {
+                return Err(AppError::new("AUTH_KEYRING", "无法读取已保存的登录信息")
+                    .with_detail(e.to_string()))
+            }
+        };
+        match parse_primary(&raw) {
+            Some(StoredForm::Legacy(creds)) => Ok(Some(*creds)),
+            Some(StoredForm::Chunked(n)) => {
+                let mut joined = String::new();
+                for i in 0..n {
+                    match Self::entry(&Self::part_key(account, i))?.get_password() {
+                        Ok(part) => joined.push_str(&part),
+                        // 分片缺失 = 这份凭证不完整,当作未登录重新走一次登录,不报错吓人
+                        Err(_) => return Ok(None),
+                    }
+                }
+                Ok(serde_json::from_str(&joined).ok())
+            }
+            None => Ok(None),
         }
     }
 
     fn delete(&self, account: &str) -> Result<(), AppError> {
+        Self::delete_parts(account);
         match Self::entry(account)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(AppError::new("AUTH_KEYRING", "退出登录时清理凭据失败")
@@ -592,6 +739,106 @@ mod tests {
             .collect();
         assert_eq!(q["client_id"], "a b&c");
         assert_eq!(q["state"], "s+t");
+    }
+
+    // ---- 钥匙串分片(Windows 凭据管理器的 2560 字节上限)----
+
+    /// Windows 的硬上限,与 `CRED_MAX_CREDENTIAL_BLOB_SIZE` 一致。
+    /// 测试里独立写一遍常量:与实现共用的话,把实现改坏成 10000 时测试会跟着放宽,
+    /// 那道守卫就是空转的(空转测试模式 #1)。
+    const WINDOWS_BLOB_LIMIT_BYTES: usize = 2560;
+
+    fn utf16_bytes(s: &str) -> usize {
+        s.encode_utf16().count() * 2
+    }
+
+    /// 核心守卫:**任何**输入切出来的每一片,UTF-16 编码后都不得超过 Windows 上限。
+    /// 这一条红了就意味着 Windows 上登录会再次失败。
+    #[test]
+    fn every_chunk_fits_windows_credential_blob_limit() {
+        let cases = [
+            String::new(),
+            "short".to_string(),
+            // 真实量级:Gitea 一对 JWT 序列化后约 1778 字符(实测 access 859 + refresh 859)
+            "a".repeat(1778),
+            "b".repeat(10_000),
+            // 非 ASCII:UTF-8 字节数与 UTF-16 码元数不成比例,按字节估会估错方向
+            "中".repeat(3000),
+            // BMP 外字符每个占 2 个 UTF-16 码元,最容易把分片顶爆
+            "😀".repeat(2000),
+        ];
+        for case in &cases {
+            for (i, part) in split_secret(case).iter().enumerate() {
+                assert!(
+                    utf16_bytes(part) <= WINDOWS_BLOB_LIMIT_BYTES,
+                    "第 {i} 片 {} 字节,超过 Windows 上限 {WINDOWS_BLOB_LIMIT_BYTES}——Windows 上会存不进钥匙串",
+                    utf16_bytes(part)
+                );
+            }
+        }
+    }
+
+    /// 切了还要能拼回来,且**一个字符都不能丢**(包括切在 emoji 上时)。
+    #[test]
+    fn split_then_join_round_trips_exactly() {
+        for case in [
+            String::new(),
+            "short".to_string(),
+            "a".repeat(1778),
+            "中".repeat(3000),
+            "😀".repeat(2000),
+            format!("{}{}", "x".repeat(1199), "😀"),
+        ] {
+            let joined: String = split_secret(&case).concat();
+            assert_eq!(joined, case, "分片拼接后与原文不一致");
+        }
+    }
+
+    /// 真实量级的凭证必须被切开——不切就是没修好。
+    #[test]
+    fn realistic_credentials_are_actually_split() {
+        let creds = Credentials {
+            access_token: "a".repeat(859),
+            refresh_token: "r".repeat(859),
+            expires_at: 1_786_095_579,
+        };
+        let json = serde_json::to_string(&creds).unwrap();
+        assert!(
+            utf16_bytes(&json) > WINDOWS_BLOB_LIMIT_BYTES,
+            "前提失效:这份凭证本来就没超限,这个测试就白测了(实测应为 {} 字节)",
+            utf16_bytes(&json)
+        );
+        assert!(
+            split_secret(&json).len() > 1,
+            "超限的凭证必须被切成多片,否则 Windows 上原样存不进去"
+        );
+    }
+
+    /// 旧格式(整份 Credentials 在主条目里)必须继续读得出来:
+    /// v0.3.10 及更早在 macOS 上登录的用户,升级后不该被踢下线。
+    #[test]
+    fn legacy_single_entry_format_is_still_readable() {
+        let creds = Credentials {
+            access_token: "tok".into(),
+            refresh_token: "ref".into(),
+            expires_at: 42,
+        };
+        let raw = serde_json::to_string(&creds).unwrap();
+        match parse_primary(&raw) {
+            Some(StoredForm::Legacy(got)) => assert_eq!(*got, creds),
+            _ => panic!("旧格式没被认出来——升级会让已登录用户全部掉线"),
+        }
+    }
+
+    /// 新格式的清单不能被误判成旧凭证,反之亦然。
+    #[test]
+    fn manifest_and_legacy_forms_are_not_confused() {
+        let manifest = serde_json::to_string(&ChunkManifest { chunks: 3 }).unwrap();
+        match parse_primary(&manifest) {
+            Some(StoredForm::Chunked(3)) => {}
+            _ => panic!("清单没被认出来"),
+        }
+        assert!(parse_primary("not json at all").is_none());
     }
 
     // ---- loopback ----

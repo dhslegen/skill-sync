@@ -120,8 +120,12 @@ function AgentsStep() {
 
 function SignInStep() {
   const { next } = useWizard();
-  const { status, user, signIn } = useSession();
+  // error 必须取出来渲染:漏了它,登录失败在界面上**什么都不显示**,
+  // 用户看到的就是"点了授权、回到应用没反应"——2026-08-07 Windows 首个真机版
+  // (v0.3.10)登录失败时,真正挡住排查的就是这里(设置页一直有错误行,唯独向导没有)。
+  const { status, user, signIn, error } = useSession();
   const signedIn = status === "signedIn";
+  const signingIn = status === "signingIn";
 
   return (
     <div>
@@ -145,10 +149,11 @@ function SignInStep() {
           <>
             <button
               type="button"
+              disabled={signingIn}
               onClick={() => void signIn()}
-              className="h-8 rounded-ctl bg-accent px-4 text-[12.5px] font-medium text-white hover:opacity-90"
+              className="h-8 rounded-ctl bg-accent px-4 text-[12.5px] font-medium text-white hover:opacity-90 disabled:opacity-60"
             >
-              {t("wizard.signInAction")}
+              {signingIn ? t("wizard.signInWaiting") : t("wizard.signInAction")}
             </button>
             <button
               type="button"
@@ -160,6 +165,9 @@ function SignInStep() {
           </>
         )}
       </div>
+      {error && (
+        <p className="mt-3 text-[11.5px] text-[#c0392b] dark:text-[#e0705f]">{error.message}</p>
+      )}
     </div>
   );
 }

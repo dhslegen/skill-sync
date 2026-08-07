@@ -92,6 +92,27 @@ describe("首次启动向导", () => {
     expect(useWizard.getState().step).toBe("curated");
   });
 
+  // 这条守卫的来历:v0.3.10 在 Windows 上登录必然失败(钥匙串超限),而向导这一步
+  // 当时没渲染 error,用户看到的是"点了授权、回到应用什么都没发生"——错误被整个吞掉,
+  // 反倒是这个"没反应"最挡排查。设置页一直有错误行,唯独向导漏了。
+  it("第二步:登录失败必须把原因显示出来,不能静默", () => {
+    useSession.setState({
+      status: "signedOut",
+      user: null,
+      error: { code: "AUTH_KEYRING", message: "凭据保存失败,请重新登录" },
+    });
+    useWizard.setState({ step: "signIn" });
+    render(<Wizard />);
+    expect(screen.getByText("凭据保存失败,请重新登录")).toBeInTheDocument();
+  });
+
+  it("第二步:等待浏览器完成登录时按钮给出可见的等待态", () => {
+    useSession.setState({ status: "signingIn", user: null, error: null });
+    useWizard.setState({ step: "signIn" });
+    render(<Wizard />);
+    expect(screen.getByRole("button", { name: /请在浏览器中完成登录/ })).toBeDisabled();
+  });
+
   it("第二步:已登录显示身份,继续即可", () => {
     useSession.setState({
       status: "signedIn",

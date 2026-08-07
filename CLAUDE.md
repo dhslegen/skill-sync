@@ -294,7 +294,7 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
   它就是这个项目的开发者文档。**别按全局规则把它加进 exclude 或重写历史**。
   仍然适用的部分:`docs/*`(除放行的两个)、`_*.md`、AI 流程产物一律不进版本控制。
 
-## 当前进度(2026-08-07,M7 完成,现役 v0.3.9)
+## 当前进度(2026-08-07,M7 完成 + M8 任务 1-2 完成,现役 v0.3.10)
 
 **M7 = 作者/贡献者展示**(M6 候选三,方案在拍板过程中被用户推翻两次,终稿是
 tags/curated 同款的库侧静态文件,分解在 docs/M7-任务分解.md,只在本地):
@@ -322,10 +322,13 @@ macOS 交叉编译仍不通(aws-lc-sys 要 Windows SDK),但已无所谓——不
 
 **M1–M6 全部完成并提交**(M6 分解与拍板见 docs/M6-任务分解.md;任务 4/5 中途被用户
 推翻重做过,经过在 git log)。
-**现役版本 v0.3.9**(公告牌实测指向它)。0.3.1–0.3.7 是**为了验证自更新链路连发的**
+**现役版本 v0.3.10**(公告牌实测指向它,**首个含 Windows 包的版本**,
+2026-08-07 发布:三平台条目齐全,从发布仓下载的 exe 用公告牌里的签名 + 打进包的
+公钥 minisign 验签通过)。0.3.1–0.3.7 是**为了验证自更新链路连发的**
 ——改更新机制天然要两跳:一跳把机制送到用户机器上,一跳才能让它自己跑起来。
 自更新新链路(静默装好 → 左下角 pill → 重启生效)与 macOS 重启激活修复
-**都已真机端到端验过**(见下面的现役机制约束)。
+**都已真机端到端验过**(见下面的现役机制约束);**Windows 侧的自更新还没跑过**
+——0.3.10 之前没有 Windows 包,要等 0.3.11 才是那第二跳。
 **M6 候选五条的处置**:候选二(标签)当日提交 tags.json + curated.json 到真实库,
 用户已验证生效;候选一(更新提示)= 任务 1–3;候选四(认领语义)= 任务 4–5;
 候选三(作者/贡献者展示)= **M7 已做**,且没按当初"详情面板破例联网"的思路——
@@ -542,6 +545,31 @@ M7 的契约变更:`StoreSkillCard` 新增 `author`(`string | null`)、`SkillDet
   PAT 凭证 expires_at=0 永不触发续期端点;**内建 Client ID 绝不发给别家 Gitea**);
   GitHub = device flow 主通道 + PAT 备用(`session.rs` 的 github 平行区段,不与 Gitea
   函数硬参数化合并)。内建源的读**永远匿名**(公开可读,带过期令牌反而 401)。
+- **钥匙串里的凭证是分片存的,因为 Windows 只给 1280 个字符**(M8,2026-08-07,
+  v0.3.10 Windows 首个真机版登录失败的根因):Windows 凭据管理器的
+  `CRED_MAX_CREDENTIAL_BLOB_SIZE = 5*512 = 2560` **字节**,而
+  `windows-native-keyring-store` 写入前把密码转成 **UTF-16**(字节数翻倍,
+  见该 crate `utils.rs`:`blob = vec![0; blob_u16.len()*2]`,超了返回 `TooLong`)
+  ——实际上限 = **1280 个 ASCII 字符**。而 Gitea 一对 JWT 序列化后约 **1778 字符**
+  (实测 access 859 + refresh 859),**每次登录必然超限**。macOS 钥匙串没有这个限制,
+  所以本机与 CI 全绿、只有 Windows 用户中招。
+  - 现在 `KeyringStore` 按 UTF-16 码元数切片(`MAX_UTF16_UNITS_PER_CHUNK = 1200`,
+    不顶格 1280 是给令牌长度浮动留余量),分片存 `{account}.part{i}`,
+    主条目改存清单 `{"chunks":N}`;**分片全写成功才更新主条目**
+    (反序会留下指向半份内容的清单),**覆盖写前先清旧分片**(否则旧令牌碎片
+    长期留在系统凭据管理器里,是泄漏面)。
+  - **旧格式必须继续读得出来**:v0.3.10 及更早写的是整份 `Credentials` JSON,
+    `parse_primary` 先试它再试清单——不然升级会把已登录用户全部踢下线。
+    反向降级(≤0.3.10 读到新清单)会 serde 失败 → `.ok()` → None → 视为未登录,
+    重新登录即可,不会崩。
+  - **切片必须按 `char` 边界并按 `len_utf16()` 累计**,不能按字节:UTF-8 字节数与
+    UTF-16 码元数没有固定比例(ASCII 1:1、中文 3:1、BMP 外 4:2),按字节估会估反。
+  - 护栏:`core::auth` 的纯逻辑测试(每片不超限 / 往返一致 / 旧格式可读,三轮注入验证过)
+    **+ `tests/keyring_windows.rs` 的真机往返**——后者才是关键。这个缺陷发生时
+    Rust 470 + 前端 408 全绿、双平台 CI 也绿,**因为没有一条测试碰过真实的
+    Windows 凭据管理器**(全走 `MemoryStore` 或纯逻辑)。
+  - ⚠️ 排查时别把浏览器那句「登录成功」当成登录成功:那个页面是
+    `handle_callback_request` 在**拿到授权码的当场**回的,换令牌与存凭证都还没发生。
 - **scheduler 逐源且常驻**(M3 任务 2):`run_all_sources_check` 一个源失败不拦其他源,
   全失败则本轮**不上报**(报 NothingInstalled 等于撒谎);合并在 `scheduler::merge_reports`。
 - **删自定义源**:已装技能保留(界面标"来源已移除",更新/回推按钮消失),该源凭证与
@@ -744,10 +772,12 @@ M7 的契约变更:`StoreSkillCard` 新增 `author`(`string | null`)、`SkillDet
 **只能在真机/真实环境验的**
 > ⚠️ 下面前三条(Windows 真机 / cfg(unix) 测试 / Windows GUI)**已归入 M8**,
 > 见 docs/M8-任务分解.md 任务 3;它们欠的不是代码,是一台 x64 Windows 机器。
-> Windows 发布链路两个缺口(latest.json 无 windows 条目、发版脚本只发 macOS)
-> **已于 M8 任务 1-2 补齐**(2026-08-07):CI 出 exe → 本地补签 → 三平台公告牌,
-> 守卫在 `bundle_config.rs::publish_script_feeds_all_three_platforms`;
-> **但还没真发过一版 Windows**,首个含 windows 条目的版本发出后此句才可删。
+> Windows 发布链路的两个缺口(latest.json 无 windows 条目、发版脚本只发 macOS)
+> **已于 M8 任务 1-2 补齐并真发版实证**(2026-08-07,v0.3.10):CI 出 exe →
+> 本地补签 → 三平台公告牌,守卫在
+> `bundle_config.rs::publish_script_feeds_all_three_platforms`。
+> **仍欠的是 Windows 侧的自更新整跳**:0.3.10 是首个 Windows 包,老版本根本不存在,
+> 要等 0.3.11 发出去才第一次真跑(与 macOS 当年同样的「两跳」)。
 
 - **Windows 普通权限真机**(任务 6 欠的最后一档):CI 已验 Windows runner 上 junction
   建链/摘链真实通过,且断言"必须是 junction 而不是 symlink"(C11 的提权假阳性有护栏);
