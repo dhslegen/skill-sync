@@ -55,7 +55,22 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
     let tray = TrayIconBuilder::with_id("main")
         .menu(&menu)
-        .show_menu_on_left_click(true)
+        // **左键打开窗口、右键出菜单**(2026-08-07 用户提,两个平台的系统惯例都是这样:
+        // macOS 菜单栏项与 Windows 通知区图标,左键都是"主操作",右键才是菜单)。
+        // 关掉它之后左键不再自动弹菜单,改由下面的 on_tray_icon_event 接管。
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| {
+            // 只认"左键抬起":按下就响应会在用户拖动图标(macOS 允许 Cmd 拖动菜单栏项)
+            // 时误触发;右键与其余按键交给菜单本身,这里一概不管。
+            if let tauri::tray::TrayIconEvent::Click {
+                button: tauri::tray::MouseButton::Left,
+                button_state: tauri::tray::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main_window(app),
             "check-updates" => {
@@ -174,10 +189,21 @@ pub fn run() {
         .expect("error while building tauri application")
         // 窗口全部隐藏/关闭也不退出——托盘常驻;只有显式 app.exit(托盘「退出」)才走
         .run(|_app, event| {
-            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
-                if code.is_none() {
-                    api.prevent_exit();
+            match event {
+                tauri::RunEvent::ExitRequested { api, code, .. } => {
+                    if code.is_none() {
+                        api.prevent_exit();
+                    }
                 }
+                // **点程序坞图标要能把窗口叫回来**(2026-08-07 用户提)。
+                // macOS 上关窗只是隐藏、应用仍在程序坞里,系统此时发的是
+                // `applicationShouldHandleReopen`(即这个事件)——不接它,
+                // 用户点程序坞图标就**什么都不会发生**,而图标还在那儿,
+                // 看起来就是"应用卡死了"。Windows 没有这个概念(任务栏图标
+                // 随窗口一起消失,入口只剩通知区图标),所以只在 macOS 上有这条。
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => show_main_window(_app),
+                _ => {}
             }
         });
 }

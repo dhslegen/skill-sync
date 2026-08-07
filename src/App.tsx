@@ -65,8 +65,16 @@ export default function App() {
   // 而 body 是 overflow:hidden——内容直接被裁掉,滚动条永远出不来
   return (
     <div className="grid h-full grid-cols-[208px_1fr] grid-rows-[100%]">
-      {/* macOS 红绿灯占位。原生窗口控制属打包任务,这里只把 44px 让出来 */}
-      <div className="pointer-events-none fixed inset-x-0 top-0 z-40 h-11" data-tauri-drag-region />
+      {/*
+        这里原先有一个横跨全宽的 `fixed ... pointer-events-none` 层挂着
+        `data-tauri-drag-region`,那是**死代码**:`pointer-events-none` 让它收不到
+        任何鼠标事件,拖拽区自然也就不成立;而它 `fixed` 定位并不占文档流,
+        注释里说的"把 44px 让出来"实际是 Sidebar 的 `mt-[52px]` 与 Toolbar 的
+        `h-11` 在做。它又盖在 z-40,一旦去掉 pointer-events-none 就会挡住 Toolbar
+        上的所有控件——两者不可兼得,所以整块删掉。
+        窗口拖拽改由**真正空着的两处**承担:Sidebar 顶部那条(见 Sidebar.tsx)
+        与 Toolbar 容器本身。2026-08-07 用户报"窗口拖不动"的根因就是这里。
+      */}
 
       <Sidebar version={info?.version ?? "0.0.0"} />
 

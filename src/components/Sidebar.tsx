@@ -36,7 +36,16 @@ export function Sidebar({ version }: { version: string }) {
   const updates = updateCount(list, index);
 
   return (
-    <aside className="flex flex-col border-r border-border bg-[var(--sidebar-bg)] px-2 pb-2.5 backdrop-blur-[20px]">
+    <aside className="relative flex flex-col border-r border-border bg-[var(--sidebar-bg)] px-2 pb-2.5 backdrop-blur-[20px]">
+      {/*
+        顶部这 52px 原本只是给 macOS 红绿灯让位的空白,**没有拖拽区**——
+        而它恰恰是用户想挪窗口时最自然会按下去的地方(标题栏的位置),
+        于是"窗口拖不动"(2026-08-07 用户报)。给它挂上 drag region:
+        它整条都是空的,不存在"按下按钮却被当成拖窗口"的风险;
+        红绿灯本身浮在更上层、由系统优先响应,不会被这层抢走。
+      */}
+      <div className="absolute inset-x-0 top-0 h-[52px]" data-tauri-drag-region />
+
       <div className="mb-3.5 mt-[52px] flex items-center gap-2 px-2.5">
         <span className="grid size-[22px] place-items-center rounded-[6px] bg-accent text-white">
           {/* 品牌标记:同步双箭头。这是唯一手写的 svg,Lucide 里没有同形状的 */}

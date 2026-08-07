@@ -82,4 +82,16 @@ describe("侧边栏 · 技能更新角标", () => {
 
     expect(mineBadge()).toBeNull();
   });
+
+  // 2026-08-07 用户报"窗口拖不动":顶部这条 52px 空白(给 macOS 红绿灯让位的地方)
+  // 正是想挪窗口时最自然会按下去的位置,原先却没有拖拽区,而 App.tsx 里那个横跨
+  // 全宽的候选又被 pointer-events-none 废掉了。没有它,无边框窗口就真的挪不动。
+  it("顶部留出的空白必须是窗口拖拽区,否则窗口挪不动", () => {
+    const { container } = render(<Sidebar version="0.3.0" />);
+    const region = container.querySelector("[data-tauri-drag-region]");
+
+    expect(region).not.toBeNull();
+    // 拖拽区不能自己把鼠标事件屏蔽掉——那正是它此前失效的原因
+    expect(region?.className ?? "").not.toContain("pointer-events-none");
+  });
 });

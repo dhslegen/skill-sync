@@ -37,8 +37,43 @@ cd "$(dirname "$0")/.."
 VERSION="${1:-}"
 if [[ -z "$VERSION" || ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "用法:./scripts/publish-release.sh <新版本号,如 0.2.0>" >&2
+  echo "     发版说明从 RELEASE_NOTES.md 的对应版本章节自动读取(见下)" >&2
   exit 1
 fi
+
+# ---------- 发版说明:从 RELEASE_NOTES.md 取该版本的章节 ----------
+# 2026-08-07 用户拍板:**每个版本都要有发版说明**,不能再让所有 release 长着
+# 同一句"内部发布"——同事拿到新包得知道升了什么。说明的唯一真相是仓库里的
+# RELEASE_NOTES.md(受版本控制、随代码走查),README 的版本历史与内网 release
+# 的 body 都从它来,不手抄第二份。
+NOTES_FILE="RELEASE_NOTES.md"
+RELEASE_NOTES="$(python3 - "$VERSION" <<'PYEOF'
+import re, sys, pathlib
+version = sys.argv[1]
+path = pathlib.Path("RELEASE_NOTES.md")
+if not path.exists():
+    sys.exit(f"缺 {path}")
+text = path.read_text(encoding="utf-8")
+# 章节形如 "## 0.3.12 —— 标题",取到下一个 "## " 或文件末尾
+m = re.search(rf"^##\s+{re.escape(version)}\b.*?$(.*?)(?=^##\s|\Z)", text, re.M | re.S)
+if not m:
+    sys.exit(f"RELEASE_NOTES.md 里没有 {version} 的章节")
+body = m.group(1).strip()
+if not body:
+    sys.exit(f"RELEASE_NOTES.md 里 {version} 的章节是空的")
+print(body)
+PYEOF
+)" || {
+  echo "❌ 拿不到 v$VERSION 的发版说明。" >&2
+  echo "   请先在 $NOTES_FILE 顶部加一段:" >&2
+  echo "" >&2
+  echo "   ## $VERSION —— 一句话主题" >&2
+  echo "" >&2
+  echo "   - 改了什么、用户会看到什么变化" >&2
+  echo "" >&2
+  echo "   这是硬要求:没有说明的版本发出去,同事不知道该不该升(2026-08-07 拍板)。" >&2
+  exit 1
+}
 
 # ---------- 前置校验:缺什么当场说清楚,不要构建了十分钟才失败 ----------
 fail=0
@@ -163,8 +198,16 @@ fi
 
 # ---------- 传版本 release:dmg 给人装,tar.gz+sig 给自动更新下载 ----------
 echo "==> 创建 release v$VERSION 并上传产物"
+RELEASE_BODY="$(RELEASE_NOTES="$RELEASE_NOTES" python3 - <<'PYEOF'
+import json, os
+notes = os.environ["RELEASE_NOTES"]
+tail = ("\n\n---\nmacOS 装 dmg,Windows 装 x64-setup.exe;"
+        "tar.gz / sig 是自动更新用的,不用手动下载。")
+print(json.dumps(notes + tail, ensure_ascii=False))
+PYEOF
+)"
 RELEASE_ID="$(api POST "/releases" -H "Content-Type: application/json" \
-  -d "{\"tag_name\":\"v$VERSION\",\"name\":\"SkillSync $VERSION\",\"body\":\"内部发布。macOS 装 dmg,Windows 装 x64-setup.exe;tar.gz 与 sig 是自动更新用的,不用手动下载。\"}" \
+  -d "{\"tag_name\":\"v$VERSION\",\"name\":\"SkillSync $VERSION\",\"body\":$RELEASE_BODY}" \
   | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")"
 api POST "/releases/$RELEASE_ID/assets?name=SkillSync_${VERSION}_universal.dmg" -F "attachment=@$DMG" >/dev/null
 api POST "/releases/$RELEASE_ID/assets?name=SkillSync.app.tar.gz" -F "attachment=@$TARBALL" >/dev/null

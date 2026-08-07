@@ -144,6 +144,35 @@ fn publish_script_feeds_all_three_platforms() {
     );
 }
 
+/// 发版必须带发版说明(2026-08-07 用户拍板,指定记进项目记忆)。
+///
+/// 此前所有 release 的正文都是脚本里写死的同一句"内部发布",同事拿到新包不知道
+/// 该不该升。现在说明的唯一真相是 `RELEASE_NOTES.md`,发布脚本读不到对应版本的
+/// 章节就拒绝发版。这条守卫钉住三件事:文件在、脚本确实读它、当前版本有章节
+/// ——把"发版说明"从自觉变成闸门。
+#[test]
+fn every_release_must_carry_release_notes() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+    let notes = std::fs::read_to_string(root.join("RELEASE_NOTES.md"))
+        .expect("缺 RELEASE_NOTES.md——发版说明的唯一真相,README 与内网 release 都从它来");
+    let script = std::fs::read_to_string(root.join("scripts/publish-release.sh")).unwrap();
+
+    assert!(
+        script.contains("RELEASE_NOTES.md"),
+        "publish-release.sh 不再读 RELEASE_NOTES.md——发版说明这道闸被绕过了"
+    );
+
+    // 当前版本必须已经有章节,否则下一次发版会在最后一刻才被拦下
+    let conf: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("src-tauri/tauri.conf.json")).unwrap())
+            .unwrap();
+    let version = conf["version"].as_str().expect("conf 必须有 version");
+    assert!(
+        notes.lines().any(|l| l.starts_with("## ") && l.contains(version)),
+        "RELEASE_NOTES.md 里没有当前版本 {version} 的章节——发版会被脚本拒绝"
+    );
+}
+
 #[test]
 fn windows_installer_must_not_require_admin() {
     // DoD:非研发配置的 Windows 机、普通用户、零命令行。
