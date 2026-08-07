@@ -1,13 +1,18 @@
-# 发布构建:打 v* tag 触发,双平台出安装包(M1 任务 13)。
+# 发布构建:打 v* tag 触发,双平台出安装包(M1 任务 13;M8 起真实启用,主要为 Windows)。
 #
 # 与 ci.yml 同一假设:语法兼容内网 Gitea Actions,迁移时只需调整 runs-on 与 secrets。
 #
-# 编译期内网配置从 secrets 注入(铁律 5:源码与仓库中不得出现真实内网地址)。
+# 编译期内网配置从 secrets 注入。2026-08-07 用户拍板调整了保密边界:
+# **内网地址/仓库坐标/公钥可以进公开 CI**(产物 artifact 任何人可下载,可接受),
+# 但**真秘密——minisign 私钥、任何 token/密码——绝不配进公开仓 secrets**。
+# 因此 TAURI_SIGNING_PRIVATE_KEY 不在 guard 的必需名单里:CI 产物不带 .sig,
+# Windows 包的 .sig 由本地机器 `pnpm tauri signer sign` 离线补签(私钥永不离开本地)。
+#
 # secrets 未配置时 workflow 直接失败——绝不发出"连不上公司技能库"的空壳包,
 # 这与 scripts/build-release.sh 的本地拦截是同一道闸的两个入口。
 #
-# macOS 签名/公证:证书类 secrets(APPLE_*)到位后自动生效;未配置时产出未签名包,
-# 标记为 unsigned 仅供内部测试机——不要把它发给普通同事。
+# macOS 签名/公证:正式 macOS 发布走本地 publish-release.sh(证书在本地钥匙串);
+# 此处 APPLE_* secrets 未配置时产出未签名包,仅供内部测试机——不要发给普通同事。
 name: Release
 
 on:
@@ -29,7 +34,6 @@ jobs:
           BRANCH: ${{ secrets.SKILLSYNC_BUILTIN_BRANCH }}
           UPDATE_URL: ${{ secrets.SKILLSYNC_UPDATE_URL }}
           UPDATE_PUBKEY: ${{ secrets.SKILLSYNC_UPDATE_PUBKEY }}
-          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           fail=0
           for pair in "SKILLSYNC_BUILTIN_GITEA_URL=$URL" "SKILLSYNC_OAUTH_CLIENT_ID=$CID" \
@@ -40,9 +44,10 @@ jobs:
               fail=1
             fi
           done
-          # App 自更新(M2 任务 5):缺更新源/公钥/签名私钥,发布出去的包永远收不到更新
-          for pair in "SKILLSYNC_UPDATE_URL=$UPDATE_URL" "SKILLSYNC_UPDATE_PUBKEY=$UPDATE_PUBKEY" \
-                      "TAURI_SIGNING_PRIVATE_KEY=$SIGNING_KEY"; do
+          # App 自更新:缺更新源/公钥,发布出去的包永远收不到更新。
+          # TAURI_SIGNING_PRIVATE_KEY **故意不在必需名单**(2026-08-07 拍板):
+          # 真秘密绝不配进公开仓 secrets,.sig 由本地离线补签——别把它加回来。
+          for pair in "SKILLSYNC_UPDATE_URL=$UPDATE_URL" "SKILLSYNC_UPDATE_PUBKEY=$UPDATE_PUBKEY"; do
             name="${pair%%=*}"; value="${pair#*=}"
             if [ -z "$value" ]; then
               echo "::error::缺少 secret $name —— 发布出去的包永远收不到应用更新,拒绝发布"
@@ -100,14 +105,20 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        # createUpdaterArtifacts 只在发布构建打开(主 conf 不放,日常构建无签名私钥会失败)。
-        # pubkey 也必须在这里给:签名发生在**构建那一刻**,tauri 读的是
+        # pubkey 必须在这里给:签名验证配置编译进包,tauri 读的是
         # plugins.updater.pubkey,而主 conf 里按铁律 5 只有空占位,
         # 空字符串会报 `failed to decode pubkey: Missing comment in public key`。
         # dangerousInsecureTransportProtocol:内网 Gitea 是 http,tauri updater 默认拒绝
         # 明文端点,不开它发布包永远收不到更新(2026-08-05 端到端实测抓到)。
+        # createUpdaterArtifacts **只在签名私钥存在时开**:开了它、没私钥,构建直接失败,
+        # 而私钥按 2026-08-07 拍板绝不进公开仓 secrets——公开 CI 上产物不带 .sig,
+        # 由本地 `pnpm tauri signer sign` 离线补签(迁到内网 CI 配上私钥后自动恢复出 .sig)。
+        # shell 必须显式 bash:Windows runner 默认 pwsh,下面的 $() 语法根本跑不了
+        # ——secrets 未配置的年代 guard 一直拦着,这个 step 在 Windows 上从没真跑过。
+        # overlay 用 node 拼(setup-node 保证双平台可用;python3 在 Windows 的 bash 里没保证)。
+        shell: bash
         run: |
-          CONFIG_JSON="$(python3 -c 'import json,os;print(json.dumps({"bundle":{"createUpdaterArtifacts":True},"plugins":{"updater":{"pubkey":os.environ["SKILLSYNC_UPDATE_PUBKEY"],"dangerousInsecureTransportProtocol":True}}}))')"
+          CONFIG_JSON="$(node -e 'const c={plugins:{updater:{pubkey:process.env.SKILLSYNC_UPDATE_PUBKEY,dangerousInsecureTransportProtocol:true}}};if(process.env.TAURI_SIGNING_PRIVATE_KEY)c.bundle={createUpdaterArtifacts:true};console.log(JSON.stringify(c))')"
           pnpm tauri build --config "$CONFIG_JSON"
 
       - name: 收集产物 (macOS)

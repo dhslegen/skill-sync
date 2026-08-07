@@ -36,7 +36,7 @@ fn updater_plugin_needs_an_empty_placeholder_config() {
 /// updater 产物开关(M2 任务 5)的两侧配对:
 /// - 主 conf **不开** createUpdaterArtifacts——否则没有签名私钥的日常构建直接失败;
 /// - 发布通道(build-release.sh 与 release.yml)**必须开**——否则发布包没有 .sig,
-///   自更新链路整个哑火。
+///   自更新链路整个哑火。release.yml 上是**条件开**(私钥存在才开),见下一条测试。
 ///
 /// 两侧一起断言,字段名拼错在任何一侧都逃不掉。
 #[test]
@@ -76,11 +76,43 @@ fn updater_artifacts_are_release_only() {
         );
     }
 
-    // 发布闸门:三个新变量在两条发布通道里都有校验
+    // 发布闸门:更新三件套在本地通道全部必需;公开 CI 通道只必需前两个(见下一条测试)
     for name in ["SKILLSYNC_UPDATE_URL", "SKILLSYNC_UPDATE_PUBKEY", "TAURI_SIGNING_PRIVATE_KEY"] {
         assert!(script.contains(name), "build-release.sh 缺 {name} 的校验");
+    }
+    for name in ["SKILLSYNC_UPDATE_URL", "SKILLSYNC_UPDATE_PUBKEY"] {
         assert!(workflow.contains(name), "release.yml 缺 {name} 的注入/校验");
     }
+}
+
+/// 公开 CI 的保密边界(2026-08-07 用户拍板,M8):
+/// 内网地址/坐标/公钥可以进公开仓 secrets 与 artifact,但 **minisign 私钥这类真秘密
+/// 绝不配进公开仓**——release.yml 的 guard 不得把 TAURI_SIGNING_PRIVATE_KEY 列为必需,
+/// 否则要么发布永远被拦,要么诱使人把私钥配上去。CI 产物因此不带 .sig,
+/// 由本地 `pnpm tauri signer sign` 离线补签(私钥永不离开发布机)。
+#[test]
+fn public_ci_never_requires_the_signing_private_key() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+    let workflow = std::fs::read_to_string(root.join(".github/workflows/release.yml")).unwrap();
+
+    // guard 校验私钥的历史写法是把它拼进 "NAME=$VALUE" 对;env 传递写法(NAME: ${{...}})
+    // 不含 `TAURI_SIGNING_PRIVATE_KEY=$`。有人把私钥加回 guard 必需名单时这里变红。
+    assert!(
+        !workflow.contains("TAURI_SIGNING_PRIVATE_KEY=$"),
+        "release.yml 的 guard 把签名私钥列为必需了——公开仓绝不配真秘密,\
+         Windows 的 .sig 走本地离线补签,别把这道闸改回去"
+    );
+    // 哨兵注释:语义提醒必须留在 workflow 里,删注释视同删约束
+    assert!(
+        workflow.contains("故意不在必需名单"),
+        "release.yml 里解释私钥为何不必需的注释被删了——下一个人会把它当遗漏补回去"
+    );
+    // 条件开关必须存在:私钥存在才开 createUpdaterArtifacts(迁内网 CI 后自动恢复出 .sig)
+    assert!(
+        workflow.contains("TAURI_SIGNING_PRIVATE_KEY)c.bundle={createUpdaterArtifacts:true}"),
+        "release.yml 丢了「有私钥才开 createUpdaterArtifacts」的条件——\
+         无条件开会让无私钥的 CI 构建直接失败"
+    );
 }
 
 #[test]

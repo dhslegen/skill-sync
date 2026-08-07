@@ -304,16 +304,19 @@ tags/curated 同款的库侧静态文件,分解在 docs/M7-任务分解.md,只�
 **下一阶段 = M8:Windows 发版**(2026-08-07 定,分解在 docs/M8-任务分解.md,只在本地)。
 用 Windows 的同事至今拿不到包,已经表达失望——**这是 M8 的首要目标,其余欠账全部
 排在它后面**(顺延清单见 M8 文档第三节,每条都有既有的推迟理由,别当遗漏重做)。
-开工前先认这条硬约束:**Windows 发布包不能走公开 GitHub Actions**
-——仓库是 PUBLIC,Actions artifact 对任何 GitHub 用户可下载,而包里编译进了内网地址,
-违反「安装包只走内部渠道」。现状是安全的(secrets 一个没配,`guard` 会拦;
-公开 release v0.1.0 零附件),**别为了省事把 secrets 配上去**。
-macOS 上交叉编译也不通(aws-lc-sys 要 Windows SDK),所以只能在 Windows 上构建
-——**用用户自己那台公司 Windows 机**(2026-08-07 拍板)。
-⚠️ **顺序陷阱:先验收,再搭构建环境**。那台机器现在是干净的普通员工机器,
-正是「Windows 普通权限真机」唯一合格的验收环境;一旦装上 VS Build Tools/Rust,
-它就再也回答不了"普通同事能不能装上、能不能用"——装包/junction/Claude Code 读到/
-GUI 行为这几条**必须在装任何开发工具之前做完**。
+**构建路线 = 公开 GitHub Actions**(2026-08-07 用户拍板,**推翻了当日早前
+「不能走公开 CI」的红线**——理由:Windows 本机构建太麻烦)。保密边界随之重划:
+- **可以进公开 CI 的 secrets 与 artifact**:内网地址、仓库坐标、OAuth Client ID
+  (公共客户端无 secret)、minisign 公钥——artifact 任何人可下载,用户明确接受;
+- **仍绝不进公开仓的**:minisign 私钥、任何 token/密码。`TAURI_SIGNING_PRIVATE_KEY`
+  不在 release.yml guard 的必需名单里,CI 产物**不带 .sig**,由本地
+  `pnpm tauri signer sign` 离线补签(已实测可行;私钥永不离开这台 mac)。
+  守卫:`bundle_config.rs::public_ci_never_requires_the_signing_private_key`。
+- 铁律 5(源码/仓库文件中不得出现真实内网地址与 OAuth secret)**不变**
+  ——secrets 是 CI 配置,不是源码。
+macOS 交叉编译仍不通(aws-lc-sys 要 Windows SDK),但已无所谓——不再需要本机构建。
+原「先验收再搭构建环境」的顺序陷阱**随之解除**:用户那台公司 Windows 机不装任何
+开发工具,保持干净,直接当「Windows 普通权限真机」验收环境用。
 
 **M1–M6 全部完成并提交**(M6 分解与拍板见 docs/M6-任务分解.md;任务 4/5 中途被用户
 推翻重做过,经过在 git log)。
