@@ -118,6 +118,16 @@ jobs:
         # overlay 用 node 拼(setup-node 保证双平台可用;python3 在 Windows 的 bash 里没保证)。
         shell: bash
         run: |
+          # GitHub Actions 把未配置的 secret 展开成**空字符串**塞进 env,而 tauri 的
+          # macOS 打包只要看到 APPLE_CERTIFICATE 这个变量存在(哪怕为空)就去导钥匙串,
+          # 空值导入直接失败(`failed to import keychain certificate`)。guard 拦着的
+          # 年代这个 step 从没跑过,2026-08-07 首跑才暴露——与 pwsh 那个坑同一类。
+          # 对策:为空即 unset,让 tauri 走"未配置"分支(未签名包)。
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                   APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID \
+                   TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            if [ -z "${!v:-}" ]; then unset "$v"; fi
+          done
           CONFIG_JSON="$(node -e 'const c={plugins:{updater:{pubkey:process.env.SKILLSYNC_UPDATE_PUBKEY,dangerousInsecureTransportProtocol:true}}};if(process.env.TAURI_SIGNING_PRIVATE_KEY)c.bundle={createUpdaterArtifacts:true};console.log(JSON.stringify(c))')"
           pnpm tauri build --config "$CONFIG_JSON"
 
