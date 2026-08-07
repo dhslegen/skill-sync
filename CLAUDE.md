@@ -326,7 +326,7 @@ M5 任务 3 要点:技能库根 `tags.json`(`{"tags":{"<dirSlug>":["标签",…]
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 464 + 前端 408 测试通过(M7 起),clippy(**--all-targets**)/eslint/tsc 干净,
+- 本机:Rust 468 + 前端 408 测试通过(M7 起),clippy(**--all-targets**)/eslint/tsc 干净,
   `pnpm dev` 启动冒烟通过(带内网配置实测:商店读到真实库 30 个技能)
 - **双平台 CI**:**M4 任务 1 的两笔(`3857720` / `a7a1de3`)macOS + Windows 双 job 全绿**(2026-08-04 逐 job 实测);
   M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;`de7b233`/`2eb0595` 当时因账号计费
@@ -361,6 +361,10 @@ M6 的契约变更:新增事件 `app-update://ready`(载荷为版本号;探测�
 `app-update://available`,前端那条监听已删);`AppUpdateStatus` 新增 `ready` 档;
 `InstalledSkillView` 新增 `claimBindable`;**没有**新增 command
 (原计划的 `skill_claim_preview` 已撤——判定并进了 `installed_list`,不留没人用的 API)。
+M7 的契约变更:`StoreSkillCard` 新增 `author`(`string | null`)、`SkillDetail` 新增
+`attribution`(`{author, contributors} | null`);**没有**新增 command 与事件
+——归因随索引一起下来,前端零新增请求。新增 core 原语 `gitea::file_content`
+(contents API 读单文件内容 + blob sha)。
 
 ### 现役机制约束(动相关代码前必读)
 
@@ -602,6 +606,12 @@ M6 的契约变更:新增事件 `app-update://ready`(载荷为版本号;探测�
     文件一起失败**,只读用户分享必然报错。这条假设是 `share_live` 的 fork 用例当场
     证伪的(本地起着 docker Gitea 才跑到),纯逻辑与 wiremock 测试都看不见跨仓这回事。
     因此追加归因的位置在 `submit_gitea` **内部**、三条路各自取自己的目标仓。
+  - **「归因绝不拦分享」必须在提交边界也成立**(`change_files_sparing_skill`):
+    Gitea 多文件提交是原子的,authors.json 现在**每次分享都写**,两个人同时分享
+    **不同**技能也会撞在这一个文件的 blob sha 上——归因一条过期就把技能文件一起
+    拖垮,用户看到的是一句与归因毫无关系的冲突错误、分享根本没进去。
+    所以提交被拒时**剥掉归因重试一次**(`REPO_FORBIDDEN` 除外,那是分支保护、
+    调用方要据此降级)。归因丢了下次分享补上,用户的技能必须进得去。
   - **判定"是不是同一个人"要比别名**(展示名 + 登录名):存量 authors.json 按 Gitea
     **登录名**记(初版手工填的、gen-authors 从 git 历史算的都是),而 App 用 full_name
     ——只比展示名的话,作者本人一分享就把自己追加进自己的 contributors。写进文件的

@@ -686,6 +686,40 @@ async fn submit(
 
 // ============================================================ 归因维护(M7 任务 5)
 
+/// 库根归因文件名。它是提交里唯一"可以被牺牲"的条目(见 [`change_files_sparing_skill`])。
+const AUTHORS_FILE: &str = "authors.json";
+
+/// 提交;若因归因条目被拒,**剥掉归因重试一次**,保住用户真正要办的事。
+///
+/// 为什么需要这一层:归因与技能文件在同一笔多文件提交里,而 Gitea 的 contents API
+/// 是原子的——`authors.json` 的 blob sha 一旦过期(**每次分享都写这一个文件**,
+/// 两个人同时分享不同技能就会撞上),**整笔提交连技能文件一起被拒**。
+/// 用户看到的是一句与归因毫无关系的冲突错误,而他的分享根本没进去。
+/// 「归因绝不拦分享」必须在**提交边界**也成立,不能只在读取边界成立。
+///
+/// `REPO_FORBIDDEN` 直接上报:那是分支保护,调用方要据此降级走评审,不是归因的锅。
+async fn change_files_sparing_skill(
+    client: &GiteaClient,
+    owner: &str,
+    repo: &str,
+    req: &ChangeFilesRequest,
+) -> Result<crate::core::gitea::CommitResult, AppError> {
+    match client.change_files(owner, repo, req).await {
+        Ok(commit) => Ok(commit),
+        Err(e) if e.code == "REPO_FORBIDDEN" => Err(e),
+        Err(e) => {
+            let stripped: Vec<FileChange> =
+                req.files.iter().filter(|f| f.path != AUTHORS_FILE).cloned().collect();
+            if stripped.len() == req.files.len() {
+                return Err(e); // 本来就没带归因,如实上报
+            }
+            tracing::warn!(code = %e.code, "带归因修订的提交被拒,剥掉归因重试一次");
+            let retry = ChangeFilesRequest { files: stripped, ..req.clone() };
+            client.change_files(owner, repo, &retry).await
+        }
+    }
+}
+
 /// 归因修订的三种结果。`Untouchable` = 文件在但形状不对,**一个字节都不动**
 /// ——重建会抹掉其他条目,修复交给管理员(scripts/gen-authors.mjs 或手改)。
 #[derive(Debug, PartialEq, Eq)]
@@ -778,7 +812,6 @@ async fn attribution_file_change(
     repo: &RepoRef,
     dir_slug: &str,
 ) -> Option<FileChange> {
-    const AUTHORS_FILE: &str = "authors.json";
     let user = match client.current_user().await {
         Ok(u) => u,
         Err(e) => {
@@ -864,7 +897,7 @@ async fn submit_gitea(
                 message: message.to_string(),
                 files: files.clone(),
             };
-            match client.change_files(&repo.owner, &repo.repo, &direct).await {
+            match change_files_sparing_skill(client, &repo.owner, &repo.repo, &direct).await {
                 Ok(commit) => {
                     return Ok(Submitted {
                         mode: ShareMode::Pushed,
@@ -883,7 +916,7 @@ async fn submit_gitea(
             message: message.to_string(),
             files,
         };
-        let commit = client.change_files(&repo.owner, &repo.repo, &via_branch).await?;
+        let commit = change_files_sparing_skill(client, &repo.owner, &repo.repo, &via_branch).await?;
         let pull = client
             .create_pull(&repo.owner, &repo.repo, &branch_name, &repo.branch, message, "")
             .await?;
@@ -912,7 +945,7 @@ async fn submit_gitea(
         message: message.to_string(),
         files,
     };
-    let commit = client.change_files(&fork.owner, &fork.repo, &via_fork).await?;
+    let commit = change_files_sparing_skill(client, &fork.owner, &fork.repo, &via_fork).await?;
     let pull = client
         .create_pull(
             &repo.owner,

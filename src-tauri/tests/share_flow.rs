@@ -11,7 +11,7 @@ use skillsync_lib::core::fsops;
 use skillsync_lib::core::gitea::{GiteaClient, RepoRef};
 use skillsync_lib::core::share::{self, CandidateOrigin, ShareMode, ShareOutcome, SharePrecheck};
 use skillsync_lib::core::state::{InstalledSkill, LinkRecord, SharedSkill, SkillSource, Store};
-use wiremock::matchers::{body_partial_json, method, path, path_regex};
+use wiremock::matchers::{body_partial_json, body_string_contains, method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const NOW: &str = "2026-07-31T09:00:00.000Z";
@@ -521,6 +521,70 @@ async fn an_entry_recorded_under_the_login_name_recognizes_the_same_person() {
         authors_change(&body).is_none(),
         "author 记的 lisi 就是分享者本人(full_name 李四),不该改动 authors.json"
     );
+}
+
+/// 「归因绝不拦分享」必须在**提交边界**也成立,不只在读取边界。
+///
+/// authors.json 现在每次分享都写,两个人同时分享**不同**技能也会撞在这一个文件的
+/// blob sha 上;而 Gitea 的多文件提交是原子的,归因一条过期就把技能文件一起拖垮,
+/// 用户看到一句与归因毫无关系的冲突错误、分享根本没进去。所以提交被拒时要剥掉
+/// 归因重试一次:归因丢了无所谓(下次分享补上),用户的技能必须进得去。
+#[tokio::test]
+async fn a_stale_attribution_entry_is_dropped_so_the_skill_still_lands() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "我的笔记", "记点东西");
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", false).await;
+    mount_repo_info(&server, true).await;
+    mount_current_user(&server).await;
+    mount_authors_json(&server, Some(r#"{"authors":{"other":{"author":"张三"}}}"#)).await;
+    // 带 authors.json 的提交被拒(模拟并发下 blob sha 过期);不带的放行。
+    // 顺序很重要:wiremock 按注册顺序取**第一个**匹配上的 Mock,所以更具体的"拒绝"
+    // 必须先挂,通用的"放行"挂在后面兜住重试那一次。
+    Mock::given(method("POST"))
+        .and(path("/api/v1/repos/skills/skills/contents"))
+        .and(body_string_contains("authors.json"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+            "message": "sha does not match"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/repos/skills/skills/contents"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "commit": { "sha": "newsha1", "html_url": "http://x/commit/newsha1" }
+        })))
+        .mount(&server)
+        .await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+        .await
+        .expect("归因过期不该让整个分享失败");
+
+    let ShareOutcome::Shared { commit_sha, .. } = outcome else {
+        panic!("应当分享成功");
+    };
+    assert_eq!(commit_sha, "newsha1");
+
+    // 第二次提交(重试)里不带 authors.json,技能文件照旧
+    let reqs = server.received_requests().await.unwrap();
+    let posted: Vec<_> = reqs
+        .iter()
+        .filter(|r| r.url.path() == "/api/v1/repos/skills/skills/contents" && r.method.as_str() == "POST")
+        .collect();
+    assert_eq!(posted.len(), 2, "应当剥掉归因重试一次");
+    let retry: serde_json::Value = serde_json::from_slice(&posted[1].body).unwrap();
+    assert!(authors_change(&retry).is_none(), "重试不该再带归因");
+    assert!(
+        retry["files"].as_array().unwrap().iter().any(|f| f["path"] == "skills/my-notes/SKILL.md"),
+        "技能文件必须还在"
+    );
+    // 记账照常落下——分享确实成功了
+    assert_eq!(state_of(&c).shared.len(), 1);
 }
 
 /// 只读用户的 fork 路径:归因的 blob sha **必须从 fork 仓读**。
