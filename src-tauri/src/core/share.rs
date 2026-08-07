@@ -666,20 +666,16 @@ async fn submit(
                     .map(|f| (f.path, f.sha))
                     .collect()
             };
-            let mut changes: Vec<FileChange> = files
+            let changes = files
                 .into_iter()
                 .map(|(path, bytes)| match remote_shas.get(&path) {
                     Some(sha) => FileChange::update(path.clone(), &bytes, sha.clone()),
                     None => FileChange::create(path.clone(), &bytes),
                 })
                 .collect();
-            // M7 任务 5:归因跟着分享动作走。在这里(三条路分流之前)追加,
-            // 直推/开分支/fork 提交里天然都带上;authors.json 在库根,
-            // 不会与上面按 prefix 过滤的技能文件撞路径。GitHub 臂刻意不做
-            // ——authors.json 是公司库契约,GitHub 源本来就不展示归因。
-            if let Some(fc) = attribution_file_change(c, repo, share_name).await {
-                changes.push(fc);
-            }
+            // 归因修订(M7 任务 5)在 submit_gitea 内部按**实际提交目标仓**追加
+            // ——不能在这里做,fork 路径的目标仓不是 repo。GitHub 臂刻意不做:
+            // authors.json 是公司库契约,GitHub 源本来就不展示归因。
             submit_gitea(c, repo, force_review, changes, message, share_name, now).await
         }
         ShareClient::Github(c) => {
@@ -708,8 +704,18 @@ enum AttributionUpsert {
 /// - 文件坏 JSON、顶层/authors/条目/contributors 形状不对 → `Untouchable`;
 ///   条目缺 author 同理——App 不猜残缺数据的语义,不动它。
 ///
+/// **`aliases` 是同一个人的全部写法**(展示名 + 登录名),只用于"是否已在名单里"的比对;
+/// 写进文件的永远是 `display`。少了它,同一个人会被记成两个:手工维护的初版与
+/// gen-authors 的产出用的是 git 名/登录名,而 App 用 full_name——真实内网库的初版
+/// 正是按登录名填的,而账号可能另设了中文全名,他一分享就会把自己追加成自己的贡献者。
+///
 /// serde_json 开着 preserve_order:其余条目与键序原样保住,diff 只有这一处。
-fn upsert_attribution(existing: Option<&str>, dir_slug: &str, sharer: &str) -> AttributionUpsert {
+fn upsert_attribution(
+    existing: Option<&str>,
+    dir_slug: &str,
+    display: &str,
+    aliases: &[&str],
+) -> AttributionUpsert {
     use serde_json::{json, Map, Value};
     let mut doc: Value = match existing {
         None => json!({ "authors": {} }),
@@ -727,9 +733,10 @@ fn upsert_attribution(existing: Option<&str>, dir_slug: &str, sharer: &str) -> A
     let Some(map) = authors.as_object_mut() else {
         return AttributionUpsert::Untouchable("authors 字段不是对象");
     };
+    let is_me = |name: Option<&str>| name.is_some_and(|n| aliases.contains(&n));
     match map.get_mut(dir_slug) {
         None => {
-            map.insert(dir_slug.to_string(), json!({ "author": sharer }));
+            map.insert(dir_slug.to_string(), json!({ "author": display }));
         }
         Some(entry) => {
             let Some(obj) = entry.as_object_mut() else {
@@ -737,7 +744,7 @@ fn upsert_attribution(existing: Option<&str>, dir_slug: &str, sharer: &str) -> A
             };
             match obj.get("author").and_then(|v| v.as_str()) {
                 None => return AttributionUpsert::Untouchable("该技能的归因条目缺 author"),
-                Some(author) if author == sharer => return AttributionUpsert::Unchanged,
+                Some(author) if is_me(Some(author)) => return AttributionUpsert::Unchanged,
                 Some(_) => {
                     let contributors = obj
                         .entry("contributors")
@@ -745,10 +752,10 @@ fn upsert_attribution(existing: Option<&str>, dir_slug: &str, sharer: &str) -> A
                     let Some(arr) = contributors.as_array_mut() else {
                         return AttributionUpsert::Untouchable("contributors 不是数组");
                     };
-                    if arr.iter().any(|v| v.as_str() == Some(sharer)) {
+                    if arr.iter().any(|v| is_me(v.as_str())) {
                         return AttributionUpsert::Unchanged;
                     }
-                    arr.push(Value::String(sharer.to_string()));
+                    arr.push(Value::String(display.to_string()));
                 }
             }
         }
@@ -779,8 +786,20 @@ async fn attribution_file_change(
             return None;
         }
     };
-    // 展示名口径(用户拍板):full_name 优先,空则 login
-    let sharer = if user.full_name.trim().is_empty() { user.login } else { user.full_name };
+    // 展示名口径(用户拍板):full_name 优先,空则 login。
+    // login 同时作为别名参与"是否已在名单里"的比对——存量数据(手工填的、
+    // gen-authors 从 git 历史算的)记的往往是登录名。
+    let login = user.login.trim().to_string();
+    let full_name = user.full_name.trim().to_string();
+    let display = if full_name.is_empty() { login.clone() } else { full_name };
+    if display.is_empty() {
+        tracing::warn!("分享者身份没有可用的名字,本次跳过归因维护");
+        return None;
+    }
+    let mut aliases: Vec<&str> = vec![display.as_str()];
+    if !login.is_empty() && login != display {
+        aliases.push(login.as_str());
+    }
     let existing = match client.file_content(repo, AUTHORS_FILE).await {
         Ok(v) => v,
         Err(e) => {
@@ -789,7 +808,7 @@ async fn attribution_file_change(
         }
     };
     match existing {
-        None => match upsert_attribution(None, dir_slug, &sharer) {
+        None => match upsert_attribution(None, dir_slug, &display, &aliases) {
             AttributionUpsert::Updated(text) => Some(FileChange::create(AUTHORS_FILE, text.as_bytes())),
             _ => None,
         },
@@ -798,7 +817,7 @@ async fn attribution_file_change(
                 tracing::warn!("authors.json 不是 UTF-8,不动它");
                 return None;
             };
-            match upsert_attribution(Some(text), dir_slug, &sharer) {
+            match upsert_attribution(Some(text), dir_slug, &display, &aliases) {
                 AttributionUpsert::Updated(next) => {
                     Some(FileChange::update(AUTHORS_FILE, next.as_bytes(), sha))
                 }
@@ -830,6 +849,14 @@ async fn submit_gitea(
     let branch_name = review_branch(share_name, now);
 
     if info.permissions.push {
+        // 归因修订并进同一笔提交(M7 任务 5)。**必须在这里按目标仓取 sha**:
+        // blob sha 不跨仓通用,拿上游的 sha 往 fork 上 update 会得到
+        // `404 object does not exist`——整笔提交连技能文件一起失败。
+        // 这个假设是 share_live 的 fork 用例当场证伪的,纯逻辑测试看不见。
+        let mut files = files;
+        if let Some(fc) = attribution_file_change(client, repo, share_name).await {
+            files.push(fc);
+        }
         if !force_review {
             let direct = ChangeFilesRequest {
                 branch: repo.branch.clone(),
@@ -869,6 +896,16 @@ async fn submit_gitea(
 
     // 只读:实测连开分支都 403,唯一的路是 fork
     let fork = client.fork_repo(&repo.owner, &repo.repo).await?;
+    // 归因的 blob sha 必须来自 **fork 仓**——提交发到这里,上游的 sha 在这儿不认。
+    let fork_ref = RepoRef {
+        owner: fork.owner.clone(),
+        repo: fork.repo.clone(),
+        branch: repo.branch.clone(),
+    };
+    let mut files = files;
+    if let Some(fc) = attribution_file_change(client, &fork_ref, share_name).await {
+        files.push(fc);
+    }
     let via_fork = ChangeFilesRequest {
         branch: repo.branch.clone(),
         new_branch: Some(branch_name.clone()),
@@ -1121,7 +1158,7 @@ mod tests {
 
     #[test]
     fn upsert_creates_document_when_repo_has_no_authors_json() {
-        let text = updated(upsert_attribution(None, "weekly-report", "张三"));
+        let text = updated(upsert_attribution(None, "weekly-report", "张三", &["张三"]));
         let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(doc["authors"]["weekly-report"]["author"], "张三");
         // 与 gen-authors.mjs 的产出一致:尾随换行
@@ -1137,7 +1174,7 @@ mod tests {
     "alpha-second": { "author": "李四", "contributors": ["赵六"] }
   }
 }"#;
-        let text = updated(upsert_attribution(Some(existing), "weekly-report", "张三"));
+        let text = updated(upsert_attribution(Some(existing), "weekly-report", "张三", &["张三"]));
         let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(doc["$comment"], "管理员手写的注释要原样保住");
         assert_eq!(doc["authors"]["zulu-first"]["author"], "王五");
@@ -1153,7 +1190,7 @@ mod tests {
     fn upsert_never_rewrites_author_of_existing_entry() {
         // 覆盖他人技能/回推他人技能:分享者进 contributors,author 一个字不动
         let existing = r#"{"authors":{"weekly-report":{"author":"张三"}}}"#;
-        let text = updated(upsert_attribution(Some(existing), "weekly-report", "李四"));
+        let text = updated(upsert_attribution(Some(existing), "weekly-report", "李四", &["李四"]));
         let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(doc["authors"]["weekly-report"]["author"], "张三");
         assert_eq!(doc["authors"]["weekly-report"]["contributors"][0], "李四");
@@ -1163,11 +1200,11 @@ mod tests {
     fn upsert_is_a_no_op_for_author_or_known_contributor() {
         let existing = r#"{"authors":{"weekly-report":{"author":"张三","contributors":["李四"]}}}"#;
         assert_eq!(
-            upsert_attribution(Some(existing), "weekly-report", "张三"),
+            upsert_attribution(Some(existing), "weekly-report", "张三", &["张三"]),
             AttributionUpsert::Unchanged
         );
         assert_eq!(
-            upsert_attribution(Some(existing), "weekly-report", "李四"),
+            upsert_attribution(Some(existing), "weekly-report", "李四", &["李四"]),
             AttributionUpsert::Unchanged
         );
     }
@@ -1176,22 +1213,22 @@ mod tests {
     fn upsert_refuses_to_touch_malformed_files_or_entries() {
         // 坏 JSON:重建会抹掉其他条目,一个字节都不动
         assert!(matches!(
-            upsert_attribution(Some("{not json"), "s", "张三"),
+            upsert_attribution(Some("{not json"), "s", "张三", &["张三"]),
             AttributionUpsert::Untouchable(_)
         ));
         // 顶层不是对象
         assert!(matches!(
-            upsert_attribution(Some("[]"), "s", "张三"),
+            upsert_attribution(Some("[]"), "s", "张三", &["张三"]),
             AttributionUpsert::Untouchable(_)
         ));
         // authors 不是对象
         assert!(matches!(
-            upsert_attribution(Some(r#"{"authors":"nope"}"#), "s", "张三"),
+            upsert_attribution(Some(r#"{"authors":"nope"}"#), "s", "张三", &["张三"]),
             AttributionUpsert::Untouchable(_)
         ));
         // 条目缺 author:残缺数据的语义不猜
         assert!(matches!(
-            upsert_attribution(Some(r#"{"authors":{"s":{"contributors":["x"]}}}"#), "s", "张三"),
+            upsert_attribution(Some(r#"{"authors":{"s":{"contributors":["x"]}}}"#), "s", "张三", &["张三"]),
             AttributionUpsert::Untouchable(_)
         ));
         // contributors 不是数组
@@ -1199,9 +1236,40 @@ mod tests {
             upsert_attribution(
                 Some(r#"{"authors":{"s":{"author":"别人","contributors":"nope"}}}"#),
                 "s",
-                "张三"
+                "张三",
+                &["张三"]
             ),
             AttributionUpsert::Untouchable(_)
         ));
+    }
+
+    /// 同一个人的两种写法必须认作一个人。真实场景:初版 authors.json 按 Gitea
+    /// **登录名**手工填(gen-authors 从 git 历史算出来的也是登录名/git 名),
+    /// 而 App 分享时用的是 **full_name**。不比别名的话,作者本人一分享就会被
+    /// 追加进自己的 contributors——同一个人在界面上出现两次。
+    #[test]
+    fn aliases_keep_one_person_from_becoming_two() {
+        // 条目按登录名记,分享者展示名是中文全名:认出是本人,不动
+        let by_login = r#"{"authors":{"weekly-report":{"author":"wangfurong"}}}"#;
+        assert_eq!(
+            upsert_attribution(Some(by_login), "weekly-report", "王富荣", &["王富荣", "wangfurong"]),
+            AttributionUpsert::Unchanged
+        );
+        // contributors 里按登录名记的也一样认得出
+        let contributed = r#"{"authors":{"weekly-report":{"author":"别人","contributors":["wangfurong"]}}}"#;
+        assert_eq!(
+            upsert_attribution(Some(contributed), "weekly-report", "王富荣", &["王富荣", "wangfurong"]),
+            AttributionUpsert::Unchanged
+        );
+        // 确实是别人时照常追加,而且写进去的是展示名不是登录名
+        let others = r#"{"authors":{"weekly-report":{"author":"张三"}}}"#;
+        let text = updated(upsert_attribution(
+            Some(others),
+            "weekly-report",
+            "王富荣",
+            &["王富荣", "wangfurong"],
+        ));
+        let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(doc["authors"]["weekly-report"]["contributors"][0], "王富荣");
     }
 }

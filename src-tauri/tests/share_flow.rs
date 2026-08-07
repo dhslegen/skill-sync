@@ -492,6 +492,111 @@ async fn share_creates_authors_json_when_library_has_none() {
     assert_eq!(doc["authors"]["my-notes"]["author"], "李四");
 }
 
+/// 存量 authors.json 按 **Gitea 登录名** 记(初版手工填的、gen-authors 从 git 历史
+/// 算的都是这个口径),而 App 分享时用 full_name。别名比对必须认出这是同一个人,
+/// 否则作者本人一分享就把自己追加进自己的 contributors。
+#[tokio::test]
+async fn an_entry_recorded_under_the_login_name_recognizes_the_same_person() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "我的笔记", "记点东西");
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", false).await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    mount_current_user(&server).await; // login: lisi / full_name: 李四
+    mount_authors_json(&server, Some(r#"{"authors":{"my-notes":{"author":"lisi"}}}"#)).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+        .await
+        .unwrap();
+
+    let reqs = server.received_requests().await.unwrap();
+    let posted: Vec<_> = reqs.iter().filter(|r| r.method.as_str() == "POST").collect();
+    let body: serde_json::Value = serde_json::from_slice(&posted[0].body).unwrap();
+    assert!(
+        authors_change(&body).is_none(),
+        "author 记的 lisi 就是分享者本人(full_name 李四),不该改动 authors.json"
+    );
+}
+
+/// 只读用户的 fork 路径:归因的 blob sha **必须从 fork 仓读**。
+/// 拿上游的 sha 往 fork 上 update,Gitea 报 `404 object does not exist`,
+/// 整笔提交连技能文件一起失败——只读用户分享必然报错。这是 share_live 的 fork
+/// 用例当场证伪的假设(纯逻辑测试看不见跨仓 sha 这回事),这里用 mock 钉住。
+#[tokio::test]
+async fn attribution_on_the_fork_path_reads_the_fork_not_the_upstream() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "我的笔记", "d");
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", false).await;
+    mount_repo_info(&server, false).await; // 只读 → fork 路径
+    mount_current_user(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/repos/skills/skills/forks"))
+        .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
+            "name": "skills", "owner": { "login": "zhang-san" }
+        })))
+        .mount(&server)
+        .await;
+    // fork 仓的 authors.json:sha 与上游刻意不同,断言用的就是这个差别
+    let fork_authors = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(r#"{"authors":{"other":{"author":"张三"}}}"#)
+    };
+    Mock::given(method("GET"))
+        .and(path("/api/v1/repos/zhang-san/skills/contents/authors.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "sha": "forkblobsha", "encoding": "base64", "content": fork_authors
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/repos/zhang-san/skills/contents"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "commit": { "sha": "forksha", "html_url": "http://x" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/repos/skills/skills/pulls"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "html_url": "http://x/pulls/9", "number": 9
+        })))
+        .mount(&server)
+        .await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+        .await
+        .unwrap();
+
+    let reqs = server.received_requests().await.unwrap();
+    // 读的是 fork 仓的 authors.json,不是上游的
+    assert!(
+        reqs.iter().any(|r| r.url.path() == "/api/v1/repos/zhang-san/skills/contents/authors.json"),
+        "fork 路径必须读 fork 仓的 authors.json"
+    );
+    assert!(
+        !reqs.iter().any(|r| r.url.path() == "/api/v1/repos/skills/skills/contents/authors.json"),
+        "不该拿上游的 blob sha 往 fork 上提交"
+    );
+    // 提交里带的是 fork 仓的 blob sha
+    let post = reqs
+        .iter()
+        .find(|r| r.url.path() == "/api/v1/repos/zhang-san/skills/contents" && r.method.as_str() == "POST")
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
+    let entry = body["files"].as_array().unwrap().iter().find(|f| f["path"] == "authors.json").unwrap();
+    assert_eq!(entry["sha"], "forkblobsha");
+}
+
 /// 归因是锦上添花:身份/文件读不到(此处连 /user 都没 mock,404)绝不拦分享,
 /// 提交里也不夹带半个 authors.json。上面 fresh 用例的 files.len()==2 断言
 /// 是这条纪律的另一道护栏。
