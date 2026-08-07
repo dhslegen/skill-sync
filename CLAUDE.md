@@ -301,6 +301,17 @@ tags/curated 同款的库侧静态文件,分解在 docs/M7-任务分解.md,只�
 分享链路自动维护 authors.json(起因:git 历史把代传技能都算到上传者头上,
 "谁分享的"比"谁提交的"更接近真相)。细节见「关键事实」的作者条目与 git log。
 
+**下一阶段 = M8:Windows 发版**(2026-08-07 定,分解在 docs/M8-任务分解.md,只在本地)。
+用 Windows 的同事至今拿不到包,已经表达失望——**这是 M8 的首要目标,其余欠账全部
+排在它后面**(顺延清单见 M8 文档第三节,每条都有既有的推迟理由,别当遗漏重做)。
+开工前先认这条硬约束:**Windows 发布包不能走公开 GitHub Actions**
+——仓库是 PUBLIC,Actions artifact 对任何 GitHub 用户可下载,而包里编译进了内网地址,
+违反「安装包只走内部渠道」。现状是安全的(secrets 一个没配,`guard` 会拦;
+公开 release v0.1.0 零附件),**别为了省事把 secrets 配上去**。
+macOS 上交叉编译也不通(aws-lc-sys 要 Windows SDK),所以只能本地 Windows 环境
+或内网 runner 构建;⚠️ 本机是 Apple Silicon,VM 里的 Windows 是 **ARM64**,
+而同事的 PC 多为 x64,**能否交叉出 x64 包必须先实测**,别发个装不上的包出去。
+
 **M1–M6 全部完成并提交**(M6 分解与拍板见 docs/M6-任务分解.md;任务 4/5 中途被用户
 推翻重做过,经过在 git log)。
 **现役版本 v0.3.9**(公告牌实测指向它)。0.3.1–0.3.7 是**为了验证自更新链路连发的**
@@ -329,7 +340,7 @@ tags 当时侥幸没出问题,是因为支持它的版本先到了用户机器�
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 468 + 前端 408 测试通过(M7 起),clippy(**--all-targets**)/eslint/tsc 干净,
+- 本机:Rust 470 + 前端 408 测试通过(M7 起),clippy(**--all-targets**)/eslint/tsc 干净,
   `pnpm dev` 启动冒烟通过(带内网配置实测:商店读到真实库 30 个技能)
 - **双平台 CI**:**M4 任务 1 的两笔(`3857720` / `a7a1de3`)macOS + Windows 双 job 全绿**(2026-08-04 逐 job 实测);
   M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;`de7b233`/`2eb0595` 当时因账号计费
@@ -723,6 +734,12 @@ M7 的契约变更:`StoreSkillCard` 新增 `author`(`string | null`)、`SkillDet
   窗口控制的话用户连关窗都做不到,而关窗现在还接着"缩到托盘"。等有真机再做,连同 vibrancy。
 
 **只能在真机/真实环境验的**
+> ⚠️ 下面前三条(Windows 真机 / cfg(unix) 测试 / Windows GUI)**已归入 M8**,
+> 见 docs/M8-任务分解.md 任务 3;它们欠的不是代码,是一台 x64 Windows 机器。
+> Windows 发布链路本身还缺两块:`latest.json` **没有 `windows-x86_64` 条目**
+> (Windows 用户装上后收不到自更新,v0.1.0/v0.2.0 的坑不能重演)、
+> `publish-release.sh` 全是 macOS 路径。
+
 - **Windows 普通权限真机**(任务 6 欠的最后一档):CI 已验 Windows runner 上 junction
   建链/摘链真实通过,且断言"必须是 junction 而不是 symlink"(C11 的提权假阳性有护栏);
   但 runner 权限宽松 ≠ 普通员工受限机器。"不开开发者模式、普通用户权限下装成功且
