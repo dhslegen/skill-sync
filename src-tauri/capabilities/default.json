@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "主窗口的权限。allow-start-dragging 必须显式加:core:window:default 里没有它,而 data-tauri-drag-region 最终就是靠这条 IPC 挪窗口——缺了它前端毫无异常、窗口就是拖不动(守卫见 tests/bundle_config.rs)",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "opener:default",
-    "notification:default"
+    "notification:default",
+    "core:window:allow-start-dragging"
   ]
 }

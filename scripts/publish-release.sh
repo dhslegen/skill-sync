@@ -262,6 +262,66 @@ if [[ -n "$WIN_EXE" ]]; then
   curl -sSfI "$WIN_URL" >/dev/null || { echo "❌ Windows 包下载地址不可达:$WIN_URL" >&2; exit 1; }
 fi
 
+# ---------- 同步 README 到发布仓(2026-08-11 用户要求)----------
+# 发布仓的首页是**同事下载安装包时唯一会看到的说明**,此前一直是建仓时那句
+# 「# skillsync-releases」空壳。同步"同款 README",顺带把 RELEASE_NOTES.md 一起送过去
+# ——README 里有两处指向它的相对链接,只送一个文件那两处就是死链。
+# 开发者文档(CLAUDE.md / docs/terminology.md)在发布仓不存在,改写成公开仓的绝对地址。
+# 两个文件走**一笔提交**(Gitea 多文件接口),避免首页与版本历史短暂不一致。
+# 请求体字段一律 snake_case(`new_branch` 那个坑,见 CLAUDE.md 关键事实)。
+# 口径同 artifact 清理:**失败只警告,不让发版以非零退出**——包已经发出去了。
+echo "==> 同步 README 到发布仓"
+if ! RELEASE_TOKEN="$SKILLSYNC_RELEASE_TOKEN" REPO_API="$REPO_API" VERSION="$VERSION" python3 - <<'PYEOF'
+import base64, json, os, sys, urllib.request, urllib.error
+
+api = os.environ["REPO_API"]
+token = os.environ["RELEASE_TOKEN"]
+version = os.environ["VERSION"]
+GITHUB = "https://github.com/dhslegen/skill-sync/blob/main"
+
+
+def call(method, path, payload=None):
+    req = urllib.request.Request(
+        api + path, method=method,
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers={"Authorization": f"token {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
+
+
+branch = call("GET", "").get("default_branch") or "main"
+
+readme = open("README.md", encoding="utf-8").read()
+# 发布仓没有开发者文档,相对链接会 404;指到公开仓去
+readme = readme.replace("](./CLAUDE.md)", f"]({GITHUB}/CLAUDE.md)")
+readme = readme.replace("](./docs/terminology.md)", f"]({GITHUB}/docs/terminology.md)")
+
+files = []
+for path, text in (("README.md", readme),
+                   ("RELEASE_NOTES.md", open("RELEASE_NOTES.md", encoding="utf-8").read())):
+    try:
+        sha = call("GET", f"/contents/{path}?ref={branch}")["sha"]
+        op = {"operation": "update", "sha": sha}
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+        op = {"operation": "create"}   # 首次同步
+    files.append({**op, "path": path,
+                  "content": base64.b64encode(text.encode()).decode()})
+
+call("POST", "/contents", {
+    "branch": branch,
+    "message": f"同步 SkillSync {version} 的说明文档(由 publish-release.sh 自动维护)",
+    "files": files,
+})
+print(f"   已同步 README.md + RELEASE_NOTES.md → {branch}")
+PYEOF
+then
+  echo "   ⚠️ README 同步失败(**发版本身已成功**)。手动补:在发布仓把 README.md" >&2
+  echo "      与 RELEASE_NOTES.md 覆盖成本仓同名文件即可,不影响任何已发出去的包。" >&2
+fi
+
 # ---------- 清理公开 CI 上的 artifact(2026-08-07 用户拍板)----------
 # 分发实际走内网发布仓,GitHub 上那份副本没有任何人用,却带着编译进去的内网配置
 # 在公开仓挂 90 天(删 tag **不会**删 artifact,要按 artifact id 逐个删)。

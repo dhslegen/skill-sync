@@ -640,15 +640,33 @@ M7 的契约变更:`StoreSkillCard` 新增 `author`(`string | null`)、`SkillDet
 - **`open_library_url` 只放行与内建 Gitea 同源的地址**(scheme+host+port 全等),
   `javascript:`/`file:` 一律拒绝——那是从 webview 通往系统的通道。多源之后要按 registry 放行,
   但别放宽成"任意 URL"。
-- **窗口能被拖动,靠的是两块"真的空着"的区域**(2026-08-07 用户报"窗口拖不动"):
-  Sidebar 顶部那条 52px(给 macOS 红绿灯让位的空白)与 Toolbar 容器本身,
-  两处都挂 `data-tauri-drag-region`。
+- **窗口拖动要两个条件同时成立:前端有拖拽区 + capability 授了
+  `core:window:allow-start-dragging`**(2026-08-11 真机验证)。
+  - 🔴 **`core:window:default` 里没有 `allow-start-dragging`**,必须在
+    `capabilities/default.json` 里显式加(项目自己的 `gen/schemas/acl-manifests.json`
+    可核实:默认集 28 条,有 `allow-internal-toggle-maximize`、唯独没有它)。
+    缺了它的表现极具迷惑性:tauri 注入的 `drag.js` 在 `document` 上照常收到 mousedown、
+    判定也过了,只是最后那句 `invoke('plugin:window|start_dragging')` 被 ACL 拒掉
+    ——**前端毫无异常,控制台之外零痕迹**。这个应用从 M1 到 v0.3.12 的窗口
+    **一次都没能拖动过**,期间两轮"修复"(删死代码层、给 Sidebar 顶部加拖拽区)
+    修的都是没坏的地方:DOM 一直是对的。守卫
+    `bundle_config.rs::drag_regions_require_the_start_dragging_permission`。
+    ⚠️ 可证伪的对照:**双击最大化用的是默认就给的那条权限**,所以"双击能最大化、
+    按住拖不动"就是 ACL 缺权限的现场指纹,别再去查 DOM。
+  - 拖拽区在三处:Sidebar 顶部那条 52px(给 macOS 红绿灯让位的空白)、Toolbar 容器、
+    向导顶部 h-11,都挂 `data-tauri-drag-region`。
   - ⚠️ **别再往顶部加"横跨全宽的拖拽层"**:那样会盖住 Toolbar 上的所有控件,
     唯一的补救是 `pointer-events-none`,而它把拖拽也一起废掉——两者不可兼得。
     App.tsx 里原先就有这么一层,写着 drag region 却从来没生效过。
-  - 拖拽区只挂在**容器**上,内部每个可点控件都不在拖拽区内,否则按下按钮
-    会被当成拖窗口、点击永远发不出去(UI 规范 §6.1)。
-  - 守卫:`Sidebar.test.tsx` 断言拖拽区存在**且不带 `pointer-events-none``。
+  - **裸写的 `data-tauri-drag-region` 是 self 语义**(`drag.js` 里
+    `el === composedPath[0]`):只有直接点在该元素上才算,想让整个子树可拖要写
+    `data-tauri-drag-region="deep"`。所以拖拽区只挂在**容器**上,内部每个可点控件
+    都不在拖拽区内,否则按下按钮会被当成拖窗口、点击永远发不出去(UI 规范 §6.1)。
+  - **`drag.js` 的监听器挂在 `document` 的冒泡阶段**:路径上任何一处
+    `stopPropagation()` 都能让拖拽整体失效(React 合成事件的 stopPropagation
+    会连原生事件一起停在 root 容器上,根本到不了 `document`)。
+  - 守卫:`Sidebar.test.tsx` 断言拖拽区存在**且不带 `pointer-events-none`**;
+    权限那条由 `bundle_config.rs` 守着,判据是"前端有没有拖拽区",拖拽区搬家也不失效。
 - **托盘/菜单栏:左键开窗口,右键出菜单**(2026-08-07 用户提,两个平台的系统惯例):
   `show_menu_on_left_click(false)` + `on_tray_icon_event` 里只认
   **左键 + 抬起**(`MouseButtonState::Up`)。认"按下"会在 macOS 上用户
@@ -866,8 +884,14 @@ README 的版本历史都从它来,不手抄第二份。README 的「版本历�
 部署指南 §7.4)。它包办:改三处版本号 → **commit + tag + push**(tag 触发 GitHub CI
 出 Windows 包,与本地构建并行;版本号必须先进 tag,这步没法留给人)→ 本地构建
 macOS(签名+公证)→ 打 dmg → 等 CI → 下载 exe 本地补签(私钥不进公开 CI)→
-建版本 release 传五个产物 → 重建**三平台** latest 公告牌 → curl 验收。
-版本号 commit 已由脚本推送,跑完不用再手动 commit。应急开关 `SKIP_WINDOWS=1`
+建版本 release 传五个产物 → 重建**三平台** latest 公告牌 → curl 验收 →
+**同步 README.md + RELEASE_NOTES.md 到发布仓**(2026-08-11 加:发布仓首页是同事
+下载安装包时唯一会看到的说明,此前一直是建仓那句空壳;两个文件走一笔提交,
+README 里指向 RELEASE_NOTES 的相对链接才不是死链;开发者文档链接改写成公开仓绝对地址;
+失败只警告不让发版非零退出)→ 清理公开 CI artifact → 回收 Rust 孤儿产物
+(`cargo sweep --maxsize 20GB`,单位默认 MB、PATH 收项目目录,两个坑见脚本注释)。
+版本号 commit 已由脚本推送,跑完不用再手动 commit(但 **Cargo.lock 每次都会剩一笔**,
+脚本只 add 三个版本号文件)。应急开关 `SKIP_WINDOWS=1`
 只发 macOS(公告牌将没有 windows 条目,Windows 用户收不到那版更新)。
 
 **已实测的发布终态**(2026-08-06):发布仓有 v0.2.1/v0.2.2,latest 公告牌指向 0.2.2;

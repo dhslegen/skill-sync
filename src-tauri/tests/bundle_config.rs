@@ -303,3 +303,77 @@ fn keyring_service_name_is_pinned_independently_of_the_bundle_id() {
         "bundle identifier 不能以 .app 结尾:与 macOS 应用包扩展名冲突,tauri 会告警"
     );
 }
+
+/// 前端有拖拽区,capability 就必须显式授 `core:window:allow-start-dragging`。
+///
+/// **`core:window:default` 不含这一条**(2026-08-11 用真机验证 + 本项目自己生成的
+/// `gen/schemas/acl-manifests.json` 核实:默认集 28 条,有
+/// `allow-internal-toggle-maximize`,唯独没有 `allow-start-dragging`)。
+/// 少了它的表现极具迷惑性:`data-tauri-drag-region` 的标记、层级、pointer-events
+/// 全都对,tauri 注入的 drag.js 也确实在 `document` 上收到了 mousedown,
+/// 但它最后那句 `invoke('plugin:window|start_dragging')` 被 ACL 拒掉
+/// ——**前端一点反应都没有,控制台之外没有任何痕迹**。
+///
+/// 代价是这个应用从 M1 到 v0.3.12 的窗口**一次都没能拖动过**,而两轮"修复"
+/// (删死代码层、给 Sidebar 顶部加拖拽区)修的都是没坏的地方:DOM 一直是对的。
+/// 判据取"前端有没有拖拽区",而不是硬编码某个文件——拖拽区搬家了守卫也不该失效。
+#[test]
+fn drag_regions_require_the_start_dragging_permission() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+
+    fn has_drag_region(dir: &std::path::Path) -> bool {
+        std::fs::read_dir(dir).map(|entries| {
+            entries.filter_map(Result::ok).any(|e| {
+                let p = e.path();
+                if p.is_dir() {
+                    has_drag_region(&p)
+                } else if p.extension().is_some_and(|x| x == "tsx" || x == "ts") {
+                    // 测试文件里的断言字符串不算"用了拖拽区"
+                    !p.to_string_lossy().contains(".test.")
+                        && std::fs::read_to_string(&p)
+                            .is_ok_and(|s| s.contains("data-tauri-drag-region"))
+                } else {
+                    false
+                }
+            })
+        })
+        .unwrap_or(false)
+    }
+
+    if !has_drag_region(&root.join("src")) {
+        return; // 前端不再有拖拽区,这条守卫无从谈起
+    }
+
+    let cap = std::fs::read_to_string(root.join("src-tauri/capabilities/default.json"))
+        .expect("缺 capabilities/default.json");
+    assert!(
+        cap.contains("core:window:allow-start-dragging"),
+        "前端有 data-tauri-drag-region,但 capability 没授 core:window:allow-start-dragging。\
+         core:window:default **不包含**它,不显式加就等于窗口永远拖不动,\
+         而且前端看不出任何异常——这个缺陷已经活过 12 个版本"
+    );
+}
+
+/// 发版必须把说明文档同步到内网发布仓。
+///
+/// 发布仓的首页是**同事下载安装包时唯一会看到的说明**,而它长期是建仓时那句
+/// 「# skillsync-releases」空壳(2026-08-11 用户指出)。README 里有两处指向
+/// RELEASE_NOTES.md 的相对链接,所以两个文件必须一起送——只送 README 等于送了两条死链。
+#[test]
+fn publish_script_syncs_docs_to_the_release_repo() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+    let script = std::fs::read_to_string(root.join("scripts/publish-release.sh")).unwrap();
+    let sync = script
+        .split_once("同步 README 到发布仓")
+        .expect("publish-release.sh 不再同步 README——发布仓首页会停在旧版本")
+        .1;
+    // 只看同步段落内部,免得被脚本别处出现的同名字符串蒙混过去
+    let sync = &sync[..sync.find("清理公开 CI").unwrap_or(sync.len())];
+    for f in ["README.md", "RELEASE_NOTES.md"] {
+        assert!(sync.contains(f), "同步段落没带上 {f}");
+    }
+    assert!(
+        sync.contains("\"/contents\""),
+        "同步没走 Gitea 多文件接口:两个文件分两笔提交会让首页与版本历史短暂不一致"
+    );
+}
