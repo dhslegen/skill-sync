@@ -279,6 +279,39 @@ if [[ -n "${RUN_ID:-}" ]]; then
   done
 fi
 
+# ---------- 回收 Rust 构建的孤儿产物(2026-08-10 用户拍板)----------
+# 为什么挂在发版脚本里:cargo **没有任何 GC 机制**,而发版正是孤儿产物的最大来源。
+# 产物文件名里的 hash 来自 metadata(版本号/features/依赖/编译 flag),**不含源码内容**
+# ——所以纯改代码是原地覆盖,不累积;而**版本号一变,整套产物换新名、旧的全成孤儿**。
+# 实测:src-tauri/target 从 M1 开工到 2026-08-10(约 10 天、13 个版本)堆到 73GB,
+# 其中 deps/ 43GB 里躺着 576327 个 .o(macOS debug 默认 split-debuginfo=unpacked,
+# DWARF 调试信息散在每个 codegen unit 的 .o 里),incremental/ 另有 32GB。
+# 单个集成测试二进制在 debug 下 65MB,而 tests/ 有 28 个 crate,每个都全量链接 lib。
+#
+# 调试信息档位**刻意保持现状**(未设 [profile.dev] debug):排查 Rust 侧问题
+# 高度依赖 backtrace 与 lldb,压体积的收益不值得拿它换——用定期回收解决,不用降级调试能力。
+#
+# 与上面 artifact 清理同一口径:**回收失败只警告,绝不让发版以非零退出**
+# (发版已经成功了)。工具没装也只提示不拦——换台机器发版不该因为少个开发工具就失败。
+if command -v cargo-sweep >/dev/null 2>&1; then
+  echo "==> 回收 Rust 构建的孤儿产物"
+  BEFORE_KB="$(/usr/bin/du -sk src-tauri/target 2>/dev/null | cut -f1 || echo 0)"
+
+  # 策略 = **硬上限 20GB**(2026-08-11 用户拍板),不是 --time 时间窗口:
+  # 发版密集时"7 天内"能同时躺着好几个版本的整套产物,时间窗口给不出体积保证。
+  # maxsize 从最老的开始删,近期产物保留,下次增量重编不受影响。
+  # 两个易错点(都已用 --help 与 --dry-run 核实过,别凭记忆改):
+  #   ① **单位默认 MB**,必须写 `20GB`——写成 `20` 就是 20MB,会把整个 target 扫空;
+  #   ② `[PATH]` 收的是**项目目录**(含 Cargo.toml),给 `src-tauri/target` 只会
+  #      WARN "does not exist" 然后静默什么都不删。
+  cargo sweep --maxsize 20GB src-tauri || true
+
+  AFTER_KB="$(/usr/bin/du -sk src-tauri/target 2>/dev/null | cut -f1 || echo 0)"
+  echo "   target: $((BEFORE_KB/1024))MB → $((AFTER_KB/1024))MB"
+else
+  echo "   ⚠️ 未装 cargo-sweep,跳过孤儿产物回收(装它:cargo install cargo-sweep)" >&2
+fi
+
 echo
 echo "✅ v$VERSION 发布完成"
 echo "   新用户安装包:$GITEA/skills/skillsync-releases/releases  (发 dmg / x64-setup.exe 链接到内网群即可)"
