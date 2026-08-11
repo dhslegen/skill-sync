@@ -1,7 +1,7 @@
 {
   "name": "skillsync",
   "private": true,
-  "version": "0.3.11",
+  "version": "0.3.12",
   "type": "module",
   "pnpm": {
     "onlyBuiltDependencies": [
