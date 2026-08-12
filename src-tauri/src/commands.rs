@@ -1931,6 +1931,53 @@ pub async fn plaza_search(query: String) -> Result<Vec<plaza::PlazaSkillCard>, A
     plaza::search(&http, plaza::PLAZA_API_BASE, &query).await
 }
 
+/// 校验广场坐标的形状:必须是恰好一层 `owner/repo`,两段都不能空。
+/// 拒绝多段路径(`a/b/c`)——广场只给单层坐标,多一段大概率是把 skills.sh 的
+/// `id`(`owner/repo/skill-name`)错传成了 `owner_repo`。
+fn parse_owner_repo(owner_repo: &str) -> Result<(&str, &str), AppError> {
+    match owner_repo.split_once('/') {
+        Some((owner, repo)) if !owner.is_empty() && !repo.is_empty() && !repo.contains('/') => {
+            Ok((owner, repo))
+        }
+        _ => Err(AppError::new(
+            "REPO_INVALID_REGISTRY",
+            "技能坐标格式不对,应为「拥有者/技能库名」这样的两段式",
+        )
+        .with_detail(owner_repo.to_string())),
+    }
+}
+
+/// 幂等挂仓(M9 任务 3):把广场搜索结果的 `owner/repo` 坐标写进
+/// `config.plazaRepos`,之后获取/更新走既有获取 IPC(`registryId: "plaza"`)与
+/// `acquire` 全链路——本命令只管把坐标挂上,`acquire` 侧零逻辑改动。
+///
+/// 幂等判定与追加动作都在 `registry::find_plaza_repo`/`record_plaza_repo`(纯逻辑,
+/// 已单测);这里只做参数转换、按需发一次 HTTP 探测、原子写回 config,是"薄壳"。
+///
+/// **绝不经 `registry::add_repo`**:那条入口对 `PLAZA_REGISTRY_ID` 报
+/// `REPO_BUILTIN_LOCKED`(M9 任务 2 刻意加的守卫——广场坐标只能由"装了一个搜索结果"
+/// 这件事产生,不许手填 owner/repo)。本命令直接操作 `config.plaza_repos`,
+/// 是唯一被允许绕过该守卫的调用方。
+#[tauri::command]
+pub async fn plaza_ensure_repo(owner_repo: String) -> Result<registry::RepoView, AppError> {
+    let (owner, repo) = parse_owner_repo(&owner_repo)?;
+
+    let store = app_store()?;
+    let mut config = store.load_config()?.value;
+
+    if let Some(view) = registry::find_plaza_repo(&config.plaza_repos, owner, repo) {
+        return Ok(view);
+    }
+
+    // 外部服务,跟随系统代理(M3 决策),与 plaza_search 同一支 client。
+    let http = crate::core::gitea::app_http_client_proxied()?;
+    let branch = plaza::default_branch(&http, plaza::PLAZA_GITHUB_API_BASE, owner, repo).await?;
+
+    let view = registry::record_plaza_repo(&mut config.plaza_repos, owner, repo, branch);
+    store.save_config(&config)?;
+    Ok(view)
+}
+
 fn app_store() -> Result<state::Store, AppError> {
     state::Store::for_env(&SystemEnv)
         .ok_or_else(|| AppError::new("FS_NO_HOME", "找不到用户主目录,无法保存本地数据"))
@@ -2217,5 +2264,28 @@ mod tests {
         );
         // 账上没有:留给 share_installed 报 FS_NOT_INSTALLED,不在这层另造错误
         assert_eq!(installed_repo_key(&st, "never-installed"), None);
+    }
+
+    // ============================================================ 广场挂仓(M9 任务 3)
+
+    #[test]
+    fn parse_owner_repo_accepts_a_single_level_pair() {
+        assert_eq!(parse_owner_repo("vercel-labs/skills").unwrap(), ("vercel-labs", "skills"));
+    }
+
+    #[test]
+    fn parse_owner_repo_rejects_missing_slash_or_empty_segments() {
+        for bad in ["no-slash", "/repo", "owner/", "/", ""] {
+            let err = parse_owner_repo(bad).unwrap_err();
+            assert_eq!(err.code, "REPO_INVALID_REGISTRY", "input={bad:?}");
+        }
+    }
+
+    /// 广场只给单层坐标;三段路径(比如误传了 skills.sh 的 `id`
+    /// `owner/repo/skill-name`)必须被拒,不能悄悄把中间段当成 repo 名。
+    #[test]
+    fn parse_owner_repo_rejects_more_than_one_slash() {
+        let err = parse_owner_repo("owner/repo/skill-name").unwrap_err();
+        assert_eq!(err.code, "REPO_INVALID_REGISTRY");
     }
 }

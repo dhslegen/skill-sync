@@ -184,7 +184,8 @@ pub fn run() {
             commands::share_candidates,
             commands::skill_share,
             commands::skill_share_changes,
-            commands::plaza_search
+            commands::plaza_search,
+            commands::plaza_ensure_repo
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -631,3 +631,12 @@ export interface PlazaSkillCard {
  */
 export const plazaSearch = (query: string) =>
   call<PlazaSkillCard[]>("plaza_search", { query });
+
+/**
+ * 幂等挂仓(M9 任务 3):把广场搜索结果的 `ownerRepo`(`owner/repo`)坐标写进
+ * `config.plazaRepos`。已挂过直接返回既有视图,不重复发探测请求。返回的
+ * `RepoView.key` 直接喂给既有获取 IPC(`registryId: "plaza", repo: key`),
+ * 走 acquire 全链路——这里只管挂仓这一步(编排在任务 5)。
+ */
+export const plazaEnsureRepo = (ownerRepo: string) =>
+  call<RepoView>("plaza_ensure_repo", { ownerRepo });

@@ -505,6 +505,41 @@ pub fn add_repo(
     Ok(entry)
 }
 
+/// 广场专用的挂仓判定(M9 任务 3)。**唯一**被允许写 `config.plazaRepos` 的入口的
+/// 前半段——`add_repo` 对 `PLAZA_REGISTRY_ID` 锁死(见其文档),广场坐标只能由
+/// "获取一个搜索结果"这件事产生,不接受手填 owner/repo 的表单。
+///
+/// 这个坐标是否已经挂过。已挂 → 给出它的视图(`commands::plaza_ensure_repo`
+/// 据此免发一次网络探测,幂等的关键就在这一步)。
+pub fn find_plaza_repo(plaza_repos: &[RepoConfig], owner: &str, repo: &str) -> Option<RepoView> {
+    let key = repo_key(owner, repo);
+    plaza_repos
+        .iter()
+        .find(|r| repo_key(&r.owner, &r.repo) == key)
+        .map(|r| repo_view(r, false))
+}
+
+/// 把一个新探测到的坐标追加进 `plaza_repos`,给出它的视图。
+///
+/// **调用前必须先 [`find_plaza_repo`] 确认不存在**——本函数不做去重。刻意不在这里
+/// 重复查一遍:CLAUDE.md 测试要求点名的空转模式之一就是"同一条规则查两遍",
+/// 其中一遍在正常调用路径下永远不触发,改坏也不会变红。去重判据只此一处。
+pub fn record_plaza_repo(
+    plaza_repos: &mut Vec<RepoConfig>,
+    owner: &str,
+    repo: &str,
+    branch: String,
+) -> RepoView {
+    let entry = RepoConfig {
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+        branch,
+        name: None,
+    };
+    plaza_repos.push(entry.clone());
+    repo_view(&entry, false)
+}
+
 /// 从源里移除一个技能库。内建主仓锁定;自定义源不允许删到空
 /// (最后一个仓请直接移除整个来源,免得留下一个解析必败的空壳源)。
 pub fn remove_repo(
@@ -1368,5 +1403,66 @@ mod tests {
         // 与是否配置了任何源无关:一个源都没有,skills.sh 仍然放行
         let unconfigured = BuiltinSource { base_url: None, repo: None, branch: "main" };
         assert!(url_allowed(&unconfigured, &[], "https://skills.sh/x"));
+    }
+
+    // ============================================================ 广场挂仓(M9 任务 3)
+
+    #[test]
+    fn find_plaza_repo_returns_none_when_not_yet_hung() {
+        assert!(find_plaza_repo(&[], "vercel-labs", "skills").is_none());
+        assert!(find_plaza_repo(&[plaza_repo()], "someone", "else").is_none());
+    }
+
+    #[test]
+    fn find_plaza_repo_returns_the_view_when_present() {
+        let view = find_plaza_repo(&[plaza_repo()], "vercel-labs", "skills")
+            .expect("已挂过的坐标应能找到");
+        assert_eq!(view.key, "vercel-labs/skills");
+        assert_eq!(view.owner, "vercel-labs");
+        assert_eq!(view.repo, "skills");
+        assert_eq!(view.branch, "main");
+        // 与 list() 里广场行的口径一致:没有主仓,仓本身不锁定
+        assert!(!view.primary);
+        assert!(!view.locked);
+    }
+
+    #[test]
+    fn record_plaza_repo_appends_and_returns_a_matching_view() {
+        let mut repos = Vec::new();
+        let view = record_plaza_repo(&mut repos, "vercel-labs", "skills", "develop".into());
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].owner, "vercel-labs");
+        assert_eq!(repos[0].repo, "skills");
+        assert_eq!(repos[0].branch, "develop");
+        assert_eq!(view.key, "vercel-labs/skills");
+        assert_eq!(view.branch, "develop");
+        assert!(!view.primary);
+        assert!(!view.locked);
+
+        // 挂完之后立刻能被 find 到,且分支是刚探测出的值——这正是 commands::plaza_ensure_repo
+        // 幂等判定要用的路径。
+        let found = find_plaza_repo(&repos, "vercel-labs", "skills").unwrap();
+        assert_eq!(found.branch, "develop");
+    }
+
+    /// 挂完之后 `resolve(plaza, key)` 立即可用,分支取的正是刚记下的探测值
+    /// ——这是 `plaza_ensure_repo` 与既有获取 IPC 之间唯一的耦合点,必须闭环。
+    #[test]
+    fn resolve_sees_a_repo_immediately_after_record_plaza_repo() {
+        let mut repos = Vec::new();
+        record_plaza_repo(&mut repos, "vercel-labs", "skills", "develop".into());
+
+        let resolved = resolve(
+            &fake_builtin(),
+            &[],
+            &[],
+            PLAZA_REGISTRY_ID,
+            Some("vercel-labs/skills"),
+            &repos,
+        )
+        .unwrap();
+        assert_eq!(resolved.repo.branch, "develop");
+        assert_eq!(resolved.base_url, PLAZA_BASE_URL);
+        assert_eq!(resolved.kind, RegistryKind::Github);
     }
 }
