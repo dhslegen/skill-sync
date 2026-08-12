@@ -112,6 +112,9 @@ src-tauri/src/
   core/github.rs     GitHub client:读链路(branches/zipball,RepoSource trait)+
                      device flow 原语 + current_user + 写链路(M3-5b:repo_view 权限、
                      createCommitOnBranch、git/refs、pulls、fork+就绪轮询)
+  core/plaza.rs      技能广场(M9):skills.sh 搜索原语(宽容解析)+ 挂仓预检
+                     (default_branch,复用 github::fetch_repo_view)+ fetch_repo_skills
+                     (详情面板不联网承诺的唯一破例,现拉 zipball 走既有 store::build_index)
   commands.rs        Tauri IPC command 定义(薄壳,逻辑在 core)+ 托盘/updater 接线在 lib.rs
 resources/agents.json  75-agent 注册表(移植自 vercel-labs/skills v1.5.20,MIT,保留出处注释)
 scripts/           维护脚本(verify-*.mjs 跑上游源码生成 ground-truth fixture;
@@ -301,7 +304,28 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
   它就是这个项目的开发者文档。**别按全局规则把它加进 exclude 或重写历史**。
   仍然适用的部分:`docs/*`(除放行的两个)、`_*.md`、AI 流程产物一律不进版本控制。
 
-## 当前进度(2026-08-11,M7 完成 + M8 任务 1-3 完成,现役 v0.3.13)
+## 当前进度(2026-08-12,M9 完成,M7 完成 + M8 任务 1-3 完成,现役 v0.3.13)
+
+**M9 = 技能广场**(skills.sh 发现层接入,方案见本地 `docs/设计-技能广场-
+skills.sh发现层接入.md`,调查见本地 `docs/调查-npx-skills-find-开放API.md`,
+任务分解与逐任务报告只在本地,不进版本控制)。商店库切换器里加固定一档
+「技能广场」:搜 skills.sh → 结果是 GitHub `owner/repo` 坐标 → 点开现拉详情 →
+装的时候先幂等挂仓(`plaza_ensure_repo`)再走**既有** GitHub 源 acquire 全链路
+——协议层零新代码,新增的只有「调 skills.sh 搜索 API」这一件事(调查报告的
+核心结论)。任务 1 `core/plaza.rs` 搜索原语 + `plaza_search` → 任务 2 广场源
+六处穿线(见「现役机制约束」)→ 任务 3 `plaza_ensure_repo` 幂等挂仓 + 安装链路
+→ 任务 4 `plaza_detail` 现拉详情 + 进程内缓存(详情面板不联网承诺的唯一破例)
+→ 任务 5 前端「技能广场」页 → 任务 6(本任务)live 测试 + 承诺同步。
+**`INDEX_SCHEMA_VERSION` 本里程碑未动**(仍为 3,`store.rs` 全程零改动,
+`changing_the_cached_skill_shape_forces_a_version_decision` 断言值也未变——
+2026-08-12 收尾时确认过 `git diff 6037725..b559dc6 -- src-tauri/src/core/store.rs`
+在任务 1–5 的七笔提交里为空)。
+**已实测**:本机 `SKILLSYNC_PLAZA_LIVE=1 cargo test --test plaza_live -- --nocapture`
+真跑通(2026-08-12):`q=react` 搜到 20 条,每条 `source` 均为合法 `owner/repo`;
+`vercel-labs/agent-skills` 走 `fetch_repo_skills` 真实发现 9 个技能。
+**未验证**:同事内网办公机对 skills.sh / github.com 的可达性(降级已按设计
+干净,连不上=没这功能、不影响公司技能库,真机验收时看一眼即可);广场页的
+真机视觉自查(未请用户看过一眼,前五个任务的界面截图停留在本机开发环境)。
 
 **M7 = 作者/贡献者展示**(M6 候选三,方案在拍板过程中被用户推翻两次,终稿是
 tags/curated 同款的库侧静态文件,分解在 docs/M7-任务分解.md,只在本地):
@@ -363,12 +387,20 @@ tags 当时侥幸没出问题,是因为支持它的版本先到了用户机器�
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust 483 + 前端 411 测试通过(2026-08-11 v0.3.13 起),clippy(**--all-targets**)/eslint/tsc 干净,
-  `pnpm dev` 启动冒烟通过(带内网配置实测:商店读到真实库 30 个技能)
-- **双平台 CI**:**M4 任务 1 的两笔(`3857720` / `a7a1de3`)macOS + Windows 双 job 全绿**(2026-08-04 逐 job 实测);
-  M3 任务 1–5a(`2006213`…`5259ea2`)连续五次全绿;`de7b233`/`2eb0595` 当时因账号计费
-  被拒,仓库转公开后 2026-08-03 rerun 双 job 全绿(任务 6 的 claim_flow junction 路径
-  首次真实过 CI)。**下一个提交的 CI 结论自己 `gh run list` 看,别照抄这一行**
+- 本机:Rust **542**(含 M9 新增的 6 个 `plaza_*` 集成测试文件,以及 `plaza_live` 的
+  2 条——默认跳过时它们走早退分支、仍算通过计进这个数,真正联网跑的那次结果记在
+  「M9 = 技能广场」一节)+ 前端 **480** 测试通过(2026-08-12 M9 任务 6 收尾时串行
+  实测,五道闸全绿),clippy(**--all-targets**)/eslint/tsc 干净。此前 v0.3.13 发版时
+  记的是 Rust 483 + 前端 411——**这行数字每次任务收尾自己重跑,不要照抄上一版**。
+  `pnpm dev` 启动冒烟通过(带内网配置实测:商店读到真实库 30 个技能,此前记录)
+- **双平台 CI**:M9 任务 1–5 的七笔提交(`624056a`…`b559dc6`,任务 3、4 各拆成两笔)
+  逐笔 `gh run view` 核实 macOS + Windows 双 job 均绿(2026-08-12 实测,不是只看
+  `gh run list` 的整体状态——`624056a`/`d8defab` 两笔一开始漏了逐 job 核实,
+  发现后补查确认无误);最新一笔 `b559dc6` 耗时 8m10s。**M4 任务 1 的两笔(`3857720` / `a7a1de3`)
+  macOS + Windows 双 job 全绿**(2026-08-04 逐 job 实测);M3 任务 1–5a(`2006213`…
+  `5259ea2`)连续五次全绿;`de7b233`/`2eb0595` 当时因账号计费被拒,仓库转公开后
+  2026-08-03 rerun 双 job 全绿(任务 6 的 claim_flow junction 路径首次真实过 CI)。
+  **下一个提交的 CI 结论自己 `gh run list` 看,别照抄这一行**
 - **真实 GitHub e2e 已跑通**:读链路(任务 4,`github_live` 对 dhslegen/skills
   走完 索引→发现→安装→lock 双写)、device flow 登录(5a,`device_flow_live`,
   身份 dhslegen)、分享写路径(5b,`share_github_live` 对一次性测试仓走完
@@ -402,6 +434,14 @@ M7 的契约变更:`StoreSkillCard` 新增 `author`(`string | null`)、`SkillDet
 `attribution`(`{author, contributors} | null`);**没有**新增 command 与事件
 ——归因随索引一起下来,前端零新增请求。新增 core 原语 `gitea::file_content`
 (contents API 读单文件内容 + blob sha)。
+M9 新增的 IPC:`plaza_search`(query → `PlazaSkillCard[]`,skills.sh 搜索薄壳)、
+`plaza_ensure_repo`(owner/repo → `RepoView`,幂等挂仓,**唯一**被允许写
+`config.plazaRepos` 的入口)、`plaza_detail`(owner/repo → `SkillDetail[]`,
+详情面板不联网承诺的唯一破例,命中进程内缓存或现拉)。三者均不接受
+`registryId` 参数(广场源固定,不需要调用方指明);**没有**新增事件
+——广场技能一旦挂仓就走既有的 `store_index`/`skill_acquire` 常规路径,
+不需要专属的进度或变更事件。新增错误码 `NET_PLAZA_SEARCH`(搜索失败)、
+`NET_PLAZA_REPO`(挂仓探测失败),归 `NET_*` 族。
 
 ### 现役机制约束(动相关代码前必读)
 
@@ -565,6 +605,24 @@ M7 的契约变更:`StoreSkillCard` 新增 `author`(`string | null`)、`SkillDet
   `<repo>-<ref>`);mode 语义与 Gitea 相同(可执行 0o755、其余 0=没记录)。
   fixture: `tests/fixtures/github-zipball-modes.zip`(真实录制裁剪,裁剪脚本必须保留
   原始 external_attr——python zipfile.writestr 会把 0 擅自补成 0o600)。
+- **技能广场(M9)接的 skills.sh 搜索端点不是开放 API,是 `npx skills find` 恰好在调的
+  内部端点**(2026-08-12 实测,调查见本地 `docs/调查-npx-skills-find-开放API.md`,
+  已不进版本控制):无文档、无版本号、无 SLA。
+  - `GET https://skills.sh/api/search?q=<词>&limit=<n>`,**无鉴权**,响应
+    `{skills:[{id, skillId, name, source, installs}]}`;`q` 去空白后不足 2 字符
+    上游报 400,`limit` 上限在 51–100 之间(CLI 用 20,`core::plaza` 同款)。
+  - **`source` 字段就是 GitHub `owner/repo`——这是广场"安装/更新零新协议"的根据**:
+    搜索结果直接喂给既有 `core::github` `RepoSource` 机制(M3/M4 已 e2e 验证),
+    协议层不必再造一遍;
+  - **无文档必须宽容解析**:`core/plaza.rs` 的 `RawSkill` 每个字段都是 `Option`,
+    缺 `name`/`source`/`id` 任一即判定该条脏数据、跳过不拖垮整批,未知字段忽略;
+  - **只有搜索一条发现路径**:`/api/trending`、`/api/skills` 实测均 404,没有"浏览
+    全量"端点,广场 UI 因此是"搜索优先"而非"逛列表";
+  - **blob 下载 API(`/api/download/{owner}/{repo}/{slug}`)刻意不用**:响应把文件
+    内容装成文本 JSON 字符串,二进制与可执行位语义不明(与 Gitea 压缩包早年吃过的
+    同一种亏),且它的 hash 口径与本项目 `dir_content_hash` 不同——用它等于引入
+    第三种归档格式的全套成本,上游自己也只拿它当"快路径,失败即回退 git clone"。
+    广场安装走的是**既有的** GitHub zipball 路径,不碰这个端点。
 - **代理两档**(M3 任务 3,推翻 M1"一律直连"):内建源 `app_http_client()` 直连;
   外部源 `app_http_client_proxied()` 跟随系统代理;选择集中在 `commands::http_client_for`。
   不加每源开关(用户拍板)。
@@ -597,6 +655,43 @@ M7 的契约变更:`StoreSkillCard` 新增 `author`(`string | null`)、`SkillDet
     Windows 凭据管理器**(全走 `MemoryStore` 或纯逻辑)。
   - ⚠️ 排查时别把浏览器那句「登录成功」当成登录成功:那个页面是
     `handle_callback_request` 在**拿到授权码的当场**回的,换令牌与存凭证都还没发生。
+- **技能广场(M9)是锁定源同款的第二个"不落 config.registries"源,保留 id 固定为
+  `plaza`**(`registry::PLAZA_REGISTRY_ID`,kind=github,base_url=`https://github.com`
+  锁定不可删/不可加仓——用户挂仓的坐标经专用 IPC `plaza_ensure_repo` 写进
+  `config.plazaRepos`,不走通用 `registry::add_repo`,该入口对 `plaza` 报
+  `REPO_BUILTIN_LOCKED`)。**内建源当年只穿了一处就在 M6 造成"认领对主线场景
+  从来没生效过"的静默失效(见上面 `resolve_binding` 一条),广场因此照抄内建源的
+  教训,逐处显式穿线并各自独立测试 + 注入验证,不许合并成一条笼统断言。
+  六处穿线清单(M9 任务 2,`registry.rs`/`acquire.rs`/`commands.rs`/`state.rs`)**:
+  1. `registry::resolve` 的广场解析臂(带 key 才能解析,无 key 报错——广场没有
+     主仓概念,不能像内建源那样落回一个默认仓);
+  2. `registry::list` 必须给出广场行,**哪怕 `plaza_repos` 还是空的**(否则库切换器
+     里那一档根本不出现,商店的"技能广场"入口自始至终摆不出来);
+  3. `registry::add_repo`/`remove` 对 `plaza` 的防撞与锁定(拒绝手填坐标、拒绝
+     删除),以及 `next_id` 生成 `custom-N` 时**绝不与保留字 `plaza` 相撞**;
+  4. `acquire::BindingSources` 显式传入 `plaza_repos`(否则广场装的技能永远绑不回
+     源,`source_state` 会谎报"来源已移除"——与内建源当年的缺陷同一种成因);
+  5. scheduler 的源枚举(`commands::check_targets` 含广场行,否则"定时更新天然
+     覆盖广场仓"是假话,广场仓永远不被检查);
+  6. `commands::source_state` 对 `registry_id == PLAZA_REGISTRY_ID` 的特判
+     (**M9 任务 2 走查编译器报错列表时顺带发现的真实缺陷,不在最初设计的五处
+     清单里**,但危害同构:没有这条特判,广场装的技能会被误判"来源已移除",
+     更新/回推按钮凭空消失)——**这条本身就是"照抄先例仍会漏"的活证据**,
+     加新的锁定源前先把六处清单过一遍,不要只抄五处。
+  另有 `url_allowed` 放行 `https://skills.sh`(仅 https,详情页"在浏览器中查看"用)
+  与 `state.rs` 的 `plaza_repos` 字段(serde default 兼容旧 config,不升
+  schemaVersion——加可选字段是兼容变更)。
+- **技能广场的详情面板是"不联网"承诺的唯一破例,范围钉死在广场**(`core::plaza::
+  fetch_repo_skills`):内建源与已有自定义源的 `store_skill_detail` 一行没改,
+  仍然全部来自索引缓存;广场是新 IPC(`plaza_detail`)+ 新状态槽(进程内
+  `HashMap`,`OnceLock` 单例,**不落盘**——避免为"很可能从未安装过"的仓积累
+  孤儿缓存文件),只有广场页会调它。仓未挂进 `config.plazaRepos` 时详情仍要能看
+  (`resolve` 报 `REPO_UNKNOWN_REPO` 时临时探测默认分支直连,**绝不写 config**
+  ——挂仓只能由「装了一个搜索结果」这个动作触发,即 `plaza_ensure_repo`)。
+- **广场"有更新"徽标的指纹口径**(设计文档 §2.4 已预判、M9 任务 5 落地验证):
+  `cardState`/`hasUpdate` 的判定不区分"这是商店浏览来的还是广场装的"——挂上仓之后
+  它就在库切换器里以普通库的形态出现(走 `store_index` 的常规浏览/建索引路径),
+  指纹判定天然精确,**不需要另开一条"广场专属"的判定分支**。
 - **scheduler 逐源且常驻**(M3 任务 2):`run_all_sources_check` 一个源失败不拦其他源,
   全失败则本轮**不上报**(报 NothingInstalled 等于撒谎);合并在 `scheduler::merge_reports`。
 - **删自定义源**:已装技能保留(界面标"来源已移除",更新/回推按钮消失),该源凭证与
