@@ -1104,6 +1104,31 @@ impl crate::core::gitea::RepoSource for SourceClient {
     }
 }
 
+/// GitHub 源的凭证加载:取 keyring 里存的 access token,取不到就降级匿名。
+///
+/// **只服务 GitHub 分支**(`read_source` 的 Github 臂 + `plaza_detail` 的未挂仓臂,
+/// 这是全仓仅有的两处 `CredentialStore::load` 调用点,M9 任务 4 审查发现两处曾是
+/// 逐行同构的重复代码)——**不要**为了对称把 Gitea 分支也改成调用它:Gitea 走的是
+/// `auth::ensure_access_token`,那条路有令牌刷新语义(过期会用 `refresh_token` 静默
+/// 换新并回写存储);**GitHub device flow 令牌当前没有刷新机制**(上游本身如此,
+/// `session::github_login_device` 存下的就是一枚长期有效的 token),这里"直接读、
+/// 读不到就匿名"的语义与 Gitea 分支不同,不该往它那边对齐,也不该指望它将来长出
+/// 同款刷新逻辑就顺手改这里——真要加 GitHub 侧的令牌刷新,那是一次独立的设计决策。
+///
+/// 失败(钥匙串读不出等)不是硬错误:记日志后返回 `None`,调用方据此构造匿名 client
+/// ——与自定义 Gitea 源"取不到凭证降级匿名"同一套姿势。`store` 参数化是为了让这条
+/// 路径脱离真实系统钥匙串直接单测(见 `tests` 模块 `load_github_token_*` 系列);
+/// 生产两处调用都传 `&KeyringStore`。
+fn load_github_token(store: &impl CredentialStore, registry_id: &str) -> Option<String> {
+    match store.load(registry_id) {
+        Ok(creds) => creds.map(|c| c.access_token),
+        Err(err) => {
+            tracing::warn!(registry_id, code = %err.code, "读取凭证失败,按匿名访问");
+            None
+        }
+    }
+}
+
 /// 读链路入口:解析源 → 构造对应 client,返回访问坐标。
 ///
 /// **刻意不看 OAuth 配置**:技能库公开可匿名读,商店浏览先于登录(产品前提,
@@ -1121,13 +1146,7 @@ async fn read_source(
         registry::RegistryKind::Github => {
             // 任务 5 起带上 device flow / PAT 存下的凭证(私有库可读);
             // 取不出来降级匿名,与自定义 Gitea 源同语义
-            let token = match KeyringStore.load(registry_id) {
-                Ok(creds) => creds.map(|c| c.access_token),
-                Err(err) => {
-                    tracing::warn!(registry_id, code = %err.code, "读取凭证失败,按匿名访问");
-                    None
-                }
-            };
+            let token = load_github_token(&KeyringStore, registry_id);
             SourceClient::Github(github::GithubClient::new(&resolved.base_url, token, http))
         }
         registry::RegistryKind::Gitea if resolved.builtin => {
@@ -2047,13 +2066,7 @@ pub async fn plaza_detail(owner_repo: String) -> Result<Vec<SkillDetail>, AppErr
             let http = http_client_for(registry::PLAZA_REGISTRY_ID)?;
             let branch =
                 plaza::default_branch(&http, plaza::PLAZA_GITHUB_API_BASE, owner, repo).await?;
-            let token = match KeyringStore.load(registry::PLAZA_REGISTRY_ID) {
-                Ok(creds) => creds.map(|c| c.access_token),
-                Err(err) => {
-                    tracing::warn!(code = %err.code, "读取广场凭证失败,按匿名访问");
-                    None
-                }
-            };
+            let token = load_github_token(&KeyringStore, registry::PLAZA_REGISTRY_ID);
             let client = github::GithubClient::new(registry::PLAZA_BASE_URL, token, http);
             let repo_ref = RepoRef { owner: owner.to_string(), repo: repo.to_string(), branch };
             cached_plaza_detail(plaza_detail_cache(), &cache_key, &client, &repo_ref).await
@@ -2371,6 +2384,58 @@ mod tests {
     fn parse_owner_repo_rejects_more_than_one_slash() {
         let err = parse_owner_repo("owner/repo/skill-name").unwrap_err();
         assert_eq!(err.code, "REPO_INVALID_REGISTRY");
+    }
+
+    // ============================================================ GitHub 令牌加载(M9 任务 4 fix)
+    //
+    // `load_github_token` 抽出前,`read_source` 的 Github 臂与 `plaza_detail` 的未挂仓臂
+    // 各自内联一份逐行同构的凭证加载逻辑,且**零测试覆盖**(审查发现)。这里补上:
+    // 有凭证 → 返回 token;读取失败(钥匙串故障等)→ 返回 None 且不 panic。
+
+    /// 总是返回 `Err` 的假凭证存储,模拟钥匙串读取失败(权限问题/无桌面会话等)
+    /// ——`auth::MemoryStore` 只会话到 `Ok`,盖不到这条分支。
+    struct FailingStore;
+
+    impl CredentialStore for FailingStore {
+        fn save(&self, _account: &str, _creds: &auth::Credentials) -> Result<(), AppError> {
+            unreachable!("load_github_token 不调 save")
+        }
+        fn load(&self, _account: &str) -> Result<Option<auth::Credentials>, AppError> {
+            Err(AppError::new("AUTH_KEYRING", "读取凭证失败"))
+        }
+        fn delete(&self, _account: &str) -> Result<(), AppError> {
+            unreachable!("load_github_token 不调 delete")
+        }
+    }
+
+    #[test]
+    fn load_github_token_returns_the_token_when_the_store_has_credentials() {
+        let store = auth::MemoryStore::default();
+        store
+            .save(
+                "plaza",
+                &auth::Credentials {
+                    access_token: "gh-token-abc".into(),
+                    refresh_token: String::new(),
+                    expires_at: 0,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(load_github_token(&store, "plaza"), Some("gh-token-abc".to_string()));
+    }
+
+    #[test]
+    fn load_github_token_falls_back_to_anonymous_when_the_store_has_nothing() {
+        let store = auth::MemoryStore::default();
+        assert_eq!(load_github_token(&store, "plaza"), None);
+    }
+
+    /// 注入验证的另一面:钥匙串本身故障(不是"没登录",是"读不出来")不该让调用方
+    /// panic 或把错误一路抛出去拦住浏览——必须静默降级匿名,与自定义 Gitea 源同语义。
+    #[test]
+    fn load_github_token_degrades_to_anonymous_when_the_store_errors() {
+        assert_eq!(load_github_token(&FailingStore, "plaza"), None, "读取失败要降级匿名,不能 panic");
     }
 
     // ============================================================ 广场详情缓存(M9 任务 4)
