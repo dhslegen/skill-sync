@@ -15,6 +15,7 @@ use crate::core::gitea::{GiteaClient, RepoRef};
 use crate::core::github;
 use crate::core::installer::{self, InstallReport, Installer};
 use crate::core::local_detail;
+use crate::core::plaza;
 use crate::core::registry::{self, BUILTIN_REGISTRY_ID};
 use crate::core::remove;
 use crate::core::scheduler;
@@ -1887,6 +1888,16 @@ pub async fn skill_remove(args: SkillRemoveArgs) -> Result<remove::RemoveOutcome
     })
     .await
     .map_err(|e| AppError::new("FS_TASK", "移除操作未能完成,请重试").with_detail(e.to_string()))?
+}
+
+/// 技能广场搜索(M9 任务 1):接入 skills.sh,只做发现。
+///
+/// 薄壳:client 用 [`crate::core::gitea::app_http_client_proxied`]——skills.sh 是
+/// 外部服务,必须跟随系统代理(M3 决策),不能用内建源那支直连 client。
+#[tauri::command]
+pub async fn plaza_search(query: String) -> Result<Vec<plaza::PlazaSkillCard>, AppError> {
+    let http = crate::core::gitea::app_http_client_proxied()?;
+    plaza::search(&http, plaza::PLAZA_API_BASE, &query).await
 }
 
 fn app_store() -> Result<state::Store, AppError> {

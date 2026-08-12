@@ -11,6 +11,7 @@ pub mod gitea;
 pub mod github;
 pub mod installer;
 pub mod local_detail;
+pub mod plaza;
 pub mod registry;
 pub mod remove;
 pub mod scheduler;

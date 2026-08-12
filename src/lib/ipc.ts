@@ -609,3 +609,25 @@ export const skillShareChanges = (args: {
   /** 冲突确认后的第二跳:跳过远端变更检测,强制走提交审核。 */
   forceReview?: boolean;
 }) => call<ShareInstalledOutcome>("skill_share_changes", { args });
+
+// ============================================================ 技能广场(M9 任务 1)
+// 与 src-tauri/src/core/plaza.rs 的 PlazaSkillCard 一一对应(camelCase)。
+// 只做发现:安装/更新走既有 GitHub 源机制,复用 ownerRepo 即可,这里不新增能力。
+
+/** 技能广场(skills.sh)一条搜索结果。 */
+export interface PlazaSkillCard {
+  name: string;
+  /** 上游 `id`(`owner/repo/skill-name`),拼 `https://skills.sh/<slug>` 页面地址用。 */
+  slug: string;
+  /** 上游 `source`(`owner/repo`),详情与安装的寻址键。 */
+  ownerRepo: string;
+  installs: number;
+}
+
+/**
+ * 搜索技能广场。`query` 去空白后不足 2 字符时 core 侧直接返回空数组、不发请求
+ * (上游 400 的边界)。失败统一是 `NET_PLAZA_SEARCH`——调用方按"搜索失败,请稍后
+ * 重试"降级展示即可,不需要区分断网还是端点变了形状。
+ */
+export const plazaSearch = (query: string) =>
+  call<PlazaSkillCard[]>("plaza_search", { query });
