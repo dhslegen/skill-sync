@@ -28,6 +28,18 @@ use crate::error::AppError;
 /// 内建技能库的 registry id。M1 只有这一个源,多源起按 id 区分凭证与缓存。
 pub const BUILTIN_REGISTRY_ID: &str = "company";
 
+/// 技能广场(skills.sh 搜索,M9 任务 1)的 registry id。与 [`BUILTIN_REGISTRY_ID`]
+/// 同款锁定源:**不落 `config.registries`**,坐标是常量而不是用户配置。
+///
+/// 与内建源的关键差异:广场**没有主仓概念**——它是搜索态,不存在"默认技能库"。
+/// `resolve(PLAZA_REGISTRY_ID, key=None)` 因此必须报错,不能像内建源那样落回一个
+/// 编译期写死的主仓(见 [`resolve`] 里的专门注释)。
+pub const PLAZA_REGISTRY_ID: &str = "plaza";
+/// 广场技能一律来自 GitHub(skills.sh 的 `source` 字段就是 GitHub `owner/repo`,
+/// 见 `core::plaza` 模块头),因此广场源的访问坐标固定指向 github.com——
+/// 与 skills.sh 本身(`core::plaza::PLAZA_API_BASE`,只用于**搜索**)是两个不同的域名。
+pub const PLAZA_BASE_URL: &str = "https://github.com";
+
 /// 编译期注入的内建源坐标。生产走 [`BuiltinSource::from_build`],测试注入假值。
 #[derive(Debug, Clone)]
 pub struct BuiltinSource {
@@ -181,15 +193,39 @@ pub fn repo_key(owner: &str, repo: &str) -> String {
 }
 
 /// 按 id + 仓库键解析出访问坐标。`BUILTIN_REGISTRY_ID` 的主仓走编译期常量、
-/// 追加仓查 `builtin_extra`;其余查 `registries`。`repo_key = None` 落主仓
-/// (内建 = 常量,自定义 = `repos[0]`)——既有调用方外部行为不变。
+/// 追加仓查 `builtin_extra`;`PLAZA_REGISTRY_ID` 查 `plaza_repos`(**没有主仓**,
+/// `key = None` 报错——见该分支注释);其余查 `registries`。`repo_key = None`
+/// 落主仓(内建 = 常量,自定义 = `repos[0]`)——既有调用方外部行为不变。
 pub fn resolve(
     builtin: &BuiltinSource,
     registries: &[RegistryConfig],
     builtin_extra: &[RepoConfig],
     id: &str,
     key: Option<&str>,
+    plaza_repos: &[RepoConfig],
 ) -> Result<ResolvedRegistry, AppError> {
+    if id == PLAZA_REGISTRY_ID {
+        // 广场是搜索态,没有"默认技能库"这回事——`key=None` 不能像内建源那样落回
+        // 一个编译期写死的主仓(广场压根没有主仓),必须报错。
+        let Some(k) = key else {
+            return Err(plaza_has_no_default_repo());
+        };
+        let repo = plaza_repos
+            .iter()
+            .find(|r| repo_key(&r.owner, &r.repo) == k)
+            .ok_or_else(|| unknown_repo(k))?;
+        return Ok(ResolvedRegistry {
+            id: PLAZA_REGISTRY_ID.to_string(),
+            kind: RegistryKind::Github,
+            base_url: PLAZA_BASE_URL.to_string(),
+            repo: RepoRef {
+                owner: repo.owner.clone(),
+                repo: repo.repo.clone(),
+                branch: repo.branch.clone(),
+            },
+            builtin: false,
+        });
+    }
     if id == BUILTIN_REGISTRY_ID {
         // 两条报错沿用 M1 `store_target` 的原文:文案已过术语守卫,前端也按它引导用户。
         let Some(base_url) = builtin.base_url.filter(|u| !u.is_empty()) else {
@@ -257,14 +293,20 @@ pub fn resolve(
     })
 }
 
-/// 设置页的完整源列表:内建源永远第一位,其后按 config 中的顺序。
+/// 设置页的完整源列表:内建源永远第一位,其后按 config 中的顺序,**广场永远在末尾**。
 ///
 /// 自定义条目的 `kind` 原样透出(不做"认不出就当 gitea"的粉饰):config 只可能被
 /// 手改出垃圾值,真正的访问在 [`resolve`] 处会被拦,列表层如实展示才好排查。
+///
+/// 广场行**没有 `repo`**(广场无主仓概念,即便 `plaza_repos` 非空也不给)、
+/// `repos` 里的每一条都 `locked: false`(仓本身可删,只是 v1 还没给它接 UI 入口;
+/// **源**本身仍不可删,见 [`remove`])。`plaza_repos` 为空时这一行仍要出现——
+/// 库切换器要能渲染出"空广场"这个状态,不能因为没有仓就整行消失。
 pub fn list(
     builtin: &BuiltinSource,
     registries: &[RegistryConfig],
     builtin_extra: &[RepoConfig],
+    plaza_repos: &[RepoConfig],
 ) -> Vec<RegistryView> {
     let mut out = Vec::with_capacity(registries.len() + 1);
     let mut builtin_repos = Vec::with_capacity(builtin_extra.len() + 1);
@@ -316,6 +358,18 @@ pub fn list(
                 .collect(),
         });
     }
+    // 广场永远在末尾:它是搜索态,不是用户配置出来的源,排在自定义源之后最不显眼。
+    out.push(RegistryView {
+        id: PLAZA_REGISTRY_ID.to_string(),
+        name: "技能广场".to_string(),
+        kind: "github".to_string(),
+        base_url: PLAZA_BASE_URL.to_string(),
+        builtin: false,
+        // 广场没有主仓概念,即便 plaza_repos 非空也不给——与内建/自定义源的
+        // "首仓即主仓"语义刻意不同。
+        repo: None,
+        repos: plaza_repos.iter().map(|r| repo_view(r, false)).collect(),
+    });
     out
 }
 
@@ -392,6 +446,9 @@ pub struct AddRepoRequest<'a> {
 /// - **分支缺省跟随该源的主库**,不是写死 `main`:追加库与主库同在一台服务器上,
 ///   沿用主库的分支约定更接近事实。写死 `main` 会让一台默认分支是 `master` 的
 ///   服务器上加进来的库变成永久报错的死条目——而表单不给分支输入,用户救不回来。
+/// - **广场(`PLAZA_REGISTRY_ID`)不接受这条通用入口**,报 `REPO_BUILTIN_LOCKED`:
+///   `config.plazaRepos` 只该由"获取一个搜索结果"这个动作追加(广场没有手填
+///   owner/repo 的表单),经这条入口手工塞坐标绕开了那份来源语义。
 pub fn add_repo(
     builtin: &BuiltinSource,
     registries: &mut [RegistryConfig],
@@ -399,6 +456,12 @@ pub fn add_repo(
     id: &str,
     req: &AddRepoRequest,
 ) -> Result<RepoConfig, AppError> {
+    if id == PLAZA_REGISTRY_ID {
+        return Err(AppError::new(
+            "REPO_BUILTIN_LOCKED",
+            "技能广场是内建来源,不能手动添加技能库",
+        ));
+    }
     let (owner, repo) = (req.owner.trim(), req.repo.trim());
     if owner.is_empty() || repo.is_empty() {
         return Err(invalid_registry("owner/repo is empty".into()));
@@ -485,12 +548,18 @@ pub fn remove_repo(
     Ok(cfg.repos.remove(pos))
 }
 
-/// 移除自定义源。内建源报 `REPO_BUILTIN_LOCKED`;不存在报 `REPO_UNKNOWN_REGISTRY`。
+/// 移除自定义源。内建源、广场都报 `REPO_BUILTIN_LOCKED`;不存在报 `REPO_UNKNOWN_REGISTRY`。
 pub fn remove(registries: &mut Vec<RegistryConfig>, id: &str) -> Result<RegistryConfig, AppError> {
     if id == BUILTIN_REGISTRY_ID {
         return Err(AppError::new(
             "REPO_BUILTIN_LOCKED",
             "公司技能库是内建来源,不能移除",
+        ));
+    }
+    if id == PLAZA_REGISTRY_ID {
+        return Err(AppError::new(
+            "REPO_BUILTIN_LOCKED",
+            "技能广场是内建来源,不能移除",
         ));
     }
     let pos = registries
@@ -500,8 +569,12 @@ pub fn remove(registries: &mut Vec<RegistryConfig>, id: &str) -> Result<Registry
     Ok(registries.remove(pos))
 }
 
-/// `open_library_url` 的白名单判定:与任一已配置源(内建 + 自定义)同源才放行。
-/// 非 http(s) scheme(`javascript:`/`file:` 等)在 [`gitea::is_same_origin`] 一层就被拒。
+/// `open_library_url` 的白名单判定:与任一已配置源(内建 + 自定义)同源才放行,
+/// **加上 skills.sh 的技能详情页**(技能广场的搜索结果指向那里,不是 github.com——
+/// `PLAZA_BASE_URL` 只是广场技能的**访问坐标**,不是它的展示页面)。
+/// 非 http(s) scheme(`javascript:`/`file:` 等)在 [`gitea::is_same_origin`] 一层就被拒;
+/// skills.sh 这一条同样借它判定,天然只放行 **https**(常量本身就是 https,
+/// `is_same_origin` 要求 scheme 一致,`http://skills.sh` 因此被拒)。
 pub fn url_allowed(builtin: &BuiltinSource, registries: &[RegistryConfig], url: &str) -> bool {
     builtin
         .base_url
@@ -510,6 +583,7 @@ pub fn url_allowed(builtin: &BuiltinSource, registries: &[RegistryConfig], url: 
         || registries
             .iter()
             .any(|r| gitea::is_same_origin(&r.base_url, url))
+        || gitea::is_same_origin(crate::core::plaza::PLAZA_API_BASE, url)
 }
 
 fn unknown_registry(id: &str) -> AppError {
@@ -526,6 +600,15 @@ fn invalid_registry(detail: String) -> AppError {
         "技能库来源的信息不完整或不合法,请检查后重试",
     )
     .with_detail(detail)
+}
+
+/// 广场没有主仓概念,`resolve(PLAZA_REGISTRY_ID, key=None)` 走到这里。
+/// 独立错误码(不是 `unknown_registry`/`unknown_repo`)——广场本身认识,缺的是"默认"这件事。
+fn plaza_has_no_default_repo() -> AppError {
+    AppError::new(
+        "REPO_UNKNOWN",
+        "技能广场没有默认技能库,请先在广场里选择一个具体的技能",
+    )
 }
 
 fn unknown_repo(key: &str) -> AppError {
@@ -616,8 +699,9 @@ mod tests {
 
     #[test]
     fn builtin_is_always_listed_first_and_locked() {
-        let listed = list(&fake_builtin(), &[custom_cfg()], &[]);
-        assert_eq!(listed.len(), 2);
+        // 内建 + 一个自定义源 + 广场(永远在末尾,见下面 plaza 专属测试)= 3
+        let listed = list(&fake_builtin(), &[custom_cfg()], &[], &[]);
+        assert_eq!(listed.len(), 3);
         assert_eq!(listed[0].id, BUILTIN_REGISTRY_ID);
         assert!(listed[0].builtin);
         assert_eq!(listed[0].base_url, "http://gitea.internal:3000");
@@ -632,9 +716,9 @@ mod tests {
         assert_eq!(listed[1].id, "custom-1");
         assert!(!listed[1].builtin);
         assert_eq!(listed[1].name, "部门工具库");
-        // 空 config 下内建源也在:列表永远不为空
-        let only_builtin = list(&fake_builtin(), &[], &[]);
-        assert_eq!(only_builtin.len(), 1);
+        // 空 config 下内建源与广场也都在:列表永远不为空
+        let only_builtin = list(&fake_builtin(), &[], &[], &[]);
+        assert_eq!(only_builtin.len(), 2);
         assert!(only_builtin[0].builtin);
     }
 
@@ -650,7 +734,7 @@ mod tests {
                 repo,
                 branch: "main",
             };
-            let err = resolve(&builtin, &[], &[], BUILTIN_REGISTRY_ID, None).unwrap_err();
+            let err = resolve(&builtin, &[], &[], BUILTIN_REGISTRY_ID, None, &[]).unwrap_err();
             assert_eq!(err.code, "REPO_NOT_CONFIGURED");
             // 文案规范:必须给下一步动作,且不含 git 术语
             assert!(err.message.contains("IT"), "{}", err.message);
@@ -662,7 +746,7 @@ mod tests {
     fn resolve_does_not_depend_on_oauth_configuration() {
         // 签名里根本没有 client_id——"商店浏览先于登录"这条产品前提的机器可读证据
         // (迁移自 commands.rs 的 store_target 同名测试,守的是同一件事)。
-        let resolved = resolve(&fake_builtin(), &[], &[], BUILTIN_REGISTRY_ID, None).unwrap();
+        let resolved = resolve(&fake_builtin(), &[], &[], BUILTIN_REGISTRY_ID, None, &[]).unwrap();
         assert_eq!(resolved.base_url, "http://gitea.internal:3000");
         assert_eq!(resolved.repo.owner, "skills");
         assert_eq!(resolved.repo.repo, "skills");
@@ -673,7 +757,7 @@ mod tests {
 
     #[test]
     fn custom_gitea_source_resolves_from_config() {
-        let resolved = resolve(&fake_builtin(), &[custom_cfg()], &[], "custom-1", None).unwrap();
+        let resolved = resolve(&fake_builtin(), &[custom_cfg()], &[], "custom-1", None, &[]).unwrap();
         assert_eq!(resolved.id, "custom-1");
         assert_eq!(resolved.base_url, "http://tools.example:8080");
         assert_eq!(resolved.repo.owner, "ai-skills");
@@ -685,7 +769,7 @@ mod tests {
 
     #[test]
     fn unknown_registry_id_gets_readable_error() {
-        let err = resolve(&fake_builtin(), &[custom_cfg()], &[], "custom-99", None).unwrap_err();
+        let err = resolve(&fake_builtin(), &[custom_cfg()], &[], "custom-99", None, &[]).unwrap_err();
         assert_eq!(err.code, "REPO_UNKNOWN_REGISTRY");
         // 人话 + 下一步动作;不把内部 id 塞进 message(那不是人话,detail 里才放)
         assert!(!err.message.contains("custom-99"), "{}", err.message);
@@ -761,7 +845,7 @@ mod tests {
         req.kind = "github";
         req.base_url = "https://github.example";
         add(&mut regs, &req).unwrap();
-        let resolved = resolve(&fake_builtin(), &regs, &[], "custom-1", None).unwrap();
+        let resolved = resolve(&fake_builtin(), &regs, &[], "custom-1", None, &[]).unwrap();
         assert_eq!(resolved.kind, RegistryKind::Github);
         // GitHub client 归任务 4:在那之前访问被拦,且是人话
         let err = resolved.require_gitea().unwrap_err();
@@ -770,7 +854,7 @@ mod tests {
 
     #[test]
     fn auth_config_for_builtin_requires_the_injected_client_id() {
-        let resolved = resolve(&fake_builtin(), &[], &[], BUILTIN_REGISTRY_ID, None).unwrap();
+        let resolved = resolve(&fake_builtin(), &[], &[], BUILTIN_REGISTRY_ID, None, &[]).unwrap();
         let cfg = resolved.auth_config(Some("client-abc")).unwrap();
         assert_eq!(cfg.base_url, "http://gitea.internal:3000");
         assert_eq!(cfg.client_id, "client-abc");
@@ -782,7 +866,7 @@ mod tests {
 
     #[test]
     fn auth_config_for_custom_source_never_borrows_the_builtin_client_id() {
-        let resolved = resolve(&fake_builtin(), &[custom_cfg()], &[], "custom-1", None).unwrap();
+        let resolved = resolve(&fake_builtin(), &[custom_cfg()], &[], "custom-1", None, &[]).unwrap();
         // 就算调用方把内建 Client ID 递进来,自定义源也不接:那是别家 Gitea
         let cfg = resolved.auth_config(Some("client-abc")).unwrap();
         assert_eq!(cfg.base_url, "http://tools.example:8080");
@@ -835,7 +919,7 @@ mod tests {
 
     #[test]
     fn builtin_repos_list_primary_first_with_lock_flags() {
-        let listed = list(&fake_builtin(), &[], &[extra_repo()]);
+        let listed = list(&fake_builtin(), &[], &[extra_repo()], &[]);
         let repos = &listed[0].repos;
         assert_eq!(repos.len(), 2);
         // 主仓:锁定、primary、键取编译期常量
@@ -855,7 +939,7 @@ mod tests {
         assert!(!repos[1].primary);
         assert!(!repos[1].locked);
         // 自定义源:首仓 primary 不锁定
-        let listed = list(&fake_builtin(), &[custom_cfg()], &[]);
+        let listed = list(&fake_builtin(), &[custom_cfg()], &[], &[]);
         let repos = &listed[1].repos;
         assert_eq!(repos.len(), 1);
         assert!(repos[0].primary);
@@ -867,7 +951,7 @@ mod tests {
     fn builtin_unconfigured_lists_no_repos_even_with_extras() {
         // 没有主仓的"多仓"是无根的:前端只显示"构建未配置"
         let unconfigured = BuiltinSource { base_url: None, repo: None, branch: "main" };
-        let listed = list(&unconfigured, &[], &[extra_repo()]);
+        let listed = list(&unconfigured, &[], &[extra_repo()], &[]);
         assert!(listed[0].repos.is_empty());
         assert!(listed[0].repo.is_none());
     }
@@ -876,12 +960,12 @@ mod tests {
     fn resolve_selects_repo_by_key() {
         let extras = [extra_repo()];
         // 内建:显式主仓键 = 缺省
-        let primary = resolve(&fake_builtin(), &[], &extras, BUILTIN_REGISTRY_ID, Some("skills/skills")).unwrap();
+        let primary = resolve(&fake_builtin(), &[], &extras, BUILTIN_REGISTRY_ID, Some("skills/skills"), &[]).unwrap();
         assert_eq!(primary.repo.owner, "skills");
         assert_eq!(primary.repo.repo, "skills");
         assert_eq!(primary.repo.branch, "main");
         // 内建:追加仓键 → 坐标来自 config,base_url 仍是编译期常量
-        let extra = resolve(&fake_builtin(), &[], &extras, BUILTIN_REGISTRY_ID, Some("design/design-skills")).unwrap();
+        let extra = resolve(&fake_builtin(), &[], &extras, BUILTIN_REGISTRY_ID, Some("design/design-skills"), &[]).unwrap();
         assert_eq!(extra.base_url, "http://gitea.internal:3000");
         assert_eq!(extra.repo.owner, "design");
         assert_eq!(extra.repo.branch, "stable");
@@ -894,7 +978,7 @@ mod tests {
             branch: "main".into(),
             name: None,
         });
-        let second = resolve(&fake_builtin(), &[cfg], &[], "custom-1", Some("ai-skills/qa-skills")).unwrap();
+        let second = resolve(&fake_builtin(), &[cfg], &[], "custom-1", Some("ai-skills/qa-skills"), &[]).unwrap();
         assert_eq!(second.repo.owner, "ai-skills");
         assert_eq!(second.repo.repo, "qa-skills");
         assert_eq!(second.repo.branch, "main");
@@ -906,7 +990,7 @@ mod tests {
             (vec![], BUILTIN_REGISTRY_ID),
             (vec![custom_cfg()], "custom-1"),
         ] {
-            let err = resolve(&fake_builtin(), &regs, &[extra_repo()], id, Some("ghost/none")).unwrap_err();
+            let err = resolve(&fake_builtin(), &regs, &[extra_repo()], id, Some("ghost/none"), &[]).unwrap_err();
             assert_eq!(err.code, "REPO_UNKNOWN_REPO", "id={id}");
             // 键不是人话,只进 detail
             assert!(!err.message.contains("ghost"), "{}", err.message);
@@ -1100,7 +1184,7 @@ mod tests {
         let removed = remove_repo(&fake_builtin(), &mut regs, &mut Vec::new(), "custom-1", "ai-skills/dept-skills")
             .unwrap();
         assert_eq!(removed.repo, "dept-skills");
-        let primary = resolve(&fake_builtin(), &regs, &[], "custom-1", None).unwrap();
+        let primary = resolve(&fake_builtin(), &regs, &[], "custom-1", None, &[]).unwrap();
         assert_eq!(primary.repo.repo, "qa-skills");
     }
 
@@ -1128,5 +1212,161 @@ mod tests {
         assert_eq!(back.builtin_extra_repos[0].name.as_deref(), Some("设计部技能库"));
         // 旧 config 没有该字段:serde default 兜住,schemaVersion 不动(有既有闸门测试)
         assert_eq!(back.schema_version, crate::core::state::SCHEMA_VERSION);
+    }
+
+    // ============================================================ 技能广场(M9 任务 2)
+    //
+    // 动机见模块头新增的 PLAZA_REGISTRY_ID 注释:广场是内建源同款的锁定源,
+    // 对"从 config 枚举"的代码不可见——下面每条测试独立盯住一处穿线,
+    // 不合并成一条笼统断言(五处穿线的第一处:resolve/list/add/remove/防撞)。
+
+    fn plaza_repo() -> RepoConfig {
+        RepoConfig {
+            owner: "vercel-labs".into(),
+            repo: "skills".into(),
+            branch: "main".into(),
+            name: None,
+        }
+    }
+
+    #[test]
+    fn resolve_plaza_repo_by_key() {
+        let resolved = resolve(
+            &fake_builtin(),
+            &[],
+            &[],
+            PLAZA_REGISTRY_ID,
+            Some("vercel-labs/skills"),
+            &[plaza_repo()],
+        )
+        .unwrap();
+        assert_eq!(resolved.id, PLAZA_REGISTRY_ID);
+        assert_eq!(resolved.kind, RegistryKind::Github);
+        assert_eq!(resolved.base_url, PLAZA_BASE_URL);
+        assert_eq!(resolved.repo.owner, "vercel-labs");
+        assert_eq!(resolved.repo.repo, "skills");
+        assert_eq!(resolved.repo.branch, "main");
+        assert!(!resolved.builtin, "广场不是内建源(它没有 OAuth PKCE 登录这回事)");
+    }
+
+    /// 广场没有主仓概念:`key=None` 不能像内建源那样落回一个编译期写死的主仓,
+    /// 必须报错——这是广场与内建源"同为锁定源"但语义不同的关键分歧点。
+    #[test]
+    fn resolve_plaza_without_a_key_is_an_error() {
+        let err = resolve(
+            &fake_builtin(),
+            &[],
+            &[],
+            PLAZA_REGISTRY_ID,
+            None,
+            &[plaza_repo()],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "REPO_UNKNOWN");
+        // 人话,不是内部标识
+        assert!(!err.message.contains("plaza"), "{}", err.message);
+        assert!(!err.message.is_empty());
+        // 上面传入的 plaza_repos 非空(&[plaza_repo()])仍然报错——
+        // "有仓"不等于"有默认仓",广场压根没有"默认"这回事。
+    }
+
+    #[test]
+    fn resolve_plaza_unknown_repo_key_is_reported() {
+        let err = resolve(
+            &fake_builtin(),
+            &[],
+            &[],
+            PLAZA_REGISTRY_ID,
+            Some("ghost/none"),
+            &[plaza_repo()],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "REPO_UNKNOWN_REPO", "与 unknown_repo() 同款,不是另起一套码");
+        assert!(!err.message.contains("ghost"), "{}", err.message);
+        assert_eq!(err.detail.as_deref(), Some("ghost/none"));
+    }
+
+    #[test]
+    fn list_includes_the_plaza_row_even_when_it_has_no_repos() {
+        // 库切换器要能渲染出"空广场"这个状态,不能因为没有仓就整行消失。
+        let listed = list(&fake_builtin(), &[custom_cfg()], &[], &[]);
+        let plaza_row = listed.last().expect("广场必须在,哪怕是空的");
+        assert_eq!(plaza_row.id, PLAZA_REGISTRY_ID);
+        assert_eq!(plaza_row.kind, "github");
+        assert_eq!(plaza_row.base_url, PLAZA_BASE_URL);
+        assert!(!plaza_row.builtin);
+        assert!(plaza_row.repo.is_none(), "广场没有主仓概念,即便将来 plaza_repos 非空也不给");
+        assert!(plaza_row.repos.is_empty());
+        // 广场永远在末尾:内建 + 一个自定义源 + 广场 = 3
+        assert_eq!(listed.len(), 3);
+    }
+
+    #[test]
+    fn list_plaza_row_reflects_configured_repos_all_unlocked() {
+        let listed = list(&fake_builtin(), &[], &[], &[plaza_repo()]);
+        let plaza_row = listed.last().unwrap();
+        assert_eq!(plaza_row.repos.len(), 1);
+        assert_eq!(plaza_row.repos[0].key, "vercel-labs/skills");
+        assert_eq!(plaza_row.repos[0].owner, "vercel-labs");
+        assert_eq!(plaza_row.repos[0].repo, "skills");
+        // 仓本身可删(v1 还没接 UI 入口,但不锁定);也没有"主仓"这回事
+        assert!(!plaza_row.repos[0].locked);
+        assert!(!plaza_row.repos[0].primary);
+        assert!(plaza_row.repo.is_none());
+    }
+
+    #[test]
+    fn remove_plaza_is_refused() {
+        let mut regs = vec![custom_cfg()];
+        let err = remove(&mut regs, PLAZA_REGISTRY_ID).unwrap_err();
+        assert_eq!(err.code, "REPO_BUILTIN_LOCKED");
+        assert_eq!(regs.len(), 1, "拒绝时不得动其他条目");
+    }
+
+    /// 广场的 `repos` 只该由"获取一个搜索结果"这个动作追加(没有手填 owner/repo 的表单),
+    /// 通用的 `add_repo` 入口对它锁死——不锁的话就绕开了广场"仓来自搜索"的来源语义。
+    #[test]
+    fn add_repo_to_plaza_is_refused() {
+        let mut extras = Vec::new();
+        let err = add_repo(
+            &fake_builtin(),
+            &mut [],
+            &mut extras,
+            PLAZA_REGISTRY_ID,
+            &AddRepoRequest { owner: "vercel-labs", repo: "skills", branch: None, name: None },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "REPO_BUILTIN_LOCKED");
+        assert!(extras.is_empty(), "拒绝时不得留下条目(这里的 extras 是内建源的,别误伤)");
+    }
+
+    /// 结构性护栏(2026-08-12 用户裁决):`next_id` 只产出 `custom-N`,天然不会撞上
+    /// `PLAZA_REGISTRY_ID`。这条断言的价值在于将来有人改 id 生成规则时它会红,
+    /// 不是现在会红——不为了让它现在变红而扭曲 `next_id` 的实现。
+    #[test]
+    fn generated_custom_ids_never_collide_with_the_plaza_id() {
+        let mut regs = Vec::new();
+        for _ in 0..5 {
+            let added = add(&mut regs, &add_req()).unwrap();
+            assert_ne!(added.id, PLAZA_REGISTRY_ID);
+        }
+    }
+
+    /// skills.sh 的技能详情页(广场搜索结果指向那里)必须放行,且只放行 https,
+    /// 不放宽成任意 URL——这个函数是从 webview 通往系统的通道。
+    #[test]
+    fn url_allowlist_permits_the_skills_dot_sh_detail_pages_over_https_only() {
+        let builtin = fake_builtin();
+        let regs = vec![custom_cfg()];
+        assert!(url_allowed(&builtin, &regs, "https://skills.sh/vercel-labs/skills/weekly-report"));
+        assert!(url_allowed(&builtin, &regs, "https://skills.sh"));
+        // 仅 https:同一个 host 换成 http 就拒
+        assert!(!url_allowed(&builtin, &regs, "http://skills.sh/vercel-labs/skills/weekly-report"));
+        // 陌生 host、危险 scheme 仍然照旧拒绝
+        assert!(!url_allowed(&builtin, &regs, "https://evil.example"));
+        assert!(!url_allowed(&builtin, &regs, "javascript:alert(1)"));
+        // 与是否配置了任何源无关:一个源都没有,skills.sh 仍然放行
+        let unconfigured = BuiltinSource { base_url: None, repo: None, branch: "main" };
+        assert!(url_allowed(&unconfigured, &[], "https://skills.sh/x"));
     }
 }

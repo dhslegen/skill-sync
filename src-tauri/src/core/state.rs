@@ -53,6 +53,12 @@ pub struct Config {
     /// (坐标是编译期常量,落盘会造出第二份真相),这里只有"追加"的部分。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub builtin_extra_repos: Vec<RepoConfig>,
+    /// 技能广场(skills.sh,M9 任务 2)锁定源 `plaza` 上,用户实际接触过的技能库坐标。
+    /// 与 `builtin_extra_repos` 同一种处理:`plaza` 本身不落盘(id/base_url 是编译期
+    /// 同款的常量,见 `core::registry::PLAZA_REGISTRY_ID`),这里只存追加坐标——
+    /// 加可选字段不升 `SCHEMA_VERSION`(先例见上一条字段)。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plaza_repos: Vec<RepoConfig>,
     #[serde(default)]
     pub auto_update: AutoUpdate,
     /// 界面偏好。`None` = 从未设置过(前端据此做 localStorage 一次性迁移),
@@ -160,6 +166,7 @@ impl Default for Config {
             schema_version: SCHEMA_VERSION,
             registries: Vec::new(),
             builtin_extra_repos: Vec::new(),
+            plaza_repos: Vec::new(),
             auto_update: AutoUpdate::default(),
             ui: None,
             disabled_agents: Vec::new(),
@@ -838,5 +845,71 @@ mod tests {
         // 全新安装默认盯得紧一点(2026-08-06 用户拍板):新人装上就能及时拿到
         // 技能库的新内容,不用先去设置里找档位。老用户的档位由迁移原样带过来,不受影响。
         assert_eq!(cfg.auto_update.skills.interval_minutes, 5);
+    }
+
+    // ============================================================ plaza_repos(M9 任务 2)
+
+    /// 旧 config(v2,来自 `builtin_extra_repos` 之后但早于本字段)没有 `plazaRepos`,
+    /// 必须读得出且落成空列表——与 `an_old_config_without_disabled_agents_reads_as_empty`
+    /// 同一套护栏,加可选字段不该让老用户的文件读不出来。
+    #[test]
+    fn an_old_config_without_plaza_repos_reads_as_empty() {
+        let (_tmp, s) = store();
+        std::fs::create_dir_all(s.dir()).unwrap();
+        std::fs::write(
+            s.dir().join("config.json"),
+            r#"{"schemaVersion":2,"registries":[],"autoUpdate":{"skills":{"enabled":true,"intervalMinutes":5},"app":true}}"#,
+        )
+        .unwrap();
+
+        let loaded = s.load_config().unwrap();
+
+        assert!(matches!(loaded.access, Access::ReadWrite), "加可选字段不该降只读");
+        assert_eq!(loaded.value.schema_version, SCHEMA_VERSION);
+        assert!(loaded.value.plaza_repos.is_empty());
+    }
+
+    /// 写回含 `plazaRepos`,且 `ui`/`registries` 原样保留——对照
+    /// `registry.rs::config_roundtrip_preserves_builtin_extra_repos` 的既有测试形状,
+    /// 换成没有专属 add 原语的 plaza(v1 直接改字段,没有 UI 入口)。
+    #[test]
+    fn config_roundtrip_preserves_plaza_repos_and_the_rest_of_the_config() {
+        let (_tmp, s) = store();
+        s.save_ui_prefs(&sample_prefs()).unwrap();
+        let mut config = s.load_config().unwrap().value;
+        config.registries.push(RegistryConfig {
+            id: "custom-1".into(),
+            name: "部门工具库".into(),
+            kind: "gitea".into(),
+            base_url: "http://tools.example:8080".into(),
+            builtin: false,
+            repos: vec![RepoConfig {
+                owner: "ai-skills".into(),
+                repo: "dept-skills".into(),
+                branch: "main".into(),
+                name: None,
+            }],
+        });
+        config.plaza_repos.push(RepoConfig {
+            owner: "vercel-labs".into(),
+            repo: "skills".into(),
+            branch: "main".into(),
+            name: None,
+        });
+        s.save_config(&config).unwrap();
+
+        let back = s.load_config().unwrap().value;
+        assert_eq!(back.plaza_repos.len(), 1);
+        assert_eq!(back.plaza_repos[0].owner, "vercel-labs");
+        assert_eq!(back.plaza_repos[0].repo, "skills");
+        // 其余字段一个不少:ui 与 registries 都是在这次 save 之前就落好的
+        assert_eq!(back.ui, Some(sample_prefs()));
+        assert_eq!(back.registries.len(), 1);
+        assert_eq!(back.registries[0].id, "custom-1");
+        assert_eq!(back.schema_version, SCHEMA_VERSION);
+
+        // 落盘的键里确实带 plazaRepos,不是只在内存里存在
+        let raw = std::fs::read_to_string(s.dir().join("config.json")).unwrap();
+        assert!(raw.contains("plazaRepos"), "{raw}");
     }
 }

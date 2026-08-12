@@ -461,8 +461,9 @@ fn check_targets(
     builtin: &registry::BuiltinSource,
     registries: &[state::RegistryConfig],
     builtin_extra: &[state::RepoConfig],
+    plaza_repos: &[state::RepoConfig],
 ) -> Vec<(String, Option<String>)> {
-    registry::list(builtin, registries, builtin_extra)
+    registry::list(builtin, registries, builtin_extra, plaza_repos)
         .into_iter()
         .flat_map(|view| {
             view.repos
@@ -472,13 +473,17 @@ fn check_targets(
         .collect()
 }
 
-/// 一轮逐源检查(M3 任务 2):内建 + 全部自定义源依次跑,一个源失败不拦其他源。
+/// 一轮逐源检查(M3 任务 2):内建 + 全部自定义源 + 广场依次跑,一个源失败不拦其他源。
 /// 返回 `None` = 没有任何源成功跑完(全失败或没有可查的源),这一轮不上报
 /// ——把"全挂了"报成 `NothingInstalled` 等于撒谎。
+///
+/// **广场必须走同一条枚举路径**(M9 任务 2):`check_targets` 直接取 [`registry::list`]
+/// 的视图,广场行已经在里面——不另写一套"内建 + 自定义"的清单再补一句"顺便查查广场",
+/// 那种写法漏一次都不会有任何测试变红(见本函数上方 `check_targets` 的用途注释)。
 async fn run_all_sources_check() -> Option<scheduler::CheckReport> {
     let store = app_store().ok()?;
-    let (registries_cfg, builtin_extra) = match store.load_config() {
-        Ok(l) => (l.value.registries, l.value.builtin_extra_repos),
+    let (registries_cfg, builtin_extra, plaza_repos) = match store.load_config() {
+        Ok(l) => (l.value.registries, l.value.builtin_extra_repos, l.value.plaza_repos),
         Err(err) => {
             tracing::warn!(code = %err.code, "定时检查读不到配置,本轮跳过");
             return None;
@@ -487,13 +492,18 @@ async fn run_all_sources_check() -> Option<scheduler::CheckReport> {
     let builtin_src = registry::BuiltinSource::from_build();
     let registry = AgentRegistry::builtin();
 
-    let targets = check_targets(&builtin_src, &registries_cfg, &builtin_extra);
+    let targets = check_targets(&builtin_src, &registries_cfg, &builtin_extra, &plaza_repos);
 
     let mut reports = Vec::new();
     for (id, repo_key) in targets {
-        let Ok(resolved) =
-            registry::resolve(&builtin_src, &registries_cfg, &builtin_extra, &id, repo_key.as_deref())
-        else {
+        let Ok(resolved) = registry::resolve(
+            &builtin_src,
+            &registries_cfg,
+            &builtin_extra,
+            &id,
+            repo_key.as_deref(),
+            &plaza_repos,
+        ) else {
             // 内建未注入配置的开发构建每轮都走到这:记 debug 免得刷日志
             tracing::debug!(registry_id = %id, "定时检查跳过该源(解析失败)");
             continue;
@@ -611,6 +621,7 @@ pub fn registry_list() -> Result<Vec<registry::RegistryView>, AppError> {
         &registry::BuiltinSource::from_build(),
         &config.registries,
         &config.builtin_extra_repos,
+        &config.plaza_repos,
     ))
 }
 
@@ -648,6 +659,7 @@ pub fn registry_add(args: RegistryAddArgs) -> Result<Vec<registry::RegistryView>
         &registry::BuiltinSource::from_build(),
         &config.registries,
         &config.builtin_extra_repos,
+        &config.plaza_repos,
     ))
 }
 
@@ -675,6 +687,7 @@ pub fn registry_remove(args: RegistryRemoveArgs) -> Result<Vec<registry::Registr
         &registry::BuiltinSource::from_build(),
         &config.registries,
         &config.builtin_extra_repos,
+        &config.plaza_repos,
     ))
 }
 
@@ -717,6 +730,7 @@ pub fn registry_add_repo(
         &builtin_src,
         &config.registries,
         &config.builtin_extra_repos,
+        &config.plaza_repos,
     ))
 }
 
@@ -758,6 +772,7 @@ pub fn registry_remove_repo(
         &builtin_src,
         &config.registries,
         &config.builtin_extra_repos,
+        &config.plaza_repos,
     ))
 }
 
@@ -798,6 +813,7 @@ fn resolve_registry(
         &config.builtin_extra_repos,
         registry_id,
         repo_key,
+        &config.plaza_repos,
     )
 }
 
@@ -1353,11 +1369,19 @@ fn binding_sources<'a>(
         builtin_repo: builtin.repo,
         builtin_extra: &config.builtin_extra_repos,
         custom: &config.registries,
+        plaza_repos: &config.plaza_repos,
     }
 }
 
 /// 提成纯函数是为了可测:`installed_list` 要 app_store,测不了
 /// ——只测两个 helper 而不测这里的组合方式,注入把两者对调也照样绿(实撞过)。
+///
+/// **广场(`PLAZA_REGISTRY_ID`)必须走独立分支**(M9 任务 2):下面的通用算法用
+/// `resolve(id, key=None)` 探测"这个源本身还在不在",这对内建/自定义源成立
+/// (它们都有主仓),但广场**没有主仓概念**——`resolve(plaza, None)` 按设计永远
+/// `Err(REPO_UNKNOWN)`(见 `registry::resolve`)。不加这个分支的话,任何广场来源的
+/// 已装技能都会被判成"来源已移除",即便广场好好的、这个库也明明在 `plaza_repos` 里
+/// ——这正是本任务动机段点名的那类"编译通过、逻辑正确,只是没人验证过实际语义"的缺陷。
 fn source_state(
     builtin: &registry::BuiltinSource,
     config: &state::Config,
@@ -1370,9 +1394,16 @@ fn source_state(
             &config.builtin_extra_repos,
             &source.registry_id,
             key,
+            &config.plaza_repos,
         )
         .is_ok()
     };
+    if source.registry_id == registry::PLAZA_REGISTRY_ID {
+        // 广场是锁定源,像内建源一样"永远在"——不存在"来源已移除"这一档,
+        // 只看这个具体的库是否还在 plaza_repos 里。
+        let key = registry::repo_key(&source.owner, &source.repo);
+        return (false, !resolve_with(Some(&key)));
+    }
     if !resolve_with(None) {
         return (true, false);
     }
@@ -2011,6 +2042,46 @@ mod tests {
         );
     }
 
+    /// 广场(M9 任务 2)必须走独立分支:通用算法用 `resolve(id, key=None)` 探测
+    /// "源本身还在不在",这对内建/自定义源成立(它们都有主仓),但广场**没有主仓**,
+    /// `resolve(plaza, None)` 按设计永远出错。不特殊处理的话,任何广场来源的已装技能
+    /// 都会被判成"来源已移除",即便广场好好的、库也明明在 `plaza_repos` 里。
+    #[test]
+    fn plaza_sourced_skills_are_never_reported_as_source_removed() {
+        let builtin = registry::BuiltinSource {
+            base_url: Some("http://gitea.internal:3000"),
+            repo: Some(("skills", "skills")),
+            branch: "main",
+        };
+        let mut config = state::Config::default();
+        config.plaza_repos.push(state::RepoConfig {
+            owner: "vercel-labs".into(),
+            repo: "skills".into(),
+            branch: "main".into(),
+            name: None,
+        });
+        let src = |owner: &str, repo: &str| state::SkillSource {
+            registry_id: "plaza".into(),
+            owner: owner.into(),
+            repo: repo.into(),
+            path: "skills/x".into(),
+            git_ref: "aaa1111".into(),
+        };
+
+        // 库在 plaza_repos 里:两个标记都不亮
+        assert_eq!(
+            source_state(&builtin, &config, &src("vercel-labs", "skills")),
+            (false, false)
+        );
+        // 库不在 plaza_repos 里:只有 library_removed 亮,绝不是 source_removed
+        // ——广场这个"源"本身从未移除过。
+        assert_eq!(
+            source_state(&builtin, &config, &src("someone", "other-skills")),
+            (false, true),
+            "广场是锁定源,永远不该被判成「来源已移除」"
+        );
+    }
+
     #[test]
     fn scheduled_check_visits_every_library_not_just_the_primary_one() {
         // 只查主库会让追加库里装的技能永远等不到更新,而界面上看不出任何异常。
@@ -2047,7 +2118,7 @@ mod tests {
             ],
         };
 
-        let targets = check_targets(&builtin, &[custom], &extras);
+        let targets = check_targets(&builtin, &[custom], &extras, &[]);
         let keys: Vec<(String, String)> = targets
             .into_iter()
             .map(|(id, k)| (id, k.unwrap_or_default()))
@@ -2064,8 +2135,49 @@ mod tests {
 
         // 内建未注入配置的开发构建:那个源一个目标都不产出,自定义源照常
         let unconfigured = registry::BuiltinSource { base_url: None, repo: None, branch: "main" };
-        let targets = check_targets(&unconfigured, &[], &extras);
+        let targets = check_targets(&unconfigured, &[], &extras, &[]);
         assert!(targets.is_empty(), "没有主库时追加库也无从查起: {targets:?}");
+    }
+
+    /// 广场(M9 任务 2)必须走同一条枚举路径:`plaza_repos` 非空时,
+    /// 定时检查的目标清单里必须含广场——它没有主仓,不会被"只查主库"那类
+    /// 老逻辑意外覆盖到,必须显式验证。**这条测试是本任务里被点名的注入验证重点**:
+    /// 删掉 `check_targets`/`registry::list` 里的广场行,这条测试必须变红。
+    #[test]
+    fn scheduled_check_visits_the_plaza_source_when_it_has_repos() {
+        let builtin = registry::BuiltinSource {
+            base_url: Some("http://gitea.internal:3000"),
+            repo: Some(("skills", "skills")),
+            branch: "main",
+        };
+        let plaza_repos = vec![state::RepoConfig {
+            owner: "vercel-labs".into(),
+            repo: "skills".into(),
+            branch: "main".into(),
+            name: None,
+        }];
+
+        let targets = check_targets(&builtin, &[], &[], &plaza_repos);
+        let keys: Vec<(String, String)> = targets
+            .into_iter()
+            .map(|(id, k)| (id, k.unwrap_or_default()))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("company".to_string(), "skills/skills".to_string()),
+                ("plaza".to_string(), "vercel-labs/skills".to_string()),
+            ],
+            "plaza_repos 非空时,目标清单必须含广场"
+        );
+
+        // 对照组:plaza_repos 为空时,广场这一行仍在(list() 的既有契约),
+        // 但它没有仓,自然产不出任何目标——不是"广场消失了",是"广场没有仓可查"。
+        let targets = check_targets(&builtin, &[], &[], &[]);
+        assert!(
+            targets.iter().all(|(id, _)| id != "plaza"),
+            "空 plaza_repos 不该产出任何广场目标: {targets:?}"
+        );
     }
 
     #[test]

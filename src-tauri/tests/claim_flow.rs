@@ -137,6 +137,7 @@ fn company_sources(custom: &[RegistryConfig]) -> acquire::BindingSources<'_> {
         builtin_repo: Some(("skills", "skills")),
         builtin_extra: &[],
         custom,
+        plaza_repos: &[],
     }
 }
 
@@ -147,6 +148,18 @@ fn custom_only(custom: &[RegistryConfig]) -> acquire::BindingSources<'_> {
         builtin_repo: None,
         builtin_extra: &[],
         custom,
+        plaza_repos: &[],
+    }
+}
+
+/// 只有广场、没有内建源与自定义源(M9 任务 2)。
+fn plaza_only(plaza_repos: &[RepoConfig]) -> acquire::BindingSources<'_> {
+    acquire::BindingSources {
+        builtin_base_url: None,
+        builtin_repo: None,
+        builtin_extra: &[],
+        custom: &[],
+        plaza_repos,
     }
 }
 
@@ -338,6 +351,74 @@ fn a_company_library_skill_rebinds_to_the_builtin_source_when_reclaimed() {
         (src.registry_id.as_str(), src.owner.as_str(), src.repo.as_str()),
         ("company", "skills", "skills"),
     );
+}
+
+/// 广场(M9 任务 2)是内建源同款的锁定源:不落 `config.registries`,必须单独传
+/// 才能被绑上。`upstream_install` 写的 lock 条目本来就是 `vercel-labs/skills`
+/// (github.com 同源),这条测试锁定"装自广场列表里的库 → 绑上 plaza"这一件事,
+/// 与下一条"不在列表里 → 绑不上"成对——两条分别独立,不许合并成一条笼统断言。
+#[test]
+fn plaza_source_binds_a_skill_installed_from_a_listed_plaza_repo() {
+    let (ctx, env) = ctx();
+    upstream_install(&ctx, "weekly-report"); // sourceUrl = https://github.com/vercel-labs/skills
+    let installer = Installer::new(&ctx.registry, &env);
+
+    let plaza_repos = vec![RepoConfig {
+        owner: "vercel-labs".into(),
+        repo: "skills".into(),
+        branch: "main".into(),
+        name: None,
+    }];
+    let report = acquire::claim(
+        &installer,
+        &ctx.registry,
+        &env,
+        &ctx.store,
+        &plaza_only(&plaza_repos),
+        "weekly-report",
+        NOW,
+    )
+    .unwrap();
+
+    assert!(report.bound, "库在广场列表里就该绑上");
+    let src = ctx.store.load_state().unwrap().value.installed[0].source.clone();
+    assert_eq!(
+        (src.registry_id.as_str(), src.owner.as_str(), src.repo.as_str()),
+        ("plaza", "vercel-labs", "skills"),
+    );
+}
+
+/// 对照组:同一次上游安装,广场列表里换成一个不相干的库——绑不上,
+/// 界面据此走 `claimBindable=false` 那条路(不摆「纳入管理」按钮)。
+#[test]
+fn plaza_source_does_not_bind_a_repo_missing_from_its_list() {
+    let (ctx, env) = ctx();
+    upstream_install(&ctx, "weekly-report");
+    let installer = Installer::new(&ctx.registry, &env);
+
+    let plaza_repos = vec![RepoConfig {
+        owner: "someone".into(),
+        repo: "other-skills".into(),
+        branch: "main".into(),
+        name: None,
+    }];
+    let report = acquire::claim(
+        &installer,
+        &ctx.registry,
+        &env,
+        &ctx.store,
+        &plaza_only(&plaza_repos),
+        "weekly-report",
+        NOW,
+    )
+    .unwrap();
+
+    assert!(!report.bound, "库不在广场列表里,不得绑定");
+    let st = ctx.store.load_state().unwrap().value;
+    assert_eq!(st.installed[0].source.registry_id, "");
+    // 展示信息仍如实保留(与其余"绑不上"场景同一姿态)
+    assert_eq!(st.installed[0].source.owner, "vercel-labs");
+    assert_eq!(st.installed[0].source.repo, "skills");
 }
 
 /// 说不清是哪个库就不绑:`sourceUrl` 不是 URL 时只能按 owner/repo 找,

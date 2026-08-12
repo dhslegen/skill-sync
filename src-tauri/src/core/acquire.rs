@@ -1059,19 +1059,27 @@ pub fn claim(
 /// **内建源必须单独传**:它锁定且不落 `config.registries`(坐标是编译期常量),
 /// 光传 `config.registries` 的话公司库来的技能永远绑不上——M3 起认领对主线场景
 /// 从来没生效过,根因就是这里少了一份坐标(M6 任务 4 修)。
+///
+/// **广场同理必须单独传**(M9 任务 2):它也锁定、也不落 `config.registries`
+/// (坐标是 `registry::PLAZA_REGISTRY_ID` / `registry::PLAZA_BASE_URL` 常量),
+/// 与内建源是完全同款的"对 config 枚举不可见"陷阱——这正是本任务要堵的口子。
 pub struct BindingSources<'a> {
     pub builtin_base_url: Option<&'a str>,
     pub builtin_repo: Option<(&'a str, &'a str)>,
     /// 内建源的追加库(M4 任务 1,落在 `config.builtinExtraRepos`)。
     pub builtin_extra: &'a [state::RepoConfig],
     pub custom: &'a [state::RegistryConfig],
+    /// 广场上用户接触过的技能库(`config.plazaRepos`)。广场没有主仓,
+    /// 因此不像内建源那样另有一对 `plaza_base_url`/`plaza_repo`——
+    /// 访问坐标固定是 `registry::PLAZA_BASE_URL`,不需要参数化。
+    pub plaza_repos: &'a [state::RepoConfig],
 }
 
 /// 一个候选库:`(源 id, 源地址, owner, repo)`。
 type Candidate<'a> = (&'a str, &'a str, &'a str, &'a str);
 
 impl BindingSources<'_> {
-    /// 摊平成候选库清单,内建与自定义一视同仁。
+    /// 摊平成候选库清单,内建、自定义、广场一视同仁。
     fn candidates(&self) -> Vec<Candidate<'_>> {
         let mut out: Vec<Candidate<'_>> = Vec::new();
         if let (Some(base), Some((o, r))) = (self.builtin_base_url, self.builtin_repo) {
@@ -1089,6 +1097,14 @@ impl BindingSources<'_> {
             for c in &reg.repos {
                 out.push((&reg.id, &reg.base_url, &c.owner, &c.repo));
             }
+        }
+        for c in self.plaza_repos {
+            out.push((
+                crate::core::registry::PLAZA_REGISTRY_ID,
+                crate::core::registry::PLAZA_BASE_URL,
+                &c.owner,
+                &c.repo,
+            ));
         }
         out
     }
