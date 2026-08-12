@@ -161,28 +161,6 @@ pub async fn search(
     parse_cards(&body)
 }
 
-/// 上游仓库视图的宽容解析形态,只取挂仓要用的一个字段。
-#[derive(Debug, Deserialize)]
-struct RawRepoView {
-    #[serde(default)]
-    default_branch: Option<String>,
-}
-
-fn parse_default_branch(body: &str) -> Result<String, AppError> {
-    let parsed: RawRepoView = serde_json::from_str(body).map_err(|e| {
-        plaza_repo_err(format!(
-            "{e}; body={}",
-            body.chars().take(400).collect::<String>()
-        ))
-    })?;
-    parsed.default_branch.filter(|b| !b.is_empty()).ok_or_else(|| {
-        plaza_repo_err(format!(
-            "响应缺少 default_branch 字段; body={}",
-            body.chars().take(400).collect::<String>()
-        ))
-    })
-}
-
 fn plaza_repo_err(detail: String) -> AppError {
     AppError::new("NET_PLAZA_REPO", "无法获取该技能库信息,请稍后重试").with_detail(detail)
 }
@@ -191,19 +169,21 @@ fn plaza_repo_err(detail: String) -> AppError {
 ///
 /// `GET {api_base}/repos/{owner}/{repo}`,取响应体的 `default_branch` 字段。
 ///
-/// # 为什么不直接调 `github::GithubClient::repo_view`
+/// # 与 `github::GithubClient::repo_view` 的关系(2026-08-12 审查后重构)
 ///
-/// 先查过了(brief 明确要求):`github.rs` 确有等价读原语 `repo_view`,形状与本函数
-/// 要做的事完全一致。但它挂在 `GithubClient::new(base_url, ..)` 上,`api_base` 由
-/// `api_base_for(base_url)` **派生**(非 `github.com` 主机一律补 `/api/v3`,GHE 语义)。
-/// 广场的访问坐标是固定常量,没有"派生"这回事——硬套会强迫这里的测试也去扮演一个
-/// GHE 实例(挂在 `/api/v3` 之下),平白引入一段与广场毫不相关的形状。这里走与同文件
-/// [`search`] 一致的自包含风格(手动拼 URL、自行错误映射),不是重新发明轮子,
-/// 是把 `search` 已验证过的"自包含"套路原样用在第二个端点上。
+/// 两者是**同一个外部契约的两个调用方**:GitHub `/repos/{owner}/{repo}` 端点、
+/// 同一个 [`crate::core::github::RepoView`] 结构(含 `default_branch` 字段)、同一套
+/// 状态码判定——URL 构造、鉴权头、状态码分档、JSON 解析全部只在
+/// [`crate::core::github::fetch_repo_view`] 里维护一份,这里不再自己拼 URL 或解析
+/// JSON。**唯一的分叉在错误处理**,而且分叉发生在这里(调用方),不在共享函数里:
+/// `repo_view` 把 401/403/404/5xx 分档人话原样透给用户,这里把**任意** `Err`
+/// 统一改写成 `NET_PLAZA_REPO`——广场挂仓探测只需要一种"探测失败,请稍后重试"的
+/// 降级展示,不需要用户分辨具体是哪一种。
 ///
 /// 匿名请求(广场技能公开可读,同内建源"读永远匿名"的先例,见 `registry.rs`
-/// `ResolvedRegistry::auth_config` 的注释);404 / 网络错误 / 解析失败一律统一
-/// 映射为 `AppError("NET_PLAZA_REPO", ..)`——与 `search` 的"单一错误码"同一套设防姿势。
+/// `ResolvedRegistry::auth_config` 的注释)。响应缺 `default_branch` 字段(或该字段
+/// 为空串)按错误处理——这不是共享契约的一部分,是广场自己的业务要求(挂仓必须拿到
+/// 一个可用的分支名),所以判定留在这一层,不下沉进共享函数。
 pub async fn default_branch(
     http: &reqwest::Client,
     api_base: &str,
@@ -211,27 +191,21 @@ pub async fn default_branch(
     repo: &str,
 ) -> Result<String, AppError> {
     let base = api_base.trim_end_matches('/');
-    let url = format!("{base}/repos/{owner}/{repo}");
-
-    let resp = http
-        .get(&url)
-        .send()
+    let view = crate::core::github::fetch_repo_view(http, None, base, owner, repo)
         .await
-        .map_err(|e| plaza_repo_err(e.to_string()))?;
-
-    let status = resp.status();
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| plaza_repo_err(e.to_string()))?;
-    if !status.is_success() {
+        .map_err(|e| {
+            plaza_repo_err(format!(
+                "{}: {}",
+                e.code,
+                e.detail.as_deref().unwrap_or(&e.message)
+            ))
+        })?;
+    if view.default_branch.is_empty() {
         return Err(plaza_repo_err(format!(
-            "HTTP {status}: {}",
-            body.chars().take(400).collect::<String>()
+            "响应缺少 default_branch 字段(owner={owner} repo={repo})"
         )));
     }
-
-    parse_default_branch(&body)
+    Ok(view.default_branch)
 }
 
 #[cfg(test)]
@@ -253,29 +227,9 @@ mod tests {
         assert!(!query_too_short("技能"));
     }
 
-    // 纯逻辑,不碰网络:响应体解析的边界情形。真正的"发对了请求 / 状态码映射"
-    // 在 tests/plaza_default_branch.rs(wiremock)。
-    #[test]
-    fn parse_default_branch_reads_the_field() {
-        let branch = parse_default_branch(r#"{"default_branch":"main","full_name":"a/b"}"#)
-            .expect("正常响应应解析成功");
-        assert_eq!(branch, "main");
-    }
-
-    #[test]
-    fn parse_default_branch_rejects_a_missing_or_empty_field() {
-        assert_eq!(
-            parse_default_branch(r#"{"full_name":"a/b"}"#).unwrap_err().code,
-            "NET_PLAZA_REPO"
-        );
-        assert_eq!(
-            parse_default_branch(r#"{"default_branch":""}"#).unwrap_err().code,
-            "NET_PLAZA_REPO"
-        );
-    }
-
-    #[test]
-    fn parse_default_branch_rejects_unparseable_bodies() {
-        assert_eq!(parse_default_branch("不是 json").unwrap_err().code, "NET_PLAZA_REPO");
-    }
+    // `default_branch` 的响应体解析(JSON 形状、缺字段判定)现在完全委派给
+    // `github::fetch_repo_view` + 本函数末尾的 `is_empty()` 判定,不再有独立的纯解析
+    // 函数可测——覆盖挪到 tests/plaza_default_branch.rs 的 wiremock 测试里
+    // (含"200 但缺 default_branch 字段"这条,2026-08-12 审查重构时新增,
+    // 防止拆掉 parse_default_branch 之后这条业务规则悄悄失去覆盖)。
 }

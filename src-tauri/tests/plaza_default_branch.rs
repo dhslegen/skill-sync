@@ -1,8 +1,12 @@
 //! `core::plaza::default_branch`(M9 任务 3)的 wiremock 集成测试。
 //!
-//! 挂在 `/repos/{owner}/{repo}` 之下(不带 `/api/v3`):`default_branch` 是自包含
-//! 实现,不经 `github::GithubClient`(该函数文档里解释了为什么不复用
-//! `GithubClient::repo_view`——两者的 api_base 语义不同,详见 `core/plaza.rs`)。
+//! 挂在 `/repos/{owner}/{repo}` 之下(不带 `/api/v3`):`default_branch` 内部委派给
+//! `github::fetch_repo_view`(2026-08-12 审查后重构,两者共用同一个外部契约——
+//! URL 构造/鉴权头/状态码分档/JSON 解析只有一份实现,详见 `core/plaza.rs` 与
+//! `core/github.rs::fetch_repo_view` 的文档)。这里测的是 `default_branch` 对外的
+//! **统一错误码**这层契约(`NET_PLAZA_REPO`),不是共享函数内部怎么发请求
+//! ——那部分由 `github.rs` 自己的既有测试(`tests/github_client.rs` 等)与
+//! `repo_view` 的既有调用方覆盖。
 
 use skillsync_lib::core::plaza;
 use wiremock::matchers::{method, path};
@@ -50,6 +54,27 @@ async fn a_non_main_default_branch_is_reported_as_is() {
         .await
         .unwrap();
     assert_eq!(branch, "develop");
+}
+
+/// 200 但响应体缺 `default_branch` 字段(或字段为空串)是广场自己的业务规则
+/// ——挂仓必须拿到一个可用的分支名,这条不属于 `github::fetch_repo_view` 共享的
+/// 外部契约(那份契约只管"这个端点怎么发请求、状态码怎么分档"),判定留在
+/// `default_branch` 自己身上。2026-08-12 审查重构时新增:此前这条由一个独立的纯函数
+/// `parse_default_branch` 覆盖,拆掉那个函数后这里补上等价的集成测试,不让业务规则
+/// 悄悄失去覆盖。
+#[tokio::test]
+async fn a_200_missing_the_default_branch_field_is_still_an_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/someorg/no-field"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"full_name":"someorg/no-field"}"#))
+        .mount(&server)
+        .await;
+
+    let err = plaza::default_branch(&http(), &server.uri(), "someorg", "no-field")
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "NET_PLAZA_REPO");
 }
 
 // ---------------------------------------------------------------- 2. 404 → 中文错误

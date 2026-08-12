@@ -346,6 +346,46 @@ pub struct RepoPermissions {
     pub push: bool,
 }
 
+/// `GET {api_base}/repos/{owner}/{repo}` 的共享读取(M9 任务 3 审查后抽出)。
+///
+/// **这是唯一实现这个外部契约的地方**:URL 构造、鉴权头、状态码分档(`check_status`)、
+/// JSON 解析(`parse_json` 反序列化进 [`RepoView`],含 `default_branch` 字段)全部只
+/// 维护这一份。两个调用方**只在拿到结果之后的错误处理上分叉**,分叉发生在调用方,
+/// 不在这个函数里:
+/// - [`GithubClient::repo_view`] 原样把这里给出的分档错误码(401/403/404/5xx,
+///   由 [`check_status`] 决定)透给用户——它的权限矩阵判断需要知道具体是哪一种;
+/// - `core::plaza::default_branch` 把任意 `Err`(不论原始错误码)统一改写成
+///   `NET_PLAZA_REPO`——广场挂仓探测只需要一种"探测失败,请稍后重试"的降级展示,
+///   不需要用户分辨是 404 还是限流还是网络问题。
+///
+/// `token` 为 `None` 时匿名请求(广场技能公开可读,同内建源"读永远匿名"的先例)。
+pub(crate) async fn fetch_repo_view(
+    http: &reqwest::Client,
+    token: Option<&str>,
+    api_base: &str,
+    owner: &str,
+    repo: &str,
+) -> Result<RepoView, AppError> {
+    let url = format!("{api_base}/repos/{owner}/{repo}");
+    let mut req = http
+        .get(url)
+        .header("accept", "application/vnd.github+json")
+        .header("x-github-api-version", "2022-11-28");
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
+    }
+    let resp = req.send().await.map_err(|e| {
+        if gitea::is_unreachable(&e) {
+            AppError::new("NET_UNREACHABLE", "连不上 GitHub,请检查网络或代理设置")
+                .with_detail(e.to_string())
+        } else {
+            AppError::new("NET_REQUEST", "网络请求失败,请稍后重试").with_detail(e.to_string())
+        }
+    })?;
+    let resp = check_status(resp).await?;
+    parse_json(resp).await
+}
+
 /// fork 的落点。202 响应体自带 full_name(录制 11)。
 #[derive(Debug, Clone)]
 pub struct ForkTarget {
@@ -393,11 +433,10 @@ impl GithubClient {
         check_status(resp).await
     }
 
-    /// 仓库视图(权限矩阵判据)。
+    /// 仓库视图(权限矩阵判据)。薄壳:实际请求在 [`fetch_repo_view`](共享读取,
+    /// 与 `core::plaza::default_branch` 共用同一个外部契约,见其文档)。
     pub async fn repo_view(&self, owner: &str, repo: &str) -> Result<RepoView, AppError> {
-        let url = format!("{}/repos/{owner}/{repo}", self.api_base);
-        let resp = self.send_built(self.request(reqwest::Method::GET, url)).await?;
-        parse_json(resp).await
+        fetch_repo_view(&self.http, self.token.as_deref(), &self.api_base, owner, repo).await
     }
 
     /// 分支是否受保护(录制 08b 的 `protected` 字段)。
