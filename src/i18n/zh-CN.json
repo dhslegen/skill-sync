@@ -326,5 +326,12 @@
   "mine.goShare": "分享到技能库",
   "mine.unclaim": "移出管理",
   "mine.unclaiming": "处理中",
-  "mine.unclaimHint": "只把它移出管理列表,技能文件与其他工具的关联都不会动。"
+  "mine.unclaimHint": "只把它移出管理列表,技能文件与其他工具的关联都不会动。",
+  "format.installsCompact": "{n}万",
+  "registries.plazaTag": "系统管理",
+  "plaza.emptyQuery": "输入关键词搜索全网技能(至少 2 个字符)",
+  "plaza.searchFailed": "技能广场暂时连不上,不影响公司技能库",
+  "plaza.installsLabel": "{installs} 次安装",
+  "plaza.openInBrowser": "在浏览器中查看",
+  "plaza.detailAmbiguous": "这个技能库里有多个技能,请选择要查看的一个"
 }

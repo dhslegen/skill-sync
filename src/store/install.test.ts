@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { failedLinks, linkedAgents, useInstall } from "./install";
+import { useRegistries } from "./registries";
 import type { AcquireOutcome, InstallReport } from "@/lib/ipc";
 
 const invoke = vi.fn();
@@ -512,6 +513,105 @@ describe("已装记账的来源坐标(M4 一源多仓)", () => {
     expect(map.has("from-library")).toBe(true);
     expect(map.has("npx-installed")).toBe(false);
     expect(map.has("my-draft")).toBe(false);
+  });
+});
+
+describe("beginFromPlaza(技能广场安装编排,M9 任务 5)", () => {
+  beforeEach(() => {
+    reset();
+    useRegistries.setState({ list: null, error: null, busy: false, loggedIn: {}, devicePrompt: null });
+  });
+
+  it("挂仓失败:不触发获取,直接进错误态", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "plaza_ensure_repo") {
+        throw { code: "NET_PLAZA_REPO", message: "无法获取该技能库信息,请稍后重试" };
+      }
+      return null;
+    });
+
+    await useInstall.getState().beginFromPlaza("vercel-labs/skills", "react-best-practices");
+
+    expect(useInstall.getState().phase).toBe("error");
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_install")).toBe(false);
+  });
+
+  it("挂仓成功后,确认安装带 registryId:plaza + 挂仓返回的寻址键", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "plaza_ensure_repo") {
+        return {
+          key: "vercel-labs/skills",
+          owner: "vercel-labs",
+          repo: "skills",
+          branch: "main",
+          name: null,
+          primary: false,
+          locked: false,
+        };
+      }
+      if (cmd === "installed_list") return [];
+      if (cmd === "registry_list") return [];
+      return { outcome: "installed", report: report(), localKept: false, lock: "written" };
+    });
+
+    await useInstall.getState().beginFromPlaza("vercel-labs/skills", "react-best-practices");
+    expect(useInstall.getState().phase).toBe("choosing");
+    await useInstall.getState().run();
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_install");
+    expect(call?.[1].args.dirSlug).toBe("react-best-practices");
+    expect(call?.[1].args.registryId).toBe("plaza");
+    expect(call?.[1].args.repo).toBe("vercel-labs/skills");
+    expect(useInstall.getState().phase).toBe("done");
+  });
+
+  it("挂仓成功后刷新技能库来源列表:切换器的已挂仓子条目才会出现(§2.4 徽标口径)", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "plaza_ensure_repo") {
+        return {
+          key: "vercel-labs/skills",
+          owner: "vercel-labs",
+          repo: "skills",
+          branch: "main",
+          name: null,
+          primary: false,
+          locked: false,
+        };
+      }
+      if (cmd === "registry_list") {
+        return [
+          {
+            id: "plaza",
+            name: "技能广场",
+            kind: "github",
+            baseUrl: "https://github.com",
+            builtin: false,
+            repo: null,
+            repos: [
+              {
+                key: "vercel-labs/skills",
+                owner: "vercel-labs",
+                repo: "skills",
+                branch: "main",
+                name: null,
+                primary: false,
+                locked: false,
+              },
+            ],
+          },
+        ];
+      }
+      return null;
+    });
+
+    await useInstall.getState().beginFromPlaza("vercel-labs/skills", "react-best-practices");
+
+    await vi.waitFor(() => {
+      expect(useRegistries.getState().list?.[0]?.repos).toHaveLength(1);
+    });
   });
 });
 

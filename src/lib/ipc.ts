@@ -614,6 +614,14 @@ export const skillShareChanges = (args: {
 // 与 src-tauri/src/core/plaza.rs 的 PlazaSkillCard 一一对应(camelCase)。
 // 只做发现:安装/更新走既有 GitHub 源机制,复用 ownerRepo 即可,这里不新增能力。
 
+/**
+ * 广场源的固定 registryId(与 `core::registry::PLAZA_REGISTRY_ID` 逐字对应)。
+ *
+ * 前端多处要判断"当前是不是广场"(库切换器、设置页、详情面板),集中成一个常量,
+ * 不许各处各写一份 `"plaza"` 字面量——那是下一次改 id 时唯一会漏改的地方。
+ */
+export const PLAZA_REGISTRY_ID = "plaza";
+
 /** 技能广场(skills.sh)一条搜索结果。 */
 export interface PlazaSkillCard {
   name: string;

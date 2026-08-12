@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { formatBytes, relativeTime, relativeTimeFromIso, shortSha, skillSlug } from "./format";
+import {
+  formatBytes,
+  formatInstalls,
+  relativeTime,
+  relativeTimeFromIso,
+  shortSha,
+  skillSlug,
+} from "./format";
 
 const NOW = Date.parse("2026-07-30T12:00:00Z");
 const ago = (ms: number) => NOW - ms;
@@ -56,5 +63,16 @@ describe("展示格式", () => {
 
   it("slug 是 技能库/目录名", () => {
     expect(skillSlug("skills", "weekly-report")).toBe("skills/weekly-report");
+  });
+
+  it("安装量中文紧凑展示(技能广场,M9 任务 5)", () => {
+    // 边界表:0/负数不显示;万以下原样;万以上保留一位小数
+    expect(formatInstalls(0)).toBe("");
+    expect(formatInstalls(-5)).toBe("");
+    expect(formatInstalls(999)).toBe("999");
+    expect(formatInstalls(1000)).toBe("1000");
+    expect(formatInstalls(5649)).toBe("5649");
+    expect(formatInstalls(625414)).toBe("62.5万");
+    expect(formatInstalls(1234567)).toBe("123.5万");
   });
 });

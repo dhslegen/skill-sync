@@ -2,13 +2,16 @@ import { WifiOff } from "lucide-react";
 import { useEffect, useMemo } from "react";
 
 import { Icon } from "@/components/Icon";
+import { PlazaCard } from "@/components/PlazaCard";
 import { SkillCard } from "@/components/SkillCard";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { relativeTimeFromIso, relativeTimeFromUnix } from "@/lib/format";
+import { PLAZA_REGISTRY_ID } from "@/lib/ipc";
 import { filterSkills, type StoreFilter } from "@/lib/search";
 import { cardState } from "@/lib/update";
 import { useInstall } from "@/store/install";
+import { usePlaza } from "@/store/plaza";
 import { useRegistries } from "@/store/registries";
 import { useStoreIndex } from "@/store/store-index";
 
@@ -19,8 +22,20 @@ const FILTERS: { id: StoreFilter; label: MessageKey }[] = [
 ];
 
 export function StorePage() {
-  const { index, status, error, query, filter, setFilter, tagFilter, toggleTag, openDetail, load } =
-    useStoreIndex();
+  const {
+    index,
+    status,
+    error,
+    query,
+    filter,
+    setFilter,
+    tagFilter,
+    toggleTag,
+    openDetail,
+    load,
+    activeRegistry,
+    activeRepo,
+  } = useStoreIndex();
   const records = useInstall((s) => s.installed);
   // 已安装集合来自 installed_list(core 的 state.json),不再是恒空的占位
   const installed = useMemo(() => new Set(records.keys()), [records]);
@@ -46,6 +61,18 @@ export function StorePage() {
     }
     return seen;
   }, [index]);
+
+  // 技能广场的"搜索态"哨兵(registryId=plaza, repo=null,见 store-index.ts 的注释):
+  // 广场没有索引可拉,这条分支必须排在下面几个早退之前——否则 `!index` 会一路
+  // 落进"首屏骨架"或"读取失败"那两档,把搜索页整个盖住(库切换器的既有教训同款)。
+  if (activeRegistry === PLAZA_REGISTRY_ID && activeRepo === null) {
+    return (
+      <>
+        <SourcePicker />
+        <PlazaResults />
+      </>
+    );
+  }
 
   // 加载中与出错这两档也要留着库切换器(2026-08-04 视觉自查抓到):
   // 早退分支把它一起挡掉后,用户切到一个连不上的技能库就**再也点不回来**
@@ -189,17 +216,38 @@ export function StorePage() {
   );
 }
 
-/** 库切换器(M3 多源 + M4 一源多仓):源 × 仓拍平成一排。
- *  只有一个库时不渲染——摆一个没得选的选择器是噪音。 */
+/**
+ * 库切换器(M3 多源 + M4 一源多仓 + M9 技能广场):源 × 仓拍平成一排。
+ *
+ * 广场(§2.5)是**固定档**,不是"选出来"的:即便它还没挂过任何仓也要出现在这一排,
+ * 排在自定义源之后——用户要能随时点进去搜索。它自己不是一个"仓",点开它是切进
+ * "搜索态"(registryId=plaza, repo=null);已挂过的仓则各自作为普通子条目出现,
+ * 点开按普通库浏览(§2.4 更新徽标口径落地正靠这条:那条路走 store_index,天然有
+ * 指纹可比)。因为广场恒定贡献至少一枚固定入口,这排切换器现在也就恒定可见了
+ * ——不再是"只有一个库时不渲染"的旧语义(旧语义仍适用于"只算真实技能库"的场景)。
+ */
 function SourcePicker() {
   const registries = useRegistries((s) => s.list);
   const activeRegistry = useStoreIndex((s) => s.activeRegistry);
   const activeRepo = useStoreIndex((s) => s.activeRepo);
   const setRegistry = useStoreIndex((s) => s.setRegistry);
+  const closePlazaDetail = usePlaza((s) => s.closeDetail);
 
   const entries = useMemo(() => {
     if (!registries) return [];
     return registries.flatMap((r) => {
+      if (r.id === PLAZA_REGISTRY_ID) {
+        return [
+          // 固定入口本身:点开进搜索态,不是浏览任何一个仓
+          { registryId: r.id, repoKey: null, label: r.name, title: r.name },
+          ...r.repos.map((repo) => ({
+            registryId: r.id,
+            repoKey: repo.key,
+            label: repo.name ?? repo.repo,
+            title: `${r.name} · ${repo.key}`,
+          })),
+        ];
+      }
       const sourceName = r.builtin ? t("registries.builtinName") : r.name;
       return r.repos.map((repo) => ({
         registryId: r.id,
@@ -229,7 +277,12 @@ function SourcePicker() {
             type="button"
             title={e.title}
             aria-pressed={active}
-            onClick={() => void setRegistry(e.registryId, e.repoKey)}
+            onClick={() => {
+              // 离开/进入哪个库都先清掉广场详情:换库之后那个面板挂着的内容
+              // 已经与当前页面无关,留着就是一个能被 Esc/关闭键之外的方式点开的死面板。
+              closePlazaDetail();
+              void setRegistry(e.registryId, e.repoKey);
+            }}
             className={cn(
               "rounded-full border px-2.5 py-[3px] text-[12px]",
               active
@@ -241,6 +294,43 @@ function SourcePicker() {
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * 技能广场的搜索结果区(M9 任务 5)。四档:空查询提示 / 搜索失败 / 空结果 / 结果网格。
+ * 搜索框在 Toolbar 里(复用现有 SearchBox,IME/防抖行为不重写),这里只管结果展示。
+ */
+function PlazaResults() {
+  const query = usePlaza((s) => s.query);
+  const results = usePlaza((s) => s.results);
+  const status = usePlaza((s) => s.status);
+  const openDetail = usePlaza((s) => s.openDetail);
+
+  const trimmed = query.trim();
+  if (trimmed.length < 2) {
+    return <p className="py-6 text-[12.5px] text-text-3">{t("plaza.emptyQuery")}</p>;
+  }
+  if (status === "error") {
+    return <p className="py-6 text-[12.5px] text-text-3">{t("plaza.searchFailed")}</p>;
+  }
+  if (status === "loading" && results.length === 0) {
+    return <p className="py-6 text-[12.5px] text-text-3">{t("store.loading")}</p>;
+  }
+  if (results.length === 0) {
+    return <p className="py-6 text-[12.5px] text-text-3">{t("store.emptySearch", { query: trimmed })}</p>;
+  }
+
+  return (
+    <div className="mt-2.5 grid grid-cols-[repeat(auto-fill,minmax(288px,1fr))] gap-2.5">
+      {results.map((card) => (
+        <PlazaCard
+          key={card.ownerRepo + "/" + card.slug}
+          card={card}
+          onOpen={() => void openDetail(card.ownerRepo, card.name, card.slug)}
+        />
+      ))}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { t } from "@/i18n";
 import {
   isAppError,
+  PLAZA_REGISTRY_ID,
   storeIndex,
   storeSkillDetail,
   type AppError,
@@ -71,6 +72,14 @@ export const useStoreIndex = create<StoreIndexState>((set, get) => ({
     // 已有内容时保持列表可见,只在首次加载显示骨架——刷新不该让页面闪空
     const registryId = get().activeRegistry;
     const repo = get().activeRepo;
+    // 广场"搜索态"的哨兵组合(registryId=plaza, repo=null):广场没有主仓概念,
+    // `resolve(plaza, None)` 按设计必然报 `REPO_UNKNOWN`(见 core/registry.rs
+    // plaza_has_no_default_repo)。这个函数不止被 StorePage 的用户操作调用——
+    // settings.ts 的 `attachReportListener` 在收到调度检查报告时也会直接
+    // `useStoreIndex.getState().load()`,与当前页面无关。守卫必须放在这里
+    // (而不只是 setRegistry 里),否则后台一轮调度就能在用户挂在广场搜索页时
+    // 把一句"技能广场没有默认技能库"的假错误灌进商店的 error 状态。
+    if (registryId === PLAZA_REGISTRY_ID && repo === null) return;
     set({ status: "loading", error: null });
     try {
       const index = await storeIndex(force, registryId, repo ?? undefined);
@@ -97,6 +106,10 @@ export const useStoreIndex = create<StoreIndexState>((set, get) => ({
       detailSlug: null,
       detail: null,
       tagFilter: null,
+      // 广场搜索态没有 load() 可跑(见上面的守卫),显式回到 idle——不然会带着
+      // 上一个库的 loading/error 残留状态进入这一页
+      status: "idle",
+      error: null,
     });
     await get().load();
   },

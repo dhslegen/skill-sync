@@ -1,4 +1,4 @@
-import { FileCode, FileText, Folder, FolderOpen, TriangleAlert, X } from "lucide-react";
+import { ExternalLink, FileCode, FileText, Folder, FolderOpen, TriangleAlert, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Icon } from "@/components/Icon";
@@ -8,19 +8,32 @@ import { SkillIcon } from "@/components/SkillIcon";
 import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { formatBytes, relativeTimeFromIso, shortSha } from "@/lib/format";
-import type { LocalSkillDetail, SkillDetail } from "@/lib/ipc";
+import { isAppError, openLibraryUrl, type LocalSkillDetail, type SkillDetail } from "@/lib/ipc";
 import { useLocalDetail } from "@/store/local-detail";
+import { locatePlazaSkill, usePlaza } from "@/store/plaza";
 import { useStoreIndex } from "@/store/store-index";
 
 /** 详情是右侧滑出面板,不整页跳转(UI 规范 §5:借 Raycast 的"详情不跳页")。
- *  两个数据源共用同一个壳:商店详情(远端缓存)与本地详情(我的技能/分享页,直接读盘)。 */
+ *  三个数据源共用同一个壳:商店详情(远端缓存)、本地详情(我的技能/分享页,直接读盘)、
+ *  技能广场详情(M9 任务 5,现拉——"详情面板不联网"承诺的唯一破例,范围钉死在广场,
+ *  见 core/plaza.rs 模块头)。 */
 export function DetailPanel() {
   const { detailSlug, detail, detailError, closeDetail, index } = useStoreIndex();
   const local = useLocalDetail();
+  const plaza = usePlaza();
   const localOpen = local.target !== null;
-  const open = detailSlug !== null || localOpen;
-  const close = localOpen ? local.close : closeDetail;
-  const title = localOpen ? local.detail?.name : detail?.name;
+  const plazaOpen = plaza.detailOwnerRepo !== null;
+  const open = detailSlug !== null || localOpen || plazaOpen;
+  const close = localOpen ? local.close : plazaOpen ? plaza.closeDetail : closeDetail;
+  const plazaMatched =
+    plazaOpen && plaza.detailSkills
+      ? locatePlazaSkill(plaza.detailSkills, plaza.detailWantedName, plaza.selectedDirSlug)
+      : null;
+  const title = localOpen
+    ? local.detail?.name
+    : plazaOpen
+      ? (plazaMatched?.name ?? plaza.detailWantedName ?? plaza.detailOwnerRepo ?? undefined)
+      : detail?.name;
   const panelRef = useRef<HTMLDivElement>(null);
   const returnFocusTo = useRef<HTMLElement | null>(null);
 
@@ -83,6 +96,8 @@ export function DetailPanel() {
               {local.error ? local.error.message : t("detail.loading")}
             </div>
           )
+        ) : plazaOpen ? (
+          <PlazaPanelBody />
         ) : open && detail ? (
           <PanelBody detail={detail} repo={index?.repo ?? ""} />
         ) : open ? (
@@ -177,8 +192,155 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
   );
 }
 
-function PanelBody({ detail, repo }: { detail: SkillDetail; repo: string }) {
-  const closeDetail = useStoreIndex((s) => s.closeDetail);
+/**
+ * 技能广场详情态(M9 任务 5)。数据来自 `usePlaza`(现拉,不是索引缓存),
+ * 三档:加载中/错误(+ 重试)/成功。成功之后还有一层"定位不到点击的那个"
+ * (设计文档 §2.2:一个仓多个技能,名字对不上就落到该仓技能列表让用户挑)。
+ */
+function PlazaPanelBody() {
+  const {
+    detailOwnerRepo,
+    detailWantedName,
+    detailSlug,
+    detailSkills,
+    detailStatus,
+    detailError,
+    selectedDirSlug,
+    retryDetail,
+    selectDetailSkill,
+  } = usePlaza();
+
+  if (detailStatus === "error") {
+    return (
+      <div className="p-5">
+        <p className="text-[12.5px] text-text-2">{detailError?.message}</p>
+        <button
+          type="button"
+          onClick={() => void retryDetail()}
+          className="mt-2.5 h-7 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+        >
+          {t("store.retry")}
+        </button>
+      </div>
+    );
+  }
+
+  if (detailStatus !== "ready" || !detailSkills) {
+    return <div className="p-5 text-[12.5px] text-text-3">{t("detail.loading")}</div>;
+  }
+
+  const matched = locatePlazaSkill(detailSkills, detailWantedName, selectedDirSlug);
+  if (matched) {
+    return (
+      <PanelBody
+        detail={matched}
+        repo={detailOwnerRepo ?? ""}
+        plaza={{ ownerRepo: detailOwnerRepo ?? "", slug: detailSlug ?? "" }}
+      />
+    );
+  }
+
+  return (
+    <PlazaSkillPicker ownerRepo={detailOwnerRepo ?? ""} skills={detailSkills} onPick={selectDetailSkill} />
+  );
+}
+
+/** 定位不到点击的那个技能时,落到该仓的技能列表让用户另选一个。 */
+function PlazaSkillPicker({
+  ownerRepo,
+  skills,
+  onPick,
+}: {
+  ownerRepo: string;
+  skills: SkillDetail[];
+  onPick: (dirSlug: string) => void;
+}) {
+  const closePlaza = usePlaza((s) => s.closeDetail);
+
+  return (
+    <>
+      <div className="flex items-center gap-3 px-5 pt-[18px]">
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate font-mono text-[15px] font-[650]">{ownerRepo}</h2>
+        </div>
+        <button
+          type="button"
+          onClick={closePlaza}
+          title={t("detail.close")}
+          aria-label={t("detail.close")}
+          className="grid size-7 shrink-0 place-items-center self-start rounded-ctl text-text-2 hover:bg-surface-3 hover:text-text"
+        >
+          <Icon icon={X} />
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto px-5 pb-5 pt-3.5">
+        {skills.length === 0 ? (
+          <p className="text-[12.5px] text-text-3">{t("store.empty")}</p>
+        ) : (
+          <>
+            <p className="mb-2.5 text-[12px] text-text-3">{t("plaza.detailAmbiguous")}</p>
+            <div className="flex flex-col gap-1.5">
+              {skills.map((s) => (
+                <button
+                  key={s.dirSlug}
+                  type="button"
+                  onClick={() => onPick(s.dirSlug)}
+                  className="rounded-card border border-border px-3 py-2 text-left hover:border-border-strong"
+                >
+                  <div className="text-[13px] font-medium">{s.name}</div>
+                  {s.description && (
+                    <div className="clamp-2 mt-0.5 text-[12px] text-text-2">{s.description}</div>
+                  )}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+/** 跳去 skills.sh 的技能页——`open_library_url` 通道,同源白名单已在 core 放行(M9)。 */
+function PlazaBrowserLink({ slug }: { slug: string }) {
+  const [openError, setOpenError] = useState<string | null>(null);
+
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={() => {
+          setOpenError(null);
+          openLibraryUrl(`https://skills.sh/${slug}`).catch((raw) =>
+            setOpenError(isAppError(raw) ? raw.message : t("error.generic")),
+          );
+        }}
+        className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-accent hover:underline"
+      >
+        <Icon icon={ExternalLink} size={12} />
+        {t("plaza.openInBrowser")}
+      </button>
+      {openError && (
+        <p className="mt-1 text-[11px] text-[#c0392b] dark:text-[#e0705f]">{openError}</p>
+      )}
+    </div>
+  );
+}
+
+function PanelBody({
+  detail,
+  repo,
+  plaza,
+}: {
+  detail: SkillDetail;
+  repo: string;
+  /** 广场态(M9 任务 5):关闭走广场自己的 store,多一个"在浏览器查看"入口,
+   *  底部获取区带着来源坐标走 `beginFromPlaza`。 */
+  plaza?: { ownerRepo: string; slug: string };
+}) {
+  const closeDetailStore = useStoreIndex((s) => s.closeDetail);
+  const closePlaza = usePlaza((s) => s.closeDetail);
+  const closeDetail = plaza ? closePlaza : closeDetailStore;
   const [tab, setTab] = useState<"readme" | "files">("readme");
 
   return (
@@ -202,6 +364,7 @@ function PanelBody({ detail, repo }: { detail: SkillDetail; repo: string }) {
             <Icon icon={X} />
           </button>
         </div>
+        {plaza && <PlazaBrowserLink slug={plaza.slug} />}
 
         <div className="mt-3.5 flex flex-wrap gap-4 border-y border-border py-2.5">
           {/* 作者/贡献者来自技能库的 authors.json(服务端维护);没有就整栏不摆。
@@ -250,7 +413,7 @@ function PanelBody({ detail, repo }: { detail: SkillDetail; repo: string }) {
         )}
       </div>
 
-      <InstallPanel dirSlug={detail.dirSlug} />
+      <InstallPanel dirSlug={detail.dirSlug} plaza={plaza ? { ownerRepo: plaza.ownerRepo } : undefined} />
     </>
   );
 }

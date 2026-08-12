@@ -17,6 +17,8 @@ import {
   installedList,
   isAppError,
   listenProgress,
+  PLAZA_REGISTRY_ID,
+  plazaEnsureRepo,
   skillInstall,
   skillLinkAgents,
   skillShareChanges,
@@ -28,6 +30,7 @@ import {
   type Resolution,
   type ShareMode,
 } from "@/lib/ipc";
+import { useRegistries } from "@/store/registries";
 
 export type InstallPhase = "idle" | "choosing" | "running" | "conflict" | "done" | "error";
 
@@ -67,6 +70,13 @@ interface InstallState {
   refreshInstalled: () => Promise<void>;
   /** 点"安装"→ 展开 agent 勾选。`registryId` 缺省 = 内建源。 */
   begin: (dirSlug: string, registryId?: string, repo?: string | null) => Promise<void>;
+  /**
+   * 技能广场的安装编排(M9 任务 5):先幂等挂仓(`plazaEnsureRepo`),拿到挂仓后的
+   * `owner/repo` 寻址键,再走既有的 `begin` 全链路——协议与编排层零新代码,
+   * 这里只是把"挂仓"这一步接在"选 agent"前面。挂仓失败直接进错误态,不能让用户
+   * 先勾完 agent 才发现装不了。
+   */
+  beginFromPlaza: (ownerRepo: string, dirSlug: string) => Promise<void>;
   /** 「我的技能」页的更新:沿用上次记账的工具与**来源**,不再问一遍。冲突照走 ConflictDialog。 */
   beginUpdate: (dirSlug: string, agentIds: string[], registryId?: string, repo?: string | null) => Promise<void>;
   toggleAgent: (name: string) => void;
@@ -165,6 +175,39 @@ export const useInstall = create<InstallState>((set, get) => ({
           detected.agents.filter((a) => a.installed && !a.disabled).map((a) => a.name),
         ),
       });
+    } catch (raw) {
+      set({ phase: "error", error: toAppError(raw) });
+    }
+  },
+
+  beginFromPlaza: async (ownerRepo, dirSlug) => {
+    set({
+      phase: "choosing",
+      dirSlug,
+      registryId: PLAZA_REGISTRY_ID,
+      // 挂仓探测还没回来,先占位——`run()` 靠这个字段拼获取请求,真正装之前必须
+      // 已经被下面的挂仓结果覆盖成一个可用的寻址键。
+      repo: null,
+      stage: null,
+      report: null,
+      error: null,
+      precheck: null,
+      localKept: false,
+      shareResult: null,
+    });
+    try {
+      const [detected, repoView] = await Promise.all([agentsDetected(), plazaEnsureRepo(ownerRepo)]);
+      set({
+        agents: detected.agents,
+        selected: new Set(
+          detected.agents.filter((a) => a.installed && !a.disabled).map((a) => a.name),
+        ),
+        repo: repoView.key,
+      });
+      // 库切换器的"已挂仓子条目"是 §2.4 更新徽标口径落地的关键(设计文档):
+      // 挂仓这一刻起这个仓就该在切换器里可见、可切进去按普通库浏览。不等安装
+      // 完成才刷新——即便用户随后在 agent 勾选那步取消,仓本身已经真挂上了。
+      void useRegistries.getState().load();
     } catch (raw) {
       set({ phase: "error", error: toAppError(raw) });
     }

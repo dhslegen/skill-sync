@@ -4,6 +4,7 @@ import { Icon } from "@/components/Icon";
 import { SearchBox } from "@/components/SearchBox";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
+import { PLAZA_REGISTRY_ID } from "@/lib/ipc";
 import {
   ACCENT_LABEL_KEY,
   ACCENT_SWATCH,
@@ -11,6 +12,7 @@ import {
   useAppearance,
   type Accent,
 } from "@/store/appearance";
+import { usePlaza } from "@/store/plaza";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi, type PageId } from "@/store/ui";
 
@@ -30,9 +32,17 @@ const TITLES: Record<PageId, MessageKey> = {
  */
 export function Toolbar() {
   const page = useUi((s) => s.page);
-  const { query, setQuery, load, status } = useStoreIndex();
+  const { query, setQuery, load, status, activeRegistry, activeRepo } = useStoreIndex();
   const { mode, prefersDark, accent, setAccent, toggleTheme } = useAppearance();
   const dark = resolveTheme(mode, prefersDark) === "dark";
+
+  // 技能广场的"搜索态"(registryId=plaza, repo=null):同一个搜索框(现有组件,
+  // IME/防抖不重写)改喂广场的查询状态,而不是再摆一个第二实例
+  // ——`SearchBox` 的 id/data-testid 是写死的单例,重复挂载会撞。
+  const isPlazaSearch = activeRegistry === PLAZA_REGISTRY_ID && activeRepo === null;
+  const plazaQuery = usePlaza((s) => s.query);
+  const setPlazaQuery = usePlaza((s) => s.setQuery);
+  const plazaStatus = usePlaza((s) => s.status);
 
   return (
     <div
@@ -41,7 +51,13 @@ export function Toolbar() {
     >
       <h1 className="mr-1 text-[13.5px] font-semibold tracking-[-0.01em]">{t(TITLES[page])}</h1>
 
-      {page === "store" && <SearchBox value={query} onChange={setQuery} kbdHint="⌘K" />}
+      {page === "store" && (
+        <SearchBox
+          value={isPlazaSearch ? plazaQuery : query}
+          onChange={isPlazaSearch ? setPlazaQuery : setQuery}
+          kbdHint="⌘K"
+        />
+      )}
 
       <div className="flex-1" />
 
@@ -65,9 +81,11 @@ export function Toolbar() {
       <IconButton label={t("toolbar.theme")} onClick={toggleTheme} icon={dark ? Moon : Sun} />
       <IconButton
         label={t("toolbar.refresh")}
-        onClick={() => load(true)}
+        // 广场搜索态没有"索引"可刷新(它是搜索态,不是浏览态):按当前查询词
+        // 重新触发一次搜索——`setQuery` 本身就是"输入即触发",同值调用同样安全。
+        onClick={() => (isPlazaSearch ? setPlazaQuery(plazaQuery) : load(true))}
         icon={RefreshCw}
-        spinning={status === "loading"}
+        spinning={isPlazaSearch ? plazaStatus === "loading" : status === "loading"}
       />
     </div>
   );

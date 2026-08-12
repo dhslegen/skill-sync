@@ -4,10 +4,16 @@ import { Icon } from "@/components/Icon";
 import { InstallButton } from "@/components/InstallButton";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
-import type { InstallStage } from "@/lib/ipc";
-import { cardState, remoteHashOf } from "@/lib/update";
+import { PLAZA_REGISTRY_ID, type InstallStage } from "@/lib/ipc";
+import { cardState, remoteHashOf, type LibraryRef } from "@/lib/update";
 import { failedLinks, linkedAgents, useInstall } from "@/store/install";
 import { useStoreIndex } from "@/store/store-index";
+
+/** `owner/repo` → 广场坐标下的 `LibraryRef`。广场技能永远走固定的 `plaza` 源。 */
+function ownerRepoToLibrary(ownerRepo: string): LibraryRef {
+  const [owner, repo] = ownerRepo.split("/");
+  return { registryId: PLAZA_REGISTRY_ID, owner: owner ?? "", repo: repo ?? "" };
+}
 
 const STAGE_LABEL: Record<InstallStage, MessageKey> = {
   fetching: "install.stageFetching",
@@ -24,16 +30,36 @@ const STAGE_LABEL: Record<InstallStage, MessageKey> = {
  * agent 多选做成**行内展开**而不是弹窗:面板本身已经是一层浮层,再叠一个模态
  * 在桌面应用里既挡视线又难退出。冲突那一档才用弹窗——它是必须打断的决策。
  */
-export function InstallPanel({ dirSlug }: { dirSlug: string }) {
-  const { phase, dirSlug: active, begin, cancel } = useInstall();
-  // 详情面板只会从商店打开:装的就是商店当前浏览的那个库(M3 多源 + M4 多仓)
+export function InstallPanel({
+  dirSlug,
+  plaza,
+}: {
+  dirSlug: string;
+  /**
+   * 技能广场详情态(M9 任务 5):不经 `useStoreIndex` 判定库,直接给来源坐标。
+   * 有值时"点安装"先幂等挂仓(`beginFromPlaza`)再走同一条 agent 勾选/运行/结果链路
+   * ——除了触发方式与"这个技能属于哪个库"的判定来源,其余阶段渲染与普通安装完全一样。
+   */
+  plaza?: { ownerRepo: string };
+}) {
+  const { phase, dirSlug: active, begin, beginFromPlaza, cancel } = useInstall();
+  // 详情面板只会从商店打开:装的就是商店当前浏览的那个库(M3 多源 + M4 多仓)。
+  // 广场详情态没有"当前浏览的库"这回事(广场本身是搜索态),坐标由 plaza 参数给。
   const activeRegistry = useStoreIndex((s) => s.activeRegistry);
   const activeRepo = useStoreIndex((s) => s.activeRepo);
   const mine = active === dirSlug;
 
   if (!mine || phase === "idle") {
     return (
-      <IdleFooter dirSlug={dirSlug} onBegin={() => void begin(dirSlug, activeRegistry, activeRepo)} />
+      <IdleFooter
+        dirSlug={dirSlug}
+        plaza={plaza}
+        onBegin={() =>
+          plaza
+            ? void beginFromPlaza(plaza.ownerRepo, dirSlug)
+            : void begin(dirSlug, activeRegistry, activeRepo)
+        }
+      />
     );
   }
   if (phase === "choosing") return <AgentChooser onCancel={cancel} />;
@@ -44,17 +70,32 @@ export function InstallPanel({ dirSlug }: { dirSlug: string }) {
   return <Running />;
 }
 
-function IdleFooter({ dirSlug, onBegin }: { dirSlug: string; onBegin: () => void }) {
+function IdleFooter({
+  dirSlug,
+  plaza,
+  onBegin,
+}: {
+  dirSlug: string;
+  plaza?: { ownerRepo: string };
+  onBegin: () => void;
+}) {
   const installed = useInstall((s) => s.installed);
   const index = useStoreIndex((s) => s.index);
   const record = installed.get(dirSlug);
   // 与商店卡片同一条判定。曾经这里只算 install/installed 两档,于是卡片显示
   // "更新"、点进来按钮却是禁用的「已启用」——用户点了毫无反应(2026-08-03 实测缺陷)。
-  const state = cardState(
-    record,
-    remoteHashOf(index, dirSlug),
-    index ? { registryId: index.registryId, owner: index.owner, repo: index.repo } : undefined,
-  );
+  //
+  // 广场详情态没有索引可比(广场是搜索态,不建索引——设计文档 §2.4):remoteHash
+  // 传空串,`cardState` 对指纹缺失按"已启用"处理,宁可漏报"有更新"也不能编造一个。
+  // 真正精确的"有更新"判定,要等这个仓被挂上、用户切到它按普通库浏览时才出现
+  // (那条路走的是 store_index,自然有指纹可比,§2.4 说的正是这件事)。
+  const state = plaza
+    ? cardState(record, "", ownerRepoToLibrary(plaza.ownerRepo))
+    : cardState(
+        record,
+        remoteHashOf(index, dirSlug),
+        index ? { registryId: index.registryId, owner: index.owner, repo: index.repo } : undefined,
+      );
 
   return (
     <div className="flex items-center gap-2.5 border-t border-border px-5 py-3.5">

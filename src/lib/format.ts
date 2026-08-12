@@ -49,3 +49,14 @@ export function formatBytes(size?: number): string {
 export function skillSlug(repo: string, dirSlug: string): string {
   return `${repo}/${dirSlug}`;
 }
+
+/**
+ * 安装量的中文紧凑展示(技能广场,M9 任务 5):万以下原样显示整数,万以上保留一位小数
+ * 并接"万"。0 与负数(不该出现,但拿到脏数据时不编造)返回空串,调用方据此整栏不摆
+ * ——与 `formatBytes` 对"拿不到大小"的处理是同一个姿势,只是这里"拿不到"表现为非正数。
+ */
+export function formatInstalls(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n < 10_000) return String(n);
+  return t("format.installsCompact", { n: (n / 10_000).toFixed(1) });
+}

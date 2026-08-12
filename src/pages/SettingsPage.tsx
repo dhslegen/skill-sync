@@ -5,7 +5,7 @@ import { LogIn } from "lucide-react";
 import { Icon } from "@/components/Icon";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
-import type { Accent, CheckReport, RegistryView, RepoView, ThemeMode } from "@/lib/ipc";
+import { PLAZA_REGISTRY_ID, type Accent, type CheckReport, type RegistryView, type RepoView, type ThemeMode } from "@/lib/ipc";
 import { skillGlyph } from "@/lib/tint";
 import { ACCENT_LABEL_KEY, ACCENT_SWATCH, useAppearance } from "@/store/appearance";
 import { useRegistries } from "@/store/registries";
@@ -165,14 +165,19 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
   const devicePrompt = useRegistries((s) => s.devicePrompt);
   const myDevicePrompt = devicePrompt?.registryId === registry.id ? devicePrompt : null;
 
+  // 广场是锁定的系统源(M9):不落 config.registries,不接受手填的追加库/移除
+  // ——`registry_add_repo`/`registry_remove` 对它一律报 `REPO_BUILTIN_LOCKED`
+  // (见 core/registry.rs)。摆一个必然报错的按钮不如不摆(M6 沉淀 3「不摆比解释好」)。
+  const isPlaza = registry.id === PLAZA_REGISTRY_ID;
   const name = registry.builtin ? t("registries.builtinName") : registry.name;
   const coords = registry.repo
     ? `${registry.baseUrl} · ${registry.repo.owner}/${registry.repo.repo}`
     : registry.builtin
       ? t("registries.notConfigured")
       : registry.baseUrl;
-  // 追加技能库只对能解析出坐标的源开放:内建未注入配置的构建没有主仓,谈不上追加
-  const canAddRepo = registry.repos.length > 0;
+  // 追加技能库只对能解析出坐标的源开放:内建未注入配置的构建没有主仓,谈不上追加;
+  // 广场的仓只能由"获取一个搜索结果"这个动作追加,这里的通用表单对它无效。
+  const canAddRepo = registry.repos.length > 0 && !isPlaza;
 
   return (
     <div className="border-t border-border first:border-t-0">
@@ -185,6 +190,11 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
                 {t("registries.builtinTag")}
               </span>
             )}
+            {isPlaza && (
+              <span className="flex-none rounded-[4px] border border-border px-1.5 py-px text-[10.5px] font-medium text-text-3">
+                {t("registries.plazaTag")}
+              </span>
+            )}
           </div>
           <div className="truncate font-mono text-[11.5px] text-text-3">
             {coords}
@@ -195,7 +205,9 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
         {mode === "idle" && (
           <div className="flex flex-none items-center gap-1.5">
             {!registry.builtin && registry.kind === "github" && (
-              // GitHub 的主通道:device flow 一键登录(任务 5);下面的凭证输入是备用
+              // GitHub 的主通道:device flow 一键登录(任务 5);下面的凭证输入是备用。
+              // 广场同样支持它——可选登录只是为了把匿名 60 次/时的配额提到 5000
+              // (设计文档 §2.5),不是"广场需要账号才能用"。
               <button
                 type="button"
                 disabled={busy || myDevicePrompt !== null}
@@ -212,7 +224,7 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
                 {t("registries.addRepoButton")}
               </button>
             )}
-            {!registry.builtin && (
+            {!registry.builtin && !isPlaza && (
               <>
                 <button
                   type="button"
@@ -229,6 +241,15 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
                   {t("registries.remove")}
                 </button>
               </>
+            )}
+            {!registry.builtin && isPlaza && (
+              <button
+                type="button"
+                className={SMALL_BUTTON}
+                onClick={() => setMode("credentials")}
+              >
+                {t("registries.credentials")}
+              </button>
             )}
           </div>
         )}
@@ -251,11 +272,16 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
           </div>
         )}
       </div>
-      {registry.repos.length > 1 && (
-        // 多于一个技能库才展开子列表:单库时头部那行坐标已经说清了,重复一行是噪音
+      {/*
+        广场没有"头部那行坐标"(它没有主仓概念,coords 摆的是 baseUrl,不是任何
+        一个具体的仓)——门槛因此降到 > 0:哪怕只挂了一个仓,也得展开子列表,
+        不然用户挂上的那个仓在设置页里完全不可见。其余源仍是 > 1(单库时头部
+        坐标已经说清,重复一行是噪音)。
+      */}
+      {registry.repos.length > (isPlaza ? 0 : 1) && (
         <div className="flex flex-col gap-1 px-3.5 pb-2.5">
           {registry.repos.map((repo) => (
-            <RepoRow key={repo.key} registryId={registry.id} repo={repo} />
+            <RepoRow key={repo.key} registryId={registry.id} repo={repo} removable={!isPlaza} />
           ))}
         </div>
       )}
@@ -316,7 +342,20 @@ function RegistryRow({ registry }: { registry: RegistryView }) {
 }
 
 /** 源下的一个技能库(M4 一源多仓)。锁定的主仓不给移除入口;移除走内联双确认。 */
-function RepoRow({ registryId, repo }: { registryId: string; repo: RepoView }) {
+function RepoRow({
+  registryId,
+  repo,
+  removable = true,
+}: {
+  registryId: string;
+  repo: RepoView;
+  /**
+   * 广场的仓 v1 不提供 UI 移除入口(设计文档 §2.3):`registry_remove_repo` 只在
+   * `config.registries` 里找,广场的仓记在独立的 `plaza_repos`,压根找不到这个
+   * registryId,报出来的错误("找不到这个技能库来源")还文不对题。
+   */
+  removable?: boolean;
+}) {
   const [confirming, setConfirming] = useState(false);
   const removeRepo = useRegistries((s) => s.removeRepo);
   const busy = useRegistries((s) => s.busy);
@@ -330,7 +369,7 @@ function RepoRow({ registryId, repo }: { registryId: string; repo: RepoView }) {
         </span>
       )}
       <span className="truncate font-mono text-[11px] text-text-3">{repo.key}</span>
-      {!repo.locked && !confirming && (
+      {removable && !repo.locked && !confirming && (
         <button
           type="button"
           className={cn(SMALL_BUTTON, "ml-auto")}

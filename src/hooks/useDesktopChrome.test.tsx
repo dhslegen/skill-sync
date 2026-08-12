@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useDesktopChrome } from "./useDesktopChrome";
 import { useAppearance } from "@/store/appearance";
 import { useLocalDetail } from "@/store/local-detail";
+import { usePlaza } from "@/store/plaza";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
 
@@ -19,6 +20,7 @@ describe("桌面快捷键", () => {
   beforeEach(() => {
     useUi.setState({ page: "store", paletteOpen: false, composing: false });
     useStoreIndex.setState({ detailSlug: null, detail: null });
+    usePlaza.setState({ detailOwnerRepo: null });
   });
 
   it("Cmd/Ctrl+K 开关命令面板", async () => {
@@ -59,6 +61,20 @@ describe("桌面快捷键", () => {
     await userEvent.keyboard("{Escape}");
     // 一次 Esc 只关一层:本地详情先关,商店详情还开着
     expect(useLocalDetail.getState().target).toBeNull();
+    expect(useStoreIndex.getState().detailSlug).toBe("weekly-report");
+
+    await userEvent.keyboard("{Escape}");
+    expect(useStoreIndex.getState().detailSlug).toBeNull();
+  });
+
+  it("Esc 关技能广场详情面板(M9 任务 5),且优先于商店详情", async () => {
+    render(<Harness />);
+    usePlaza.setState({ detailOwnerRepo: "vercel-labs/skills" });
+    useStoreIndex.setState({ detailSlug: "weekly-report" });
+
+    await userEvent.keyboard("{Escape}");
+    // 一次 Esc 只关一层:广场详情先关,商店详情还开着
+    expect(usePlaza.getState().detailOwnerRepo).toBeNull();
     expect(useStoreIndex.getState().detailSlug).toBe("weekly-report");
 
     await userEvent.keyboard("{Escape}");

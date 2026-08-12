@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SettingsPage } from "./SettingsPage";
 import { initAppearance, useAppearance } from "@/store/appearance";
+import { useRegistries } from "@/store/registries";
 import { useSession } from "@/store/session";
 import { useSettings } from "@/store/settings";
 
@@ -227,5 +228,112 @@ describe("设置页 · 更新区", () => {
 
     expect(await screen.findByText("2 个已更新 · 1 个跳过 · 0 个失败")).toBeInTheDocument();
     expect(screen.queryByText(/alpha|gamma/)).not.toBeInTheDocument();
+  });
+});
+
+describe("设置页 · 技能库来源(M9 任务 5:广场行的计划补丁)", () => {
+  beforeEach(() => {
+    reset();
+    useRegistries.setState({ list: null, error: null, busy: false, loggedIn: {}, devicePrompt: null });
+  });
+
+  const companyRow = {
+    id: "company",
+    name: "公司技能库",
+    kind: "gitea",
+    baseUrl: "http://gitea.internal:3000",
+    builtin: true,
+    repo: { owner: "skills", repo: "skills", branch: "main" },
+    repos: [
+      { key: "skills/skills", owner: "skills", repo: "skills", branch: "main", name: null, primary: true, locked: true },
+    ],
+  };
+  const customRow = {
+    id: "custom-1",
+    name: "部门工具库",
+    kind: "gitea",
+    baseUrl: "https://dept.example.com",
+    builtin: false,
+    repo: { owner: "dept", repo: "tools", branch: "main" },
+    repos: [
+      { key: "dept/tools", owner: "dept", repo: "tools", branch: "main", name: null, primary: true, locked: false },
+    ],
+  };
+  const plazaRow = (repos: { key: string; owner: string; repo: string }[] = []) => ({
+    id: "plaza",
+    name: "技能广场",
+    kind: "github",
+    baseUrl: "https://github.com",
+    builtin: false,
+    repo: null,
+    repos: repos.map((r) => ({ ...r, branch: "main", name: null, primary: false, locked: false })),
+  });
+
+  function withRegistries(list: unknown[]) {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "auto_update_get") return { skills: { enabled: true, intervalMinutes: 240 }, app: true };
+      if (cmd === "registry_list") return list;
+      return undefined;
+    });
+  }
+
+  it("广场行标「系统管理」而不是「移除」按钮;自定义源的移除按钮仍在(对照组)", async () => {
+    withRegistries([companyRow, customRow, plazaRow()]);
+    render(<SettingsPage />);
+
+    await screen.findByText("技能广场");
+    expect(screen.getByText("系统管理")).toBeInTheDocument();
+
+    // 全页只有一个「移除」——对照组:不是"谁都不摆",是"广场不摆、自定义源仍摆"
+    const removeButtons = screen.getAllByRole("button", { name: "移除" });
+    expect(removeButtons).toHaveLength(1);
+
+    await userEvent.click(removeButtons[0]);
+    await userEvent.click(screen.getByRole("button", { name: "确定移除" }));
+    expect(invoke).toHaveBeenCalledWith("registry_remove", { args: { registryId: "custom-1" } });
+    // 广场绝不会是这次移除的目标
+    expect(invoke).not.toHaveBeenCalledWith("registry_remove", { args: { registryId: "plaza" } });
+  });
+
+  it("广场行不渲染「添加技能库」——挂仓只能由获取一个搜索结果触发,通用表单对它无效", async () => {
+    withRegistries([companyRow, customRow, plazaRow()]);
+    render(<SettingsPage />);
+    await screen.findByText("技能广场");
+
+    // 公司技能库与自定义源都能追加库,广场不能:总数只有 2 个
+    expect(screen.getAllByRole("button", { name: "添加技能库" })).toHaveLength(2);
+  });
+
+  it("凭证登录按钮保留:广场支持可选 GitHub 登录以提高 API 配额", async () => {
+    withRegistries([companyRow, plazaRow()]);
+    render(<SettingsPage />);
+    await screen.findByText("技能广场");
+    expect(screen.getByRole("button", { name: "登录凭证" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "一键登录" })).toBeInTheDocument();
+  });
+
+  it("挂了一个仓也要展开子列表(广场没有主仓,头部坐标说明不了挂了什么)", async () => {
+    withRegistries([companyRow, plazaRow([{ key: "vercel-labs/skills", owner: "vercel-labs", repo: "skills" }])]);
+    render(<SettingsPage />);
+
+    expect(await screen.findByText("vercel-labs/skills")).toBeInTheDocument();
+  });
+
+  it("广场已挂仓的子行不摆移除按钮(v1 不提供该入口,注册表层面必然报错)", async () => {
+    withRegistries([companyRow, plazaRow([{ key: "vercel-labs/skills", owner: "vercel-labs", repo: "skills" }])]);
+    render(<SettingsPage />);
+    await screen.findByText("vercel-labs/skills");
+
+    // 公司是内建源(不摆移除)、广场行本身不摆移除、广场子仓也不摆移除:通篇为零
+    expect(screen.queryAllByRole("button", { name: "移除" })).toHaveLength(0);
+  });
+
+  it("单库的自定义源仍不展开子列表(未被广场的门槛改动带偏)", async () => {
+    withRegistries([companyRow, customRow, plazaRow()]);
+    render(<SettingsPage />);
+    await screen.findByText("技能广场");
+    // 自定义源只有一个库:头部坐标已说清,不该重复展开一行 dept/tools
+    expect(screen.queryByText("dept/tools")).not.toBeInTheDocument();
   });
 });

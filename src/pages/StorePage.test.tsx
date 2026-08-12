@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StorePage } from "./StorePage";
 import type { StoreIndexView, StoreSkillCard } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
+import { usePlaza } from "@/store/plaza";
 import { useRegistries } from "@/store/registries";
 import { useStoreIndex } from "@/store/store-index";
 
@@ -54,6 +55,11 @@ function seed(over: Partial<Parameters<typeof useStoreIndex.setState>[0]> = {}) 
     detailSlug: null,
     detail: null,
     detailError: null,
+    // 广场搜索态测试(M9 任务 5)会把这两个字段改成 ("plaza", null);不显式带回
+    // 默认值的话,那个状态会漏到后面按 seed() 建立"普通浏览"前提的用例里,
+    // 让它们全部错误地渲染成广场搜索页——2026-08-12 真被这条抓到过。
+    activeRegistry: "company",
+    activeRepo: null,
     ...over,
   });
 }
@@ -309,6 +315,127 @@ describe("库切换器(M4 一源多仓)", () => {
     render(<StorePage />);
     // 回退到 repo slug(design-skills),不是寻址键 design/design-skills
     expect(screen.getByRole("button", { name: "design-skills" })).toBeInTheDocument();
+  });
+});
+
+describe("库切换器 · 技能广场固定档(M9 任务 5)", () => {
+  const onlyCompany = [
+    {
+      id: "company",
+      name: "公司技能库",
+      kind: "gitea",
+      baseUrl: "http://gitea.internal:3000",
+      builtin: true,
+      repo: { owner: "skills", repo: "skills", branch: "main" },
+      repos: [
+        { key: "skills/skills", owner: "skills", repo: "skills", branch: "main", name: null, primary: true, locked: true },
+      ],
+    },
+  ];
+  const plazaRow = (repos: { key: string; owner: string; repo: string }[] = []) => ({
+    id: "plaza",
+    name: "技能广场",
+    kind: "github",
+    baseUrl: "https://github.com",
+    builtin: false,
+    repo: null,
+    repos: repos.map((r) => ({ ...r, branch: "main", name: null, primary: false, locked: false })),
+  });
+
+  beforeEach(() => {
+    useInstall.setState({ installed: new Map() });
+  });
+
+  it("即便只有一个真实技能库,广场固定档也让切换器出现", () => {
+    useRegistries.setState({ list: [...onlyCompany, plazaRow()] });
+    render(<StorePage />);
+    expect(screen.getByRole("group", { name: "技能库来源" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "技能广场" })).toBeInTheDocument();
+  });
+
+  it("加载中/出错两档,广场固定档同样在(既有教训的同款守卫)", () => {
+    useRegistries.setState({ list: [...onlyCompany, plazaRow()] });
+    seed({ status: "error", index: null, error: { code: "REPO_NOT_FOUND", message: "找不到对应的技能库或文件" } });
+    render(<StorePage />);
+    expect(screen.getByRole("button", { name: "技能广场" })).toBeInTheDocument();
+
+    seed({ status: "loading", index: null });
+    render(<StorePage />);
+    expect(screen.getAllByRole("button", { name: "技能广场" }).length).toBeGreaterThan(0);
+  });
+
+  it("已挂仓子条目出现且可切换:点击后按普通库浏览(setRegistry 带广场坐标)", async () => {
+    useRegistries.setState({
+      list: [...onlyCompany, plazaRow([{ key: "vercel-labs/skills", owner: "vercel-labs", repo: "skills" }])],
+    });
+    useStoreIndex.setState({ activeRegistry: "company", activeRepo: null });
+    seed();
+    render(<StorePage />);
+
+    await userEvent.click(screen.getByRole("button", { name: "skills" }));
+    // 展示名回退到 repo slug(vercel-labs/skills 没起名),不是寻址键
+    const s = useStoreIndex.getState();
+    expect(s.activeRegistry).toBe("plaza");
+    expect(s.activeRepo).toBe("vercel-labs/skills");
+  });
+
+  it("点击广场固定档进入搜索态:不渲染技能网格,渲染空态提示", async () => {
+    useRegistries.setState({ list: [...onlyCompany, plazaRow()] });
+    seed();
+    render(<StorePage />);
+
+    await userEvent.click(screen.getByRole("button", { name: "技能广场" }));
+    expect(useStoreIndex.getState().activeRegistry).toBe("plaza");
+    expect(useStoreIndex.getState().activeRepo).toBeNull();
+    expect(screen.getByText("输入关键词搜索全网技能(至少 2 个字符)")).toBeInTheDocument();
+    // 普通商店的卡片不该还在
+    expect(screen.queryByText("周报生成")).not.toBeInTheDocument();
+  });
+});
+
+describe("广场搜索态渲染(M9 任务 5)", () => {
+  beforeEach(() => {
+    useInstall.setState({ installed: new Map() });
+    useRegistries.setState({ list: null });
+    useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: null, index: null, status: "idle", error: null });
+    usePlaza.setState({ query: "", results: [], status: "idle", error: null });
+  });
+
+  it("查询不足 2 字符:空态提示,不渲染网格", () => {
+    render(<StorePage />);
+    expect(screen.getByText("输入关键词搜索全网技能(至少 2 个字符)")).toBeInTheDocument();
+  });
+
+  it("搜索失败:失败态文案,不是错误弹窗", () => {
+    usePlaza.setState({ query: "react", status: "error", results: [] });
+    render(<StorePage />);
+    expect(screen.getByText("技能广场暂时连不上,不影响公司技能库")).toBeInTheDocument();
+  });
+
+  it("有结果:渲染卡片网格,点击调 usePlaza.openDetail", async () => {
+    const card = {
+      name: "React 最佳实践",
+      slug: "vercel-labs/skills/react-best-practices",
+      ownerRepo: "vercel-labs/skills",
+      installs: 625414,
+    };
+    usePlaza.setState({ query: "react", status: "ready", results: [card] });
+    const openDetail = vi.fn();
+    usePlaza.setState({ openDetail });
+    render(<StorePage />);
+
+    await userEvent.click(screen.getByRole("button", { name: "React 最佳实践" }));
+    expect(openDetail).toHaveBeenCalledWith(
+      "vercel-labs/skills",
+      "React 最佳实践",
+      "vercel-labs/skills/react-best-practices",
+    );
+  });
+
+  it("查询够长但零结果:复用「没有匹配」空态,不新造一份措辞", () => {
+    usePlaza.setState({ query: "找不到的东西", status: "ready", results: [] });
+    render(<StorePage />);
+    expect(screen.getByText("没有匹配「找不到的东西」的技能。")).toBeInTheDocument();
   });
 });
 

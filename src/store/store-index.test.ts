@@ -160,4 +160,44 @@ describe("商店索引的多源切换", () => {
       args: { dirSlug: "x", registryId: "company", repo: "design/design-skills" },
     });
   });
+
+  // ---- 技能广场的搜索态哨兵(M9 任务 5):registryId=plaza, repo=null ----
+
+  describe("广场搜索态:load() 不发注定报错的请求", () => {
+    it("load() 直接对 (plaza, null) 早退,不调 store_index", async () => {
+      useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: null, status: "idle" });
+      await useStoreIndex.getState().load();
+      expect(invoke).not.toHaveBeenCalled();
+      // 早退不该把状态误改成 loading/error——原样留着
+      expect(useStoreIndex.getState().status).toBe("idle");
+    });
+
+    it("这个守卫必须在 load() 本身,不能只在 setRegistry 里:后台调度会绕过 setRegistry 直接调 load()", async () => {
+      // 复刻 settings.ts 的 attachReportListener:收到调度报告时直接
+      // useStoreIndex.getState().load(),与当前页面在不在广场页无关。
+      useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: null, status: "ready" });
+      await useStoreIndex.getState().load(true);
+      expect(invoke).not.toHaveBeenCalled();
+    });
+
+    it("挂了具体仓之后(repo 非 null)就是普通库,load() 照常发请求", async () => {
+      useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: "vercel-labs/skills" });
+      invoke.mockResolvedValueOnce(indexOf("plaza", "skills"));
+      await useStoreIndex.getState().load();
+      expect(invoke).toHaveBeenCalledWith("store_index", {
+        args: { force: false, registryId: "plaza", repo: "vercel-labs/skills" },
+      });
+    });
+
+    it("setRegistry 切进广场搜索态:不发请求,状态回到 idle(不带前一个库的 loading/error 残留)", async () => {
+      useStoreIndex.setState({ index: indexOf("company"), status: "error", error: { code: "X", message: "坏了" } });
+      await useStoreIndex.getState().setRegistry("plaza", null);
+
+      const s = useStoreIndex.getState();
+      expect(invoke).not.toHaveBeenCalled();
+      expect(s.status).toBe("idle");
+      expect(s.error).toBeNull();
+      expect(s.index).toBeNull();
+    });
+  });
 });

@@ -6,11 +6,12 @@ import { contributorsText, DetailPanel, revealLabel, stripFrontmatter } from "./
 import type { LocalSkillDetail, SkillDetail } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
+import { usePlaza } from "@/store/plaza";
 import { useStoreIndex } from "@/store/store-index";
 
 // agent 探测走 IPC:mock 掉才能让"点安装 → 展开勾选"这条路走通。
 // spy 形式暴露出来,本地详情的 reveal 测试要断言调用参数。
-const invokeMock = vi.fn(async (cmd: string, args?: unknown) => {
+const invokeMock = vi.fn(async (cmd: string, args?: unknown): Promise<unknown> => {
   void args; // 只为让 spy 把参数记进 calls;实现本身按 cmd 分发
   if (cmd === "agents_detected") {
     return {
@@ -411,5 +412,251 @@ describe("作者/贡献者展示(M7 任务 2)", () => {
     expect(contributorsText(["李四", "王五", "赵六", "孙七", "周八"])).toBe(
       "李四、王五、赵六 等 5 人",
     );
+  });
+});
+
+// ---- 技能广场详情态(M9 任务 5)——"详情面板不联网"的唯一破例,范围钉死在广场 ----
+
+describe("DetailPanel(技能广场详情态)", () => {
+  const plazaSkill = (over: Partial<SkillDetail> = {}): SkillDetail => ({
+    name: "React 最佳实践",
+    dirSlug: "react-best-practices",
+    description: "覆盖 React 常见反模式",
+    path: "react-best-practices",
+    skillMd: "---\nname: React 最佳实践\n---\n\n## 说明\n\n正文内容\n",
+    files: [{ path: "SKILL.md", size: 100 }],
+    hasScripts: false,
+    commitSha: "def4567890",
+    committedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    tags: [],
+    attribution: null,
+    ...over,
+  });
+
+  function resetAll() {
+    useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
+    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    usePlaza.setState({
+      detailOwnerRepo: null,
+      detailWantedName: null,
+      detailSlug: null,
+      detailSkills: null,
+      detailStatus: "idle",
+      detailError: null,
+      selectedDirSlug: null,
+    });
+    useInstall.setState({ phase: "idle", dirSlug: null, installed: new Map() });
+  }
+
+  beforeEach(resetAll);
+
+  it("加载中显示骨架文案", () => {
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailStatus: "loading",
+    });
+    render(<DetailPanel />);
+    expect(screen.getByText("正在读取技能内容…")).toBeInTheDocument();
+  });
+
+  it("失败态显示可读原因;点重试真的重新发起请求", async () => {
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailSlug: "vercel-labs/skills/react-best-practices",
+      detailStatus: "error",
+      detailError: { code: "NET_PLAZA_DETAIL", message: "无法获取该技能库信息,请稍后重试" },
+    });
+    render(<DetailPanel />);
+    expect(screen.getByText("无法获取该技能库信息,请稍后重试")).toBeInTheDocument();
+
+    invokeMock.mockImplementationOnce(async (cmd) =>
+      cmd === "plaza_detail" ? [plazaSkill()] : null,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "重试" }));
+
+    await screen.findByRole("heading", { name: "React 最佳实践" });
+    expect(invokeMock).toHaveBeenCalledWith("plaza_detail", { ownerRepo: "vercel-labs/skills" });
+  });
+
+  it("成功且能定位到点击的那个技能:渲染 owner/repo 坐标与浏览器查看入口", () => {
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailSlug: "vercel-labs/skills/react-best-practices",
+      detailSkills: [plazaSkill()],
+      detailStatus: "ready",
+    });
+    render(<DetailPanel />);
+
+    expect(screen.getByRole("heading", { name: "React 最佳实践" })).toBeInTheDocument();
+    // owner/repo 是外部真名,例外允许等宽展示;坐标行沿用既有的 repo/dirSlug@sha 格式
+    expect(
+      screen.getByText("vercel-labs/skills/react-best-practices @ def4567"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "在浏览器中查看" })).toBeInTheDocument();
+  });
+
+  it("点「在浏览器中查看」拼 skills.sh 的 slug 传给 open_library_url", async () => {
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailSlug: "vercel-labs/skills/react-best-practices",
+      detailSkills: [plazaSkill()],
+      detailStatus: "ready",
+    });
+    render(<DetailPanel />);
+
+    await userEvent.click(screen.getByRole("button", { name: "在浏览器中查看" }));
+    expect(invokeMock).toHaveBeenCalledWith("open_library_url", {
+      args: { url: "https://skills.sh/vercel-labs/skills/react-best-practices" },
+    });
+  });
+
+  it("多技能仓且名字对不上:落到该仓技能列表,不是空白也不是随便挑一个", () => {
+    const a = plazaSkill({ name: "React 最佳实践", dirSlug: "react-best-practices" });
+    const b = plazaSkill({ name: "Vue 最佳实践", dirSlug: "vue-best-practices", description: "Vue 反模式" });
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "不存在的名字",
+      detailSlug: "vercel-labs/skills/unknown",
+      detailSkills: [a, b],
+      detailStatus: "ready",
+    });
+    render(<DetailPanel />);
+
+    expect(screen.getByText("这个技能库里有多个技能,请选择要查看的一个")).toBeInTheDocument();
+    expect(screen.getByText("React 最佳实践")).toBeInTheDocument();
+    expect(screen.getByText("Vue 最佳实践")).toBeInTheDocument();
+    // 还没进详情态,不该出现安装按钮
+    expect(screen.queryByRole("button", { name: "安装" })).not.toBeInTheDocument();
+  });
+
+  it("从列表里选一个之后,切到那一个的详情", async () => {
+    const a = plazaSkill({ name: "React 最佳实践", dirSlug: "react-best-practices" });
+    const b = plazaSkill({ name: "Vue 最佳实践", dirSlug: "vue-best-practices" });
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "不存在的名字",
+      detailSlug: "vercel-labs/skills/unknown",
+      detailSkills: [a, b],
+      detailStatus: "ready",
+    });
+    render(<DetailPanel />);
+
+    await userEvent.click(screen.getByText("Vue 最佳实践"));
+    expect(screen.getByRole("heading", { name: "Vue 最佳实践" })).toBeInTheDocument();
+  });
+
+  it("名字命中且该仓只有一个技能时,直接进详情,不经过挑选列表", () => {
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailSlug: "vercel-labs/skills/react-best-practices",
+      detailSkills: [plazaSkill()],
+      detailStatus: "ready",
+    });
+    render(<DetailPanel />);
+    expect(screen.queryByText("这个技能库里有多个技能,请选择要查看的一个")).not.toBeInTheDocument();
+  });
+
+  it("底部获取区:没装过 → 安装,点了触发广场专属编排(先挂仓)", async () => {
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailSlug: "vercel-labs/skills/react-best-practices",
+      detailSkills: [plazaSkill()],
+      detailStatus: "ready",
+    });
+    invokeMock.mockImplementation(async (cmd) => {
+      if (cmd === "agents_detected") {
+        return {
+          agents: [
+            { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
+          ],
+          canonicalDir: "~/.agents/skills",
+        };
+      }
+      if (cmd === "plaza_ensure_repo") {
+        return { key: "vercel-labs/skills", owner: "vercel-labs", repo: "skills", branch: "main", name: null, primary: false, locked: false };
+      }
+      if (cmd === "registry_list") return [];
+      return null;
+    });
+    render(<DetailPanel />);
+
+    await userEvent.click(screen.getByRole("button", { name: "安装" }));
+    expect(await screen.findByText("选择要启用的 AI 工具")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("plaza_ensure_repo", { ownerRepo: "vercel-labs/skills" });
+  });
+
+  it("已装且指纹一致(广场坐标) → 已启用,终态点不动", () => {
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailSlug: "vercel-labs/skills/react-best-practices",
+      detailSkills: [plazaSkill()],
+      detailStatus: "ready",
+    });
+    useInstall.setState({
+      installed: new Map([
+        [
+          "react-best-practices",
+          {
+            commitSha: "x",
+            contentHash: "sha256:whatever",
+            localModified: false,
+            registryId: "plaza",
+            sourceOwner: "vercel-labs",
+            sourceRepo: "skills",
+          },
+        ],
+      ]),
+    });
+    render(<DetailPanel />);
+    expect(screen.getByRole("button", { name: /已启用/ })).toBeDisabled();
+  });
+
+  it("同名技能装自另一个技能库(广场坐标) → 替换,不是安装/更新", () => {
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailSlug: "vercel-labs/skills/react-best-practices",
+      detailSkills: [plazaSkill()],
+      detailStatus: "ready",
+    });
+    useInstall.setState({
+      installed: new Map([
+        [
+          "react-best-practices",
+          {
+            commitSha: "x",
+            contentHash: "sha256:whatever",
+            localModified: false,
+            registryId: "plaza",
+            sourceOwner: "someone-else",
+            sourceRepo: "other-skills",
+          },
+        ],
+      ]),
+    });
+    render(<DetailPanel />);
+    expect(screen.getByRole("button", { name: /^替换/ })).toBeInTheDocument();
+  });
+
+  it("Esc 优先关广场详情面板,不影响其他描述块(离线详情路径隔离)", () => {
+    // 离线路径(store-index/local-detail)在这个 describe 里也维持关闭,
+    // 说明广场详情态的引入没有牵动它们既有的判定顺序
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailSkills: [plazaSkill()],
+      detailStatus: "ready",
+    });
+    render(<DetailPanel />);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(useStoreIndex.getState().detailSlug).toBeNull();
+    expect(useLocalDetail.getState().target).toBeNull();
   });
 });

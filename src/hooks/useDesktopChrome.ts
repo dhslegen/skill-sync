@@ -2,6 +2,7 @@ import { useEffect } from "react";
 
 import { useAppearance } from "@/store/appearance";
 import { useLocalDetail } from "@/store/local-detail";
+import { usePlaza } from "@/store/plaza";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi, type PageId } from "@/store/ui";
 
@@ -35,6 +36,7 @@ export function useDesktopChrome() {
       if (e.key === "Escape") {
         if (ui.paletteOpen) ui.setPaletteOpen(false);
         else if (useLocalDetail.getState().target !== null) useLocalDetail.getState().close();
+        else if (usePlaza.getState().detailOwnerRepo !== null) usePlaza.getState().closeDetail();
         else useStoreIndex.getState().closeDetail();
         return;
       }
