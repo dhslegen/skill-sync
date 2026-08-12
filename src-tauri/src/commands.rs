@@ -1,5 +1,8 @@
 //! Tauri IPC command 定义。薄壳:仅做参数转换与调用 core,禁止在此写业务逻辑。
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use serde::{Deserialize, Serialize};
 
 use tauri::{Emitter, Manager};
@@ -1978,6 +1981,87 @@ pub async fn plaza_ensure_repo(owner_repo: String) -> Result<registry::RepoView,
     Ok(view)
 }
 
+/// 广场详情的进程内缓存(M9 任务 4):键 `owner/repo`,值该仓全部技能的详情。
+/// **只活在这一次运行的进程里,不落盘**——避免为从未安装的仓积累孤儿缓存文件
+/// (设计文档 §2.2)。`OnceLock` 首次调用才初始化,不存在"0 恰好是有效值"那类
+/// 哨兵坑(watcher::now_ms 的教训在这里不适用:这里的"空"就是字面意义的"没有过
+/// 任何写入",`HashMap::new()` 本身就是唯一且正确的初值)。
+type PlazaDetailCache = Mutex<HashMap<String, Vec<SkillDetail>>>;
+
+fn plaza_detail_cache() -> &'static PlazaDetailCache {
+    static CACHE: OnceLock<PlazaDetailCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 缓存优先地取某个广场仓的详情:命中直接返回;否则调用 `plaza::fetch_repo_skills`
+/// 现拉一次并记进缓存。**不碰 config、不碰 HOME**——仓库坐标与访问 client 都由调用方
+/// 给定,这个函数只管"要不要再发一次请求"。
+///
+/// 单独抽出来(而不是内联进 `plaza_detail`)是为了让缓存命中这件事本身可以脱离
+/// `app_store()`(真实 HOME)直接单测——见下面 `tests` 模块:`cached_plaza_detail_*`
+/// 系列用一个统计调用次数的假 `RepoSource` 验证"同 key 二次调用不再发请求"与
+/// "不同 key 各自现拉、不会互相顶替"(后者正是"缓存键写错"这类缺陷的靶子)。
+async fn cached_plaza_detail(
+    cache: &PlazaDetailCache,
+    cache_key: &str,
+    client: &impl crate::core::gitea::RepoSource,
+    repo: &RepoRef,
+) -> Result<Vec<SkillDetail>, AppError> {
+    if let Some(hit) = cache
+        .lock()
+        .expect("广场详情缓存锁不该中毒")
+        .get(cache_key)
+        .cloned()
+    {
+        return Ok(hit);
+    }
+    let skills = plaza::fetch_repo_skills(client, repo).await?;
+    cache
+        .lock()
+        .expect("广场详情缓存锁不该中毒")
+        .insert(cache_key.to_string(), skills.clone());
+    Ok(skills)
+}
+
+/// 技能广场详情(M9 任务 4):点开搜索结果卡片时现拉该仓内容。
+///
+/// **这是详情面板"不联网"承诺的唯一破例,范围钉死在广场**:内建源与已有自定义源的
+/// `store_skill_detail` 依旧全部来自索引缓存,一行没改;这是新 IPC、新状态槽
+/// (`plaza_detail_cache`),只有广场页会调它(设计文档 §2.2)。
+///
+/// 详情先于安装:仓未挂进 `config.plazaRepos` 时,`read_source` 会报
+/// `REPO_UNKNOWN_REPO`(未知仓),此时探测默认分支临时直连,**绝不写 config**
+/// ——挂仓只能由「装了一个搜索结果」这件事触发(见 `plaza_ensure_repo`)。这个分支
+/// 与 `tests/plaza_detail.rs` 的 `detail_ref_for_unregistered_repo` 逐行同构
+/// (那份测试注入的是 `Store`,不依赖真实 `HOME`,断言调用后 `plaza_repos` 仍空)。
+#[tauri::command]
+pub async fn plaza_detail(owner_repo: String) -> Result<Vec<SkillDetail>, AppError> {
+    let (owner, repo) = parse_owner_repo(&owner_repo)?;
+    let cache_key = registry::repo_key(owner, repo);
+
+    match read_source(registry::PLAZA_REGISTRY_ID, Some(&cache_key)).await {
+        Ok((client, repo_ref)) => {
+            cached_plaza_detail(plaza_detail_cache(), &cache_key, &client, &repo_ref).await
+        }
+        Err(err) if err.code == "REPO_UNKNOWN_REPO" => {
+            let http = http_client_for(registry::PLAZA_REGISTRY_ID)?;
+            let branch =
+                plaza::default_branch(&http, plaza::PLAZA_GITHUB_API_BASE, owner, repo).await?;
+            let token = match KeyringStore.load(registry::PLAZA_REGISTRY_ID) {
+                Ok(creds) => creds.map(|c| c.access_token),
+                Err(err) => {
+                    tracing::warn!(code = %err.code, "读取广场凭证失败,按匿名访问");
+                    None
+                }
+            };
+            let client = github::GithubClient::new(registry::PLAZA_BASE_URL, token, http);
+            let repo_ref = RepoRef { owner: owner.to_string(), repo: repo.to_string(), branch };
+            cached_plaza_detail(plaza_detail_cache(), &cache_key, &client, &repo_ref).await
+        }
+        Err(err) => Err(err),
+    }
+}
+
 fn app_store() -> Result<state::Store, AppError> {
     state::Store::for_env(&SystemEnv)
         .ok_or_else(|| AppError::new("FS_NO_HOME", "找不到用户主目录,无法保存本地数据"))
@@ -2287,5 +2371,122 @@ mod tests {
     fn parse_owner_repo_rejects_more_than_one_slash() {
         let err = parse_owner_repo("owner/repo/skill-name").unwrap_err();
         assert_eq!(err.code, "REPO_INVALID_REGISTRY");
+    }
+
+    // ============================================================ 广场详情缓存(M9 任务 4)
+
+    /// 造一个像真技能库那样的最小压缩包:一个技能、一个 SKILL.md。
+    ///
+    /// 这不是任务分解禁止的"发现逻辑复制"——发现算法本身仍只调既有的
+    /// `store::build_index`(见 `plaza::fetch_repo_skills`),这里只是喂给它的
+    /// 原始压缩包数据,是测试 fixture,不是第二份解析实现。
+    fn fake_archive(slug: &str) -> crate::core::gitea::RepoArchive {
+        let path = format!("owner-repo-aaa1111/skills/{slug}/SKILL.md");
+        let text = format!("---\nname: {slug}\ndescription: {slug} 的说明\n---\n\n正文\n");
+        let mut archive = crate::core::gitea::RepoArchive {
+            root: "owner-repo-aaa1111".to_string(),
+            tree: crate::core::skills::MemTree::new().with_file(&path, &text),
+            files: vec![path.clone()],
+            entries: Default::default(),
+        };
+        archive.entries.insert(
+            path,
+            crate::core::gitea::ArchiveEntry { bytes: text.into_bytes(), unix_mode: None },
+        );
+        archive
+    }
+
+    /// 统计 `download_archive` 被调用次数的假来源,供缓存命中测试用——不碰网络。
+    struct CountingSource {
+        calls: std::sync::atomic::AtomicUsize,
+        slug: &'static str,
+    }
+
+    impl crate::core::gitea::RepoSource for CountingSource {
+        async fn branch_head(
+            &self,
+            _r: &RepoRef,
+        ) -> Result<crate::core::gitea::BranchHead, AppError> {
+            Ok(crate::core::gitea::BranchHead {
+                sha: "aaa1111".into(),
+                committed_at: "2026-08-12T10:00:00Z".into(),
+            })
+        }
+        async fn download_archive(
+            &self,
+            _r: &RepoRef,
+        ) -> Result<crate::core::gitea::RepoArchive, AppError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(fake_archive(self.slug))
+        }
+    }
+
+    fn some_repo() -> RepoRef {
+        RepoRef { owner: "vercel-labs".into(), repo: "skills".into(), branch: "main".into() }
+    }
+
+    #[tokio::test]
+    async fn cached_plaza_detail_hits_cache_on_second_call_with_the_same_key() {
+        let cache: PlazaDetailCache = Mutex::new(HashMap::new());
+        let client = CountingSource { calls: Default::default(), slug: "weekly-report" };
+        let repo = some_repo();
+
+        let first = cached_plaza_detail(&cache, "vercel-labs/skills", &client, &repo)
+            .await
+            .unwrap();
+        let second = cached_plaza_detail(&cache, "vercel-labs/skills", &client, &repo)
+            .await
+            .unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(
+            client.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "第二次同 key 调用不该再发一次请求"
+        );
+    }
+
+    /// 注入验证的靶子(缓存键写错的典型后果):如果 `cache_key` 算错(比如两个不同仓
+    /// 被算成同一个键,或干脆恒定),第二个仓会拿到第一个仓的详情而不是自己现拉一份。
+    /// 用两个不同 key + 不同 slug 同时验证"隔离"与"各自都现拉了一次"两件事。
+    #[tokio::test]
+    async fn cached_plaza_detail_does_not_conflate_different_repos() {
+        let cache: PlazaDetailCache = Mutex::new(HashMap::new());
+        let client_a = CountingSource { calls: Default::default(), slug: "weekly-report" };
+        let client_b = CountingSource { calls: Default::default(), slug: "docx-to-markdown" };
+        let repo_a = some_repo();
+        let repo_b = RepoRef { owner: "octocat".into(), repo: "hello-world".into(), branch: "main".into() };
+
+        let a = cached_plaza_detail(&cache, "vercel-labs/skills", &client_a, &repo_a)
+            .await
+            .unwrap();
+        let b = cached_plaza_detail(&cache, "octocat/hello-world", &client_b, &repo_b)
+            .await
+            .unwrap();
+
+        assert_eq!(client_a.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            client_b.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "不同 key 必须各自现拉一次,不能被前一个 key 的缓存顶替"
+        );
+        assert_eq!(a[0].dir_slug, "weekly-report");
+        assert_eq!(b[0].dir_slug, "docx-to-markdown");
+    }
+
+    /// 全局单例本身的形状:两次拿到的是同一把锁背后的同一份存储,不是各自新建的空表。
+    #[tokio::test]
+    async fn plaza_detail_cache_is_a_process_wide_singleton() {
+        plaza_detail_cache()
+            .lock()
+            .expect("广场详情缓存锁不该中毒")
+            .insert("probe/singleton".to_string(), Vec::new());
+        assert!(
+            plaza_detail_cache()
+                .lock()
+                .expect("广场详情缓存锁不该中毒")
+                .contains_key("probe/singleton"),
+            "两次调用 plaza_detail_cache() 必须拿到同一份存储"
+        );
     }
 }

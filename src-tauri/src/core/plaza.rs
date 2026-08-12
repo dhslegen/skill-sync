@@ -31,6 +31,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::gitea;
+use crate::core::registry::PLAZA_REGISTRY_ID;
+use crate::core::store;
 use crate::error::AppError;
 
 /// skills.sh 搜索 API 的 base。公开地址,硬编码不涉铁律 5(铁律 5 管的是内网地址与
@@ -206,6 +209,34 @@ pub async fn default_branch(
         )));
     }
     Ok(view.default_branch)
+}
+
+/// 拉某个仓库现有全部技能的详情(广场专用,M9 任务 4)。
+///
+/// **这是详情面板"不联网"承诺的唯一破例,范围钉死在广场**(设计文档 §2.2):
+/// 内建源/已有自定义源的详情依旧全部来自 `store.rs` 的索引缓存,一个字没改;
+/// 这个函数是新路径,只有 `commands::plaza_detail` 会调它。
+///
+/// 复用 `store.rs` 既有的技能发现:branch_head + download_archive 拿到压缩包后,
+/// 直接调**既有的** `store::build_index`(禁止把发现逻辑抄第二遍),再用它自带的
+/// `detail()` 把每个技能转成与商店详情面板同一份 DTO(`store::SkillDetail`)——
+/// 前端拿到手的数据形状不必区分"这是广场还是商店"。
+///
+/// **不落盘**:这条路径服务的是"很可能从未安装过"的仓,给它建一份索引缓存文件
+/// 只会积累孤儿文件。进程内缓存是调用方(`commands::plaza_detail`)的事,
+/// 这里每次调用都会现拉一次。
+///
+/// `registry_id` 固定传 [`PLAZA_REGISTRY_ID`]:`build_index` 只把它原样记进
+/// `StoreIndex.registry_id`,`detail()` 用不到这个字段,不影响返回结果。
+pub async fn fetch_repo_skills(
+    source: &impl gitea::RepoSource,
+    repo: &gitea::RepoRef,
+) -> Result<Vec<store::SkillDetail>, AppError> {
+    let head = source.branch_head(repo).await?;
+    let archive = source.download_archive(repo).await?;
+    // fetched_at 不进 SkillDetail(那是索引/缓存层的字段,不落盘就没有意义),给 0 即可。
+    let index = store::build_index(PLAZA_REGISTRY_ID, repo, &head, &archive, 0);
+    Ok(index.skills.iter().filter_map(|s| index.detail(&s.dir_slug)).collect())
 }
 
 #[cfg(test)]

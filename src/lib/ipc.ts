@@ -640,3 +640,12 @@ export const plazaSearch = (query: string) =>
  */
 export const plazaEnsureRepo = (ownerRepo: string) =>
   call<RepoView>("plaza_ensure_repo", { ownerRepo });
+
+/**
+ * 广场详情(M9 任务 4):点开搜索结果卡片时现拉该仓内容,返回该仓全部技能
+ * (与商店详情面板同一份 `SkillDetail` 形状——安装量、更新判定都复用既有机制,
+ * 这里不新造 DTO)。未挂仓也能查(详情先于安装),调用本身**不会**把仓写进
+ * `config.plazaRepos`——那是 `plazaEnsureRepo` 的事。命中进程内缓存时不再发请求。
+ */
+export const plazaDetail = (ownerRepo: string) =>
+  call<SkillDetail[]>("plaza_detail", { ownerRepo });
