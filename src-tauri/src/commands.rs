@@ -820,6 +820,20 @@ fn resolve_registry(
     )
 }
 
+/// 源级解析(M9 终审修复):给不需要具体技能库坐标的操作用——目前只有登录/凭证管理
+/// 五个 `auth_*` command。与 [`resolve_registry`] 的区别只在于**不要求任何仓存在**,
+/// 广场因此能正常解出源级坐标而不必先挂一个仓(`registry::resolve_source` 文档
+/// 详述理由)。仍然只有 `registry::resolve_source` 这一处真正的解析逻辑,这里只是
+/// 把 `app_store()` 的读取包一层,与 `resolve_registry` 同款套路。
+fn resolve_source(registry_id: &str) -> Result<registry::ResolvedSource, AppError> {
+    let config = app_store()?.load_config()?.value;
+    registry::resolve_source(
+        &registry::BuiltinSource::from_build(),
+        &config.registries,
+        registry_id,
+    )
+}
+
 /// 某个源的登录配置。内建:OAuth PKCE;自定义:PAT(client_id 留空,判定在 core)。
 fn auth_config(registry_id: &str) -> Result<OAuthConfig, AppError> {
     let resolved = resolve_registry(registry_id, None)?;
@@ -852,7 +866,7 @@ impl RegistryArg {
 
 #[tauri::command]
 pub async fn auth_login_oauth(args: RegistryArg) -> Result<SessionUser, AppError> {
-    let resolved = resolve_registry(args.id(), None)?;
+    let resolved = resolve_source(args.id())?;
     resolved.require_gitea()?;
     // OAuth 应用是逐 Gitea 实例注册的,自定义源没有 Client ID 可用——只有 PAT 通道
     if !resolved.builtin {
@@ -882,7 +896,7 @@ pub struct LoginTokenArgs {
 #[tauri::command]
 pub async fn auth_login_token(args: LoginTokenArgs) -> Result<SessionUser, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let resolved = resolve_registry(registry_id, None)?;
+    let resolved = resolve_source(registry_id)?;
     match resolved.kind {
         registry::RegistryKind::Gitea => {
             session::login_with_token(
@@ -909,7 +923,7 @@ pub async fn auth_login_token(args: LoginTokenArgs) -> Result<SessionUser, AppEr
 
 #[tauri::command]
 pub async fn auth_status(args: RegistryArg) -> Result<SessionStatus, AppError> {
-    let resolved = resolve_registry(args.id(), None)?;
+    let resolved = resolve_source(args.id())?;
     match resolved.kind {
         registry::RegistryKind::Gitea => {
             session::status(
@@ -949,7 +963,7 @@ pub struct DeviceStartView {
 /// 发起 GitHub 一键登录:拿用户码并打开授权页。等待段在 `auth_device_wait`。
 #[tauri::command]
 pub async fn auth_device_start(args: RegistryArg) -> Result<DeviceStartView, AppError> {
-    let resolved = resolve_registry(args.id(), None)?;
+    let resolved = resolve_source(args.id())?;
     if resolved.kind != registry::RegistryKind::Github {
         return Err(AppError::new(
             "AUTH_DEVICE_UNSUPPORTED",
@@ -990,7 +1004,7 @@ pub struct DeviceWaitArgs {
 #[tauri::command]
 pub async fn auth_device_wait(args: DeviceWaitArgs) -> Result<SessionUser, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
-    let resolved = resolve_registry(registry_id, None)?;
+    let resolved = resolve_source(registry_id)?;
     if resolved.kind != registry::RegistryKind::Github {
         return Err(AppError::new(
             "AUTH_DEVICE_UNSUPPORTED",
@@ -2005,6 +2019,17 @@ pub async fn plaza_ensure_repo(owner_repo: String) -> Result<registry::RepoView,
 /// (设计文档 §2.2)。`OnceLock` 首次调用才初始化,不存在"0 恰好是有效值"那类
 /// 哨兵坑(watcher::now_ms 的教训在这里不适用:这里的"空"就是字面意义的"没有过
 /// 任何写入",`HashMap::new()` 本身就是唯一且正确的初值)。
+///
+/// **刻意不记 head sha,没有任何失效机制**(2026-08-12 终审裁定,设计文档 §2.2
+/// 同步更新过——原文一度写"head sha 一起记",已证明是当时假设了一个并不存在的
+/// 失效时机)。别顺手"补全"这个字段:排查过 `plaza_ensure_repo`(只给分支名,
+/// 没有 sha)、acquire/scheduler(走完全独立的 `store_index` 文件缓存,且只在
+/// 挂仓之后才生效)、`retryDetail`(没有强制刷新入口),**没有任何现成路径会给
+/// 这份缓存喂入"更新的 sha"**;唯一能让它派上用场的做法是每次命中都主动探一次
+/// `branch_head`——但 GitHub 匿名配额只有 60 次/小时,缓存存在的首要意义就是省它,
+/// 每次命中都多发一次探测请求是净损失。后果:同一进程内点开过的仓,详情
+/// **可能短暂陈旧**,但**安装永远是新的**(走 `acquire` 独立路径,与这份缓存无关,
+/// 会重新拉取当前内容)——这个差别是刻意接受的,不是遗漏。
 type PlazaDetailCache = Mutex<HashMap<String, Vec<SkillDetail>>>;
 
 fn plaza_detail_cache() -> &'static PlazaDetailCache {

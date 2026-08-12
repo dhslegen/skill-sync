@@ -119,10 +119,15 @@ function IdleFooter({
 }
 
 function AgentChooser({ onCancel }: { onCancel: () => void }) {
-  const { agents, selected, toggleAgent, run } = useInstall();
+  const { agents, selected, toggleAgent, run, registryId, repo } = useInstall();
   // 需要建链的才列出来:通用目录的 agent(cursor/codex 等)落在 canonical 就能读到,
   // 让用户去勾一个"勾不勾都一样"的选项只会让人困惑。
   const linkable = agents.filter((a) => a.needsLink);
+  // 广场的挂仓探测是异步的(beginFromPlaza):在它回来、`repo` 被换成真实寻址键之前,
+  // 「确定」点下去必然带着 repo: null 去调 skill_install,报"技能广场没有默认技能库"
+  // ——这句错误跟用户刚点的按钮毫无关系(M9 终审修复)。禁用比放行后报一句文不对题
+  // 的错误更诚实。
+  const confirmDisabled = registryId === PLAZA_REGISTRY_ID && repo === null;
 
   return (
     <div className="border-t border-border px-5 py-3.5">
@@ -150,8 +155,9 @@ function AgentChooser({ onCancel }: { onCancel: () => void }) {
       <div className="mt-2.5 flex items-center gap-2">
         <button
           type="button"
+          disabled={confirmDisabled}
           onClick={() => void run()}
-          className="h-[30px] rounded-ctl bg-accent px-[14px] text-[12.5px] font-[550] text-white hover:bg-accent-hover"
+          className="h-[30px] rounded-ctl bg-accent px-[14px] text-[12.5px] font-[550] text-white hover:bg-accent-hover disabled:opacity-60"
         >
           {t("install.confirm")}
         </button>

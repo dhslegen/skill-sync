@@ -791,4 +791,73 @@ mod github_tests {
             .unwrap();
         assert!(!status.logged_in);
     }
+
+    /// M9 终审修复:全仓第一条真正走过广场 auth 链路的测试。此前五个 `auth_*`
+    /// command 全部以 `resolve_registry(id, None)` 开头,`registry::resolve` 的
+    /// plaza 分支对 `key=None` 无条件报错("技能广场没有默认技能库")——登录按钮
+    /// 因此是个死按钮,而全部测试(前后端)都没有一条真正跑过这条链路:前端只对着
+    /// 返回 `undefined` 的 mock 断言"按钮渲染了"。
+    ///
+    /// 这条测试把 `commands::auth_login_token`(以及 `auth_status`/
+    /// `auth_device_start`/`auth_device_wait`)的真实分发逻辑复现出来:
+    /// 1. `registry::resolve_source(.., PLAZA_REGISTRY_ID)` 必须成功解出
+    ///    `kind=Github`(不再报 `REPO_UNKNOWN`);
+    /// 2. 按 `resolved.kind` 分发到 `github_login_token`(与 command 里的
+    ///    `match resolved.kind { Github => session::github_login_token(...) }`
+    ///    逐行同构);
+    /// 3. 凭证按 `registry::PLAZA_REGISTRY_ID`("plaza")落进凭证库——分享改动
+    ///    (`share_source` 的 GitHub 臂)正是靠这把钥匙才读得到凭证。
+    ///
+    /// `resolved.base_url` 恒为真实 `https://github.com`(编译期常量),没法拿它
+    /// 发测试请求——这里用 wiremock 的 server.uri() 替代,验证的是"kind 判定对了
+    /// 之后,登录链路本身能走通",与其余 GitHub 测试同一套姿势(`base_url` 本来
+    /// 就是各函数的参数,不是硬编码)。
+    ///
+    /// 注入验证的靶子:把 `registry::resolve` 里 plaza 那个"源级坐标"分支删掉
+    /// (换回旧的"只查 config.registries"逻辑),这条测试第一步就必须变红
+    /// ——`resolve_source` 会报 `REPO_UNKNOWN_REGISTRY`。
+    #[tokio::test]
+    async fn plaza_registry_id_walks_the_full_github_login_chain() {
+        use crate::core::registry;
+
+        // 第一段:注册表层——resolve_source 对广场必须给出 kind=Github,
+        // 不报"没有默认技能库"(这正是终审抓到的死按钮根因)。
+        let builtin = registry::BuiltinSource {
+            base_url: Some("http://gitea.internal:3000"),
+            repo: Some(("skills", "skills")),
+            branch: "main",
+        };
+        let resolved = registry::resolve_source(&builtin, &[], registry::PLAZA_REGISTRY_ID)
+            .expect("广场必须能解出源级坐标,不需要先挂一个仓");
+        assert_eq!(resolved.kind, registry::RegistryKind::Github);
+        assert_eq!(resolved.base_url, registry::PLAZA_BASE_URL);
+        assert!(!resolved.builtin);
+
+        // 第二段:按 kind 分发(与 commands::auth_login_token 的 match 分支逐行
+        // 同构),凭证落在 registry id 本身("plaza")。
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/user"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(user_json()))
+            .mount(&server)
+            .await;
+
+        let store = MemoryStore::default();
+        let user = github_login_token(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &store,
+            registry::PLAZA_REGISTRY_ID,
+            "ghp_plaza_token",
+        )
+        .await
+        .expect("广场的 GitHub 登录应当成功");
+
+        assert_eq!(user.display_name, "王工");
+        let saved = store
+            .load(registry::PLAZA_REGISTRY_ID)
+            .unwrap()
+            .expect("凭证应按 plaza 这个 registryId 落进凭证库——分享改动(share_source 的 GitHub 臂)读凭证同样按 registryId 查,这里存的这把钥匙就是它要读的那把,链路闭环");
+        assert_eq!(saved.access_token, "ghp_plaza_token");
+    }
 }

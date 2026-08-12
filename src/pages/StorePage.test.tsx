@@ -372,11 +372,36 @@ describe("库切换器 · 技能广场固定档(M9 任务 5)", () => {
     seed();
     render(<StorePage />);
 
-    await userEvent.click(screen.getByRole("button", { name: "skills" }));
-    // 展示名回退到 repo slug(vercel-labs/skills 没起名),不是寻址键
+    // 展示名回退到寻址键 `owner/repo`(vercel-labs/skills 没起名),不是裸 repo slug
+    // ——裸 slug 会让两个不同 owner 的同名仓完全同形(M9 终审修复,见下一条测试)
+    await userEvent.click(screen.getByRole("button", { name: "vercel-labs/skills" }));
     const s = useStoreIndex.getState();
     expect(s.activeRegistry).toBe("plaza");
     expect(s.activeRepo).toBe("vercel-labs/skills");
+  });
+
+  it("两个不同 owner 的同名广场仓,子条目标签不再同形(M9 终审修复)", () => {
+    useRegistries.setState({
+      list: [
+        ...onlyCompany,
+        plazaRow([
+          { key: "vercel-labs/skills", owner: "vercel-labs", repo: "skills" },
+          { key: "octocat/skills", owner: "octocat", repo: "skills" },
+        ]),
+      ],
+    });
+    seed();
+    render(<StorePage />);
+
+    // 此前两者都会退到裸 repo.repo("skills"),在切换器上完全同形,只有
+    // title 悬浮才分得出来;现在各自的标签就能区分。
+    const a = screen.getByRole("button", { name: "vercel-labs/skills" });
+    const b = screen.getByRole("button", { name: "octocat/skills" });
+    expect(a).toBeInTheDocument();
+    expect(b).toBeInTheDocument();
+    expect(a.textContent).not.toBe(b.textContent);
+    // 等宽字体展示(UI 规范:owner/repo 是 slug 形态)
+    expect(a.className).toMatch(/font-mono/);
   });
 
   it("点击广场固定档进入搜索态:不渲染技能网格,渲染空态提示", async () => {

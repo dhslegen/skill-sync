@@ -138,42 +138,94 @@ impl ResolvedRegistry {
     /// - 自定义源:PAT 通道,`client_id` 留空——PAT 凭证 `expires_at=0`,
     ///   `ensure_access_token` 永不走 OAuth 续期端点,空 client_id 不会被用到;
     ///   **内建的 Client ID 绝不塞给自定义源**(那是别家 Gitea,发过去只会泄露内网配置)。
+    ///
+    /// 判定逻辑与 [`ResolvedSource::auth_config`] 共享 [`build_auth_config`]——
+    /// 两个类型都可能代表"同一个源",分叉维护是下一次 M6 式静默漂移的温床。
     pub fn auth_config(
         &self,
         builtin_client_id: Option<&str>,
     ) -> Result<crate::core::auth::OAuthConfig, AppError> {
-        let client_id = if self.builtin {
-            builtin_client_id
-                .filter(|c| !c.is_empty())
-                .ok_or_else(|| {
-                    AppError::new(
-                        "AUTH_NOT_CONFIGURED",
-                        "这个版本没有配置公司技能库,请向 IT 索取正式安装包",
-                    )
-                })?
-                .to_string()
-        } else {
-            String::new()
-        };
-        Ok(crate::core::auth::OAuthConfig {
-            base_url: self.base_url.clone(),
-            client_id,
-        })
+        build_auth_config(&self.base_url, self.builtin, builtin_client_id)
     }
 
     /// Gitea 专用链路的类型闸门。任务 4 起**读链路已放行 GitHub**(走 `RepoSource`),
     /// 本闸门只剩登录与分享两条 Gitea 专属通道在用;GitHub 侧凭证与分享归任务 5,
     /// 接通后按通道逐个摘除。
+    ///
+    /// 判定逻辑与 [`ResolvedSource::require_gitea`] 共享 [`require_gitea_kind`]。
     pub fn require_gitea(&self) -> Result<&Self, AppError> {
-        match self.kind {
-            RegistryKind::Gitea => Ok(self),
-            RegistryKind::Github => Err(AppError::new(
-                "REPO_KIND_UNSUPPORTED",
-                "这个操作只适用于 Gitea 类型的技能库来源",
-            )
-            .with_detail(format!("registry {} kind=github", self.id))),
-        }
+        require_gitea_kind(self.kind, &self.id)?;
+        Ok(self)
     }
+}
+
+/// 源级访问坐标:只有 kind/base_url/builtin,**不含任何仓库**(M9 终审修复)。
+///
+/// 用于与具体技能库无关的操作——目前唯一的调用方是五个 `auth_*` command(登录/
+/// 凭证管理)。之所以要单独开一个类型而不是把 [`ResolvedRegistry::repo`] 改成
+/// `Option<RepoRef>`:登录本来就不需要"默认技能库"这个概念,但套用 [`resolve`]
+/// 的仓库解析会让**广场**必然报错——广场没有主仓,`resolve(PLAZA_REGISTRY_ID,
+/// key=None)` 是故意设计成报错的(见 [`resolve`] 里 plaza 分支的注释,那条报错
+/// 对"选技能库"场景是对的),但登录压根不该被这条"仓级"约束卡住。把 `repo` 改成
+/// `Option` 会让全仓所有读 `.repo` 的调用方都要多处理一层 None,波及面远大于
+/// 加一个专用的源级类型。
+#[derive(Debug, Clone)]
+pub struct ResolvedSource {
+    pub id: String,
+    pub kind: RegistryKind,
+    pub base_url: String,
+    pub builtin: bool,
+}
+
+impl ResolvedSource {
+    /// 与 [`ResolvedRegistry::require_gitea`] 同一判定(共享 [`require_gitea_kind`])。
+    pub fn require_gitea(&self) -> Result<&Self, AppError> {
+        require_gitea_kind(self.kind, &self.id)?;
+        Ok(self)
+    }
+
+    /// 与 [`ResolvedRegistry::auth_config`] 同一判定(共享 [`build_auth_config`])。
+    pub fn auth_config(
+        &self,
+        builtin_client_id: Option<&str>,
+    ) -> Result<crate::core::auth::OAuthConfig, AppError> {
+        build_auth_config(&self.base_url, self.builtin, builtin_client_id)
+    }
+}
+
+fn require_gitea_kind(kind: RegistryKind, id: &str) -> Result<(), AppError> {
+    match kind {
+        RegistryKind::Gitea => Ok(()),
+        RegistryKind::Github => Err(AppError::new(
+            "REPO_KIND_UNSUPPORTED",
+            "这个操作只适用于 Gitea 类型的技能库来源",
+        )
+        .with_detail(format!("registry {id} kind=github"))),
+    }
+}
+
+fn build_auth_config(
+    base_url: &str,
+    builtin: bool,
+    builtin_client_id: Option<&str>,
+) -> Result<crate::core::auth::OAuthConfig, AppError> {
+    let client_id = if builtin {
+        builtin_client_id
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| {
+                AppError::new(
+                    "AUTH_NOT_CONFIGURED",
+                    "这个版本没有配置公司技能库,请向 IT 索取正式安装包",
+                )
+            })?
+            .to_string()
+    } else {
+        String::new()
+    };
+    Ok(crate::core::auth::OAuthConfig {
+        base_url: base_url.to_string(),
+        client_id,
+    })
 }
 
 /// 新增自定义源的请求。`branch` 缺省按 `main`。
@@ -192,10 +244,47 @@ pub fn repo_key(owner: &str, repo: &str) -> String {
     format!("{owner}/{repo}")
 }
 
+/// 源级坐标(kind + base_url + builtin 标记),**不含任何仓**。[`resolve`] 与
+/// [`resolve_source`] 共用这一段——两处各自维护一份"id → kind/base_url"的判定
+/// 正是 M9 任务 3/4 两次被判 DRY 违规的同类风险(同一段判定抄两遍,改一处漏一处)。
+///
+/// 三个分支与 [`resolve`] 逐条对应:plaza 给固定常量;builtin 只做 base_url 这一层
+/// 检查(repo 是否配置是 [`resolve`] 自己的第二层检查,与"源"无关,留在调用方);
+/// 自定义源做 id 查找 + kind 解析。
+fn source_coords(
+    builtin: &BuiltinSource,
+    registries: &[RegistryConfig],
+    id: &str,
+) -> Result<(RegistryKind, String, bool), AppError> {
+    if id == PLAZA_REGISTRY_ID {
+        return Ok((RegistryKind::Github, PLAZA_BASE_URL.to_string(), false));
+    }
+    if id == BUILTIN_REGISTRY_ID {
+        // 报错沿用 M1 `store_target` 的原文:文案已过术语守卫,前端也按它引导用户。
+        let Some(base_url) = builtin.base_url.filter(|u| !u.is_empty()) else {
+            return Err(AppError::new(
+                "REPO_NOT_CONFIGURED",
+                "这个版本没有配置公司技能库,请向 IT 索取正式安装包",
+            ));
+        };
+        return Ok((RegistryKind::Gitea, base_url.to_string(), true));
+    }
+    let cfg = registries
+        .iter()
+        .find(|r| r.id == id)
+        .ok_or_else(|| unknown_registry(id))?;
+    let kind = RegistryKind::parse(&cfg.kind)
+        .ok_or_else(|| invalid_registry(format!("kind={}", cfg.kind)))?;
+    Ok((kind, cfg.base_url.clone(), false))
+}
+
 /// 按 id + 仓库键解析出访问坐标。`BUILTIN_REGISTRY_ID` 的主仓走编译期常量、
 /// 追加仓查 `builtin_extra`;`PLAZA_REGISTRY_ID` 查 `plaza_repos`(**没有主仓**,
 /// `key = None` 报错——见该分支注释);其余查 `registries`。`repo_key = None`
 /// 落主仓(内建 = 常量,自定义 = `repos[0]`)——既有调用方外部行为不变。
+///
+/// 与仓库无关的调用方(目前只有登录)请用 [`resolve_source`]:它不要求"默认
+/// 技能库"存在,plaza 也能正常解出源级坐标。
 pub fn resolve(
     builtin: &BuiltinSource,
     registries: &[RegistryConfig],
@@ -227,13 +316,7 @@ pub fn resolve(
         });
     }
     if id == BUILTIN_REGISTRY_ID {
-        // 两条报错沿用 M1 `store_target` 的原文:文案已过术语守卫,前端也按它引导用户。
-        let Some(base_url) = builtin.base_url.filter(|u| !u.is_empty()) else {
-            return Err(AppError::new(
-                "REPO_NOT_CONFIGURED",
-                "这个版本没有配置公司技能库,请向 IT 索取正式安装包",
-            ));
-        };
+        let (kind, base_url, _) = source_coords(builtin, registries, id)?;
         let Some((owner, repo)) = builtin.repo else {
             return Err(AppError::new(
                 "REPO_NOT_CONFIGURED",
@@ -260,18 +343,20 @@ pub fn resolve(
         };
         return Ok(ResolvedRegistry {
             id: BUILTIN_REGISTRY_ID.to_string(),
-            kind: RegistryKind::Gitea,
-            base_url: base_url.to_string(),
+            kind,
+            base_url,
             repo: selected,
             builtin: true,
         });
     }
+    let (kind, base_url, _) = source_coords(builtin, registries, id)?;
+    // 上面已经确认过这个 id 存在(否则已经在 source_coords 里报错返回),这里的
+    // find 保证命中——重新查一遍是为了拿到 `repos`(source_coords 只给 kind/base_url,
+    // 不含仓库列表)。
     let cfg = registries
         .iter()
         .find(|r| r.id == id)
         .ok_or_else(|| unknown_registry(id))?;
-    let kind = RegistryKind::parse(&cfg.kind)
-        .ok_or_else(|| invalid_registry(format!("kind={}", cfg.kind)))?;
     let repo = match key {
         None => cfg.repos.first(),
         Some(k) => cfg.repos.iter().find(|r| repo_key(&r.owner, &r.repo) == k),
@@ -283,13 +368,34 @@ pub fn resolve(
     Ok(ResolvedRegistry {
         id: cfg.id.clone(),
         kind,
-        base_url: cfg.base_url.clone(),
+        base_url,
         repo: RepoRef {
             owner: repo.owner.clone(),
             repo: repo.repo.clone(),
             branch: repo.branch.clone(),
         },
         builtin: false,
+    })
+}
+
+/// 源级解析:只给 kind/base_url/builtin,不含任何仓库坐标(M9 终审修复)。
+/// 行为与 [`resolve`] 对应分支完全一致(共享 [`source_coords`])。
+///
+/// 目前唯一的调用方是五个 `auth_*` command:登录/凭证管理不需要"默认技能库"这个
+/// 概念,用 [`resolve`] 会让广场(没有主仓)必然报错——那个报错在登录语境下文不对题
+/// (登录跟选哪个技能库无关)。广场因此在这里能正常解出 `kind=Github,
+/// base_url=https://github.com`,不必先挂一个仓。
+pub fn resolve_source(
+    builtin: &BuiltinSource,
+    registries: &[RegistryConfig],
+    id: &str,
+) -> Result<ResolvedSource, AppError> {
+    let (kind, base_url, is_builtin) = source_coords(builtin, registries, id)?;
+    Ok(ResolvedSource {
+        id: id.to_string(),
+        kind,
+        base_url,
+        builtin: is_builtin,
     })
 }
 
@@ -1464,5 +1570,95 @@ mod tests {
         assert_eq!(resolved.repo.branch, "develop");
         assert_eq!(resolved.base_url, PLAZA_BASE_URL);
         assert_eq!(resolved.kind, RegistryKind::Github);
+    }
+
+    // ==================================================== resolve_source(M9 终审修复)
+
+    /// 核心断言:广场**没有挂任何仓**时,`resolve_source` 仍能解出源级坐标——
+    /// 这正是终审揪出的缺陷本身(登录五个 command 此前全部调 `resolve(id, None)`,
+    /// 广场的这一条必然报 `REPO_UNKNOWN`)。故意注入验证的靶子:把这个分支删掉
+    /// 换成走通用 `unknown_registry` 路径,这条断言必须变红。
+    #[test]
+    fn resolve_source_resolves_plaza_without_any_mounted_repo() {
+        let resolved = resolve_source(&fake_builtin(), &[], PLAZA_REGISTRY_ID).unwrap();
+        assert_eq!(resolved.id, PLAZA_REGISTRY_ID);
+        assert_eq!(resolved.kind, RegistryKind::Github);
+        assert_eq!(resolved.base_url, PLAZA_BASE_URL);
+        assert!(!resolved.builtin);
+        // 挂了仓也不影响——源级坐标压根不看 plaza_repos
+        let mut repos = Vec::new();
+        record_plaza_repo(&mut repos, "vercel-labs", "skills", "main".into());
+        let resolved_with_repo = resolve_source(&fake_builtin(), &[], PLAZA_REGISTRY_ID).unwrap();
+        assert_eq!(resolved_with_repo.base_url, PLAZA_BASE_URL);
+    }
+
+    /// `resolve_source` 与 `resolve(.., key=None)` 对内建源/自定义源给出完全一致的
+    /// kind/base_url/builtin——两者是同一份坐标的两种"视角",不该在这三个字段上分叉。
+    #[test]
+    fn resolve_source_matches_resolve_for_builtin_and_custom() {
+        let builtin = fake_builtin();
+        let custom = vec![custom_cfg()];
+
+        let via_source = resolve_source(&builtin, &[], BUILTIN_REGISTRY_ID).unwrap();
+        let via_resolve = resolve(&builtin, &[], &[], BUILTIN_REGISTRY_ID, None, &[]).unwrap();
+        assert_eq!(via_source.kind, via_resolve.kind);
+        assert_eq!(via_source.base_url, via_resolve.base_url);
+        assert_eq!(via_source.builtin, via_resolve.builtin);
+
+        let via_source = resolve_source(&builtin, &custom, "custom-1").unwrap();
+        let via_resolve = resolve(&builtin, &custom, &[], "custom-1", None, &[]).unwrap();
+        assert_eq!(via_source.kind, via_resolve.kind);
+        assert_eq!(via_source.base_url, via_resolve.base_url);
+        assert_eq!(via_source.builtin, via_resolve.builtin);
+    }
+
+    /// 内建未注入配置的构建:`resolve_source` 与 `resolve` 报同一个错误码
+    /// ——登录也该被同一句"请向 IT 索取正式安装包"挡住,不是另一套文案。
+    #[test]
+    fn resolve_source_reports_the_same_error_as_resolve_when_builtin_unconfigured() {
+        let unconfigured = BuiltinSource { base_url: None, repo: None, branch: "main" };
+        let err = resolve_source(&unconfigured, &[], BUILTIN_REGISTRY_ID).unwrap_err();
+        assert_eq!(err.code, "REPO_NOT_CONFIGURED");
+        assert!(err.message.contains("IT"), "{}", err.message);
+    }
+
+    #[test]
+    fn resolve_source_unknown_registry_id_gets_readable_error() {
+        let err = resolve_source(&fake_builtin(), &[custom_cfg()], "custom-99").unwrap_err();
+        assert_eq!(err.code, "REPO_UNKNOWN_REGISTRY");
+        assert!(!err.message.contains("custom-99"), "{}", err.message);
+    }
+
+    /// `require_gitea`/`auth_config` 在 `ResolvedRegistry` 与 `ResolvedSource` 两个
+    /// 类型上必须给出相同判定——它们共享同一段逻辑(`require_gitea_kind`/
+    /// `build_auth_config`),这条测试钉住"共享"这件事本身,而不只是各自测一遍。
+    #[test]
+    fn resolved_source_and_resolved_registry_share_the_same_gate_logic() {
+        let builtin = fake_builtin();
+
+        // Gitea 源:两条路都通过 require_gitea,auth_config 都要求注入 client id
+        let via_registry = resolve(&builtin, &[], &[], BUILTIN_REGISTRY_ID, None, &[]).unwrap();
+        let via_source = resolve_source(&builtin, &[], BUILTIN_REGISTRY_ID).unwrap();
+        assert!(via_registry.require_gitea().is_ok());
+        assert!(via_source.require_gitea().is_ok());
+        assert_eq!(
+            via_registry.auth_config(None).unwrap_err().code,
+            via_source.auth_config(None).unwrap_err().code
+        );
+        assert_eq!(
+            via_registry.auth_config(Some("cid")).unwrap().client_id,
+            via_source.auth_config(Some("cid")).unwrap().client_id
+        );
+
+        // GitHub 源(广场):两条路都被 require_gitea 拒,错误码一致
+        let mut repos = Vec::new();
+        record_plaza_repo(&mut repos, "vercel-labs", "skills", "main".into());
+        let via_registry =
+            resolve(&builtin, &[], &[], PLAZA_REGISTRY_ID, Some("vercel-labs/skills"), &repos).unwrap();
+        let via_source = resolve_source(&builtin, &[], PLAZA_REGISTRY_ID).unwrap();
+        assert_eq!(
+            via_registry.require_gitea().unwrap_err().code,
+            via_source.require_gitea().unwrap_err().code
+        );
     }
 }

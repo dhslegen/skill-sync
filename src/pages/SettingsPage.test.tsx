@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -305,12 +305,46 @@ describe("设置页 · 技能库来源(M9 任务 5:广场行的计划补丁)", (
     expect(screen.getAllByRole("button", { name: "添加技能库" })).toHaveLength(2);
   });
 
-  it("凭证登录按钮保留:广场支持可选 GitHub 登录以提高 API 配额", async () => {
-    withRegistries([companyRow, plazaRow()]);
+  it("凭证登录按钮保留且点了真能走到 auth 链路(M9 终审修复,不再是死按钮)", async () => {
+    // 此前这两个按钮点下去必然报"技能广场没有默认技能库"——五个 auth_* command
+    // 全部以 resolve(id, key=None) 开头,广场没有主仓、key=None 必然报错。
+    // 这条测试此前只断言"按钮渲染了"(对着返回 undefined 的 mock),从没真的点过它,
+    // 是终审指出的空转模式 #4:按钮存在不等于按钮能用。
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "auto_update_get") return { skills: { enabled: true, intervalMinutes: 240 }, app: true };
+      if (cmd === "registry_list") return [companyRow, plazaRow()];
+      if (cmd === "auth_login_token") return { login: "octocat", displayName: "章鱼喵", avatarUrl: "" };
+      return undefined;
+    });
     render(<SettingsPage />);
     await screen.findByText("技能广场");
     expect(screen.getByRole("button", { name: "登录凭证" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "一键登录" })).toBeInTheDocument();
+
+    // 「登录凭证」→ 填令牌 → 提交:必须真的调用 auth_login_token,
+    // registryId 是 "plaza",不是被本地条件挡在半路。
+    await userEvent.click(screen.getByRole("button", { name: "登录凭证" }));
+    await userEvent.type(screen.getByPlaceholderText("粘贴访问凭证"), "ghp_plaza_token");
+    // 「登录」这个名字同时撞到账号区顶层的登录入口(未登录态也渲染),
+    // 表单里刚展开的提交按钮是后一个
+    const submitButtons = screen.getAllByRole("button", { name: "登录" });
+    await userEvent.click(submitButtons[submitButtons.length - 1]);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("auth_login_token", {
+        args: { registryId: "plaza", token: "ghp_plaza_token" },
+      }),
+    );
+    // 登录真的成功了(不是本地条件挡住之后的假象):store 记下了展示名
+    await waitFor(() => expect(useRegistries.getState().loggedIn.plaza).toBe("章鱼喵"));
+
+    // 「一键登录」→ 必须真的调用 auth_device_start,registryId 同样是 "plaza"
+    // (device flow 的第二步 auth_device_wait 这里没配 mock,会带着未定义结果
+    // 报一个本地错误,与本条断言无关——只关心第一步真的发出去了)。
+    await userEvent.click(screen.getByRole("button", { name: "一键登录" }));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("auth_device_start", { args: { registryId: "plaza" } }),
+    );
   });
 
   it("挂了一个仓也要展开子列表(广场没有主仓,头部坐标说明不了挂了什么)", async () => {

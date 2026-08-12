@@ -186,8 +186,15 @@ export const useInstall = create<InstallState>((set, get) => ({
       dirSlug,
       registryId: PLAZA_REGISTRY_ID,
       // 挂仓探测还没回来,先占位——`run()` 靠这个字段拼获取请求,真正装之前必须
-      // 已经被下面的挂仓结果覆盖成一个可用的寻址键。
+      // 已经被下面的挂仓结果覆盖成一个可用的寻址键。AgentChooser 据此在挂仓完成前
+      // 禁用「确定」按钮(M9 终审修复):不禁用的话,勾选面板会带着上一次安装
+      // 残留的 agents/selected 可点渲染出来,点下去必然报"技能广场没有默认技能库"
+      // ——那句错误跟用户刚点的按钮毫无关系。
       repo: null,
+      // 同一次修复:上一次安装(哪怕是别的技能)残留的勾选状态不该带进这一次——
+      // 不重置的话用户会看到一份不属于这次广场安装的 agent 列表且可能可点确定。
+      agents: [],
+      selected: new Set(),
       stage: null,
       report: null,
       error: null,

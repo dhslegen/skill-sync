@@ -239,12 +239,17 @@ function SourcePicker() {
       if (r.id === PLAZA_REGISTRY_ID) {
         return [
           // 固定入口本身:点开进搜索态,不是浏览任何一个仓
-          { registryId: r.id, repoKey: null, label: r.name, title: r.name },
+          { registryId: r.id, repoKey: null, label: r.name, title: r.name, mono: false },
           ...r.repos.map((repo) => ({
             registryId: r.id,
             repoKey: repo.key,
-            label: repo.name ?? repo.repo,
+            // 广场的仓没有源起的展示名可回退(name 恒为 null,§2.3):退到 repo.repo
+            // 会让两个不同 owner 的同名仓(如 a/skills 与 b/skills)在这排切换器上
+            // 完全同形,只有 title 悬浮才分得出来(M9 终审修复)。退到 key(owner/repo)
+            // 才是能区分的形式;真起了展示名(未来若开放)则优先用它,此时不必等宽。
+            label: repo.name ?? repo.key,
             title: `${r.name} · ${repo.key}`,
+            mono: !repo.name,
           })),
         ];
       }
@@ -256,6 +261,7 @@ function SourcePicker() {
         // 展示名优先用户起的名;主仓回退源名;追加仓回退 repo slug
         label: repo.name ?? (repo.primary ? sourceName : repo.repo),
         title: `${sourceName} · ${repo.key}`,
+        mono: false,
       }));
     });
   }, [registries]);
@@ -285,6 +291,7 @@ function SourcePicker() {
             }}
             className={cn(
               "rounded-full border px-2.5 py-[3px] text-[12px]",
+              e.mono && "font-mono",
               active
                 ? "border-border-strong bg-surface-3 font-medium text-text"
                 : "border-border bg-surface-1 text-text-2 hover:border-border-strong hover:text-text",

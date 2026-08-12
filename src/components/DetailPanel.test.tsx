@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -589,6 +589,53 @@ describe("DetailPanel(技能广场详情态)", () => {
     await userEvent.click(screen.getByRole("button", { name: "安装" }));
     expect(await screen.findByText("选择要启用的 AI 工具")).toBeInTheDocument();
     expect(invokeMock).toHaveBeenCalledWith("plaza_ensure_repo", { ownerRepo: "vercel-labs/skills" });
+  });
+
+  it("挂仓探测未回来前「确认安装」禁用,回来之后自动可点(M9 终审修复)", async () => {
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailSlug: "vercel-labs/skills/react-best-practices",
+      detailSkills: [plazaSkill()],
+      detailStatus: "ready",
+    });
+    let resolveEnsureRepo: (v: unknown) => void = () => {};
+    const ensureRepoPending = new Promise((resolve) => {
+      resolveEnsureRepo = resolve;
+    });
+    invokeMock.mockImplementation(async (cmd) => {
+      if (cmd === "agents_detected") {
+        return {
+          agents: [
+            { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
+          ],
+          canonicalDir: "~/.agents/skills",
+        };
+      }
+      // 故意不 resolve:模拟"勾选面板已经展开,挂仓探测还在飞"这段窗口期
+      if (cmd === "plaza_ensure_repo") return ensureRepoPending;
+      if (cmd === "registry_list") return [];
+      return null;
+    });
+    render(<DetailPanel />);
+
+    await userEvent.click(screen.getByRole("button", { name: "安装" }));
+    const confirm = await screen.findByRole("button", { name: "确认安装" });
+    // 此时 useInstall.repo 仍是 null(挂仓探测没回来):点下去此前会带着
+    // repo: null 去调 skill_install,报一句与这次点击毫无关系的"技能广场没有
+    // 默认技能库"。禁用比放行后报错更诚实。
+    expect(confirm).toBeDisabled();
+
+    resolveEnsureRepo({
+      key: "vercel-labs/skills",
+      owner: "vercel-labs",
+      repo: "skills",
+      branch: "main",
+      name: null,
+      primary: false,
+      locked: false,
+    });
+    await waitFor(() => expect(confirm).not.toBeDisabled());
   });
 
   it("已装且指纹一致(广场坐标) → 已启用,终态点不动", () => {

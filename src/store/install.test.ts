@@ -613,6 +613,28 @@ describe("beginFromPlaza(技能广场安装编排,M9 任务 5)", () => {
       expect(useRegistries.getState().list?.[0]?.repos).toHaveLength(1);
     });
   });
+
+  it("挂仓探测还没回来那一刻,已经清掉上一次安装残留的 agents/selected(M9 终审修复)", () => {
+    // 模拟上一次安装(哪怕是别的技能)残留下来的勾选状态——beginFromPlaza 之前
+    // 这个 store 是同一个单例,不会自动清空。
+    useInstall.setState({
+      agents: [
+        { name: "trae", displayName: "Trae", installed: true, globalSkillsDir: "~/.trae/skills", isUniversal: false, needsLink: true, disabled: false },
+      ],
+      selected: new Set(["trae"]),
+    });
+    // 挂住不 resolve:只关心 beginFromPlaza 第一个 set() 那一刻(任何 await 之前)
+    // 的同步状态,不该等 agentsDetected/plazaEnsureRepo 回来才清空——晚清等于
+    // 用户在这段等待期间看到一份不属于这次安装的 agent 列表,还可能是可点的。
+    invoke.mockImplementation(() => new Promise(() => {}));
+
+    void useInstall.getState().beginFromPlaza("vercel-labs/skills", "react-best-practices");
+
+    expect(useInstall.getState().agents).toEqual([]);
+    expect(useInstall.getState().selected.size).toBe(0);
+    expect(useInstall.getState().repo).toBeNull();
+    expect(useInstall.getState().phase).toBe("choosing");
+  });
 });
 
 function row(dirSlug: string) {
