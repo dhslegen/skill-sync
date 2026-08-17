@@ -96,3 +96,49 @@ async fn discovers_skills_in_a_real_github_repo_via_fetch_repo_skills() {
         skills[0].dir_slug
     );
 }
+
+/// 真实拉一次 skills.sh 首页热门排行榜(M10 任务 4),断言"非空,且字段形状齐全"。
+///
+/// 与上面两条同一套姿势:不断言具体名字/排名(会随安装量漂移),只断言结构;
+/// 这条额外验证了 brief 点名的两个 ground truth——**跟随了 308 重定向**(不跟随
+/// 拿到的是跳转页,解析必然失败,`cards` 会是空的)与 `PLAZA_LEADERBOARD_LIMIT`
+/// 生效(真实首页有 600 条,这里必须已经截到常量设的上限)。
+#[tokio::test]
+async fn fetches_the_real_trending_leaderboard_from_the_skills_sh_homepage() {
+    if !live_enabled() {
+        return;
+    }
+    let http = gitea::app_http_client_proxied().expect("构造代理 client 失败");
+
+    let cards = plaza::fetch_leaderboard(&http, plaza::PLAZA_HOME_URL).await;
+
+    assert!(
+        !cards.is_empty(),
+        "真实首页应当能解析出热门榜数据(若这条断红,先怀疑上游改了首页渲染实现,\
+         不是网络问题——core 侧已把网络失败也降级成空列表,两种原因界面上分不出来,\
+         但这条 live 测试的目的正是替我们分辨)"
+    );
+    assert!(
+        cards.len() <= plaza::PLAZA_LEADERBOARD_LIMIT,
+        "截断应当生效,实际 {} 条",
+        cards.len()
+    );
+    for card in &cards {
+        assert!(!card.name.is_empty(), "每条结果都应有非空 name: {card:?}");
+        assert!(!card.slug.is_empty(), "每条结果都应有非空 slug: {card:?}");
+        // 只断言非空,不强求"owner/repo 两段式"——2026-08-17 真机实测抓到过
+        // `"source":"open.feishu.cn"` 这种域名式来源(单段、没有斜杠),排行榜端点
+        // 收录的显然不只是 GitHub 仓。这类条目点开详情会在 GithubClient 那一层
+        // 404(不在本测试断言范围),这里只验"解析没把它当脏数据丢掉"这件事本身。
+        assert!(!card.owner_repo.is_empty(), "owner_repo 不该为空: {card:?}");
+    }
+
+    eprintln!(
+        "[live] skills.sh 首页热门榜解析出 {} 条,首条: {} ({}, {} 次安装, isOfficial={})",
+        cards.len(),
+        cards[0].name,
+        cards[0].owner_repo,
+        cards[0].installs,
+        cards[0].is_official
+    );
+}

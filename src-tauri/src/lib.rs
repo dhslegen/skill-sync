@@ -186,7 +186,8 @@ pub fn run() {
             commands::skill_share_changes,
             commands::plaza_search,
             commands::plaza_ensure_repo,
-            commands::plaza_detail
+            commands::plaza_detail,
+            commands::plaza_leaderboard
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

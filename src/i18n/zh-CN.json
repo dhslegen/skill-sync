@@ -333,5 +333,7 @@
   "plaza.searchFailed": "技能广场暂时连不上,不影响公司技能库",
   "plaza.installsLabel": "{installs} 次安装",
   "plaza.openInBrowser": "在浏览器中查看",
-  "plaza.detailAmbiguous": "这个技能库里有多个技能,请选择要查看的一个"
+  "plaza.detailAmbiguous": "这个技能库里有多个技能,请选择要查看的一个",
+  "plaza.trendingLabel": "全网热门",
+  "plaza.officialBadge": "官方"
 }

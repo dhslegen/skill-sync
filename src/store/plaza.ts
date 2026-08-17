@@ -10,6 +10,7 @@ import { t } from "@/i18n";
 import {
   isAppError,
   plazaDetail,
+  plazaLeaderboard,
   plazaSearch,
   type AppError,
   type PlazaSkillCard,
@@ -36,6 +37,15 @@ interface PlazaState {
   error: AppError | null;
   /** 输入即触发(内部防抖 + 边界判定),调用方不用自己管定时器。 */
   setQuery: (query: string) => void;
+
+  // ---- 首页热门排行榜(M10 任务 4:广场空态打开就有内容) ----
+  leaderboard: PlazaSkillCard[];
+  leaderboardStatus: Status;
+  /** 幂等触发:已经在读或已经读到过就不重复发 IPC——core 侧自己也有一份不失效的
+   *  进程内缓存(见 `commands::plaza_leaderboard_cache`),这里只是省一次往返,
+   *  不是正确性所必需。空结果(降级态)算"读到过"但**不算成功**,组件据此展示
+   *  回退提示,而不是无限期停在 loading。 */
+  loadLeaderboard: () => Promise<void>;
 
   // ---- 详情(点开一条搜索结果时现拉该仓全部技能) ----
   /** 当前打开的仓;null = 详情面板关闭。 */
@@ -93,6 +103,33 @@ export const usePlaza = create<PlazaState>((set, get) => {
         return;
       }
       debounceHandle = setTimeout(() => void runSearch(query), SEARCH_DEBOUNCE_MS);
+    },
+
+    leaderboard: [],
+    leaderboardStatus: "idle",
+
+    loadLeaderboard: async () => {
+      // 只挡"同一时刻已经在飞的重复请求"(比如 React 严格模式的双调用),
+      // 不挡"上一次已经读完"——是否需要真的再发一次网络请求这件事交给 core 侧
+      // 自己的进程内缓存去判断(见 `commands::plaza_leaderboard_cache`:非空结果
+      // 不失效地缓存、空结果不缓存以便下次重试)。组件每次挂载都会调这个方法
+      // (切出搜索结果又切回空态就是一次新挂载),这样设计后每次挂载至少能有一次
+      // 机会把"上次恰好网络抖动"的空态翻回有数据,不会在一次失败后就困死一整个会话。
+      if (get().leaderboardStatus === "loading") return;
+      set({ leaderboardStatus: "loading" });
+      try {
+        // `?? []`:纯防御性写法,给测试里裸 `vi.fn()`(解析成 `undefined`)与任何
+        // IPC 边界异常兜底,真实运行时 core 侧恒返回数组,这里不该也不会取到默认值。
+        const leaderboard = (await plazaLeaderboard()) ?? [];
+        set({ leaderboard, leaderboardStatus: "ready" });
+      } catch (raw) {
+        // core 侧已经把网络/解析失败都降级成空数组(见 plazaLeaderboard 文档),
+        // 这条分支理论上不会命中——留着只是给 IPC 通道本身的极端故障(比如根本
+        // 不在 Tauri 里跑)兜底,同样落到"ready + 空列表",让界面统一走
+        // "leaderboard 为空 → 退回原空态提示"这一条路径,不新造一种展示。
+        void raw;
+        set({ leaderboard: [], leaderboardStatus: "ready" });
+      }
     },
 
     detailOwnerRepo: null,

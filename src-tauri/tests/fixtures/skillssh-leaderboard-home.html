@@ -1,0 +1,18 @@
+<!--
+  真实 fixture:2026-08-17 对 https://skills.sh/ 首页的真实 GET 请求捕获
+  (跟随 308 重定向落到 https://www.skills.sh/,原始响应体 949,795 字节)。
+  下面两个 <script> 块里的文字都是原始响应体的真实字节,一字未改:
+  第一块是 self.__next_f.push 字符串字面量真实的开头(证明转义格式);
+  第二块是热门榜数组字段真实的前 6 个条目,唯一的人工改动是在第 6 条对象的
+  '}' 之后手工补了一个 ']' 提前收尾(真实数组还有约 594 条,不塞进仓库)。
+  两块之间原本还有约 40KB 与该数组无关的真实 RSC 载荷,已略去
+  ——core::plaza::fetch_leaderboard 解析时按该字段的英文键名做锚点查找,
+  不关心它前面隔了多远,略去这段不影响测试的有效性(键名本身在下面第二块
+  真实文本里完整出现,别在本注释里重复打出那个键名——会被同一个查找命中,
+  这份 fixture 曾经因此在 2026-08-17 现场炸过一次)。
+-->
+<html><body><script>
+self.__next_f.push([1,"1:\"$Sreact.fragment\"\n2:I[83020,[\"/_next/static/immutable/chunks/3vpbtybt8fuu_.js\",\"/_next/static/immutable/chunks/40mqtcyhhk3xs.js\"],\"SearchInputStateProvider\"]\n3:I[544160,[\"/_next/stati</script>
+<!-- 中间约 40KB 真实 RSC 载荷(与下面这个数组字段无关)已略去 -->
+<script>
+sLeaderboardBySource\"]\n21:300\n4e:[\"$\",\"$L55\",null,{\"initialSkills\":[{\"source\":\"vercel-labs/skills\",\"skillId\":\"find-skills\",\"name\":\"find-skills\",\"installs\":2981876,\"weeklyInstalls\":[113781,109199,109085,115475,107969,101120,96861,93130],\"isOfficial\":true},{\"source\":\"mattpocock/skills\",\"skillId\":\"grill-me\",\"name\":\"grill-me\",\"installs\":877815,\"weeklyInstalls\":[47001,49104,70968,69550,67971,64738,75922,65802]},{\"source\":\"anthropics/skills\",\"skillId\":\"frontend-design\",\"name\":\"frontend-design\",\"installs\":784708,\"weeklyInstalls\":[27857,26134,28120,26218,24780,26152,25773,24760],\"isOfficial\":true},{\"source\":\"mattpocock/skills\",\"skillId\":\"grill-with-docs\",\"name\":\"grill-with-docs\",\"installs\":746680,\"weeklyInstalls\":[41746,42976,65694,62173,58257,55615,66362,55776]},{\"source\":\"mattpocock/skills\",\"skillId\":\"improve-codebase-architecture\",\"name\":\"improve-codebase-architecture\",\"installs\":719937,\"weeklyInstalls\":[39159,39485,61006,57135,53247,50835,63780,54240]},{\"source\":\"mattpocock/skills\",\"skillId\":\"tdd\",\"name\":\"tdd\",\"installs\":695860,\"weeklyInstalls\":[37176,40327,61196,55148,52117,49935,63627,52249]}]}]\n"])</script></body></html>

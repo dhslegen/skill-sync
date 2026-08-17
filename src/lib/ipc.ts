@@ -622,7 +622,10 @@ export const skillShareChanges = (args: {
  */
 export const PLAZA_REGISTRY_ID = "plaza";
 
-/** 技能广场(skills.sh)一条搜索结果。 */
+/**
+ * 技能广场(skills.sh)一条卡片数据。搜索结果与首页热门排行榜(M10 任务 4)
+ * 共用同一个形状——两条入口都喂给同一个 `PlazaCard` 组件渲染。
+ */
 export interface PlazaSkillCard {
   name: string;
   /** 上游 `id`(`owner/repo/skill-name`),拼 `https://skills.sh/<slug>` 页面地址用。 */
@@ -630,6 +633,13 @@ export interface PlazaSkillCard {
   /** 上游 `source`(`owner/repo`),详情与安装的寻址键。 */
   ownerRepo: string;
   installs: number;
+  /**
+   * 仅热门排行榜端点提供;搜索结果恒为 `false`(那个端点没有这个字段,不编造)。
+   * 标记为可选是为了不强迫既有搜索场景的调用方都补一个恒定值——core 侧序列化时
+   * 这个字段其实总在(bool,非 `Option`),前端把它当"可能缺席"处理只是更宽容,
+   * 不代表运行时真的会缺席。
+   */
+  isOfficial?: boolean;
 }
 
 /**
@@ -639,6 +649,14 @@ export interface PlazaSkillCard {
  */
 export const plazaSearch = (query: string) =>
   call<PlazaSkillCard[]>("plaza_search", { query });
+
+/**
+ * 技能广场首页热门排行榜(M10 任务 4):广场空态("输入关键词搜索"之前)打开就有
+ * 内容,不再是一行灰字。**这个命令永不抛出 `AppError`**——core 侧已把网络失败/
+ * 上游改版导致的解析失败统一降级成空数组(见 `commands::plaza_leaderboard` 文档),
+ * 调用方拿到空数组就该退回原来的空态提示,不需要 try/catch 出一个"获取失败"的分支。
+ */
+export const plazaLeaderboard = () => call<PlazaSkillCard[]>("plaza_leaderboard");
 
 /**
  * 幂等挂仓(M9 任务 3):把广场搜索结果的 `ownerRepo`(`owner/repo`)坐标写进

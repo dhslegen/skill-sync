@@ -3,13 +3,23 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { StorePage } from "./StorePage";
-import type { StoreIndexView, StoreSkillCard } from "@/lib/ipc";
+import type { PlazaSkillCard, StoreIndexView, StoreSkillCard } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { usePlaza } from "@/store/plaza";
 import { useRegistries } from "@/store/registries";
 import { useStoreIndex } from "@/store/store-index";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+// 顶层广场"空查询"分支现在会挂载 PlazaLeaderboard(M10 任务 4),它的 useEffect
+// 会真的调一次 `invoke("plaza_leaderboard")`——绝大多数用例不关心这次调用,把
+// `invoke` 提到模块作用域并在每个用例前重置成"什么命令都回 undefined",效果与
+// 改动前的匿名 `vi.fn()` 完全一致;只有下面「全网热门排行榜」那个 describe 需要
+// 针对性配置返回值,在自己的 beforeEach 里另外 `mockImplementation`。
+const invoke = vi.fn();
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args: unknown) => invoke(cmd, args) }));
+
+beforeEach(() => {
+  invoke.mockReset();
+});
 
 const card = (over: Partial<StoreSkillCard>): StoreSkillCard => ({
   name: "周报生成",
@@ -440,12 +450,26 @@ describe("广场搜索态渲染(M9 任务 5)", () => {
     useInstall.setState({ installed: new Map() });
     useRegistries.setState({ list: null });
     useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: null, index: null, status: "idle", error: null });
-    usePlaza.setState({ query: "", results: [], status: "idle", error: null });
+    usePlaza.setState({
+      query: "",
+      results: [],
+      status: "idle",
+      error: null,
+      // M10 任务 4:空查询分支挂载 PlazaLeaderboard,不重置这两个字段会让本
+      // describe 的用例带着上一个用例(或本文件后面「全网热门排行榜」那个 describe)
+      // 残留的排行榜数据渲染,读不出这里到底测的是什么状态。
+      leaderboard: [],
+      leaderboardStatus: "idle",
+    });
   });
 
-  it("查询不足 2 字符:空态提示,不渲染网格", () => {
+  it("查询不足 2 字符且没有热门数据:退回原来的空态提示,不渲染网格", async () => {
+    // 挂载瞬间(effect 还没跑完)先走 loading 分支;core 侧 invoke 默认回
+    // undefined,`?? []` 兜底成空数组,最终稳定态才是这句空态提示——用 findByText
+    // 等它落定,不断言"挂载那一刻"的过渡态(有热门数据的分支见下面
+    // 「全网热门排行榜(M10 任务 4)」describe)。
     render(<StorePage />);
-    expect(screen.getByText("输入关键词搜索全网技能(至少 2 个字符)")).toBeInTheDocument();
+    expect(await screen.findByText("输入关键词搜索全网技能(至少 2 个字符)")).toBeInTheDocument();
   });
 
   it("搜索失败:失败态文案,不是错误弹窗", () => {
@@ -478,6 +502,79 @@ describe("广场搜索态渲染(M9 任务 5)", () => {
     usePlaza.setState({ query: "找不到的东西", status: "ready", results: [] });
     render(<StorePage />);
     expect(screen.getByText("没有匹配「找不到的东西」的技能。")).toBeInTheDocument();
+  });
+});
+
+describe("全网热门排行榜(M10 任务 4)", () => {
+  const trending: PlazaSkillCard[] = [
+    {
+      name: "find-skills",
+      slug: "vercel-labs/skills/find-skills",
+      ownerRepo: "vercel-labs/skills",
+      installs: 2_981_876,
+      isOfficial: true,
+    },
+    {
+      name: "grill-me",
+      slug: "mattpocock/skills/grill-me",
+      ownerRepo: "mattpocock/skills",
+      installs: 877_815,
+    },
+  ];
+
+  beforeEach(() => {
+    useInstall.setState({ installed: new Map() });
+    useRegistries.setState({ list: null });
+    useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: null, index: null, status: "idle", error: null });
+    usePlaza.setState({
+      query: "",
+      results: [],
+      status: "idle",
+      error: null,
+      leaderboard: [],
+      leaderboardStatus: "idle",
+    });
+  });
+
+  it("有热门数据:渲染「全网热门」标题、卡片网格与官方徽标,点击调 usePlaza.openDetail", async () => {
+    invoke.mockImplementation(async (cmd: string) => (cmd === "plaza_leaderboard" ? trending : undefined));
+    const openDetail = vi.fn();
+    usePlaza.setState({ openDetail });
+    render(<StorePage />);
+
+    expect(await screen.findByText("全网热门")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "find-skills" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "grill-me" })).toBeInTheDocument();
+    // 只有第一条(isOfficial: true)带徽标——第二条没有这个字段,不该也长出一个。
+    expect(screen.getAllByText("官方")).toHaveLength(1);
+
+    await userEvent.click(screen.getByRole("button", { name: "find-skills" }));
+    expect(openDetail).toHaveBeenCalledWith(
+      "vercel-labs/skills",
+      "find-skills",
+      "vercel-labs/skills/find-skills",
+    );
+  });
+
+  it("core 侧降级为空列表:退回原来的「输入关键词搜索」提示,不是错误弹窗", async () => {
+    invoke.mockImplementation(async (cmd: string) => (cmd === "plaza_leaderboard" ? [] : undefined));
+    render(<StorePage />);
+
+    expect(await screen.findByText("输入关键词搜索全网技能(至少 2 个字符)")).toBeInTheDocument();
+    expect(screen.queryByText("全网热门")).not.toBeInTheDocument();
+  });
+
+  it("搜索框一输入(够长)就切回搜索结果,排行榜网格不再渲染", async () => {
+    invoke.mockImplementation(async (cmd: string) => (cmd === "plaza_leaderboard" ? trending : undefined));
+    const { rerender } = render(<StorePage />);
+    expect(await screen.findByText("全网热门")).toBeInTheDocument();
+
+    // 用 rerender(而不是再调一次 render)替换同一棵树:后者会在文档里叠加第二份,
+    // 读不出"排行榜有没有真的让位",这条测试的关键就是它不再存在,不是"还有别的"。
+    usePlaza.setState({ query: "react", status: "ready", results: [] });
+    rerender(<StorePage />);
+    expect(screen.queryByText("全网热门")).not.toBeInTheDocument();
+    expect(screen.getByText("没有匹配「react」的技能。")).toBeInTheDocument();
   });
 });
 

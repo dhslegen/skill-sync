@@ -2075,6 +2075,54 @@ pub async fn plaza_search(query: String) -> Result<Vec<plaza::PlazaSkillCard>, A
     plaza::search(&http, plaza::PLAZA_API_BASE, &query).await
 }
 
+/// 广场热门排行榜的进程内缓存(M10 任务 4):同一个道理与 `plaza_detail_cache`
+/// 一致——首页 950KB/1.8s,同一进程内多次打开广场空态不该每次都重下;**刻意不记
+/// 任何失效时机**(没有现成路径能给它喂"更该刷新了"的信号,理由与
+/// `plaza_detail_cache` 文档完全同款,不重复分析一遍)。
+///
+/// **只缓存非空结果**:`plaza::fetch_leaderboard` 本身已经把失败降级成空列表
+/// (见该函数文档),如果空列表也被缓存下来,一次网络抖动就会把"排行榜空态"钉死
+/// 一整个进程生命周期——而非空结果没有这个顾虑(缓存的就是"曾经成功过一次"这件事,
+/// 不需要过期)。空结果因此每次调用都会重新尝试,给瞬时故障一个自愈的机会。
+type PlazaLeaderboardCache = Mutex<Option<Vec<plaza::PlazaSkillCard>>>;
+
+fn plaza_leaderboard_cache() -> &'static PlazaLeaderboardCache {
+    static CACHE: OnceLock<PlazaLeaderboardCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// 缓存优先地取热门排行榜:命中直接返回;否则调用 `plaza::fetch_leaderboard` 现拉
+/// 一次,非空结果才写回缓存(空结果不缓存的理由见 [`PlazaLeaderboardCache`] 上方文档)。
+///
+/// 单独抽出来(而不是内联进 `plaza_leaderboard`)是为了让缓存命中/不缓存空结果这两条
+/// 规则脱离进程级单例直接单测——与 `cached_plaza_detail` 同一个理由、同一个模式。
+async fn cached_plaza_leaderboard(
+    cache: &PlazaLeaderboardCache,
+    http: &reqwest::Client,
+    home_url: &str,
+) -> Vec<plaza::PlazaSkillCard> {
+    if let Some(cached) = cache.lock().expect("广场排行榜缓存锁不该中毒").clone() {
+        return cached;
+    }
+    let cards = plaza::fetch_leaderboard(http, home_url).await;
+    if !cards.is_empty() {
+        *cache.lock().expect("广场排行榜缓存锁不该中毒") = Some(cards.clone());
+    }
+    cards
+}
+
+/// 技能广场热门排行榜(M10 任务 4):空态打开就有内容,不再是一行灰字。
+///
+/// **这个命令永不报错**——`plaza::fetch_leaderboard` 已把网络失败/解析失败统一
+/// 降级成空列表(见该函数文档),前端拿到空列表就退回原来的"输入关键词搜索"提示,
+/// 不会看到一个突兀的错误弹窗(brief 明确要求:上游改渲染时应当降级成空态提示,
+/// 不是错误)。
+#[tauri::command]
+pub async fn plaza_leaderboard() -> Result<Vec<plaza::PlazaSkillCard>, AppError> {
+    let http = crate::core::gitea::app_http_client_proxied()?;
+    Ok(cached_plaza_leaderboard(plaza_leaderboard_cache(), &http, plaza::PLAZA_HOME_URL).await)
+}
+
 /// 校验广场坐标的形状:必须是恰好一层 `owner/repo`,两段都不能空。
 /// 拒绝多段路径(`a/b/c`)——广场只给单层坐标,多一段大概率是把 skills.sh 的
 /// `id`(`owner/repo/skill-name`)错传成了 `owner_repo`。
@@ -2762,6 +2810,78 @@ mod tests {
                 .contains_key("probe/singleton"),
             "两次调用 plaza_detail_cache() 必须拿到同一份存储"
         );
+    }
+
+    // ============================================================ 广场热门排行榜的缓存(M10 任务 4)
+
+    fn test_http_client() -> reqwest::Client {
+        reqwest::Client::builder().user_agent("SkillSync/test").build().unwrap()
+    }
+
+    async fn mount_leaderboard_home(server: &wiremock::MockServer, body: String, calls_counter: bool) {
+        let mock = wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(body));
+        if calls_counter {
+            mock.expect(1).mount(server).await;
+        } else {
+            mock.mount(server).await;
+        }
+    }
+
+    fn one_official_skill_home_body() -> String {
+        // 转义态(真实上游同款):真引号写作 \",与 core::plaza 的测试用同一套构造方式
+        // ——直接手写裸引号 JSON 喂给这个端点测不出真实场景,locate_initial_skills_array
+        // 会在第一个裸引号处判定失败,整批解析落空(这条注释同款教训见
+        // tests/plaza_leaderboard.rs)。
+        let unescaped = r#"4e:["$","$L55",null,{"initialSkills":[{"source":"a/a","skillId":"one","name":"one","installs":10}]}]"#;
+        let escaped = serde_json::to_string(unescaped).unwrap();
+        format!("<script>{}</script>", &escaped[1..escaped.len() - 1])
+    }
+
+    #[tokio::test]
+    async fn cached_plaza_leaderboard_hits_cache_on_second_call() {
+        let server = wiremock::MockServer::start().await;
+        // `.expect(1)`:第二次调用如果又发了一次请求,mount 校验会在 drop 时 panic
+        // ——这比只断言返回值相等更硬,能抓住"缓存形同虚设、其实每次都重拉"这类回归。
+        mount_leaderboard_home(&server, one_official_skill_home_body(), true).await;
+        let cache: PlazaLeaderboardCache = Mutex::new(None);
+        let http = test_http_client();
+        let home_url = format!("{}/", server.uri());
+
+        let first = cached_plaza_leaderboard(&cache, &http, &home_url).await;
+        let second = cached_plaza_leaderboard(&cache, &http, &home_url).await;
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 1);
+    }
+
+    /// 空结果(降级态)不写缓存:第二次调用应该再尝试一次,而不是永远卡在空列表上
+    /// ——见 `PlazaLeaderboardCache` 上方文档"给网络抖动一个自愈机会"那条理由。
+    #[tokio::test]
+    async fn cached_plaza_leaderboard_does_not_cache_an_empty_result() {
+        let server = wiremock::MockServer::start().await;
+        // 两次请求都挂:第一次返回坏数据(降级成空),第二次才返回真数据。
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("<html>上游改版了</html>"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(one_official_skill_home_body()))
+            .mount(&server)
+            .await;
+        let cache: PlazaLeaderboardCache = Mutex::new(None);
+        let http = test_http_client();
+        let home_url = format!("{}/", server.uri());
+
+        let first = cached_plaza_leaderboard(&cache, &http, &home_url).await;
+        assert!(first.is_empty(), "第一轮应该降级为空列表: {first:?}");
+
+        let second = cached_plaza_leaderboard(&cache, &http, &home_url).await;
+        assert_eq!(second.len(), 1, "空结果不该被缓存,第二次应该重新尝试并拿到真数据");
     }
 
     // ============================================================ blob 快路径的回退编排(M10 任务 2)

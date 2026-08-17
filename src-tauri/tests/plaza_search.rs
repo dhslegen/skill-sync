@@ -28,6 +28,9 @@ fn card(name: &str, slug: &str, owner_repo: &str, installs: u64) -> PlazaSkillCa
         slug: slug.into(),
         owner_repo: owner_repo.into(),
         installs,
+        // 搜索端点没有 isOfficial 字段(只有排行榜端点有),恒为 false——见
+        // core::plaza::PlazaSkillCard::is_official 文档。
+        is_official: false,
     }
 }
 

@@ -313,7 +313,8 @@ function SourcePicker() {
 }
 
 /**
- * 技能广场的搜索结果区(M9 任务 5)。四档:空查询提示 / 搜索失败 / 空结果 / 结果网格。
+ * 技能广场的搜索结果区(M9 任务 5)。四档:空查询("全网热门"排行榜,见
+ * {@link PlazaLeaderboard},M10 任务 4)/ 搜索失败 / 空结果 / 结果网格。
  * 搜索框在 Toolbar 里(复用现有 SearchBox,IME/防抖行为不重写),这里只管结果展示。
  */
 function PlazaResults() {
@@ -324,7 +325,10 @@ function PlazaResults() {
 
   const trimmed = query.trim();
   if (trimmed.length < 2) {
-    return <p className="py-6 text-[12.5px] text-text-3">{t("plaza.emptyQuery")}</p>;
+    // 空查询不再是一片空白:打开就有"全网热门"排行榜(用户明确要求"适配公司
+    // 技能库的展示风格");搜索框一输入(够长)就切到下面的搜索结果分支,
+    // 排行榜整个不渲染——两者互斥,不会同屏叠加。
+    return <PlazaLeaderboard />;
   }
   if (status === "error") {
     return <p className="py-6 text-[12.5px] text-text-3">{t("plaza.searchFailed")}</p>;
@@ -346,5 +350,50 @@ function PlazaResults() {
         />
       ))}
     </div>
+  );
+}
+
+/**
+ * 广场空态的"全网热门"排行榜(M10 任务 4):skills.sh 首页的热门排行,与公司技能库
+ * 同款卡片网格展示(用户明确诉求"适配公司技能库的展示风格")。
+ *
+ * **解析失败一律降级为空列表,这里退回原来的"输入关键词搜索"提示**
+ * ——`plazaLeaderboard()` 本身不会抛错(见 core `plaza::fetch_leaderboard` 文档),
+ * 空数组是"上游改版/网络不通/真的没数据"三种情况共同的表现,界面上不去猜是哪一种,
+ * 统一退回同一句提示(DoD 明确要求:测试钉住这条退回路径)。
+ */
+function PlazaLeaderboard() {
+  const leaderboard = usePlaza((s) => s.leaderboard);
+  const leaderboardStatus = usePlaza((s) => s.leaderboardStatus);
+  const loadLeaderboard = usePlaza((s) => s.loadLeaderboard);
+  const openDetail = usePlaza((s) => s.openDetail);
+
+  useEffect(() => {
+    void loadLeaderboard();
+  }, [loadLeaderboard]);
+
+  if (leaderboardStatus === "loading" && leaderboard.length === 0) {
+    return <p className="py-6 text-[12.5px] text-text-3">{t("store.loading")}</p>;
+  }
+  if (leaderboard.length === 0) {
+    return <p className="py-6 text-[12.5px] text-text-3">{t("plaza.emptyQuery")}</p>;
+  }
+
+  return (
+    <>
+      <div className="mt-2.5 mb-2.5 flex items-baseline justify-between">
+        <span className="text-[12px] font-medium text-text-2">{t("plaza.trendingLabel")}</span>
+        <span className="text-[11.5px] text-text-3">{t("plaza.emptyQuery")}</span>
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(288px,1fr))] gap-2.5">
+        {leaderboard.map((card) => (
+          <PlazaCard
+            key={card.ownerRepo + "/" + card.slug}
+            card={card}
+            onOpen={() => void openDetail(card.ownerRepo, card.name, card.slug)}
+          />
+        ))}
+      </div>
+    </>
   );
 }

@@ -112,7 +112,27 @@ pub const PLAZA_SEARCH_LIMIT: u32 = 20;
 /// 这里是它的 REST API 形态。
 pub const PLAZA_GITHUB_API_BASE: &str = "https://api.github.com";
 
+/// skills.sh 首页(M10 任务 4,热门排行榜的取数入口)。
+///
+/// 🔴 **必须跟随重定向**:`skills.sh` 会 308 到 `www.skills.sh`(2026-08-17 实测)
+/// ——`http` 必须用未关闭重定向策略的 client(reqwest 默认策略即跟随,见
+/// [`crate::core::gitea::app_http_client_proxied`],同一支 client [`search`]/
+/// [`fetch_blob`] 也在用)。这与 [`PLAZA_API_BASE`] 是两回事:那是 skills.sh 的
+/// **搜索 API**(无重定向、无 HTML),这里是它的**首页**(有重定向、是完整 HTML)。
+pub const PLAZA_HOME_URL: &str = "https://skills.sh/";
+/// 排行榜展示的条数上限(brief 建议 24,一屏够看)。截断发生在
+/// [`parse_leaderboard`](纯逻辑),不是前端切片——省下没用得上的 (600-24) 条,
+/// 不必经 IPC 搬过去又被前端扔掉。
+pub const PLAZA_LEADERBOARD_LIMIT: usize = 24;
+
 /// 一条技能广场搜索结果,供前端渲染卡片。
+///
+/// 热门排行榜([`fetch_leaderboard`],M10 任务 4)复用同一个 DTO:两条入口
+/// (搜索 / 排行榜)数据形状一致,前端因此能共用同一个 `PlazaCard` 组件渲染
+/// (brief 明确要求,也是这个项目"数据形状不因入口而分叉"的一贯姿势,详情面板的
+/// `store::SkillDetail` 同理)。`is_official` 只有排行榜入口能填:搜索 API
+/// (`RawSkill`)本身不带这个字段,`to_card` 因此恒给 `false`——不是"搜索结果都不是
+/// 官方技能"这个事实判断,是"这条数据我们拿不到,不编造"。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PlazaSkillCard {
@@ -125,6 +145,8 @@ pub struct PlazaSkillCard {
     pub owner_repo: String,
     /// 全网安装量,缺失按 0(上游字段本身可能是 0,不代表数据坏了)。
     pub installs: u64,
+    /// 上游 `isOfficial`(仅排行榜端点有此字段,见类型文档)。
+    pub is_official: bool,
 }
 
 /// 上游单条技能的宽容解析形态:字段全部 `Option`,缺失不报错、留给上一层过滤。
@@ -162,7 +184,14 @@ fn to_card(raw: RawSkill) -> Option<PlazaSkillCard> {
     let name = raw.name?;
     let owner_repo = raw.source?;
     let slug = raw.id?;
-    Some(PlazaSkillCard { name, slug, owner_repo, installs: raw.installs.unwrap_or(0) })
+    Some(PlazaSkillCard {
+        name,
+        slug,
+        owner_repo,
+        installs: raw.installs.unwrap_or(0),
+        // 搜索端点没有这个字段,见 PlazaSkillCard::is_official 文档。
+        is_official: false,
+    })
 }
 
 /// 把响应体解析成按 `installs` 降序排列的卡片列表。纯逻辑,不碰网络,方便直接单测。
@@ -226,6 +255,206 @@ pub async fn search(
     }
 
     parse_cards(&body)
+}
+
+// ============================================================ 首页热门排行榜(M10 任务 4)
+//
+// 需求见 brief:广场空态("输入关键词搜索")之前是一片空白,只有一行灰字。
+// skills.sh 首页有一个热门排行榜,但**没有 JSON API**(`/api/trending`、
+// `/api/leaderboard`、`/api/skills`、`/api/popular`、`/api/stats` 在 skills.sh 与
+// www.skills.sh 两个域名下全部 404,2026-08-17 实测)——数据在首页 SSR 的 Next.js
+// RSC(React Server Components)载荷里,以 `self.__next_f.push([1,"…"])` 这种
+// "把整份序列化流程当一个大字符串塞进 <script> 标签"的形式出现:字符串内容本身
+// 又按 JSON 字符串规则转义了一层(引号变 `\"`,反斜杠变 `\\`……),混着一堆与我们
+// 无关的组件树/模块 ID 数据,不是一份能直接 `serde_json::from_str` 的干净响应体。
+//
+// **抠取策略,两步走**(见 [`locate_initial_skills_array`] 与 [`parse_leaderboard`]):
+// 1. 在原始 HTML 里定位字面量 `initialSkills`(前一步不解转义,就在转义态文本上做
+//    括号匹配——转义态下真实的引号写作 `\"`、真实的方括号仍是裸字符 `[`/`]`,
+//    不需要先整体反转义就能正确跳过字符串里的内容,找到与之配对的那个 `]`);
+// 2. 把抠出来的那一小段(仍是转义态)套上引号交给 `serde_json` 当 JSON 字符串反转义
+//    一次,拿到真正的 JSON 数组文本,再正常 `serde_json::from_str`。
+//
+// 这套流程完全不依赖 `self.__next_f.push` 调用的具体边界(不需要先找到那个函数调用
+// 字符串字面量的起止),只锚定 `initialSkills` 这一个词——上游怎么组织其余的载荷
+// 与我们无关,壳越薄越不容易被上游一次无关改动带崩。
+//
+// **容错语义(本任务的核心)**:上面这条链路的任何一步失败(锚点找不到/括号不配对/
+// 反转义失败/JSON 解析失败/单条记录缺字段),以及取数本身失败(网络错误、非 200),
+// **一律返回空列表,不透出 `Err`**——[`fetch_leaderboard`] 因此不返回 `Result`,
+// 用类型本身把"这个函数不会让调用方处理错误"钉死,不留一条"万一忘了 `.unwrap_or_default()`"
+// 的退路。上游改了首页渲染实现是完全可预期的(Next.js 版本升级、A/B 实验都可能改变
+// RSC 载荷形状),那时候的正确表现是"退回现在这样的空态提示",不是给用户弹一个
+// "获取热门技能失败"的错误——用户根本不知道"热门技能"是什么,一个突兀的错误弹窗
+// 只会制造困惑。真正的失败原因走 `tracing::warn!`,只进日志不进界面。
+
+fn plaza_leaderboard_err(detail: String) -> AppError {
+    AppError::new("NET_PLAZA_LEADERBOARD", "获取热门技能失败,请稍后重试").with_detail(detail)
+}
+
+/// 上游单条排行榜记录的宽容解析形态。字段全部 `Option`(`is_official` 例外,见下),
+/// 缺失不报错、留给上一层过滤——与 [`RawSkill`] 同一套姿势。
+///
+/// `skill_id` 与 [`RawSkill::id`] 不是一回事:排行榜条目没有现成的三段式 `id`
+/// (`owner/repo/skill-name`),只有 `source`(`owner/repo`)与 `skillId`(纯技能名)
+/// 分开给,[`to_leaderboard_card`] 自己拼出与搜索端点同一形状的 `slug`。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawLeaderboardSkill {
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    skill_id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    installs: Option<u64>,
+    /// 缺失按 `false`(serde bool 默认值)——这是"不确定是不是官方"与"确定不是官方"
+    /// 唯一能选的一档,保守起见按后者处理,不会让排行榜错误地标出一堆"官方"徽标。
+    #[serde(default)]
+    is_official: bool,
+}
+
+fn to_leaderboard_card(raw: RawLeaderboardSkill) -> Option<PlazaSkillCard> {
+    let name = raw.name?;
+    let owner_repo = raw.source?;
+    let skill_id = raw.skill_id?;
+    // 与搜索端点的 id 同一形状(owner/repo/skill-name),拼 skills.sh 页面 URL 用
+    // ——两条入口共用同一个 PlazaSkillCard,拼法必须一致。
+    let slug = format!("{owner_repo}/{skill_id}");
+    Some(PlazaSkillCard {
+        name,
+        slug,
+        owner_repo,
+        installs: raw.installs.unwrap_or(0),
+        is_official: raw.is_official,
+    })
+}
+
+/// 在**仍是转义态**(未反转义)的原始 HTML 里,找到 `initialSkills` 锚点之后
+/// 紧跟的那个 JSON 数组 `[...]` 的字节区间(左闭右开,含首尾方括号)。
+///
+/// 转义态下的括号匹配规则:真实的引号字符写作两个字符 `\"`(反斜杠+引号)——用一个
+/// 显式的 `escaped` 标志记"上一个字符是不是反斜杠",下一个字符若是 `"` 就切换
+/// "是否在字符串里",其余转义(`\\`、`\n`、`\uXXXX` 的起始字符等)原样吞掉、不切换
+/// 状态即可,它们不可能让我们误把字符串内容当成结构字符。结构字符(`[`/`]`)本身在
+/// 转义态里从不需要转义,所以不在字符串里时,裸的 `[`/`]` 才计入深度,深度归零即为
+/// 该数组的末尾。
+///
+/// **`escaped` 标志不能省**:直接用 `if c == '\\' { continue; }` 会让被转义的那个
+/// 字符落进下一轮循环、跟普通字符走同一套判定——遇到 `\"` 时会把它当成"裸引号"而不是
+/// "真实引号该切换 in_string",整段扫描全错。这正是本函数第一版被本地实测抓到的
+/// bug(fixture 一喂真实数据就返回 `None`),留着这条注释防止有人"简化"回那个版本。
+///
+/// 找不到锚点、锚点后没有 `[`、或括号配对失败(比如文本在数组闭合前戛然而止,或转义态
+/// 里出现了不该出现的裸引号),都返回 `None`——调用方按"解析失败"处理,不 panic、不猜。
+fn locate_initial_skills_array(html: &str) -> Option<(usize, usize)> {
+    let anchor = html.find("initialSkills")?;
+    let bracket_start = anchor + html[anchor..].find('[')?;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, c) in html[bracket_start..].char_indices() {
+        if escaped {
+            // 上一个字符是反斜杠,这个字符是被转义的内容:只有它是引号时才代表
+            // 一个真实引号,标志字符串边界;其余转义字符不改变 in_string。
+            if c == '"' {
+                in_string = !in_string;
+            }
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match c {
+            '"' => {
+                // 转义态下不该出现裸引号(真实引号总是 \" 两个字符,上面已经处理);
+                // 出现了说明数据形状不是预期的样子,按"配对失败"处理。
+                return None;
+            }
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((bracket_start, bracket_start + i + c.len_utf8()));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 把首页 HTML 解析成排行榜卡片列表。纯逻辑,不碰网络,方便直接单测
+/// (见模块头「首页热门排行榜」一节的两步走策略)。
+fn parse_leaderboard(html: &str) -> Result<Vec<PlazaSkillCard>, AppError> {
+    let (start, end) = locate_initial_skills_array(html).ok_or_else(|| {
+        plaza_leaderboard_err("未能在首页 HTML 中定位热门榜数据(锚点缺失或括号未配对)".into())
+    })?;
+    // 这一段仍是转义态:套上引号交给 serde_json 当 JSON 字符串反转义一次
+    // ——上游用的正是标准 JSON 字符串转义规则(2026-08-17 实测验证),不必自己
+    // 手写一遍 \\uXXXX/\\n 之类的反转义表。
+    let quoted = format!("\"{}\"", &html[start..end]);
+    let json_text: String = serde_json::from_str(&quoted)
+        .map_err(|e| plaza_leaderboard_err(format!("热门榜片段反转义失败: {e}")))?;
+    let raw: Vec<RawLeaderboardSkill> = serde_json::from_str(&json_text)
+        .map_err(|e| plaza_leaderboard_err(format!("热门榜 JSON 解析失败: {e}")))?;
+    let mut cards: Vec<PlazaSkillCard> =
+        raw.into_iter().filter_map(to_leaderboard_card).collect();
+    // 上游数据本就按 installs 降序(实测),这里仍显式排序一遍——与 parse_cards
+    // 同一套"不假设上游顺序,自己兜底"的姿势,稳定排序不引入无意义的抖动。
+    cards.sort_by_key(|c| std::cmp::Reverse(c.installs));
+    cards.truncate(PLAZA_LEADERBOARD_LIMIT);
+    Ok(cards)
+}
+
+/// 拉 skills.sh 首页热门排行榜(M10 任务 4)。
+///
+/// **网络失败与解析失败一律降级为空列表,函数本身不返回 `Result`**——这是与本模块
+/// 其余网络函数([`search`]/[`fetch_blob`])刻意不同之处,理由见模块头。真正的
+/// 失败原因经 `tracing::warn!` 记日志,不透给调用方。
+///
+/// `http` 必须是 [`crate::core::gitea::app_http_client_proxied`] 构造的 client
+/// (跟随系统代理 + 跟随重定向,`skills.sh` 会 308 到 `www.skills.sh`,不跟随
+/// 重定向拿到的是一个空跳转页,解析必然失败)。`home_url` 生产环境固定传
+/// [`PLAZA_HOME_URL`],测试注入 wiremock 地址。
+pub async fn fetch_leaderboard(http: &reqwest::Client, home_url: &str) -> Vec<PlazaSkillCard> {
+    match fetch_leaderboard_inner(http, home_url).await {
+        Ok(cards) => cards,
+        Err(e) => {
+            tracing::warn!(
+                code = %e.code,
+                detail = e.detail.as_deref().unwrap_or_default(),
+                "热门技能排行榜获取/解析失败,降级为空列表"
+            );
+            Vec::new()
+        }
+    }
+}
+
+async fn fetch_leaderboard_inner(
+    http: &reqwest::Client,
+    home_url: &str,
+) -> Result<Vec<PlazaSkillCard>, AppError> {
+    let resp = http
+        .get(home_url)
+        .send()
+        .await
+        .map_err(|e| plaza_leaderboard_err(e.to_string()))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| plaza_leaderboard_err(e.to_string()))?;
+    if !status.is_success() {
+        return Err(plaza_leaderboard_err(format!("HTTP {status}")));
+    }
+    parse_leaderboard(&body)
 }
 
 // ==================================================================== blob 取数(M10 任务 1)
@@ -730,6 +959,112 @@ mod tests {
     // 函数可测——覆盖挪到 tests/plaza_default_branch.rs 的 wiremock 测试里
     // (含"200 但缺 default_branch 字段"这条,2026-08-12 审查重构时新增,
     // 防止拆掉 parse_default_branch 之后这条业务规则悄悄失去覆盖)。
+
+    // ======================================================== 首页热门排行榜(M10 任务 4)
+    // 真实 fixture(`fixtures/skillssh-leaderboard-home.html`)的端到端解析覆盖在
+    // `tests/plaza_leaderboard.rs`(wiremock,含跟随重定向);这里只测
+    // `locate_initial_skills_array`/`parse_leaderboard` 这两个纯逻辑函数本身的边界,
+    // 用手写的、体量最小的转义态样本,不依赖那份大 fixture。
+
+    /// 手工拼一段转义态样本:等价于反转义后的 `{"initialSkills":[<obj_json>]}`。
+    /// `obj_json` 传真正的 JSON(未转义),这里负责按上游同款规则转义一遍
+    /// (借用 `serde_json::to_string` 反过来生成"内容是这段 JSON 文本"的转义态字符串
+    /// ——`serde_json::to_string(&json_text)` 恰好做的就是"给这段文本加上 JSON 字符串
+    /// 转义",与上游把整份 RSC 载荷序列化成字符串塞进 `<script>` 是同一件事)。
+    fn escaped_payload(obj_json: &str) -> String {
+        let json_text = format!("{{\"initialSkills\":[{obj_json}]}}");
+        let escaped = serde_json::to_string(&json_text).unwrap();
+        // `to_string` 的结果带首尾引号(它把 json_text 当一个 JSON 字符串序列化),
+        // 转义态本身不需要这两个引号——上游的 <script> 标签里也没有,是我们的扫描器
+        // 自己套引号反转义(见 parse_leaderboard),这里去掉以保持来源一致。
+        escaped[1..escaped.len() - 1].to_string()
+    }
+
+    fn skill_obj(source: &str, skill_id: &str, name: &str, installs: u64) -> String {
+        format!(
+            r#"{{"source":"{source}","skillId":"{skill_id}","name":"{name}","installs":{installs}}}"#
+        )
+    }
+
+    #[test]
+    fn locate_initial_skills_array_finds_matching_bracket_around_a_string_containing_brackets() {
+        // 值里带 [ 和 ] 字符(转义态下仍是裸字符,不该被误当结构括号)——
+        // 这条样本专门验证"字符串内容不干扰括号计数"这条不变量。
+        let html = escaped_payload(&skill_obj("a/b", "weird[name]", "weird[name]", 1));
+        let (start, end) = locate_initial_skills_array(&html).expect("应能定位到数组");
+        assert_eq!(&html[start..start + 1], "[");
+        assert_eq!(&html[end - 1..end], "]");
+    }
+
+    #[test]
+    fn locate_initial_skills_array_returns_none_without_anchor() {
+        assert!(locate_initial_skills_array("<html>没有热门榜数据的普通页面</html>").is_none());
+    }
+
+    #[test]
+    fn locate_initial_skills_array_returns_none_when_brackets_never_close() {
+        // 锚点找到了,但数组在闭合前文本就戛然而止——真实场景对应"响应体被截断"。
+        let html = r#"4e:["$","$L55",null,{"initialSkills":[{"source":"a/b""#;
+        assert!(locate_initial_skills_array(html).is_none());
+    }
+
+    #[test]
+    fn parse_leaderboard_extracts_fields_and_defaults_is_official_to_false() {
+        let obj = skill_obj("vercel-labs/skills", "find-skills", "find-skills", 100);
+        let html = escaped_payload(&obj);
+        let cards = parse_leaderboard(&html).expect("应能解析");
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].name, "find-skills");
+        assert_eq!(cards[0].owner_repo, "vercel-labs/skills");
+        assert_eq!(cards[0].slug, "vercel-labs/skills/find-skills");
+        assert_eq!(cards[0].installs, 100);
+        assert!(!cards[0].is_official, "缺 isOfficial 字段应默认 false");
+    }
+
+    #[test]
+    fn parse_leaderboard_reads_is_official_true_when_present() {
+        let obj = r#"{"source":"anthropics/skills","skillId":"frontend-design","name":"frontend-design","installs":5,"isOfficial":true}"#;
+        let html = escaped_payload(obj);
+        let cards = parse_leaderboard(&html).expect("应能解析");
+        assert!(cards[0].is_official);
+    }
+
+    #[test]
+    fn parse_leaderboard_sorts_descending_and_skips_dirty_entries() {
+        let objs = [
+            skill_obj("a/a", "low", "low", 1),
+            skill_obj("b/b", "high", "high", 999),
+            // 缺 skillId:整条脏数据,应跳过而不是让整批解析失败。
+            r#"{"source":"c/c","name":"missing-skill-id","installs":500}"#.to_string(),
+            skill_obj("d/d", "mid", "mid", 500),
+        ];
+        let html = escaped_payload(&objs.join(","));
+        let cards = parse_leaderboard(&html).expect("单条脏数据不应让整批失败");
+        assert_eq!(cards.len(), 3, "{cards:?}");
+        assert_eq!(
+            cards.iter().map(|c| c.installs).collect::<Vec<_>>(),
+            vec![999, 500, 1]
+        );
+    }
+
+    #[test]
+    fn parse_leaderboard_truncates_to_the_display_limit() {
+        let objs: Vec<String> = (0..(PLAZA_LEADERBOARD_LIMIT + 10) as u64)
+            .map(|i| skill_obj("a/a", &format!("s{i}"), &format!("s{i}"), i))
+            .collect();
+        let html = escaped_payload(&objs.join(","));
+        let cards = parse_leaderboard(&html).expect("应能解析");
+        assert_eq!(cards.len(), PLAZA_LEADERBOARD_LIMIT);
+        // 截断前先排过序:留下来的必须是 installs 最高的那一批,不是随便扔掉尾巴。
+        assert_eq!(cards[0].installs, (PLAZA_LEADERBOARD_LIMIT + 9) as u64);
+    }
+
+    #[test]
+    fn parse_leaderboard_fails_without_crashing_on_a_page_with_no_leaderboard_data() {
+        let err = parse_leaderboard("<html><body>上游改版,这个字段不见了</body></html>")
+            .expect_err("锚点缺失应返回 Err,由调用方(fetch_leaderboard)降级成空列表");
+        assert_eq!(err.code, "NET_PLAZA_LEADERBOARD");
+    }
 
     // ======================================================== 安装白名单(M10 任务 3)
 
