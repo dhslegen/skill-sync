@@ -187,3 +187,34 @@ async fn a_dirty_entry_among_real_data_is_skipped_without_failing_the_batch() {
     let names: Vec<&str> = got.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, vec!["one", "three"], "{got:?}");
 }
+
+// ------------------------------------------- 5. owner/repo 形状过滤(2026-08-17 审查修复)
+
+/// 2026-08-17 真机实测抓到的真实样本:`open.feishu.cn` 下的 `lark-doc` 技能,
+/// `source` 是域名式来源、没有斜杠,不是 `owner/repo` 两段式。
+///
+/// 这不是假想的边界情况——用户提供的官网截图第 13 条就是这一条。点开它会在
+/// `commands::parse_owner_repo` 那一层直接报"技能坐标格式不对"(压根到不了
+/// GitHub API),摆出这张卡片等于主动把一个必然报错、且报错内容与"点了一张
+/// 热门技能卡片"毫不相关的入口推给用户,必须在解析这一步就过滤掉。
+#[tokio::test]
+async fn an_entry_whose_source_is_not_owner_repo_shaped_is_filtered_out() {
+    let server = MockServer::start().await;
+    let unescaped = r#"4e:["$","$L55",null,{"initialSkills":[{"source":"vercel-labs/skills","skillId":"find-skills","name":"find-skills","installs":100},{"source":"open.feishu.cn","skillId":"lark-doc","name":"lark-doc","installs":90},{"source":"mattpocock/skills","skillId":"grill-me","name":"grill-me","installs":80}]}]"#;
+    let body = escaped_html_body(unescaped);
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+
+    let got = plaza::fetch_leaderboard(&http(), &format!("{}/", server.uri())).await;
+
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(
+        got.iter().all(|c| c.owner_repo != "open.feishu.cn"),
+        "域名式来源不该出现在渲染给用户的结果里: {got:?}"
+    );
+    let names: Vec<&str> = got.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["find-skills", "grill-me"]);
+}

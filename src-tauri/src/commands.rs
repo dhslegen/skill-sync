@@ -2126,16 +2126,20 @@ pub async fn plaza_leaderboard() -> Result<Vec<plaza::PlazaSkillCard>, AppError>
 /// 校验广场坐标的形状:必须是恰好一层 `owner/repo`,两段都不能空。
 /// 拒绝多段路径(`a/b/c`)——广场只给单层坐标,多一段大概率是把 skills.sh 的
 /// `id`(`owner/repo/skill-name`)错传成了 `owner_repo`。
+///
+/// 判据委派给 [`plaza::is_owner_repo_shaped`]——`plaza::to_leaderboard_card`
+/// 过滤排行榜脏条目用的是同一份逻辑,两处「这坐标像不像 owner/repo」的标准
+/// 必须一致,不能各写一份(2026-08-17 审查修复)。
 fn parse_owner_repo(owner_repo: &str) -> Result<(&str, &str), AppError> {
-    match owner_repo.split_once('/') {
-        Some((owner, repo)) if !owner.is_empty() && !repo.is_empty() && !repo.contains('/') => {
-            Ok((owner, repo))
-        }
-        _ => Err(AppError::new(
+    if plaza::is_owner_repo_shaped(owner_repo) {
+        // is_owner_repo_shaped 已经确认了 split_once('/') 会成功,这里不会 panic。
+        Ok(owner_repo.split_once('/').expect("is_owner_repo_shaped 已确认存在 '/'"))
+    } else {
+        Err(AppError::new(
             "REPO_INVALID_REGISTRY",
             "技能坐标格式不对,应为「拥有者/技能库名」这样的两段式",
         )
-        .with_detail(owner_repo.to_string())),
+        .with_detail(owner_repo.to_string()))
     }
 }
 

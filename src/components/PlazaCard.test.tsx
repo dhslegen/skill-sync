@@ -10,6 +10,7 @@ const card = (over: Partial<PlazaSkillCard> = {}): PlazaSkillCard => ({
   slug: "vercel-labs/skills/react-best-practices",
   ownerRepo: "vercel-labs/skills",
   installs: 625414,
+  isOfficial: false,
   ...over,
 });
 
@@ -42,5 +43,17 @@ describe("PlazaCard", () => {
     render(<PlazaCard card={card()} onOpen={onOpen} />);
     await userEvent.click(screen.getByRole("button", { name: "React 最佳实践" }));
     expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  // ==================================================== 官方徽标(M10 任务 4)
+
+  it("isOfficial 为 true 时显示「官方」徽标", () => {
+    render(<PlazaCard card={card({ isOfficial: true })} onOpen={() => {}} />);
+    expect(screen.getByText("官方")).toBeInTheDocument();
+  });
+
+  it("isOfficial 为 false 时不显示徽标(搜索结果卡片的默认值)", () => {
+    render(<PlazaCard card={card({ isOfficial: false })} onOpen={() => {}} />);
+    expect(screen.queryByText("官方")).not.toBeInTheDocument();
   });
 });

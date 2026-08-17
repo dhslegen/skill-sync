@@ -315,10 +315,35 @@ struct RawLeaderboardSkill {
     is_official: bool,
 }
 
+/// `owner/repo` 两段式的形状判据:恰好一条 `/`,两段都非空。
+///
+/// **唯一实现**,两处调用方共用:`commands::parse_owner_repo`(用户/skills.sh
+/// 手填的广场坐标做输入校验,报 `REPO_INVALID_REGISTRY`)与
+/// [`to_leaderboard_card`](排行榜条目过滤,数据里混进的域名式来源如
+/// `open.feishu.cn` 没有斜杠,这里判 false 就被当脏数据丢弃)。
+///
+/// 2026-08-17 审查修复:排行榜条目本来没有过这道判据,`plaza_detail` 拿到
+/// 无斜杠的 `owner_repo` 会在 [`crate::commands::parse_owner_repo`] 那一层
+/// 直接报"技能坐标格式不对",而不是走到 GitHub API 才 404——排行榜是主动推给
+/// 用户的首屏内容,点一张必然报错、且报错文案与"点了一张热门技能卡片"这件事
+/// 毫不相关的卡片,不该摆出来(与 M6「绑不上就不摆那个按钮」同一个姿势:
+/// 不摆比解释好)。
+pub(crate) fn is_owner_repo_shaped(s: &str) -> bool {
+    match s.split_once('/') {
+        Some((owner, repo)) => !owner.is_empty() && !repo.is_empty() && !repo.contains('/'),
+        None => false,
+    }
+}
+
 fn to_leaderboard_card(raw: RawLeaderboardSkill) -> Option<PlazaSkillCard> {
     let name = raw.name?;
     let owner_repo = raw.source?;
     let skill_id = raw.skill_id?;
+    // 形状不像 owner/repo 的一律当脏数据丢弃(见 is_owner_repo_shaped 文档)
+    // ——真实数据里出现过 "open.feishu.cn" 这类域名式来源,点开必然报错。
+    if !is_owner_repo_shaped(&owner_repo) {
+        return None;
+    }
     // 与搜索端点的 id 同一形状(owner/repo/skill-name),拼 skills.sh 页面 URL 用
     // ——两条入口共用同一个 PlazaSkillCard,拼法必须一致。
     let slug = format!("{owner_repo}/{skill_id}");
@@ -1064,6 +1089,51 @@ mod tests {
         let err = parse_leaderboard("<html><body>上游改版,这个字段不见了</body></html>")
             .expect_err("锚点缺失应返回 Err,由调用方(fetch_leaderboard)降级成空列表");
         assert_eq!(err.code, "NET_PLAZA_LEADERBOARD");
+    }
+
+    // ======================================================== owner/repo 形状过滤(2026-08-17 审查修复)
+
+    #[test]
+    fn is_owner_repo_shaped_accepts_a_clean_two_segment_pair() {
+        assert!(is_owner_repo_shaped("vercel-labs/skills"));
+    }
+
+    #[test]
+    fn is_owner_repo_shaped_rejects_missing_slash_or_empty_segments() {
+        // "open.feishu.cn" 是 2026-08-17 真机实测在真实排行榜数据里见过的样本
+        // ——域名式来源,没有斜杠,不是 GitHub 坐标。
+        for bad in ["open.feishu.cn", "no-slash", "/repo", "owner/", "/", ""] {
+            assert!(!is_owner_repo_shaped(bad), "不该判为两段式: {bad:?}");
+        }
+    }
+
+    #[test]
+    fn is_owner_repo_shaped_rejects_more_than_one_slash() {
+        assert!(!is_owner_repo_shaped("owner/repo/skill-name"));
+    }
+
+    /// 端到端:排行榜里混进一条 `source` 是域名式来源(真实样本 `open.feishu.cn`)
+    /// 的记录,`parse_leaderboard` 必须把它当脏数据丢弃,不能让它混进结果——
+    /// 摆一张点了必然报错(`commands::parse_owner_repo` 会拒它,详情面板压根
+    /// 到不了 GitHub API 那一层)的卡片,比没有这条数据更糟。
+    #[test]
+    fn parse_leaderboard_filters_out_entries_whose_source_is_not_owner_repo_shaped() {
+        let objs = [
+            skill_obj("vercel-labs/skills", "find-skills", "find-skills", 100),
+            // 真实样本:open.feishu.cn 下的 lark-doc,source 没有斜杠。
+            skill_obj("open.feishu.cn", "lark-doc", "lark-doc", 90),
+            skill_obj("mattpocock/skills", "grill-me", "grill-me", 80),
+        ];
+        let html = escaped_payload(&objs.join(","));
+        let cards = parse_leaderboard(&html).expect("应能解析");
+
+        assert_eq!(cards.len(), 2, "{cards:?}");
+        assert!(
+            cards.iter().all(|c| c.owner_repo != "open.feishu.cn"),
+            "域名式来源不该出现在结果里: {cards:?}"
+        );
+        let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["find-skills", "grill-me"]);
     }
 
     // ======================================================== 安装白名单(M10 任务 3)

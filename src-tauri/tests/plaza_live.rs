@@ -126,11 +126,19 @@ async fn fetches_the_real_trending_leaderboard_from_the_skills_sh_homepage() {
     for card in &cards {
         assert!(!card.name.is_empty(), "每条结果都应有非空 name: {card:?}");
         assert!(!card.slug.is_empty(), "每条结果都应有非空 slug: {card:?}");
-        // 只断言非空,不强求"owner/repo 两段式"——2026-08-17 真机实测抓到过
+        // 断言严格的 owner/repo 两段式——2026-08-17 真机实测抓到过
         // `"source":"open.feishu.cn"` 这种域名式来源(单段、没有斜杠),排行榜端点
-        // 收录的显然不只是 GitHub 仓。这类条目点开详情会在 GithubClient 那一层
-        // 404(不在本测试断言范围),这里只验"解析没把它当脏数据丢掉"这件事本身。
-        assert!(!card.owner_repo.is_empty(), "owner_repo 不该为空: {card:?}");
+        // 收录的显然不只是 GitHub 仓;点开这类条目会在 `commands::parse_owner_repo`
+        // 那一层直接报"技能坐标格式不对"(压根到不了 GitHub API),已由
+        // `plaza::to_leaderboard_card` 用 `is_owner_repo_shaped` 在解析阶段过滤掉
+        // (2026-08-17 审查修复,见该函数文档)。这里断言"结果里不该再有漏网之鱼",
+        // 是那条过滤规则在真实数据上的端到端验证。
+        let parts: Vec<&str> = card.owner_repo.split('/').collect();
+        assert!(
+            parts.len() == 2 && parts.iter().all(|p| !p.is_empty()),
+            "owner_repo 应形如 owner/repo,不该漏过滤: {:?}",
+            card.owner_repo
+        );
     }
 
     eprintln!(

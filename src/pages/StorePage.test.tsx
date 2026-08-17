@@ -484,6 +484,7 @@ describe("广场搜索态渲染(M9 任务 5)", () => {
       slug: "vercel-labs/skills/react-best-practices",
       ownerRepo: "vercel-labs/skills",
       installs: 625414,
+      isOfficial: false,
     };
     usePlaza.setState({ query: "react", status: "ready", results: [card] });
     const openDetail = vi.fn();
@@ -519,6 +520,7 @@ describe("全网热门排行榜(M10 任务 4)", () => {
       slug: "mattpocock/skills/grill-me",
       ownerRepo: "mattpocock/skills",
       installs: 877_815,
+      isOfficial: false,
     },
   ];
 
@@ -575,6 +577,24 @@ describe("全网热门排行榜(M10 任务 4)", () => {
     rerender(<StorePage />);
     expect(screen.queryByText("全网热门")).not.toBeInTheDocument();
     expect(screen.getByText("没有匹配「react」的技能。")).toBeInTheDocument();
+  });
+
+  // 反向路径(与上一条互补,2026-08-17 审查补测):清空搜索框应该回到排行榜,
+  // 不是停留在搜索结果那一档、也不是卡在空白——之前只测了"输入切走",没测过
+  // "清空切回来"。
+  it("清空搜索框(回到不足 2 字符)重新渲染排行榜", async () => {
+    invoke.mockImplementation(async (cmd: string) => (cmd === "plaza_leaderboard" ? trending : undefined));
+    usePlaza.setState({ query: "react", status: "ready", results: [] });
+    const { rerender } = render(<StorePage />);
+    expect(screen.getByText("没有匹配「react」的技能。")).toBeInTheDocument();
+    expect(screen.queryByText("全网热门")).not.toBeInTheDocument();
+
+    usePlaza.setState({ query: "", status: "idle", results: [] });
+    rerender(<StorePage />);
+
+    expect(await screen.findByText("全网热门")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "find-skills" })).toBeInTheDocument();
+    expect(screen.queryByText("没有匹配「react」的技能。")).not.toBeInTheDocument();
   });
 });
 

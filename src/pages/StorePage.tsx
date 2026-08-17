@@ -7,7 +7,7 @@ import { SkillCard } from "@/components/SkillCard";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { relativeTimeFromIso, relativeTimeFromUnix } from "@/lib/format";
-import { PLAZA_REGISTRY_ID } from "@/lib/ipc";
+import { PLAZA_REGISTRY_ID, type PlazaSkillCard } from "@/lib/ipc";
 import { filterSkills, type StoreFilter } from "@/lib/search";
 import { cardState } from "@/lib/update";
 import { useInstall } from "@/store/install";
@@ -340,13 +340,30 @@ function PlazaResults() {
     return <p className="py-6 text-[12.5px] text-text-3">{t("store.emptySearch", { query: trimmed })}</p>;
   }
 
+  return <PlazaCardGrid cards={results} onOpen={openDetail} className="mt-2.5" />;
+}
+
+/**
+ * 广场卡片网格,搜索结果区与排行榜(M10 任务 4)共用——两处除了外层间距
+ * (排行榜网格上面还有一行"全网热门"标题,搜索结果区没有)之外逐行相同,
+ * 之前各写一份是本项目已经因 DRY 问题返工过三次的那类重复,这里收成一处。
+ */
+function PlazaCardGrid({
+  cards,
+  onOpen,
+  className,
+}: {
+  cards: PlazaSkillCard[];
+  onOpen: (ownerRepo: string, name: string, slug: string) => void;
+  className?: string;
+}) {
   return (
-    <div className="mt-2.5 grid grid-cols-[repeat(auto-fill,minmax(288px,1fr))] gap-2.5">
-      {results.map((card) => (
+    <div className={cn("grid grid-cols-[repeat(auto-fill,minmax(288px,1fr))] gap-2.5", className)}>
+      {cards.map((card) => (
         <PlazaCard
           key={card.ownerRepo + "/" + card.slug}
           card={card}
-          onOpen={() => void openDetail(card.ownerRepo, card.name, card.slug)}
+          onOpen={() => onOpen(card.ownerRepo, card.name, card.slug)}
         />
       ))}
     </div>
@@ -385,15 +402,7 @@ function PlazaLeaderboard() {
         <span className="text-[12px] font-medium text-text-2">{t("plaza.trendingLabel")}</span>
         <span className="text-[11.5px] text-text-3">{t("plaza.emptyQuery")}</span>
       </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(288px,1fr))] gap-2.5">
-        {leaderboard.map((card) => (
-          <PlazaCard
-            key={card.ownerRepo + "/" + card.slug}
-            card={card}
-            onOpen={() => void openDetail(card.ownerRepo, card.name, card.slug)}
-          />
-        ))}
-      </div>
+      <PlazaCardGrid cards={leaderboard} onOpen={openDetail} />
     </>
   );
 }
