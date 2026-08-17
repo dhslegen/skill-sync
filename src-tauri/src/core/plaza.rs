@@ -548,17 +548,24 @@ const BLOB_INSTALL_SAFE_EXTS: &[&str] = &["md", "txt", "json", "yaml", "yml", "t
 
 /// 单个文件是否"纯文本、不可能需要执行位"。
 ///
-/// 判据:扩展名在保守白名单里,**且**不是 [`crate::core::skills::is_script_extension`]
-/// 认定的脚本扩展名——后者是第二道防线,哪怕白名单将来被误改动收进了脚本类后缀,
-/// 这里也会把它拦下(不是重复维护第二份扩展名表,是同一份表当两次判据用)。
+/// 判据:扩展名在保守白名单 [`BLOB_INSTALL_SAFE_EXTS`] 里。
+///
+/// **2026-08-17 审查修复(移除冗余的第二道闸)**:原实现在这里还判过一次
+/// [`crate::core::skills::is_script_extension`],意图是"哪怕白名单被误改动收进
+/// 脚本后缀,这里也拦得住"。但两张表(白名单 `md txt json yaml yml toml csv`、
+/// 脚本表 `skills::SCRIPT_EXTS`)**语义互斥、扩展名集合不相交**——任何一个使
+/// `is_script_extension` 为真的输入,其扩展名本就不在白名单里,单靠白名单已经
+/// 返回 `false`。第二道闸因此**从未在任何真实输入上单独生效过**,是 CLAUDE.md
+/// 记的"同一条规则查了两遍"那类空转:注入验证只放宽白名单(不动这道闸)时测试
+/// 不会变红,因为闸把注入信号吞掉了(误当成"双保险生效",实际是"闸挡住了本该
+/// 暴露的坏改动")。现在删掉这道闸,保护关系倒过来显式声明:两表互斥这件事本身
+/// 由 [`tests::blob_install_safe_and_script_extensions_never_overlap`] 钉住
+/// (交集为空的单测),而不是靠一份运行时代码"顺手"兜底。
 /// 大小写不敏感(`.MD` 与 `.md` 等价);多重扩展名按 `Path::extension()` 的语义只看
 /// 最后一段(`archive.tar.gz` 取到的是 `gz`,不在白名单里,按不安全处理);
 /// 没有扩展名的文件(如 `LICENSE`)直接判不安全——拿不准就回退,回退只是慢,
 /// 残缺是错。
 fn is_blob_install_safe(path: &str) -> bool {
-    if crate::core::skills::is_script_extension(path) {
-        return false;
-    }
     std::path::Path::new(path)
         .extension()
         .and_then(|ext| ext.to_str())
@@ -643,8 +650,12 @@ pub(crate) fn blob_path_unresolved_err(dir_slug: &str, sha: &str) -> AppError {
 ///
 /// - `path` 用调用方解出的真实路径(不是目录名近似值,见模块头「path 缺口」);
 /// - `has_scripts` 恒 `false`——能走到这里说明全部文件都过了
-///   [`all_files_blob_installable`],白名单里没有一个扩展名会被
-///   `is_script_extension` 认作脚本;
+///   [`all_files_blob_installable`],即扩展名全在 [`BLOB_INSTALL_SAFE_EXTS`] 里。
+///   **这依赖"白名单与 `skills::SCRIPT_EXTS` 不相交"这条不变量**——它由
+///   [`tests::blob_install_safe_and_script_extensions_never_overlap`] 单测钉住
+///   (2026-08-17 审查修复:曾经在 `is_blob_install_safe` 里另外判一次
+///   `is_script_extension` 当"双保险",但两表本就不相交,那道闸从未真正生效过,
+///   删掉后把这条不变量显式测出来,见 [`is_blob_install_safe`] 文档);
 /// - `content_hash` 留空:`acquire::finish`(`record`)算的是**落盘后**的
 ///   `fsops::dir_content_hash`,不读 `IndexedSkill.content_hash` 这个字段
 ///   ——与 zipball 路径共用同一份记账逻辑,这条"口径不许改"的护栏两条路径都遵守;
@@ -673,6 +684,8 @@ pub(crate) fn finish_blob_install(
         path: repo_path,
         skill_md: candidate.skill_md,
         files: skill_files,
+        // 依赖"白名单与 skills::SCRIPT_EXTS 不相交"这条不变量(见本函数文档),
+        // 该不变量由 tests::blob_install_safe_and_script_extensions_never_overlap 守着。
         has_scripts: false,
         content_hash: String::new(),
         tags: Vec::new(),
@@ -754,12 +767,31 @@ mod tests {
     }
 
     #[test]
-    fn blob_install_safe_rejects_script_extensions_even_if_whitelisted_by_mistake() {
-        // 双保险:is_script_extension 是第二道防线。这里只验证现状(.sh 不在白名单里
-        // 时自然被拒),放宽白名单后的红线由 tests/plaza_install_blob.rs 的注入验证钉住
-        // ——那条测试要真的改源码才能复现,这里测的是"正常状态下 .sh 就是不安全"。
+    fn blob_install_safe_rejects_common_script_extensions() {
+        // 单靠白名单本身就够——脚本扩展名不在 BLOB_INSTALL_SAFE_EXTS 里,
+        // 不需要(也不该)再查一次 is_script_extension(见 is_blob_install_safe
+        // 文档的 2026-08-17 审查修复说明)。放宽白名单后这条测试的红线由
+        // `commands.rs` 的注入验证钉住(见该文件 mod tests 里 install_via_plaza_blob
+        // 相关用例的报告记录)。
         for ext in ["sh", "bash", "zsh", "py", "js", "mjs", "ps1", "rb"] {
             assert!(!is_blob_install_safe(&format!("run.{ext}")), "脚本扩展名 .{ext} 不该安全");
+        }
+    }
+
+    /// 白名单 [`BLOB_INSTALL_SAFE_EXTS`] 与脚本表 `skills::SCRIPT_EXTS`
+    /// **交集必须为空**——这是 [`is_blob_install_safe`] 只靠白名单单独把关的前提
+    /// (2026-08-17 审查修复):此前用一次额外的 `is_script_extension` 调用当
+    /// "双保险",但两表互斥这件事从未被显式检查过,那道闸因此从未在任何真实输入上
+    /// 单独生效——注入验证只放宽白名单时测试不会变红,正是这条不变量没被测出来的
+    /// 后果。现在把它变成一条独立的、故意针对"以后有人往哪张表加错扩展名"的护栏:
+    /// 往白名单加 `.sh`,或往脚本表加 `.md`,这条测试当场红。
+    #[test]
+    fn blob_install_safe_and_script_extensions_never_overlap() {
+        for whitelisted in BLOB_INSTALL_SAFE_EXTS {
+            assert!(
+                !crate::core::skills::SCRIPT_EXTS.contains(whitelisted),
+                "白名单里的 .{whitelisted} 同时出现在脚本扩展名表里,两者必须互斥"
+            );
         }
     }
 

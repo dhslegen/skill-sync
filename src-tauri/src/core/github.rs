@@ -382,7 +382,10 @@ pub fn resolve_skill_path(tree: &RepoTree, dir_slug: &str) -> Option<String> {
         return None;
     }
     let suffix = format!("/{}", crate::core::skills::SKILL_FILE);
-    let mut candidates: Vec<&str> = tree
+    // 不需要 `dedup()`:git 树里的路径本就唯一(同一个 commit 不会有两条同名条目),
+    // 两个不同目录巧合命中同一个 `dir_slug` 时,candidates 里的两个字符串本身
+    // 不相等,dedup 对它们是恒等操作——留着只是死代码。
+    let candidates: Vec<&str> = tree
         .paths
         .iter()
         .filter_map(|p| {
@@ -391,7 +394,6 @@ pub fn resolve_skill_path(tree: &RepoTree, dir_slug: &str) -> Option<String> {
             (leaf == dir_slug).then_some(dir)
         })
         .collect();
-    candidates.dedup();
     match candidates.as_slice() {
         [only] => Some((*only).to_string()),
         _ => None,

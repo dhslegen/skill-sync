@@ -1387,7 +1387,7 @@ pub async fn skill_install(
             // `acquire::acquire` 会再发一次同样的 Fetching,重复发同一个值无害。
             emit(acquire::Stage::Fetching);
             let blob_http = http_client_for(registry_id)?;
-            if let Ok((skill, payload, remote_sha)) = install_via_plaza_blob(
+            let attempt = install_via_plaza_blob(
                 github_client,
                 &repo,
                 &blob_http,
@@ -1395,8 +1395,16 @@ pub async fn skill_install(
                 repo_tree_cache(),
                 &args.dir_slug,
             )
-            .await
-            {
+            .await;
+            // 回退本身**不改用户可见行为**(照旧静默走 zipball)——这行日志只服务
+            // 线上排查:此前完全没有任何痕迹,"为什么这个技能还是慢"排查不出方向。
+            if let Err(err) = &attempt {
+                tracing::debug!(
+                    dir_slug = %args.dir_slug, code = %err.code,
+                    "广场安装 blob 快路径不适用,回退整仓压缩包"
+                );
+            }
+            if let Ok((skill, payload, remote_sha)) = attempt {
                 return acquire::acquire_prefetched(
                     &registry,
                     &SystemEnv,

@@ -637,12 +637,20 @@ pub fn discover_skills(tree: &dyn SkillTree, base: &str, opts: &DiscoverOptions)
     }
 }
 
+/// "脚本类"扩展名表,判定"含可执行脚本"警示角标用(见 [`is_script_extension`])。
+///
+/// **提到模块级是为了让它可以被别处引用而不必复制一份**(M10 任务 3 审查修复):
+/// `core::plaza` 的安装白名单(`BLOB_INSTALL_SAFE_EXTS`)与这张表在语义上互斥
+/// (前者是"确定不需要执行位的纯文本后缀",后者是"可能需要执行位的脚本后缀"),
+/// 那条互斥关系由 `core::plaza` 的单测直接断言"两表交集为空"——如果两张表
+/// 曾经各自独立维护、互不知道对方存在,这条不变量就没有任何东西守着。
+pub(crate) const SCRIPT_EXTS: [&str; 8] = ["sh", "bash", "zsh", "py", "js", "mjs", "ps1", "rb"];
+
 /// `path` 的扩展名是否是"脚本类"扩展名——纯按文件名判断,**不看可执行位**
 /// (`chmod` 信息在这个函数的调用方那一层已经不一定拿得到:M10 任务 2 的 blob 路径
 /// 只有文件名与内容,没有 zip 的 unix mode)。判定与是否真的可执行无关,只是
 /// "详情页警示角标"这个 UX 意图本身就是按扩展名猜的(见 [`has_executable_scripts`])。
 pub(crate) fn is_script_extension(path: &str) -> bool {
-    const SCRIPT_EXTS: [&str; 8] = ["sh", "bash", "zsh", "py", "js", "mjs", "ps1", "rb"];
     Path::new(path)
         .extension()
         .and_then(|ext| ext.to_str())
