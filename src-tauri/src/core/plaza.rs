@@ -10,6 +10,20 @@
 //! 这个模块**只管发现**:结果里的 `owner_repo` 就是 GitHub `owner/repo`,安装/更新
 //! 零新协议——直接复用既有 `core::github` 的 `RepoSource` 机制(M3/M4 已实现并 e2e 验证)。
 //!
+//! # blob 取数(M10 任务 1)
+//!
+//! M9 的详情/安装都借道 `core::github` 的 zipball 机制——为看一个技能下整个仓,
+//! 真机实测 3MB/50s(`wshobson/agents`)。skills.sh 另有一个 blob 快照端点
+//! (`GET /api/download/{owner}/{repo}/{slug}`)只回该技能目录的文件,同一个样本
+//! 14KB/0.57s。[`fetch_blob`] 是这个端点的取数原语。
+//!
+//! **它不是"新协议",是"新体积"**:内容与 zipball 里的同名文件逐字节相同——
+//! 已用 3 个真实技能(单文件纯英文 / 多文件带子目录 / 单文件大段中文)现场验证过,
+//! 见 `tests/plaza_blob_live.rs` 与任务报告。这正是"安装也能走 blob"的地基:
+//! 商店索引里的 `content_hash` 是从 zipball 算的(`store::remote_content_hash`),
+//! 装的字节必须与它对得上,否则界面会永远误报"有更新"。
+//! **本任务只给原语与实证,不接入安装/详情路径**——那是任务 2/3 的事。
+//!
 //! # 请求走外部源的 client
 //!
 //! skills.sh 是外部服务,调用方必须传入 [`crate::core::gitea::app_http_client_proxied`]
@@ -162,6 +176,107 @@ pub async fn search(
     }
 
     parse_cards(&body)
+}
+
+// ==================================================================== blob 取数(M10 任务 1)
+
+/// blob 快照返回的一个文件。
+///
+/// **`contents` 必须按字节使用**:上游给的是 JSON 字符串,但落盘与内容 hash
+/// (`fsops::dir_content_hash`/`store::remote_content_hash`)一律按 `as_bytes()` 走。
+/// UTF-8 下字符数与字节数不对等——本模块 live 等价性测试里的真实样本(2026-08-17
+/// 实测)`SKILL.md` 字符长 13112、编码后 13225 字节,按 `.len()`(字符数)去比就会
+/// 得出错误结论。这是 [`fetch_blob`] 存在的意义:调用方(任务 3 的安装路径)拿到手的
+/// 就是"该按字节处理"的 `String`,不必也不应该自己再去猜。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct BlobFile {
+    /// 技能目录**内**的相对路径(如 `SKILL.md`、`references/foo.md`),不带仓/技能目录前缀
+    /// ——与 `store::SkillFile::path` 同一口径,拼落盘路径时直接 join。
+    pub path: String,
+    pub contents: String,
+}
+
+/// 单个文件的宽容解析形态:字段全 `Option`,缺失整条跳过(与 [`RawSkill`]/[`to_card`]
+/// 同一套"单条脏数据不拖垮整批"的姿势)。
+#[derive(Debug, Deserialize)]
+struct RawBlobFile {
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    contents: Option<String>,
+}
+
+/// 顶层响应形态。上游还带一个 `hash` 字段(它自己的内容指纹口径),我们不用
+/// ——本 app 有自己的 `fsops::dir_content_hash`/`store::remote_content_hash`,两套口径
+/// 混用只会制造第二种"应该相等却对不上"的坑,所以这里干脆不反序列化它,serde 默认忽略。
+#[derive(Debug, Deserialize)]
+struct BlobResponse {
+    #[serde(default)]
+    files: Vec<RawBlobFile>,
+}
+
+fn plaza_blob_err(detail: String) -> AppError {
+    AppError::new("NET_PLAZA_BLOB", "获取技能内容失败,请稍后重试").with_detail(detail)
+}
+
+/// 把响应体解析成文件列表。纯逻辑,不碰网络,方便直接单测。缺 `path`/`contents`
+/// 任一字段的条目跳过,不让整批解析失败。
+fn parse_blob_files(body: &str) -> Result<Vec<BlobFile>, AppError> {
+    let parsed: BlobResponse = serde_json::from_str(body).map_err(|e| {
+        plaza_blob_err(format!(
+            "{e}; body={}",
+            body.chars().take(400).collect::<String>()
+        ))
+    })?;
+    let files = parsed
+        .files
+        .into_iter()
+        .filter_map(|f| {
+            let path = f.path?;
+            let contents = f.contents?;
+            Some(BlobFile { path, contents })
+        })
+        .collect();
+    Ok(files)
+}
+
+/// blob 快照:`GET {api_base}/api/download/{owner}/{repo}/{slug}`。
+///
+/// 宽容解析(见 [`parse_blob_files`]);网络错误 / 非 200 / 整体解析失败统一映射为
+/// `AppError("NET_PLAZA_BLOB", ..)`——与 [`search`] 同一套"错误码只分类不分因"的姿势,
+/// 前端只需要一种"获取失败,请稍后重试"的降级展示。
+///
+/// `http` 必须是 [`crate::core::gitea::app_http_client_proxied`] 构造的 client
+/// (模块级文档已述:外部源跟随系统代理)。
+pub async fn fetch_blob(
+    http: &reqwest::Client,
+    api_base: &str,
+    owner: &str,
+    repo: &str,
+    slug: &str,
+) -> Result<Vec<BlobFile>, AppError> {
+    let base = api_base.trim_end_matches('/');
+    let url = format!("{base}/api/download/{owner}/{repo}/{slug}");
+
+    let resp = http
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| plaza_blob_err(e.to_string()))?;
+
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| plaza_blob_err(e.to_string()))?;
+    if !status.is_success() {
+        return Err(plaza_blob_err(format!(
+            "HTTP {status}: {}",
+            body.chars().take(400).collect::<String>()
+        )));
+    }
+
+    parse_blob_files(&body)
 }
 
 fn plaza_repo_err(detail: String) -> AppError {
