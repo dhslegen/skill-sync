@@ -377,3 +377,38 @@ fn publish_script_syncs_docs_to_the_release_repo() {
         "同步没走 Gitea 多文件接口:两个文件分两笔提交会让首页与版本历史短暂不一致"
     );
 }
+
+/// `pnpm dev` 必须自己把内网配置注入进去,不能退回裸 `tauri dev`。
+///
+/// 动机(2026-08-17 用户提):此前每次真机验收都要先手敲
+/// `set -a; . fixtures/.env.gitea.local; set +a`,忘了敲的表现是商店空白 +
+/// 「这个版本没有配置公司技能库」——看起来像功能坏了,其实只是没注入常量。
+/// **验收本来就容易被跳过,不该再加一道手动步骤。**
+///
+/// 同时钉住那个跳过开关:未配置态**是要能随时进的真实场景**,不是次品。
+/// 同日的「广场入口在唯一条目时整个消失」正是在那一档下暴露的
+/// (内建源没配置 → `registry::list` 给空 `repos` → 广场成了切换器唯一条目
+/// → 撞上 `entries.length <= 1` 早退 → 整排切换器消失),带着配置永远撞不到。
+#[test]
+fn dev_script_loads_the_intranet_config_and_keeps_an_escape_hatch() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+    let pkg = std::fs::read_to_string(root.join("package.json")).unwrap();
+    let script = std::fs::read_to_string(root.join("scripts/dev.sh")).unwrap();
+
+    assert!(
+        pkg.contains("bash scripts/dev.sh"),
+        "package.json 的 dev 不再走 scripts/dev.sh——退回裸 tauri dev 就等于把手动 source 那道摩擦加回来了"
+    );
+    assert!(
+        script.contains("fixtures/.env.gitea.local"),
+        "dev.sh 不再加载 fixtures/.env.gitea.local,起出来的 dev 连不上公司技能库"
+    );
+    assert!(
+        script.contains("SKILLSYNC_NO_INTRANET"),
+        "dev.sh 丢了跳过开关:未配置态是要能随时进的真实场景(见本测试文档注释)"
+    );
+    assert!(
+        script.contains("exec pnpm exec tauri dev"),
+        "dev.sh 不再起 tauri dev"
+    );
+}

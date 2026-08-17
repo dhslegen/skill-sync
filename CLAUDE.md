@@ -29,7 +29,11 @@
 
 ## 常用命令
 ```
-pnpm dev            # tauri dev
+pnpm dev            # 走 scripts/dev.sh:**自动加载 fixtures/.env.gitea.local** 再起
+                    # tauri dev(2026-08-17 起;此前是裸 tauri dev,每次验收都要
+                    # 先手敲 set -a 那串,忘了敲的表现是商店空白+「没有配置公司
+                    # 技能库」,看着像功能坏了)。要验"未配置内网"那一档:
+                    # SKILLSYNC_NO_INTRANET=1 pnpm dev
 pnpm build          # tauri build(无签名变量时产出未签名包,仅内部测试)
 ./scripts/publish-release.sh 0.2.3   # **发版就跑它**:改版本号→commit+tag+push(触发
                                      # GitHub CI 出 Windows 包)→本地构建 macOS 签名公证
@@ -177,6 +181,8 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
   `tauri.conf.json` 的 `plugins.<name>` 节,缺该节即 `PluginInitialization` 失败。
   冒烟方式:后台 `pnpm dev` → 等 `target/debug/skillsync` 进程存活 → 看
   `~/.skillsync/logs/`。同时把这类配置的存在性用 `tests/bundle_config.rs` 钉住。
+  (`pnpm dev` 自 2026-08-17 起自动加载内网配置,冒烟时顺带能看到
+  `[dev] 已加载 …` 那行;守卫 `dev_script_loads_the_intranet_config_and_keeps_an_escape_hatch`。)
 - **写完测试必做注入验证**(本项目最有价值的一条实践):故意改坏实现,确认对应测试真的变红。
   M1 全程累计抓出十余处空转测试,几乎都属于下面四种写法——写测试时优先自查:
   1. **同一条规则查了两遍** → 其中一遍永远不触发,改坏也不红(store.rs 的 schemaVersion、

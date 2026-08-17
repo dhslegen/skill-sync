@@ -9,7 +9,7 @@
     ]
   },
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "bash scripts/dev.sh",
     "dev:web": "vite",
     "build": "tauri build",
     "build:web": "tsc && vite build",
