@@ -353,6 +353,23 @@ describe("库切换器 · 技能广场固定档(M9 任务 5)", () => {
     expect(screen.getByRole("button", { name: "技能广场" })).toBeInTheDocument();
   });
 
+  it("内建源没注入配置时,广场固定档必须仍然可点", () => {
+    // 2026-08-17 真机验收撞到的死路:`SourcePicker` 有一条既有早退
+    // `entries.length <= 1 → null`(本意是"只有一个技能库时切换器是噪音")。
+    // 内建源未注入编译期配置时 `registry::list` 给的 `repos` 是**空数组**,
+    // 于是它一个条目都不产出,广场固定入口成了唯一条目 → 早退命中 →
+    // **整个切换器不渲染,广场入口彻底不可达**。
+    // 上面那条用例没抓到,是因为它的 `onlyCompany` fixture 带着一条 repo,
+    // 把阈值"自然垫高"了——M9 任务 5 审查时的原话正是这句,而那个"自然"
+    // 只在内建源已配置时成立。
+    // **广场固定入口不是"一个技能库",是功能入口**:唯一条目时也必须能点。
+    const unconfiguredBuiltin = [{ ...onlyCompany[0], repo: null, repos: [] }];
+    useRegistries.setState({ list: [...unconfiguredBuiltin, plazaRow()] });
+    render(<StorePage />);
+    expect(screen.getByRole("group", { name: "技能库来源" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "技能广场" })).toBeInTheDocument();
+  });
+
   it("加载中/出错两档,广场固定档同样在(既有教训的同款守卫)", () => {
     useRegistries.setState({ list: [...onlyCompany, plazaRow()] });
     seed({ status: "error", index: null, error: { code: "REPO_NOT_FOUND", message: "找不到对应的技能库或文件" } });

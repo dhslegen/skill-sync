@@ -266,7 +266,14 @@ function SourcePicker() {
     });
   }, [registries]);
 
-  if (entries.length <= 1) return null;
+  // 只有一个可选项时切换器是噪音——但**广场固定入口不算"一个技能库"**:
+  // 它是进搜索态的功能入口,哪怕它是唯一条目也必须点得到。
+  // 反例(2026-08-17 真机验收撞到):内建源没注入编译期配置时 `registry::list`
+  // 给的 `repos` 是空数组,非广场分支一个条目都不产出,广场入口成了唯一条目,
+  // 早退一命中就**整个切换器消失、广场彻底不可达**。
+  const libraryCount = entries.filter((e) => !(e.registryId === PLAZA_REGISTRY_ID && e.repoKey === null)).length;
+  const hasPlazaEntry = entries.length > libraryCount;
+  if (!hasPlazaEntry && libraryCount <= 1) return null;
 
   return (
     <div
