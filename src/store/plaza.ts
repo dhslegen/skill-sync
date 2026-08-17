@@ -114,7 +114,9 @@ export const usePlaza = create<PlazaState>((set, get) => {
         selectedDirSlug: null,
       });
       try {
-        const skills = await plazaDetail(ownerRepo);
+        // slug/name 就是这条搜索结果自带的 skills.sh id 与 frontmatter 名字——
+        // 原样带给 core 侧,给了就优先走 blob 快路径(M10 任务 2)。
+        const skills = await plazaDetail(ownerRepo, slug, name);
         // 面板可能在等待期间被关掉或换了别的仓,回来的结果就不该再写进去
         if (get().detailOwnerRepo === ownerRepo) {
           set({ detailSkills: skills, detailStatus: "ready" });

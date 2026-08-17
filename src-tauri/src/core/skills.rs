@@ -637,16 +637,30 @@ pub fn discover_skills(tree: &dyn SkillTree, base: &str, opts: &DiscoverOptions)
     }
 }
 
-/// 判断某技能目录里是否含可执行脚本,用于详情页的"含可执行脚本"警示角标(UX 增强清单 #2)。
-pub fn has_executable_scripts(dir: &str, files: &[String]) -> bool {
+/// `path` 的扩展名是否是"脚本类"扩展名——纯按文件名判断,**不看可执行位**
+/// (`chmod` 信息在这个函数的调用方那一层已经不一定拿得到:M10 任务 2 的 blob 路径
+/// 只有文件名与内容,没有 zip 的 unix mode)。判定与是否真的可执行无关,只是
+/// "详情页警示角标"这个 UX 意图本身就是按扩展名猜的(见 [`has_executable_scripts`])。
+pub(crate) fn is_script_extension(path: &str) -> bool {
     const SCRIPT_EXTS: [&str; 8] = ["sh", "bash", "zsh", "py", "js", "mjs", "ps1", "rb"];
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| SCRIPT_EXTS.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
+/// 判断某技能目录里是否含可执行脚本,用于详情页的"含可执行脚本"警示角标(UX 增强清单 #2)。
+///
+/// `files` 是**整仓**的文件列表(路径带 `dir` 前缀,如商店页扫描解压后的压缩包),
+/// 先按 `dir/` 剥前缀再判定扩展名(委派给 [`is_script_extension`])。
+/// 广场 blob 路径(M10 任务 2)拿到手的文件路径本来就已经是技能目录内的相对路径,
+/// 不需要剥前缀这一步,直接调 [`is_script_extension`]——两处判据同一份扩展名表,
+/// 不重复维护第二份列表。
+pub fn has_executable_scripts(dir: &str, files: &[String]) -> bool {
     let prefix = format!("{dir}/");
-    files.iter().any(|f| {
-        f.strip_prefix(prefix.as_str())
-            .and_then(|rel| Path::new(rel).extension())
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| SCRIPT_EXTS.contains(&ext.to_ascii_lowercase().as_str()))
-    })
+    files
+        .iter()
+        .any(|f| f.strip_prefix(prefix.as_str()).is_some_and(is_script_extension))
 }
 
 #[cfg(test)]

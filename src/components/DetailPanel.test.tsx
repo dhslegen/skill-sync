@@ -477,7 +477,13 @@ describe("DetailPanel(技能广场详情态)", () => {
     await userEvent.click(screen.getByRole("button", { name: "重试" }));
 
     await screen.findByRole("heading", { name: "React 最佳实践" });
-    expect(invokeMock).toHaveBeenCalledWith("plaza_detail", { ownerRepo: "vercel-labs/skills" });
+    expect(invokeMock).toHaveBeenCalledWith("plaza_detail", {
+      args: {
+        ownerRepo: "vercel-labs/skills",
+        skillId: "vercel-labs/skills/react-best-practices",
+        wantedName: "React 最佳实践",
+      },
+    });
   });
 
   it("成功且能定位到点击的那个技能:渲染 owner/repo 坐标与浏览器查看入口", () => {

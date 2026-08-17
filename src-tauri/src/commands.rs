@@ -2067,7 +2067,58 @@ async fn cached_plaza_detail(
     Ok(skills)
 }
 
-/// 技能广场详情(M9 任务 4):点开搜索结果卡片时现拉该仓内容。
+/// `plaza_detail` 的参数(M10 任务 2 把它从裸字符串升级为结构体)。
+///
+/// `skill_id`/`wanted_name` 给了才会尝试 blob 快路径:前端在
+/// `usePlaza.openDetail(ownerRepo, name, slug)` 调用时点开的那条搜索结果本来就有
+/// 这两样(`slug` = `PlazaSkillCard::slug` = skills.sh 的 `id`),原样带过来即可,
+/// 不需要现拆。缺任一个都直接走既有 zipball 全仓路径(向后兼容:
+/// `tests/plaza_detail.rs` 的既有用例不传这两个字段,行为必须与改动前完全一致)。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlazaDetailArgs {
+    pub owner_repo: String,
+    #[serde(default)]
+    pub skill_id: Option<String>,
+    #[serde(default)]
+    pub wanted_name: Option<String>,
+}
+
+/// blob 快路径(有 `skill_id`+`wanted_name` 才试)命中即返回单项列表;
+/// 拿不到 blob 结果的一切情况(缺参数、blob 失败、internal、名字对不上)都静默落到
+/// 现拉整仓的 `cached_plaza_detail`——与 `plaza_detail` 改动前**完全同一条路径**,
+/// "多技能仓、名字对不上时显示列表"这条 M9 任务 5 的既有行为因此原样保留
+/// (见 `core::plaza::fetch_skill_detail_via_blob` 模块文档的判据清单)。
+///
+/// `blob_api_base` 单独作为参数(生产调用点固定传 [`plaza::PLAZA_API_BASE`]),
+/// 不在函数体内写死——这样测试能喂 wiremock 地址,覆盖"blob 命中"与"blob 失败回退"
+/// 两条路径,不必真的打 skills.sh(与本文件其余薄壳测试同一套注入风格)。
+///
+/// `cache` 同样是参数而不是在函数体内直接调 [`plaza_detail_cache`]:那是**进程级**
+/// 单例,多个测试用同一个 `cache_key`("vercel-labs/skills"这类字面量在本文件
+/// 到处出现)会通过它互相脏读——与 `cached_plaza_detail` 早就是这个注入写法同理
+/// (见其函数文档),这里只是保持同一套习惯,不是新规矩。
+async fn plaza_detail_for_client(
+    client: &impl crate::core::gitea::RepoSource,
+    repo_ref: &RepoRef,
+    cache: &PlazaDetailCache,
+    cache_key: &str,
+    blob_api_base: &str,
+    skill_id: Option<&str>,
+    wanted_name: Option<&str>,
+) -> Result<Vec<SkillDetail>, AppError> {
+    if let (Some(id), Some(name)) = (skill_id, wanted_name) {
+        let http = crate::core::gitea::app_http_client_proxied()?;
+        if let Ok(detail) =
+            plaza::fetch_skill_detail_via_blob(client, repo_ref, &http, blob_api_base, id, name).await
+        {
+            return Ok(vec![detail]);
+        }
+    }
+    cached_plaza_detail(cache, cache_key, client, repo_ref).await
+}
+
+/// 技能广场详情(M9 任务 4,M10 任务 2 改走 blob):点开搜索结果卡片时现拉该仓内容。
 ///
 /// **这是详情面板"不联网"承诺的唯一破例,范围钉死在广场**:内建源与已有自定义源的
 /// `store_skill_detail` 依旧全部来自索引缓存,一行没改;这是新 IPC、新状态槽
@@ -2078,14 +2129,30 @@ async fn cached_plaza_detail(
 /// ——挂仓只能由「装了一个搜索结果」这件事触发(见 `plaza_ensure_repo`)。这个分支
 /// 与 `tests/plaza_detail.rs` 的 `detail_ref_for_unregistered_repo` 逐行同构
 /// (那份测试注入的是 `Store`,不依赖真实 `HOME`,断言调用后 `plaza_repos` 仍空)。
+///
+/// 两个分支各自的 `client` 是不同的具体类型(`SourceClient` 枚举 vs 直接构造的
+/// `GithubClient`),`plaza_detail_for_client` 对 `impl RepoSource` 泛型、按调用点
+/// 各自单态化,因此这里仍然是两段各自调用而不是先统一成一个变量——与改动前的结构
+/// 保持一致,不是遗漏合并。
 #[tauri::command]
-pub async fn plaza_detail(owner_repo: String) -> Result<Vec<SkillDetail>, AppError> {
-    let (owner, repo) = parse_owner_repo(&owner_repo)?;
+pub async fn plaza_detail(args: PlazaDetailArgs) -> Result<Vec<SkillDetail>, AppError> {
+    let (owner, repo) = parse_owner_repo(&args.owner_repo)?;
     let cache_key = registry::repo_key(owner, repo);
+    let skill_id = args.skill_id.as_deref();
+    let wanted_name = args.wanted_name.as_deref();
 
     match read_source(registry::PLAZA_REGISTRY_ID, Some(&cache_key)).await {
         Ok((client, repo_ref)) => {
-            cached_plaza_detail(plaza_detail_cache(), &cache_key, &client, &repo_ref).await
+            plaza_detail_for_client(
+                &client,
+                &repo_ref,
+                plaza_detail_cache(),
+                &cache_key,
+                plaza::PLAZA_API_BASE,
+                skill_id,
+                wanted_name,
+            )
+            .await
         }
         Err(err) if err.code == "REPO_UNKNOWN_REPO" => {
             let http = http_client_for(registry::PLAZA_REGISTRY_ID)?;
@@ -2094,7 +2161,16 @@ pub async fn plaza_detail(owner_repo: String) -> Result<Vec<SkillDetail>, AppErr
             let token = load_github_token(&KeyringStore, registry::PLAZA_REGISTRY_ID);
             let client = github::GithubClient::new(registry::PLAZA_BASE_URL, token, http);
             let repo_ref = RepoRef { owner: owner.to_string(), repo: repo.to_string(), branch };
-            cached_plaza_detail(plaza_detail_cache(), &cache_key, &client, &repo_ref).await
+            plaza_detail_for_client(
+                &client,
+                &repo_ref,
+                plaza_detail_cache(),
+                &cache_key,
+                plaza::PLAZA_API_BASE,
+                skill_id,
+                wanted_name,
+            )
+            .await
         }
         Err(err) => Err(err),
     }
@@ -2578,5 +2654,162 @@ mod tests {
                 .contains_key("probe/singleton"),
             "两次调用 plaza_detail_cache() 必须拿到同一份存储"
         );
+    }
+
+    // ============================================================ blob 快路径的回退编排(M10 任务 2)
+    //
+    // `fetch_skill_detail_via_blob` 本身"什么条件下该 Err"已经在
+    // `tests/plaza_detail_blob.rs` 钉住;这里测的是 `plaza_detail_for_client`
+    // 用这个 Err/Ok 做的路由决定——blob 失败必须落到与改动前完全同一条
+    // `cached_plaza_detail` 路径,不能凑合出一个只有一项的"列表"。
+
+    async fn mount_weekly_report_blob(server: &wiremock::MockServer, status: u16, body: serde_json::Value) {
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/download/vercel-labs/skills/weekly-report",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(status).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn plaza_detail_for_client_uses_blob_and_skips_the_zipball_when_it_matches() {
+        let skillssh = wiremock::MockServer::start().await;
+        mount_weekly_report_blob(
+            &skillssh,
+            200,
+            serde_json::json!({
+                "files": [{
+                    "path": "SKILL.md",
+                    "contents": "---\nname: weekly-report\ndescription: 从 blob 来的\n---\n\n正文\n"
+                }]
+            }),
+        )
+        .await;
+        let cache: PlazaDetailCache = Mutex::new(HashMap::new());
+        let client = CountingSource { calls: Default::default(), slug: "weekly-report" };
+        let repo = some_repo();
+
+        let result = plaza_detail_for_client(
+            &client,
+            &repo,
+            &cache,
+            "vercel-labs/skills",
+            &skillssh.uri(),
+            Some("vercel-labs/skills/weekly-report"),
+            Some("weekly-report"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].description, "从 blob 来的");
+        assert_eq!(
+            client.calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "blob 命中时不该再下整仓压缩包"
+        );
+    }
+
+    /// 名字对不上是"多技能仓、名字对不上时显示列表"这条既有行为的触发条件
+    /// (M9 任务 5)——必须落到能展示**该仓全部技能**的 zipball 路径,不能只返回
+    /// 这一个文不对题的结果。
+    #[tokio::test]
+    async fn plaza_detail_for_client_falls_back_to_the_full_zipball_when_the_blob_name_mismatches() {
+        let skillssh = wiremock::MockServer::start().await;
+        mount_weekly_report_blob(
+            &skillssh,
+            200,
+            serde_json::json!({
+                "files": [{
+                    "path": "SKILL.md",
+                    "contents": "---\nname: 完全不同的名字\ndescription: 从 blob 来的\n---\n\n正文\n"
+                }]
+            }),
+        )
+        .await;
+        let cache: PlazaDetailCache = Mutex::new(HashMap::new());
+        let client = CountingSource { calls: Default::default(), slug: "weekly-report" };
+        let repo = some_repo();
+
+        let result = plaza_detail_for_client(
+            &client,
+            &repo,
+            &cache,
+            "vercel-labs/skills",
+            &skillssh.uri(),
+            Some("vercel-labs/skills/weekly-report"),
+            Some("weekly-report"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            client.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "blob 名字对不上必须回退到现拉整仓这条既有路径"
+        );
+        // fake_archive 只放了一个技能,断言拿到的是 zipball 路径的产物而不是 blob 的
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].dir_slug, "weekly-report");
+        assert_eq!(result[0].description, "weekly-report 的说明", "必须是 fake_archive 的内容,不是 blob 的");
+    }
+
+    #[tokio::test]
+    async fn plaza_detail_for_client_falls_back_when_blob_404s() {
+        let skillssh = wiremock::MockServer::start().await;
+        mount_weekly_report_blob(&skillssh, 404, serde_json::json!({"error": "not found"})).await;
+        let cache: PlazaDetailCache = Mutex::new(HashMap::new());
+        let client = CountingSource { calls: Default::default(), slug: "weekly-report" };
+        let repo = some_repo();
+
+        let result = plaza_detail_for_client(
+            &client,
+            &repo,
+            &cache,
+            "vercel-labs/skills",
+            &skillssh.uri(),
+            Some("vercel-labs/skills/weekly-report"),
+            Some("weekly-report"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(result[0].dir_slug, "weekly-report");
+    }
+
+    /// 缺 `skill_id`/`wanted_name`(旧调用方/未来其他入口)必须**完全不碰** blob——
+    /// 直接走 `cached_plaza_detail`,一次网络请求都不该发到 skills.sh。
+    #[tokio::test]
+    async fn plaza_detail_for_client_skips_blob_entirely_without_skill_id_or_wanted_name() {
+        let skillssh = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/download/vercel-labs/skills/weekly-report",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({"files": []})))
+            .expect(0)
+            .mount(&skillssh)
+            .await;
+        let cache: PlazaDetailCache = Mutex::new(HashMap::new());
+        let client = CountingSource { calls: Default::default(), slug: "weekly-report" };
+        let repo = some_repo();
+
+        let result = plaza_detail_for_client(
+            &client,
+            &repo,
+            &cache,
+            "vercel-labs/skills",
+            &skillssh.uri(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(result[0].dir_slug, "weekly-report");
     }
 }

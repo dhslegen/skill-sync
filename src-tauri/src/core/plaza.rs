@@ -22,7 +22,16 @@
 //! 见 `tests/plaza_blob_live.rs` 与任务报告。这正是"安装也能走 blob"的地基:
 //! 商店索引里的 `content_hash` 是从 zipball 算的(`store::remote_content_hash`),
 //! 装的字节必须与它对得上,否则界面会永远误报"有更新"。
-//! **本任务只给原语与实证,不接入安装/详情路径**——那是任务 2/3 的事。
+//! 任务 1 只给原语与实证,不接安装/详情路径。
+//!
+//! # 详情走 blob(M10 任务 2)
+//!
+//! [`fetch_skill_detail_via_blob`] 是详情面板的新首选路径:88 倍提速的对象是
+//! **用户点开的那一个技能**,不是整仓。它与 [`fetch_repo_skills`](zipball)
+//! 完全独立、互不改动——`commands::plaza_detail` 按"blob 能不能满足这次点击"
+//! 二选一,blob 失败或结果与点开的搜索结果对不上,一律回退 zipball,
+//! "多技能仓、名字对不上时显示列表"这条 M9 任务 5 的既有行为原样保留
+//! (细节与判据见该函数文档)。安装路径**这次没动**,仍然是任务 3 的事。
 //!
 //! # 请求走外部源的 client
 //!
@@ -352,6 +361,136 @@ pub async fn fetch_repo_skills(
     // fetched_at 不进 SkillDetail(那是索引/缓存层的字段,不落盘就没有意义),给 0 即可。
     let index = store::build_index(PLAZA_REGISTRY_ID, repo, &head, &archive, 0);
     Ok(index.skills.iter().filter_map(|s| index.detail(&s.dir_slug)).collect())
+}
+
+// ============================================================ 详情走 blob(M10 任务 2)
+
+/// 从 skills.sh 的 `id`(`PlazaSkillCard::slug`,形如 `owner/repo/skill-name`)里
+/// 抠出 [`fetch_blob`] 要的那个"纯技能名"参数。
+///
+/// 要求 `id` 恰好以 `{owner}/{repo}/` 开头,且剩下的部分不再含 `/`——这是模块头
+/// 记的上游约定(`id` 三段式,`skillId` 是"纯技能名"、没有更深的路径)。
+/// 形状对不上就返回 `None`,调用方据此放弃 blob 快路径、直接回退现有 zipball 路径
+/// (**保守**:宁可少用一次加速,也不猜一个可能是错的技能名去发请求)。
+fn skill_name_from_id<'a>(id: &'a str, owner: &str, repo: &str) -> Option<&'a str> {
+    let rest = id.strip_prefix(&format!("{owner}/{repo}/"))?;
+    (!rest.is_empty() && !rest.contains('/')).then_some(rest)
+}
+
+/// 把 blob 快照的文件列表拼成一份 [`store::SkillDetail`](单个技能,不做仓内发现)。
+///
+/// **不调用 `skills::discover_skills`**:blob 端点本身已经按 slug 精确定位到了
+/// 唯一一个技能目录,不存在"这堆文件里哪个子目录是技能"这个要发现的问题——
+/// 需要发现的场景(多技能仓、目录结构未知)本就走不通 blob,天然回退 zipball。
+///
+/// - `skill_md` 取文件列表里的 [`crate::core::skills::SKILL_FILE`],缺失或
+///   frontmatter 解析失败一律映射 `NET_PLAZA_BLOB`——调用方按"blob 不可用"处理,
+///   不新开错误分叉(与 [`fetch_blob`] 同一套"错误码只分类不分因"姿势)。
+/// - `has_scripts` 复用 `skills::is_script_extension`(同一份扩展名表,见该函数文档)
+///   ——blob 的文件路径本来就是技能目录内的相对路径,不需要再剥前缀。
+/// - `path`/`tags`/`attribution` 是这条路径**拿不到**的信息(blob 端点不给仓内完整
+///   路径,也不读库根的 tags.json/authors.json——那两个文件多数广场仓根本没有,
+///   为它们多发请求违反 brief"不为 blob 做防腐层"的边界):`path` 退而求其次填
+///   技能目录名本身(这是**真值的一部分**,不是编造;而且广场详情面板压根不渲染
+///   `SkillDetail.path`,见 `DetailPanel.tsx` 的 `PanelBody`,`LocalPanelBody` 才用它);
+///   `tags` 给空、`attribution` 给 `None`,与"库里没有这两个文件"时的既有语义完全一致
+///   (`IndexedSkill.tags`/`attribution` 本来就是"没有就不摆",不算新行为)。
+/// - **`internal` 标记的技能一律当作 blob 不适用**:zipball 路径的
+///   `discover_skills` 默认排除 `metadata.internal: true` 的技能
+///   (`DiscoverOptions::default()`),blob 路径必须复现同一条规则,否则"某技能仓的
+///   internal 技能不该出现在结果里"这条既有行为会被 blob 快路径悄悄破坏。
+fn detail_from_blob_files(
+    dir_slug: &str,
+    files: Vec<BlobFile>,
+    commit_sha: String,
+    committed_at: String,
+) -> Result<store::SkillDetail, AppError> {
+    let skill_md = files
+        .iter()
+        .find(|f| f.path == crate::core::skills::SKILL_FILE)
+        .map(|f| f.contents.clone())
+        .ok_or_else(|| {
+            plaza_blob_err(format!(
+                "blob 响应缺少 {}(dir_slug={dir_slug})",
+                crate::core::skills::SKILL_FILE
+            ))
+        })?;
+
+    let parsed = crate::core::skills::parse_skill_md(&skill_md)
+        .map_err(|e| plaza_blob_err(format!("{}(dir_slug={dir_slug})", e.reason())))?;
+    if parsed.internal {
+        return Err(plaza_blob_err(format!(
+            "该技能标记为 internal,按既有规则不进结果(dir_slug={dir_slug})"
+        )));
+    }
+
+    let has_scripts = files.iter().any(|f| crate::core::skills::is_script_extension(&f.path));
+    let skill_files = files
+        .iter()
+        .map(|f| store::SkillFile {
+            path: f.path.clone(),
+            // `String::len()` 本就是字节数(UTF-8 编码长度),不是字符数——与
+            // `fetch_blob` 文档反复强调的"contents 必须按字节用"是同一件事,
+            // 这里不必也不该再写 `.as_bytes().len()`(clippy::needless_as_bytes)。
+            size: Some(f.contents.len() as u64),
+        })
+        .collect();
+
+    Ok(store::SkillDetail {
+        name: parsed.name,
+        dir_slug: dir_slug.to_string(),
+        description: parsed.description,
+        path: dir_slug.to_string(),
+        skill_md,
+        files: skill_files,
+        has_scripts,
+        commit_sha,
+        committed_at,
+        tags: Vec::new(),
+        attribution: None,
+    })
+}
+
+/// 给「用户点开的这一个技能」拼详情(M10 任务 2):优先 blob 快照,只取这一个技能,
+/// 不下整仓。
+///
+/// **只服务这一次点击,不是"广场详情的新实现"**——与 [`fetch_repo_skills`](整仓/
+/// zipball)是两条独立路径,调用方(`commands::plaza_detail`)按"blob 能不能满足
+/// 这次点击"二选一,绝不混用。以下任一情况都视为"blob 不适用",返回 `Err` 让调用方
+/// 静默回退到完全不动的 [`fetch_repo_skills`] 路径(brief 明确要求:回退场景**必须**
+/// 走 zipball,不能用这条路径凑合出一个只有一项的"列表"):
+/// - `skill_slug` 形状不对(见 [`skill_name_from_id`]);
+/// - blob 请求失败(404/超时/解析失败,见 [`fetch_blob`]);
+/// - 技能标记为 `internal`(见 [`detail_from_blob_files`]);
+/// - **blob 拿到的技能名与用户点开那条搜索结果的名字对不上**——这正是 M9 任务 5
+///   "多技能仓、名字对不上时显示列表"的既有判据(前端 `locatePlazaSkill` 同款字段),
+///   对不上就必须落到能展示完整候选列表的 zipball 路径,而不是只给用户看这一个
+///   可能文不对题的结果。
+///
+/// `source`/`repo` 用于 [`gitea::RepoSource::branch_head`] 拿准确的
+/// `commit_sha`/`committed_at`(轻量请求,几百字节;这里不用 `download_archive`)。
+pub async fn fetch_skill_detail_via_blob(
+    source: &impl gitea::RepoSource,
+    repo: &gitea::RepoRef,
+    blob_http: &reqwest::Client,
+    blob_api_base: &str,
+    id: &str,
+    wanted_name: &str,
+) -> Result<store::SkillDetail, AppError> {
+    let skill_slug = skill_name_from_id(id, &repo.owner, &repo.repo)
+        .ok_or_else(|| plaza_blob_err(format!("无法从 id 解出技能名: {id}")))?;
+
+    let head = source.branch_head(repo).await?;
+    let files = fetch_blob(blob_http, blob_api_base, &repo.owner, &repo.repo, skill_slug).await?;
+    let detail = detail_from_blob_files(skill_slug, files, head.sha, head.committed_at)?;
+
+    if detail.name != wanted_name {
+        return Err(plaza_blob_err(format!(
+            "blob 技能名({})与点击的搜索结果名({wanted_name})不一致,回退整仓路径",
+            detail.name
+        )));
+    }
+    Ok(detail)
 }
 
 #[cfg(test)]

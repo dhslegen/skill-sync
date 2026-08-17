@@ -650,10 +650,17 @@ export const plazaEnsureRepo = (ownerRepo: string) =>
   call<RepoView>("plaza_ensure_repo", { ownerRepo });
 
 /**
- * 广场详情(M9 任务 4):点开搜索结果卡片时现拉该仓内容,返回该仓全部技能
- * (与商店详情面板同一份 `SkillDetail` 形状——安装量、更新判定都复用既有机制,
- * 这里不新造 DTO)。未挂仓也能查(详情先于安装),调用本身**不会**把仓写进
- * `config.plazaRepos`——那是 `plazaEnsureRepo` 的事。命中进程内缓存时不再发请求。
+ * 广场详情(M9 任务 4,M10 任务 2 改走 blob):点开搜索结果卡片时现拉内容。
+ *
+ * `skillId`/`wantedName` 就是点击时那条搜索结果的 `slug`/`name`
+ * (`usePlaza.openDetail` 已经拿在手里,原样带过来即可)——给了就优先走 blob 快照
+ * 只取这一个技能(前端可感知的提速,数十秒降到 1 秒内),返回单项数组;
+ * blob 不适用(未给这两个参数 / 404 / 该技能标记 internal / 技能名与点击的搜索结果
+ * 对不上)时 core 侧静默回退现拉整仓的 zipball 路径,返回该仓全部技能——与
+ * `plazaDetail` 改动前完全同一份行为,`locatePlazaSkill` 该显示"多技能列表"时
+ * 照样显示(与商店详情面板同一份 `SkillDetail` 形状,这里不新造 DTO)。
+ * 未挂仓也能查(详情先于安装),调用本身**不会**把仓写进 `config.plazaRepos`
+ * ——那是 `plazaEnsureRepo` 的事。zipball 路径命中进程内缓存时不再发请求。
  */
-export const plazaDetail = (ownerRepo: string) =>
-  call<SkillDetail[]>("plaza_detail", { ownerRepo });
+export const plazaDetail = (ownerRepo: string, skillId?: string, wantedName?: string) =>
+  call<SkillDetail[]>("plaza_detail", { args: { ownerRepo, skillId, wantedName } });

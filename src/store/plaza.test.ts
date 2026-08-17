@@ -142,11 +142,17 @@ describe("usePlaza 详情", () => {
 
   beforeEach(reset);
 
-  it("openDetail 拉该仓全部技能", async () => {
+  it("openDetail 拉该仓全部技能,且把 slug/name 原样带给 core(M10 任务 2 的 blob 快路径参数)", async () => {
     invoke.mockResolvedValueOnce([skillOf()]);
     await usePlaza.getState().openDetail("vercel-labs/skills", "React 最佳实践", "vercel-labs/skills/react-best-practices");
 
-    expect(invoke).toHaveBeenCalledWith("plaza_detail", { ownerRepo: "vercel-labs/skills" });
+    expect(invoke).toHaveBeenCalledWith("plaza_detail", {
+      args: {
+        ownerRepo: "vercel-labs/skills",
+        skillId: "vercel-labs/skills/react-best-practices",
+        wantedName: "React 最佳实践",
+      },
+    });
     const s = usePlaza.getState();
     expect(s.detailStatus).toBe("ready");
     expect(s.detailSkills).toEqual([skillOf()]);
