@@ -24,6 +24,46 @@
 //! 装的字节必须与它对得上,否则界面会永远误报"有更新"。
 //! 任务 1 只给原语与实证,不接安装/详情路径。
 //!
+//! # 安装走 blob(M10 任务 3)
+//!
+//! 装的时候也优先试 blob,不下整仓压缩包——同一个道理,同一份地基(任务 1 的
+//! 等价性实证)。但安装比详情([`fetch_skill_detail_via_blob`])多两条硬约束,
+//! 都是"信息会真的落进持久数据"逼出来的:
+//!
+//! 1. **blob 落盘会丢可执行位**(上面 ground truth 2:上游 v1.5.22 只在
+//!    zipball/clone 路径 `chmod`,`skill.files` 那条只有 `writeFile`)。所以只有
+//!    "确定不需要执行位"的纯文本扩展名才允许走 blob——白名单见
+//!    [`all_files_blob_installable`]:任何一个文件不在白名单里,**整个技能**回退
+//!    zipball,不是"跳过那一个文件"。
+//!
+//! 2. 🔴 **blob 端点不给仓库内的真实相对路径**(它的 `slug` 参数是"技能目录名",
+//!    不是路径——`wshobson/agents` 的 `code-review-excellence`,真实路径是
+//!    `plugins/developer-essentials/skills/code-review-excellence`)。任务 2 的
+//!    详情面板能把这个信息缺口混过去(`SkillDetail.path` 退化填目录名,因为已核实
+//!    详情面板从不渲染这个字段);**安装不能**——这个值会被 `acquire::record`
+//!    真实写进 `state.installed[].source.path` 与外部契约 `.skill-lock.json` 的
+//!    `skillPath`,`share.rs` 还拿它去定位"分享改动"要提交到仓库的哪个目录。
+//!    写错等于制造下一个 M6 sourceUrl/sourceType 那种坑(字段形状写错,下游判定
+//!    静默失灵,只有真的走到那条路径才会暴露)。
+//!
+//!    2026-08-17 拍板选项 A:额外发一次 `GET /repos/{o}/{r}/git/trees/{sha}?
+//!    recursive=1`([`crate::core::github::GithubClient::tree`],只回路径不回内容,
+//!    实测同一个样本 502,100 字节/5.55 秒,`truncated: false`,仍远小于
+//!    3,149,975 字节/50.4 秒的 zipball——这也是上游 `npx skills` 自己的做法,
+//!    `blob.ts` 第一步就是"Trees API → discover SKILL.md locations",不是本 app
+//!    独创),在树里找"以技能目录名结尾、目录下有 SKILL.md"的**唯一**匹配
+//!    ([`crate::core::github::resolve_skill_path`])。树被截断、零匹配、多个
+//!    同名目录——任何一种都不敢猜,一律回退 zipball(方案 B「只给更新走 blob」
+//!    放弃了首次安装提速这个核心收益;方案 C「path 退化成目录名」会把错误路径
+//!    写进持久数据与外部契约,均已否决)。
+//!
+//! 这两条检查任一不过,本节的函数就返回 `Err`,调用方(`commands::skill_install`)
+//! 静默回退到完全不动的 [`fetch_repo_skills`](zipball)全链路——与详情面板同一套
+//! "宁可少加速一次,也不猜一个可能错的结果"的姿势。安装本身仍然**完整走
+//! `acquire::acquire_prefetched`**(与 `acquire::acquire` 共用预检/落盘/记账那条
+//! 尾巴,见该函数文档)——blob 只换掉了"取数"那一步,冲突判定、
+//! `Installer::install` 的清空重建保护、`.skill-lock.json` 双写口径一个字都没有分叉。
+//!
 //! # 详情走 blob(M10 任务 2)
 //!
 //! [`fetch_skill_detail_via_blob`] 是详情面板的新首选路径:88 倍提速的对象是
@@ -55,6 +95,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::gitea;
+use crate::core::installer::SkillPayload;
 use crate::core::registry::PLAZA_REGISTRY_ID;
 use crate::core::store;
 use crate::error::AppError;
@@ -224,7 +265,7 @@ struct BlobResponse {
     files: Vec<RawBlobFile>,
 }
 
-fn plaza_blob_err(detail: String) -> AppError {
+pub(crate) fn plaza_blob_err(detail: String) -> AppError {
     AppError::new("NET_PLAZA_BLOB", "获取技能内容失败,请稍后重试").with_detail(detail)
 }
 
@@ -493,6 +534,165 @@ pub async fn fetch_skill_detail_via_blob(
     Ok(detail)
 }
 
+// ============================================================ 安装走 blob(M10 任务 3)
+//
+// 判据与设计理由见模块头「安装走 blob」一节(尤其是 path 缺口那一条,2026-08-17 拍板)。
+// 这里只放实现:三个纯逻辑函数(白名单判定、候选检查、拼装),各自独立可测,
+// 网络编排(branch_head → fetch_blob → 候选检查 → trees → resolve_skill_path →
+// 拼装)留给调用方 `commands::skill_install`(它需要访问 `GithubClient::tree` 与
+// 进程级缓存,那两样都不该让 `core::plaza` 认识——plaza 是 skills.sh 的模块)。
+
+/// blob 落盘不写权限位,只有"不可能需要执行位"的扩展名才允许走安装快路径
+/// (见模块头 ground truth 2)。
+const BLOB_INSTALL_SAFE_EXTS: &[&str] = &["md", "txt", "json", "yaml", "yml", "toml", "csv"];
+
+/// 单个文件是否"纯文本、不可能需要执行位"。
+///
+/// 判据:扩展名在保守白名单里,**且**不是 [`crate::core::skills::is_script_extension`]
+/// 认定的脚本扩展名——后者是第二道防线,哪怕白名单将来被误改动收进了脚本类后缀,
+/// 这里也会把它拦下(不是重复维护第二份扩展名表,是同一份表当两次判据用)。
+/// 大小写不敏感(`.MD` 与 `.md` 等价);多重扩展名按 `Path::extension()` 的语义只看
+/// 最后一段(`archive.tar.gz` 取到的是 `gz`,不在白名单里,按不安全处理);
+/// 没有扩展名的文件(如 `LICENSE`)直接判不安全——拿不准就回退,回退只是慢,
+/// 残缺是错。
+fn is_blob_install_safe(path: &str) -> bool {
+    if crate::core::skills::is_script_extension(path) {
+        return false;
+    }
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| BLOB_INSTALL_SAFE_EXTS.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
+/// blob 返回的文件是否**全部**命中白名单——这是"整个技能能不能走安装快路径"的
+/// 判据,不是逐文件挑着装:哪怕只有一个文件不安全,整个技能都回退 zipball。
+/// 空列表不算"全部安全"(`fetch_blob` 正常不会返回空列表,这里是双保险)。
+pub(crate) fn all_files_blob_installable(files: &[BlobFile]) -> bool {
+    !files.is_empty() && files.iter().all(|f| is_blob_install_safe(&f.path))
+}
+
+/// 已经通过"能不能装"全部检查(仓内真实路径除外)的 blob 素材。
+#[derive(Debug)]
+pub(crate) struct BlobInstallCandidate {
+    name: String,
+    description: String,
+    skill_md: String,
+    files: Vec<BlobFile>,
+}
+
+/// 检查 blob 响应是否满足"能走安装快路径"的条件(仓内真实路径除外——那个要另发
+/// 一次 trees 请求,由调用方决定要不要发,见模块头)。宁可回退:白名单不过、
+/// 缺 [`crate::core::skills::SKILL_FILE`]、frontmatter 解析失败、`internal` 标记,
+/// 任一条命中都返回 `Err`,错误码统一是 `NET_PLAZA_BLOB`(与 [`fetch_blob`] 同一套
+/// "错误码只分类不分因"姿势)。
+///
+/// `internal` 检查复现的是 zipball 路径 `discover_skills`(`DiscoverOptions::
+/// default()`)默认排除 `metadata.internal: true` 技能的既有行为——理论上装不到
+/// 这一步(详情面板早已把它过滤掉,用户点不到安装按钮),留着是防御性的第二道门,
+/// 与 [`detail_from_blob_files`] 同一套理由。
+pub(crate) fn blob_install_candidate(
+    dir_slug: &str,
+    files: Vec<BlobFile>,
+) -> Result<BlobInstallCandidate, AppError> {
+    let skill_md = files
+        .iter()
+        .find(|f| f.path == crate::core::skills::SKILL_FILE)
+        .map(|f| f.contents.clone())
+        .ok_or_else(|| {
+            plaza_blob_err(format!(
+                "blob 响应缺少 {}(dir_slug={dir_slug})",
+                crate::core::skills::SKILL_FILE
+            ))
+        })?;
+
+    if !all_files_blob_installable(&files) {
+        return Err(plaza_blob_err(format!(
+            "含不在保守白名单内的文件,回退整仓路径(dir_slug={dir_slug})"
+        )));
+    }
+
+    let parsed = crate::core::skills::parse_skill_md(&skill_md)
+        .map_err(|e| plaza_blob_err(format!("{}(dir_slug={dir_slug})", e.reason())))?;
+    if parsed.internal {
+        return Err(plaza_blob_err(format!(
+            "该技能标记为 internal,不走快路径(dir_slug={dir_slug})"
+        )));
+    }
+
+    Ok(BlobInstallCandidate {
+        name: parsed.name,
+        description: parsed.description,
+        skill_md,
+        files,
+    })
+}
+
+/// 仓内真实路径解不出来时的统一错误(树被截断 / 零匹配 / 多个同名目录,
+/// 见 [`crate::core::github::resolve_skill_path`])——与 [`blob_install_candidate`]
+/// 同一套 `NET_PLAZA_BLOB` 错误码,调用方按同一种"blob 不适用"处理,静默回退 zipball。
+pub(crate) fn blob_path_unresolved_err(dir_slug: &str, sha: &str) -> AppError {
+    plaza_blob_err(format!(
+        "无法在仓库树中为 {dir_slug} 唯一定位到真实路径,回退整仓路径(commit={sha})"
+    ))
+}
+
+/// 把已经过 [`blob_install_candidate`] 检查、且已经解出仓内真实路径(`repo_path`,
+/// 来自 [`crate::core::github::resolve_skill_path`])的素材,拼成 `acquire` 编排要的
+/// `(IndexedSkill, SkillPayload)`。纯逻辑,不碰网络。
+///
+/// - `path` 用调用方解出的真实路径(不是目录名近似值,见模块头「path 缺口」);
+/// - `has_scripts` 恒 `false`——能走到这里说明全部文件都过了
+///   [`all_files_blob_installable`],白名单里没有一个扩展名会被
+///   `is_script_extension` 认作脚本;
+/// - `content_hash` 留空:`acquire::finish`(`record`)算的是**落盘后**的
+///   `fsops::dir_content_hash`,不读 `IndexedSkill.content_hash` 这个字段
+///   ——与 zipball 路径共用同一份记账逻辑,这条"口径不许改"的护栏两条路径都遵守;
+/// - `tags`/`attribution` 给空——blob 端点没有这些信息,与"库里没有
+///   tags.json/authors.json"时的既有语义一致,不是新增的降级(与
+///   [`detail_from_blob_files`] 同一套理由)。
+pub(crate) fn finish_blob_install(
+    dir_slug: &str,
+    candidate: BlobInstallCandidate,
+    repo_path: String,
+) -> (store::IndexedSkill, SkillPayload) {
+    let skill_files: Vec<store::SkillFile> = candidate
+        .files
+        .iter()
+        .map(|f| store::SkillFile {
+            path: f.path.clone(),
+            size: Some(f.contents.len() as u64),
+        })
+        .collect();
+    let payload = payload_from_blob_files(&candidate.files);
+
+    let skill = store::IndexedSkill {
+        name: candidate.name,
+        dir_slug: dir_slug.to_string(),
+        description: candidate.description,
+        path: repo_path,
+        skill_md: candidate.skill_md,
+        files: skill_files,
+        has_scripts: false,
+        content_hash: String::new(),
+        tags: Vec::new(),
+        attribution: None,
+    };
+    (skill, payload)
+}
+
+/// blob 文件转换成待落盘的 payload。权限位一律用默认(`SkillPayload::with_file`,
+/// 不调用 `with_executable`)——blob 端点不给 unix mode,上游落盘也不 `chmod`
+/// (模块头 ground truth 2),且白名单已经把"可能需要执行位"的扩展名挡在外面,
+/// 这里没有丢失任何本该保留的信息。
+fn payload_from_blob_files(files: &[BlobFile]) -> SkillPayload {
+    let mut payload = SkillPayload::new();
+    for f in files {
+        payload = payload.with_file(&f.path, f.contents.as_bytes());
+    }
+    payload
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,4 +717,131 @@ mod tests {
     // 函数可测——覆盖挪到 tests/plaza_default_branch.rs 的 wiremock 测试里
     // (含"200 但缺 default_branch 字段"这条,2026-08-12 审查重构时新增,
     // 防止拆掉 parse_default_branch 之后这条业务规则悄悄失去覆盖)。
+
+    // ======================================================== 安装白名单(M10 任务 3)
+
+    fn f(path: &str) -> BlobFile {
+        BlobFile { path: path.to_string(), contents: String::new() }
+    }
+
+    #[test]
+    fn blob_install_safe_extensions_are_case_insensitive() {
+        assert!(is_blob_install_safe("SKILL.md"));
+        assert!(is_blob_install_safe("SKILL.MD"), "大小写不敏感");
+        assert!(is_blob_install_safe("notes.Txt"));
+    }
+
+    #[test]
+    fn blob_install_safe_takes_only_the_last_of_multiple_extensions() {
+        // Path::extension() 只看最后一段:archive.tar.gz 取到的是 gz,不在白名单里。
+        assert!(!is_blob_install_safe("archive.tar.gz"));
+        // 反过来,最后一段在白名单里就放行,即便前一段"看起来"像别的东西。
+        assert!(is_blob_install_safe("weird.name.json"));
+    }
+
+    #[test]
+    fn blob_install_safe_rejects_files_without_an_extension() {
+        // 拿不准就回退——没有扩展名一律不安全,即便文件名本身看着人畜无害。
+        assert!(!is_blob_install_safe("LICENSE"));
+        assert!(!is_blob_install_safe("README"));
+    }
+
+    #[test]
+    fn blob_install_safe_rejects_unknown_extensions() {
+        assert!(!is_blob_install_safe("logo.png"));
+        assert!(!is_blob_install_safe("archive.zip"));
+        assert!(!is_blob_install_safe("data.bin"));
+    }
+
+    #[test]
+    fn blob_install_safe_rejects_script_extensions_even_if_whitelisted_by_mistake() {
+        // 双保险:is_script_extension 是第二道防线。这里只验证现状(.sh 不在白名单里
+        // 时自然被拒),放宽白名单后的红线由 tests/plaza_install_blob.rs 的注入验证钉住
+        // ——那条测试要真的改源码才能复现,这里测的是"正常状态下 .sh 就是不安全"。
+        for ext in ["sh", "bash", "zsh", "py", "js", "mjs", "ps1", "rb"] {
+            assert!(!is_blob_install_safe(&format!("run.{ext}")), "脚本扩展名 .{ext} 不该安全");
+        }
+    }
+
+    #[test]
+    fn all_files_blob_installable_requires_every_file_to_pass() {
+        assert!(all_files_blob_installable(&[f("SKILL.md"), f("references/foo.txt")]));
+        assert!(!all_files_blob_installable(&[f("SKILL.md"), f("scripts/run.sh")]),
+            "一个文件不安全,整个技能都不算能走 blob");
+        assert!(!all_files_blob_installable(&[]), "空列表不算全部安全");
+    }
+
+    // ======================================================== blob_install_candidate
+
+    fn skill_md_only(name: &str) -> Vec<BlobFile> {
+        vec![BlobFile {
+            path: crate::core::skills::SKILL_FILE.to_string(),
+            contents: format!("---\nname: {name}\ndescription: 测试\n---\n\n正文\n"),
+        }]
+    }
+
+    #[test]
+    fn blob_install_candidate_accepts_a_pure_markdown_skill() {
+        let candidate = blob_install_candidate("demo-skill", skill_md_only("演示技能")).unwrap();
+        assert_eq!(candidate.name, "演示技能");
+    }
+
+    #[test]
+    fn blob_install_candidate_rejects_when_skill_md_is_missing() {
+        let err = blob_install_candidate("demo-skill", vec![f("notes.txt")]).unwrap_err();
+        assert_eq!(err.code, "NET_PLAZA_BLOB");
+    }
+
+    #[test]
+    fn blob_install_candidate_rejects_a_script_file() {
+        let mut files = skill_md_only("演示技能");
+        files.push(BlobFile { path: "scripts/run.sh".into(), contents: "#!/bin/sh\n".into() });
+        let err = blob_install_candidate("demo-skill", files).unwrap_err();
+        assert_eq!(err.code, "NET_PLAZA_BLOB");
+    }
+
+    #[test]
+    fn blob_install_candidate_rejects_a_binary_file() {
+        let mut files = skill_md_only("演示技能");
+        files.push(BlobFile { path: "assets/logo.png".into(), contents: "not really png bytes".into() });
+        let err = blob_install_candidate("demo-skill", files).unwrap_err();
+        assert_eq!(err.code, "NET_PLAZA_BLOB");
+    }
+
+    #[test]
+    fn blob_install_candidate_rejects_internal_skills() {
+        let files = vec![BlobFile {
+            path: crate::core::skills::SKILL_FILE.to_string(),
+            contents: "---\nname: 内部技能\ndescription: 测试\nmetadata:\n  internal: true\n---\n\n正文\n".into(),
+        }];
+        let err = blob_install_candidate("demo-skill", files).unwrap_err();
+        assert_eq!(err.code, "NET_PLAZA_BLOB");
+    }
+
+    // ======================================================== finish_blob_install
+
+    #[test]
+    fn finish_blob_install_uses_the_resolved_repo_path_not_the_dir_slug() {
+        let candidate = blob_install_candidate("code-review-excellence", skill_md_only("代码审查")).unwrap();
+        let (skill, payload) = finish_blob_install(
+            "code-review-excellence",
+            candidate,
+            "plugins/developer-essentials/skills/code-review-excellence".to_string(),
+        );
+        // 这条断言就是 path 缺口那道护栏本身:path 必须是解出来的真实路径,
+        // 不能退化成 dir_slug——两者在这个样本里恰好不相等,能直接抓到"退化成近似值"
+        // 这类回归(fixture 陷阱模式 #3 的对照:两个概念绝不能取同一个值)。
+        assert_eq!(skill.path, "plugins/developer-essentials/skills/code-review-excellence");
+        assert_ne!(skill.path, skill.dir_slug);
+        assert!(!skill.has_scripts);
+        assert!(payload.files().contains_key(crate::core::skills::SKILL_FILE));
+    }
+
+    #[test]
+    fn payload_from_blob_files_uses_default_permissions_only() {
+        let files = skill_md_only("演示技能");
+        let payload = payload_from_blob_files(&files);
+        let entry = payload.files().get(crate::core::skills::SKILL_FILE).unwrap();
+        assert_eq!(entry.unix_mode, None, "blob 落盘不猜 chmod,一律走默认权限位");
+    }
 }

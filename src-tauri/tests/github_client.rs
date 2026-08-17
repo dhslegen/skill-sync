@@ -7,7 +7,7 @@
 
 use skillsync_lib::core::github::{api_base_for, GithubClient};
 use skillsync_lib::core::gitea::RepoRef;
-use wiremock::matchers::{header, header_exists, method, path};
+use wiremock::matchers::{header, header_exists, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const ZIPBALL: &[u8] = include_bytes!("fixtures/github-zipball-modes.zip");
@@ -171,4 +171,86 @@ async fn anonymous_requests_carry_no_authorization_and_token_becomes_bearer() {
         .branch_head(&repo())
         .await
         .expect("匿名请求带了 Authorization 头会命中 500 桩");
+}
+
+// ============================================================ tree(M10 任务 3)
+
+#[tokio::test]
+async fn tree_parses_paths_and_the_truncated_flag() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v3/repos/junegunn/fzf/git/trees/abc1234"))
+        .and(query_param("recursive", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"sha":"abc1234","truncated":false,"tree":[
+                {"path":"README.md","type":"blob"},
+                {"path":"plugins","type":"tree"},
+                {"path":"plugins/skills/demo/SKILL.md","type":"blob"}
+            ]}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let tree = client(&server, None).tree(&repo(), "abc1234").await.unwrap();
+    assert!(!tree.truncated);
+    assert_eq!(
+        tree.paths,
+        vec![
+            "README.md".to_string(),
+            "plugins".to_string(),
+            "plugins/skills/demo/SKILL.md".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn tree_surfaces_the_truncated_flag_when_the_repo_is_too_large() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v3/repos/junegunn/fzf/git/trees/abc1234"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"sha":"abc1234","truncated":true,"tree":[{"path":"README.md","type":"blob"}]}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let tree = client(&server, None).tree(&repo(), "abc1234").await.unwrap();
+    assert!(tree.truncated, "被截断的树必须原样把 truncated=true 带出来,不能吞掉");
+}
+
+#[tokio::test]
+async fn tree_maps_404_the_same_way_as_other_endpoints() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v3/repos/junegunn/fzf/git/trees/deadbee"))
+        .respond_with(ResponseTemplate::new(404).set_body_string(r#"{"message":"Not Found"}"#))
+        .mount(&server)
+        .await;
+
+    let err = client(&server, None).tree(&repo(), "deadbee").await.unwrap_err();
+    assert_eq!(err.code, "REPO_NOT_FOUND");
+}
+
+#[tokio::test]
+async fn tree_request_uses_the_given_sha_not_the_branch_name() {
+    // repo() 的分支是 master,但 tree() 必须用调用方传入的 commit sha 拼 URL——
+    // 树与 blob 内容要是同一个快照,传分支名会在分支推进后撕裂。
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v3/repos/junegunn/fzf/git/trees/master"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v3/repos/junegunn/fzf/git/trees/e365764"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"sha":"e365764","truncated":false,"tree":[]}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    client(&server, None)
+        .tree(&repo(), "e365764")
+        .await
+        .expect("必须命中按 sha 拼的 URL,而不是按分支名拼的那条 404 桩");
 }

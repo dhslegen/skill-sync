@@ -1290,6 +1290,66 @@ pub struct InstallArgs {
     pub resolution: Option<acquire::Resolution>,
 }
 
+/// 广场安装走 blob 时,仓库树的进程内缓存(M10 任务 3)。键是 `(owner, repo, sha)`,
+/// 值是那次 `git/trees` 响应的解析结果。**这份缓存不需要失效逻辑,也不该加**:
+/// key 里带着具体的 commit sha,同一个 sha 对应的树内容是不可变的——不像
+/// `plaza_detail_cache`(键只到 owner/repo,同一个键在不同时间点可能对应不同内容,
+/// 所以那边要专门论证"为什么不用管失效")。只活在这一次运行的进程里,不落盘,
+/// 存在的意义是"同一个仓装多个技能时不必重复拉一次 500KB 级的树"。
+type RepoTreeCache = Mutex<HashMap<(String, String, String), github::RepoTree>>;
+
+fn repo_tree_cache() -> &'static RepoTreeCache {
+    static CACHE: OnceLock<RepoTreeCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 缓存优先地取某个 `(owner, repo, sha)` 的仓库树:命中直接返回;否则现拉一次
+/// (`GithubClient::tree`)并记进缓存。**GitHub 的树 API 也吃匿名 60 次/小时的配额**
+/// ——这份缓存是唯一的缓解手段;登录后走带凭证的 client(既有机制,见
+/// `read_source`)配额会宽松很多,这里不用额外做什么。
+async fn cached_repo_tree(
+    cache: &RepoTreeCache,
+    github_client: &github::GithubClient,
+    repo: &RepoRef,
+    sha: &str,
+) -> Result<github::RepoTree, AppError> {
+    let key = (repo.owner.clone(), repo.repo.clone(), sha.to_string());
+    if let Some(hit) = cache.lock().expect("仓库树缓存锁不该中毒").get(&key).cloned() {
+        return Ok(hit);
+    }
+    let tree = github_client.tree(repo, sha).await?;
+    cache
+        .lock()
+        .expect("仓库树缓存锁不该中毒")
+        .insert(key, tree.clone());
+    Ok(tree)
+}
+
+/// 广场安装的 blob 快路径编排(M10 任务 3):`branch_head`(拿 sha)→ blob 取数
+/// → 白名单/frontmatter 检查([`plaza::blob_install_candidate`])→ 仓库树
+/// (缓存,见 [`cached_repo_tree`])解出真实路径 → 拼成 `acquire::acquire_prefetched`
+/// 要的素材。
+///
+/// 任意一步失败都原样把 `Err` 交还给调用方——调用方([`skill_install`])据此静默
+/// 回退到完全不动的 zipball 路径,这里不需要、也不应该替调用方决定"要不要重试"。
+async fn install_via_plaza_blob(
+    github_client: &github::GithubClient,
+    repo: &RepoRef,
+    blob_http: &reqwest::Client,
+    blob_api_base: &str,
+    tree_cache: &RepoTreeCache,
+    dir_slug: &str,
+) -> Result<(store::IndexedSkill, installer::SkillPayload, String), AppError> {
+    let head = github_client.branch_head(repo).await?;
+    let files = plaza::fetch_blob(blob_http, blob_api_base, &repo.owner, &repo.repo, dir_slug).await?;
+    let candidate = plaza::blob_install_candidate(dir_slug, files)?;
+    let tree = cached_repo_tree(tree_cache, github_client, repo, &head.sha).await?;
+    let path = github::resolve_skill_path(&tree, dir_slug)
+        .ok_or_else(|| plaza::blob_path_unresolved_err(dir_slug, &head.sha))?;
+    let (skill, payload) = plaza::finish_blob_install(dir_slug, candidate, path);
+    Ok((skill, payload, head.sha))
+}
+
 #[tauri::command]
 pub async fn skill_install(
     app: tauri::AppHandle,
@@ -1307,18 +1367,58 @@ pub async fn skill_install(
         let _ = app.emit(channel.as_str(), stage);
     };
 
+    let req = acquire::AcquireRequest {
+        source: acquire::SourceMeta { registry_id, kind, base_url: &base_url },
+        repo: &repo,
+        dir_slug: &args.dir_slug,
+        agent_names: &args.agent_ids,
+        resolution: args.resolution,
+    };
+
+    // 广场技能优先尝试 blob 快路径(M10 任务 3):不适用的一切情况(见
+    // `plaza::blob_install_candidate`/`install_via_plaza_blob` 的判据清单,尤其是
+    // "仓内真实路径解不出来"那一条,模块头「path 缺口」有完整说明)一律静默回退到
+    // 完全不动的 zipball 路径。只对 `PLAZA_REGISTRY_ID` 尝试——skills.sh 的 blob
+    // 端点只收录了广场技能,自定义/内建源没有对应数据,试了也必然 404。
+    if registry_id == registry::PLAZA_REGISTRY_ID {
+        if let SourceClient::Github(github_client) = &client {
+            // 这段窗口(blob + trees,实测 6 秒级)没有阶段性进度可报,先给一个
+            // Fetching 让进度条动起来,免得用户以为卡住了;真正回退 zipball 时
+            // `acquire::acquire` 会再发一次同样的 Fetching,重复发同一个值无害。
+            emit(acquire::Stage::Fetching);
+            let blob_http = http_client_for(registry_id)?;
+            if let Ok((skill, payload, remote_sha)) = install_via_plaza_blob(
+                github_client,
+                &repo,
+                &blob_http,
+                plaza::PLAZA_API_BASE,
+                repo_tree_cache(),
+                &args.dir_slug,
+            )
+            .await
+            {
+                return acquire::acquire_prefetched(
+                    &registry,
+                    &SystemEnv,
+                    &store,
+                    req,
+                    &skill,
+                    payload,
+                    &remote_sha,
+                    &now_iso8601(),
+                    &emit,
+                )
+                .await;
+            }
+        }
+    }
+
     acquire::acquire(
         &client,
         &registry,
         &SystemEnv,
         &store,
-        acquire::AcquireRequest {
-            source: acquire::SourceMeta { registry_id, kind, base_url: &base_url },
-            repo: &repo,
-            dir_slug: &args.dir_slug,
-            agent_names: &args.agent_ids,
-            resolution: args.resolution,
-        },
+        req,
         &now_iso8601(),
         auth::now_unix(),
         &emit,
@@ -2811,5 +2911,485 @@ mod tests {
 
         assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(result[0].dir_slug, "weekly-report");
+    }
+
+    // ============================================================ 安装走 blob(M10 任务 3)
+    //
+    // `install_via_plaza_blob` 本身"什么条件下该 Err"是这里的重点(白名单/内部标记/
+    // 路径解不出来);落盘之后的 DoD(hash 等式、path 与 zipball 路径一致)在下面
+    // 那条端到端测试里,用真实的 `acquire::acquire_prefetched`/`acquire::acquire`
+    // 两条路径分别落到独立临时 HOME,逐字段比对——两条路径共用同一个 `finish`,
+    // 这条测试钉的正是"共用"这件事本身没有名不副实。
+
+    /// 与 `plaza_acquire.rs` 同款的最小 `AgentEnv`:指向临时目录,不碰真实 `$HOME`。
+    struct TmpEnv {
+        home: std::path::PathBuf,
+    }
+    impl crate::core::agents::AgentEnv for TmpEnv {
+        fn home(&self) -> Option<std::path::PathBuf> {
+            Some(self.home.clone())
+        }
+        fn var(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn path_exists(&self, path: &std::path::Path) -> bool {
+            path.exists()
+        }
+        fn read_to_string(&self, path: &std::path::Path) -> Option<String> {
+            std::fs::read_to_string(path).ok()
+        }
+    }
+
+    async fn mount_branch_head(
+        server: &wiremock::MockServer,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        sha: &str,
+    ) {
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/api/v3/repos/{owner}/{repo}/branches/{branch}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": branch,
+                "commit": { "sha": sha, "commit": { "committer": { "date": "2026-08-17T10:00:00Z" } } }
+            })))
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_tree(
+        server: &wiremock::MockServer,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+        paths: &[&str],
+        truncated: bool,
+    ) {
+        let tree: Vec<_> = paths.iter().map(|p| serde_json::json!({"path": p, "type": "blob"})).collect();
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/api/v3/repos/{owner}/{repo}/git/trees/{sha}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "sha": sha, "truncated": truncated, "tree": tree
+            })))
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_blob(
+        server: &wiremock::MockServer,
+        owner: &str,
+        repo: &str,
+        slug: &str,
+        status: u16,
+        body: serde_json::Value,
+    ) {
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!("/api/download/{owner}/{repo}/{slug}")))
+            .respond_with(wiremock::ResponseTemplate::new(status).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    fn nested_repo() -> RepoRef {
+        RepoRef { owner: "wshobson".into(), repo: "agents".into(), branch: "main".into() }
+    }
+
+    #[tokio::test]
+    async fn install_via_plaza_blob_resolves_the_real_nested_path_not_the_dir_slug() {
+        let server = wiremock::MockServer::start().await;
+        let repo = nested_repo();
+        mount_branch_head(&server, "wshobson", "agents", "main", "aaa1111").await;
+        mount_tree(
+            &server,
+            "wshobson",
+            "agents",
+            "aaa1111",
+            &[
+                "plugins/developer-essentials/skills/code-review-excellence/SKILL.md",
+                "README.md",
+            ],
+            false,
+        )
+        .await;
+        mount_blob(
+            &server,
+            "wshobson",
+            "agents",
+            "code-review-excellence",
+            200,
+            serde_json::json!({
+                "files": [{"path": "SKILL.md", "contents": "---\nname: 代码审查\ndescription: 演示\n---\n\n正文\n"}]
+            }),
+        )
+        .await;
+
+        let github_client = github::GithubClient::new(&server.uri(), None, reqwest::Client::new());
+        let cache: RepoTreeCache = Mutex::new(HashMap::new());
+
+        let (skill, payload, sha) = install_via_plaza_blob(
+            &github_client,
+            &repo,
+            &reqwest::Client::new(),
+            &server.uri(),
+            &cache,
+            "code-review-excellence",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(sha, "aaa1111");
+        assert_eq!(
+            skill.path,
+            "plugins/developer-essentials/skills/code-review-excellence",
+            "必须是解出来的真实路径,不能退化成目录名近似值"
+        );
+        assert_ne!(skill.path, skill.dir_slug);
+        assert!(payload.files().contains_key("SKILL.md"));
+    }
+
+    /// 白名单不过必须**在发 trees 请求之前**就拒绝——用 `.expect(0)` 硬断言这一点,
+    /// 不只是断言最终结果是 Err(那样测不出"有没有多打一次不必要的请求")。
+    #[tokio::test]
+    async fn install_via_plaza_blob_rejects_before_calling_trees_when_a_script_file_is_present() {
+        let server = wiremock::MockServer::start().await;
+        let repo = some_repo();
+        mount_branch_head(&server, "vercel-labs", "skills", "main", "aaa1111").await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/api/v3/repos/vercel-labs/skills/git/trees/.*",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"sha": "aaa1111", "truncated": false, "tree": []}),
+            ))
+            .expect(0)
+            .mount(&server)
+            .await;
+        mount_blob(
+            &server,
+            "vercel-labs",
+            "skills",
+            "weekly-report",
+            200,
+            serde_json::json!({
+                "files": [
+                    {"path": "SKILL.md", "contents": "---\nname: 周报\ndescription: 演示\n---\n\n正文\n"},
+                    {"path": "scripts/run.sh", "contents": "#!/bin/sh\necho hi\n"}
+                ]
+            }),
+        )
+        .await;
+
+        let github_client = github::GithubClient::new(&server.uri(), None, reqwest::Client::new());
+        let cache: RepoTreeCache = Mutex::new(HashMap::new());
+
+        let err = install_via_plaza_blob(
+            &github_client,
+            &repo,
+            &reqwest::Client::new(),
+            &server.uri(),
+            &cache,
+            "weekly-report",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "NET_PLAZA_BLOB");
+    }
+
+    /// 同上,换成二进制文件——白名单挡的不只是脚本。
+    #[tokio::test]
+    async fn install_via_plaza_blob_rejects_before_calling_trees_when_a_binary_file_is_present() {
+        let server = wiremock::MockServer::start().await;
+        let repo = some_repo();
+        mount_branch_head(&server, "vercel-labs", "skills", "main", "aaa1111").await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/api/v3/repos/vercel-labs/skills/git/trees/.*",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"sha": "aaa1111", "truncated": false, "tree": []}),
+            ))
+            .expect(0)
+            .mount(&server)
+            .await;
+        mount_blob(
+            &server,
+            "vercel-labs",
+            "skills",
+            "weekly-report",
+            200,
+            serde_json::json!({
+                "files": [
+                    {"path": "SKILL.md", "contents": "---\nname: 周报\ndescription: 演示\n---\n\n正文\n"},
+                    {"path": "assets/logo.png", "contents": "not really png bytes"}
+                ]
+            }),
+        )
+        .await;
+
+        let github_client = github::GithubClient::new(&server.uri(), None, reqwest::Client::new());
+        let cache: RepoTreeCache = Mutex::new(HashMap::new());
+
+        let err = install_via_plaza_blob(
+            &github_client,
+            &repo,
+            &reqwest::Client::new(),
+            &server.uri(),
+            &cache,
+            "weekly-report",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "NET_PLAZA_BLOB");
+    }
+
+    /// 树被截断(超大仓)必须回退,即便现存路径里恰好只有一个匹配。
+    #[tokio::test]
+    async fn install_via_plaza_blob_rejects_when_the_tree_is_truncated() {
+        let server = wiremock::MockServer::start().await;
+        let repo = nested_repo();
+        mount_branch_head(&server, "wshobson", "agents", "main", "aaa1111").await;
+        mount_tree(
+            &server,
+            "wshobson",
+            "agents",
+            "aaa1111",
+            &["plugins/developer-essentials/skills/code-review-excellence/SKILL.md"],
+            true, // truncated
+        )
+        .await;
+        mount_blob(
+            &server,
+            "wshobson",
+            "agents",
+            "code-review-excellence",
+            200,
+            serde_json::json!({"files": [{"path": "SKILL.md", "contents": "---\nname: 代码审查\ndescription: 演示\n---\n\n正文\n"}]}),
+        )
+        .await;
+
+        let github_client = github::GithubClient::new(&server.uri(), None, reqwest::Client::new());
+        let cache: RepoTreeCache = Mutex::new(HashMap::new());
+
+        let err = install_via_plaza_blob(
+            &github_client,
+            &repo,
+            &reqwest::Client::new(),
+            &server.uri(),
+            &cache,
+            "code-review-excellence",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "NET_PLAZA_BLOB");
+    }
+
+    #[tokio::test]
+    async fn cached_repo_tree_hits_cache_on_second_call_with_the_same_sha() {
+        let server = wiremock::MockServer::start().await;
+        // `.expect(1)` 是断言,不是限流:如果代码没走缓存而真发了第二次请求,
+        // wiremock 仍会正常应答两次,只有在 server 于测试结束时 drop 校验期望
+        // 才会因"实际命中 2 次 != 期望 1 次"而 panic——与本文件其余 `.expect(0)`
+        // 用例同一套验证方式。
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/v3/repos/vercel-labs/skills/git/trees/aaa1111",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"sha": "aaa1111", "truncated": false, "tree": []}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let github_client = github::GithubClient::new(&server.uri(), None, reqwest::Client::new());
+        let cache: RepoTreeCache = Mutex::new(HashMap::new());
+        let repo = some_repo();
+
+        let first = cached_repo_tree(&cache, &github_client, &repo, "aaa1111").await.unwrap();
+        let second = cached_repo_tree(&cache, &github_client, &repo, "aaa1111").await.unwrap();
+        assert_eq!(first.paths, second.paths);
+    }
+
+    /// 用 zip crate 构建一个与 blob mock 内容逐字节相同的压缩包,顶层前缀模拟 GitHub
+    /// 的 `{owner}-{repo}-{短sha}/` 形态,技能放在与旗舰样本同款的嵌套路径下——
+    /// path 缺口那道护栏必须在"嵌套目录"这个真实会发生的场景下验证,顶层技能测不出
+    /// 差别(dir_slug 与 path 恰好相等,退化成近似值也不会被抓到)。
+    fn nested_zip(owner: &str, repo: &str, sha: &str, slug: &str, skill_md: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts: zip::write::SimpleFileOptions = Default::default();
+            let root = format!("{owner}-{repo}-{sha}");
+            w.add_directory(format!("{root}/"), opts).unwrap();
+            w.start_file(
+                format!("{root}/plugins/developer-essentials/skills/{slug}/SKILL.md"),
+                opts,
+            )
+            .unwrap();
+            std::io::Write::write_all(&mut w, skill_md.as_bytes()).unwrap();
+            w.finish().unwrap();
+        }
+        buf
+    }
+
+    /// DoD 头号护栏(逐条见任务 3 报告):
+    /// 1. 落盘后 `fsops::dir_content_hash` 必须等于索引里的 `content_hash`;
+    /// 2. `state.installed[].source.path` 与 `.skill-lock.json` 的 `skillPath`
+    ///    必须与走 zipball 装**同一个技能**时写下的值完全相等——这两条护栏此前都
+    ///    只存在于报告文字里,这条测试是它们唯一的代码形态。
+    #[tokio::test]
+    async fn blob_install_matches_the_zipball_install_on_content_hash_and_recorded_path() {
+        const NOW: &str = "2026-08-17T12:00:00.000Z";
+        let owner = "wshobson";
+        let repo_name = "agents";
+        let branch = "main";
+        let sha = "aaa1111";
+        let slug = "code-review-excellence";
+        let skill_md = "---\nname: 代码审查\ndescription: 演示\n---\n\n正文,长度无所谓,只要两条路径写的字节相同。\n";
+        let nested_path = format!("plugins/developer-essentials/skills/{slug}");
+
+        let server = wiremock::MockServer::start().await;
+        mount_branch_head(&server, owner, repo_name, branch, sha).await;
+        mount_tree(
+            &server,
+            owner,
+            repo_name,
+            sha,
+            &[&format!("{nested_path}/SKILL.md"), "README.md"],
+            false,
+        )
+        .await;
+        mount_blob(
+            &server,
+            owner,
+            repo_name,
+            slug,
+            200,
+            serde_json::json!({"files": [{"path": "SKILL.md", "contents": skill_md}]}),
+        )
+        .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/api/v3/repos/{owner}/{repo_name}/zipball/{branch}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(nested_zip(owner, repo_name, sha, slug, skill_md)))
+            .mount(&server)
+            .await;
+
+        let github_client = github::GithubClient::new(&server.uri(), None, reqwest::Client::new());
+        let repo = RepoRef { owner: owner.into(), repo: repo_name.into(), branch: branch.into() };
+        let registry = AgentRegistry::builtin();
+        let tmp = tempfile::tempdir().unwrap();
+
+        // ---- 索引侧的 content_hash:与生产完全同一条建索引路径(zipball 是唯一真相源)----
+        let head = github_client.branch_head(&repo).await.unwrap();
+        let archive = github_client.download_archive(&repo).await.unwrap();
+        let index = store::build_index("plaza", &repo, &head, &archive, 0);
+        let indexed = index.skills.iter().find(|s| s.dir_slug == slug).expect("zipball 里应发现到这个技能");
+        assert_eq!(indexed.path, nested_path, "sanity:索引侧解出的真实路径应与嵌套 fixture 一致");
+
+        // 普通函数而不是闭包:`AcquireRequest<'a>` 要求返回值的生命周期跟着入参走
+        // (`for<'a> Fn(&'a RepoRef) -> AcquireRequest<'a>`),闭包类型推导表达不出
+        // 这个高阶生命周期,函数的生命周期省略规则天然支持。
+        fn req_for<'a>(repo: &'a RepoRef, slug: &'a str) -> acquire::AcquireRequest<'a> {
+            acquire::AcquireRequest {
+                source: acquire::SourceMeta {
+                    registry_id: "plaza",
+                    kind: "github",
+                    base_url: "https://github.com",
+                },
+                repo,
+                dir_slug: slug,
+                agent_names: &[],
+                resolution: None,
+            }
+        }
+
+        // ---- blob 路径:install_via_plaza_blob → acquire_prefetched 落盘 ----
+        let tree_cache: RepoTreeCache = Mutex::new(HashMap::new());
+        let (skill, payload, remote_sha) = install_via_plaza_blob(
+            &github_client,
+            &repo,
+            &reqwest::Client::new(),
+            &server.uri(),
+            &tree_cache,
+            slug,
+        )
+        .await
+        .unwrap();
+        assert_eq!(skill.path, indexed.path);
+
+        let env_blob = TmpEnv { home: tmp.path().join("blob-home") };
+        let store_blob = state::Store::new(env_blob.home.join(".skillsync"));
+        let outcome = acquire::acquire_prefetched(
+            &registry,
+            &env_blob,
+            &store_blob,
+            req_for(&repo, slug),
+            &skill,
+            payload,
+            &remote_sha,
+            NOW,
+            &|_: acquire::Stage| {},
+        )
+        .await
+        .unwrap();
+        let acquire::AcquireOutcome::Installed { report, .. } = outcome else {
+            panic!("全新安装不该撞冲突: {outcome:?}")
+        };
+
+        // ---- DoD①:落盘后的 hash 必须与索引里的 content_hash 相等 ----
+        let canonical = std::path::PathBuf::from(&report.canonical_dir);
+        let disk_hash = crate::core::fsops::dir_content_hash(&canonical).unwrap();
+        assert_eq!(
+            disk_hash, indexed.content_hash,
+            "blob 装出来的字节必须与索引里的 content_hash 对得上——不等就是界面永远误报'有更新'"
+        );
+
+        let st_blob = store_blob.load_state().unwrap().value;
+        assert_eq!(st_blob.installed[0].source.path, indexed.path);
+
+        // ---- 对照:zipball 路径装**同一个技能**,两条路径落到独立的临时 HOME ----
+        let env_zip = TmpEnv { home: tmp.path().join("zip-home") };
+        let store_zip = state::Store::new(env_zip.home.join(".skillsync"));
+        acquire::acquire(
+            &github_client,
+            &registry,
+            &env_zip,
+            &store_zip,
+            req_for(&repo, slug),
+            NOW,
+            0,
+            &|_: acquire::Stage| {},
+        )
+        .await
+        .unwrap();
+        let st_zip = store_zip.load_state().unwrap().value;
+
+        // ---- DoD②:state.installed[].source.path 两条路径必须完全相等 ----
+        assert_eq!(
+            st_blob.installed[0].source.path, st_zip.installed[0].source.path,
+            "blob 装与 zipball 装同一个技能,state.installed[].source.path 必须完全相等"
+        );
+        assert_eq!(st_blob.installed[0].source.path, nested_path);
+
+        // ---- DoD②(续):.skill-lock.json 的 skillPath 两条路径也必须完全相等 ----
+        let lock_blob: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(env_blob.home.join(".agents").join(".skill-lock.json")).unwrap(),
+        )
+        .unwrap();
+        let lock_zip: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(env_zip.home.join(".agents").join(".skill-lock.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            lock_blob["skills"][slug]["skillPath"], lock_zip["skills"][slug]["skillPath"],
+            ".skill-lock.json 的 skillPath 两条路径必须完全相等"
+        );
+        assert_eq!(lock_blob["skills"][slug]["skillPath"], nested_path);
     }
 }

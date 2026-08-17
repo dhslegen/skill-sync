@@ -221,6 +221,10 @@ impl SourceMeta<'_> {
     }
 }
 
+/// 全部字段都是 `Copy` 类型(引用/切片/`Option<Resolution>`),派生 `Copy` 让
+/// 同一个请求能先喂给 blob 快路径试一次、失败再原样喂给 zipball 路径——不然
+/// 调用方(`commands::skill_install`)得手写两份几乎一样的构造代码(M10 任务 3)。
+#[derive(Clone, Copy)]
 pub struct AcquireRequest<'a> {
     pub source: SourceMeta<'a>,
     pub repo: &'a RepoRef,
@@ -275,9 +279,6 @@ pub async fn acquire(
     fetched_at: i64,
     progress: ProgressSink<'_>,
 ) -> Result<AcquireOutcome, AppError> {
-    // 这段期间的文件事件不上报:`Installer::install` 是清空重建,监听器若在此时
-    // 触发,前端会拿到一个技能凭空消失或只写了一半的瞬间(见 core::watcher 模块头)。
-    let _quiet = crate::core::watcher::app_write();
     progress(Stage::Fetching);
     // 先问分支头再下载:记账要记**实际装下来的那个版本**。
     // 拿商店缓存里的 sha 去记会在"浏览时是 A、点安装时远端已到 B"的情况下永久记错,
@@ -305,13 +306,65 @@ pub async fn acquire(
         })?;
 
     let payload = extract_payload(&archive, skill);
+
+    finish(registry, env, store, req, skill, payload, &head.sha, now, progress).await
+}
+
+/// 广场安装的 blob 快路径(M10 任务 3):取数那一步(下载压缩包 → 建索引 →
+/// 找到技能 → 抽取 payload)已经由调用方(`commands::skill_install` 的 plaza 分支,
+/// 经 `core::plaza::blob_install_candidate`/`finish_blob_install` 拼好),不再重复
+/// 下载整仓压缩包。**预检 → 落盘 → 建链 → 记账这条尾巴与 [`acquire`] 完全共用**
+/// (都是 [`finish`]),这正是"守卫在 acquire、不许绕开"这条硬约束落地的地方——
+/// blob 路径与 zipball 路径唯一的差别只在"payload 从哪来",冲突判定、
+/// `Installer::install` 的清空重建保护、`.skill-lock.json` 双写口径一个字都没有分叉。
+///
+/// **不刷新索引缓存**:blob 只知道"这一个技能",拿它建一份只有一条记录的索引
+/// 缓存写盘,会让这个仓后续正常浏览(切到「按仓浏览」)只看到一个技能——宁可让
+/// 下一次浏览触发一次完整的 zipball 刷新(既有行为),也不写一份残缺缓存。
+#[allow(clippy::too_many_arguments)]
+pub async fn acquire_prefetched(
+    registry: &AgentRegistry,
+    env: &dyn AgentEnv,
+    store: &Store,
+    req: AcquireRequest<'_>,
+    skill: &IndexedSkill,
+    payload: SkillPayload,
+    remote_sha: &str,
+    now: &str,
+    progress: ProgressSink<'_>,
+) -> Result<AcquireOutcome, AppError> {
+    finish(registry, env, store, req, skill, payload, remote_sha, now, progress).await
+}
+
+/// [`acquire`]/[`acquire_prefetched`] 共用的尾巴:预检 → 落盘 → 建链 → 记账。
+/// 两者唯一的区别是"payload/skill/remote_sha 怎么来的"(前者现下载现建索引,
+/// 后者由调用方已经拼好),从这里开始完全同一条逻辑,这也是"守卫在 acquire"
+/// 这条硬约束在代码层面的体现——没有第二份预检/记账实现。
+#[allow(clippy::too_many_arguments)]
+async fn finish(
+    registry: &AgentRegistry,
+    env: &dyn AgentEnv,
+    store: &Store,
+    req: AcquireRequest<'_>,
+    skill: &IndexedSkill,
+    payload: SkillPayload,
+    remote_sha: &str,
+    now: &str,
+    progress: ProgressSink<'_>,
+) -> Result<AcquireOutcome, AppError> {
+    // 这段期间的文件事件不上报:`Installer::install` 是清空重建,监听器若在此时
+    // 触发,前端会拿到一个技能凭空消失或只写了一半的瞬间(见 core::watcher 模块头)。
+    let _quiet = crate::core::watcher::app_write();
+
     // install() 一进去就 reset_dir。空 payload 会把 canonical 清成空目录,
     // 也就是"技能还在列表里,装完却是个空壳"——宁可报错。
     //
-    // 说明:走到这里 payload 理论上不可能为空——索引是从同一份压缩包的文本树建的,
-    // 发现到 SKILL.md 就意味着 entries 里也有它(tree ⊂ entries)。留着这道检查是因为
-    // 它守的是 `reset_dir` 这个破坏性动作,而**唯一可能让它触发的是 prefix 拼错**
-    // ——那条逻辑另有单测(`extract_payload_*`)直接钉住。
+    // 说明:zipball 路径走到这里 payload 理论上不可能为空——索引是从同一份压缩包的
+    // 文本树建的,发现到 SKILL.md 就意味着 entries 里也有它(tree ⊂ entries);
+    // blob 路径同样不可能为空——`blob_install_candidate` 已经确认过响应里有
+    // `SKILL.md`。留着这道检查是因为它守的是 `reset_dir` 这个破坏性动作,
+    // 两条路径各自唯一可能让它触发的原因(前者 prefix 拼错、后者上游响应形状突变)
+    // 都另有各自的单测直接钉住。
     if payload.is_empty() {
         return Err(AppError::new(
             "REPO_EMPTY_SKILL",
@@ -328,7 +381,7 @@ pub async fn acquire(
         env,
         &loaded.value,
         req.dir_slug,
-        &head.sha,
+        remote_sha,
         Some(req.repo),
     )?;
 
@@ -381,7 +434,7 @@ pub async fn acquire(
         &report,
         skill,
         req,
-        &head.sha,
+        remote_sha,
         now,
         keep_local,
         canonical_visible,

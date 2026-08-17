@@ -114,6 +114,39 @@ impl GithubClient {
         gitea::unzip_archive(&bytes)
     }
 
+    /// 递归拉某个 commit 的完整目录树,只回路径不回内容(M10 任务 3)。
+    ///
+    /// **必须传 blob 那次请求拿到的同一个 commit sha**,不能传分支名——树与
+    /// blob 内容要是同一个快照,否则会出现"树是新的、blob 内容是旧的"这种撕裂
+    /// (见 `core::plaza` 模块头「安装走 blob」一节)。存在的意义是把
+    /// skills.sh blob 端点只给的"技能目录名"换算回仓库内的真实相对路径
+    /// (`resolve_skill_path`),同一个仓库装多个技能时,调用方应按
+    /// `(owner, repo, sha)` 缓存这次响应——同一个 sha 的树内容不可变,
+    /// 不需要任何失效逻辑(见 `commands.rs` 的 `cached_repo_tree`)。
+    pub async fn tree(&self, r: &RepoRef, sha: &str) -> Result<RepoTree, AppError> {
+        #[derive(Deserialize)]
+        struct Entry {
+            path: String,
+        }
+        #[derive(Deserialize)]
+        struct Response {
+            #[serde(default)]
+            tree: Vec<Entry>,
+            #[serde(default)]
+            truncated: bool,
+        }
+        let url = format!(
+            "{}/repos/{}/{}/git/trees/{}?recursive=1",
+            self.api_base, r.owner, r.repo, sha
+        );
+        let resp = self.send(url).await?;
+        let parsed: Response = parse_json(resp).await?;
+        Ok(RepoTree {
+            paths: parsed.tree.into_iter().map(|e| e.path).collect(),
+            truncated: parsed.truncated,
+        })
+    }
+
     async fn send(&self, url: String) -> Result<reqwest::Response, AppError> {
         let mut req = self
             .http
@@ -317,6 +350,118 @@ impl RepoSource for GithubClient {
     }
     async fn download_archive(&self, r: &RepoRef) -> Result<RepoArchive, AppError> {
         GithubClient::download_archive(self, r).await
+    }
+}
+
+// ============================================================ git trees(M10 任务 3)
+
+/// 一次 `git/trees?recursive=1` 响应,只保留后续路径匹配需要的部分。
+#[derive(Debug, Clone)]
+pub struct RepoTree {
+    /// 树里每一条(文件与目录)的仓库根相对路径。GitHub 响应里还有个 `type`
+    /// (`blob`/`tree`)字段,这里用不上——[`resolve_skill_path`] 只关心哪些路径
+    /// 以 `/SKILL.md` 结尾,那已经足够定位到技能目录,不需要区分文件与目录节点。
+    pub paths: Vec<String>,
+    /// 仓库太大,GitHub 把这次递归结果截断了——**这份树不完整,不可信**。
+    /// 调用方必须视为"找不到",不能因为凑巧没用到被截掉的部分就假装安全:
+    /// 没办法知道被截掉的那部分里是否还有一个同名目录,会让"唯一匹配"变成误判。
+    pub truncated: bool,
+}
+
+/// 在仓库树里为"技能目录名"(`dir_slug`)找出仓库根相对的真实路径(M10 任务 3)。
+///
+/// skills.sh 的 blob 端点(`core::plaza::fetch_blob`)只按目录名取内容,不给仓内
+/// 路径——但 `state.installed[].source.path`/`.skill-lock.json` 的 `skillPath`
+/// 都要这个真实路径(`share.rs` 还拿它去定位"分享改动"要提交到仓库的哪个目录,
+/// 见 `core::plaza` 模块头「安装走 blob」一节)。这个函数把"目录名"换算回"路径":
+/// 在全部 `SKILL.md` 条目里找"直接父目录名等于 `dir_slug`"的那些,**必须恰好一个**
+/// ——树被截断、零匹配、同名目录不止一处,任何一种都不敢猜,一律 `None` 交给调用方
+/// 回退 zipball。
+pub fn resolve_skill_path(tree: &RepoTree, dir_slug: &str) -> Option<String> {
+    if tree.truncated {
+        return None;
+    }
+    let suffix = format!("/{}", crate::core::skills::SKILL_FILE);
+    let mut candidates: Vec<&str> = tree
+        .paths
+        .iter()
+        .filter_map(|p| {
+            let dir = p.strip_suffix(&suffix)?;
+            let leaf = dir.rsplit('/').next().unwrap_or(dir);
+            (leaf == dir_slug).then_some(dir)
+        })
+        .collect();
+    candidates.dedup();
+    match candidates.as_slice() {
+        [only] => Some((*only).to_string()),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+
+    fn tree(paths: &[&str]) -> RepoTree {
+        RepoTree {
+            paths: paths.iter().map(|s| s.to_string()).collect(),
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn resolves_a_uniquely_nested_skill_directory() {
+        let t = tree(&[
+            "plugins/developer-essentials/skills/code-review-excellence/SKILL.md",
+            "plugins/developer-essentials/skills/code-review-excellence/references/checklist.md",
+            "README.md",
+        ]);
+        assert_eq!(
+            resolve_skill_path(&t, "code-review-excellence"),
+            Some("plugins/developer-essentials/skills/code-review-excellence".to_string())
+        );
+    }
+
+    #[test]
+    fn resolves_a_skill_directory_one_level_deep() {
+        let t = tree(&["skills/weekly-report/SKILL.md"]);
+        assert_eq!(
+            resolve_skill_path(&t, "weekly-report"),
+            Some("skills/weekly-report".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_when_there_is_no_match() {
+        let t = tree(&["skills/weekly-report/SKILL.md"]);
+        assert_eq!(resolve_skill_path(&t, "does-not-exist"), None);
+    }
+
+    #[test]
+    fn returns_none_when_the_same_leaf_name_appears_in_two_places() {
+        // 同名目录出现在两处:绑谁都是猜,一律不敢定。
+        let t = tree(&[
+            "plugins/a/skills/demo/SKILL.md",
+            "plugins/b/skills/demo/SKILL.md",
+        ]);
+        assert_eq!(resolve_skill_path(&t, "demo"), None);
+    }
+
+    #[test]
+    fn returns_none_when_the_tree_was_truncated_even_with_an_exact_single_match() {
+        // 截断发生在响应层面:哪怕现存路径里恰好只有一个匹配,也不能信——
+        // 被截掉的那部分完全可能藏着另一个同名目录。
+        let mut t = tree(&["skills/weekly-report/SKILL.md"]);
+        t.truncated = true;
+        assert_eq!(resolve_skill_path(&t, "weekly-report"), None);
+    }
+
+    #[test]
+    fn does_not_match_a_skill_md_sitting_at_the_repo_root() {
+        // 根层的 SKILL.md 没有"父目录名"可比——不该匹配任何 dir_slug,
+        // 这是刻意的边界(极罕见的仓库布局,交给调用方回退 zipball)。
+        let t = tree(&["SKILL.md"]);
+        assert_eq!(resolve_skill_path(&t, "SKILL.md"), None);
     }
 }
 
