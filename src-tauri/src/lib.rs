@@ -8,9 +8,29 @@ use tauri::{
     Manager,
 };
 
+/// 没设 `RUST_LOG` 时的日志级别。**与 2026-08-19 加 `EnvFilter` 之前的行为逐字等价**
+/// (`tracing_subscriber::fmt()` 的 builder 默认就是 `LevelFilter::INFO`)——这个常量
+/// 存在的意义是让"默认级别是什么"可被测试断言,而不是散在初始化代码里靠读。
+pub const DEFAULT_LOG_FILTER: &str = "info";
+
 /// 日志初始化:滚动文件落 `~/.skillsync/logs/`,按天切割、保留 7 份(假设:一周的
 /// 追溯窗口对"昨晚自动更新为什么没动"这类问题够用)。失败不拦启动——日志是
 /// 辅助通道,不能因为磁盘没权限就打不开应用。
+///
+/// # 级别:默认 INFO,`RUST_LOG` 可临时调高
+///
+/// 🔴 **2026-08-19 修**:此前这里只有 `fmt()`,**没有设任何 filter**,走 builder
+/// 默认的 `LevelFilter::INFO` —— 代码里那几处 `tracing::debug!`
+/// (监听器事件出错、忽略自己写盘引发的变更、自动更新本轮跳过、定时检查跳过某源、
+/// 分享路径预告未取到)**一行都不会落盘**。写了日志却打不开,排查时会误判成
+/// "那段代码根本没走到",比没写日志更误导。
+///
+/// 现在默认值 `"info"` 与修之前**逐字等价**(常态日志体积不变,不给用户的磁盘
+/// 加负担),只是多了一个开关:排查时 `RUST_LOG=skillsync=debug pnpm dev` 就能
+/// 看到那几行,`RUST_LOG=debug` 则连 hyper/tauri 的一起看。
+///
+/// **`try_from_default_env` 失败(变量没设或写错)一律退回 `"info"`**,不报错、
+/// 不拦启动——写错一个日志过滤器不该让应用打不开。
 fn init_tracing() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let dir = dirs_log_dir()?;
     let appender = tracing_appender::rolling::Builder::new()
@@ -21,7 +41,10 @@ fn init_tracing() -> Option<tracing_appender::non_blocking::WorkerGuard> {
         .build(dir)
         .ok()?;
     let (writer, guard) = tracing_appender::non_blocking(appender);
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER));
     tracing_subscriber::fmt()
+        .with_env_filter(filter)
         .with_writer(writer)
         .with_ansi(false)
         .with_target(false)

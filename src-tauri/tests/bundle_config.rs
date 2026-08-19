@@ -412,3 +412,40 @@ fn dev_script_loads_the_intranet_config_and_keeps_an_escape_hatch() {
         "dev.sh 不再起 tauri dev"
     );
 }
+
+/// 日志订阅器必须带 filter,且默认级别不得高于 INFO。
+///
+/// 动机(2026-08-19 修的一个真实缺陷):此前 `init_tracing` 只有
+/// `tracing_subscriber::fmt()`,**没有设任何 filter**,走 builder 默认的
+/// `LevelFilter::INFO` —— 代码里那几处 `tracing::debug!` 一行都不会落到
+/// `~/.skillsync/logs/`。写了日志却打不开,排查时会误判成"那段代码没走到"。
+///
+/// **这条守卫是文本级的,理由与 `plugins.updater` 空占位那条相同**:日志初始化
+/// 发生在 tauri runtime 启动路径上,而 `cargo test` 与 vitest **都不启动 runtime**
+/// ——`init_tracing` 的函数体没有任何单测走得到。文本守卫钉不住行为,但钉得住
+/// "有人把这行删了/简化了"。
+///
+/// 第二条断言防的是**反向搭车**:修"debug 打不开"时最顺手的做法是把默认级别调成
+/// DEBUG,那会让每个用户的磁盘常态多出成倍的日志——开关要给,默认不能动。
+#[test]
+fn log_subscriber_keeps_a_filter_and_a_conservative_default() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"),
+    )
+    .unwrap();
+
+    assert!(
+        src.contains("with_env_filter"),
+        "init_tracing 不再给订阅器设 filter —— 那样 RUST_LOG 会失效,\
+         所有 tracing::debug! 又变成写了也打不开的死代码"
+    );
+    assert!(
+        src.contains("try_from_default_env"),
+        "不再读 RUST_LOG —— 排查时没有任何办法临时调高级别"
+    );
+    assert_eq!(
+        skillsync_lib::DEFAULT_LOG_FILTER, "info",
+        "默认日志级别被改动了。给开关可以,动默认不行:\
+         默认级别决定每个用户磁盘上的常态日志体积,不是排查方便与否的问题"
+    );
+}

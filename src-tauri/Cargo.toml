@@ -54,7 +54,7 @@ getrandom = "0.4.3"
 tokio = { version = "1.53.1", features = ["rt", "time", "sync", "macros"] }
 # 日志:滚动文件落 ~/.skillsync/logs/,scheduler 后台运行的唯一可追溯通道
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 tracing-appender = "0.2"
 # 本地技能目录的文件监听(M4 任务 6c 级别 3)。关掉默认特性里的 crossbeam 通道,
 # 我们用 std::sync::mpsc 就够;macos_fsevent 让 macOS 走 FSEvents 而不是轮询
