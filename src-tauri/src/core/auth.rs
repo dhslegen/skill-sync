@@ -536,27 +536,72 @@ impl KeyringStore {
     }
 }
 
+/// 把一份凭证写进钥匙串的**纯编排**:决定"整份写还是分片写",不认识 keyring crate。
+///
+/// # 为什么先试整份(2026-08-19 修的真实体验缺陷)
+///
+/// 🔴 **macOS 的钥匙串按「条目」逐个授权**——存成 N 片就是 N 个条目,用户开一次应用
+/// 要点 N 次「允许」。此前无条件走分片(主条目清单 + 2 片),于是每次启动**弹三次**。
+///
+/// 而分片本身是给 **Windows** 修的:凭据管理器的 blob 上限换算成 **1280 个 ASCII 字符**,
+/// 而 Gitea 一对 JWT 约 1778 字符,不分片必然写不进去(v0.3.10 的 Windows 登录失败)。
+/// **macOS 钥匙串没有这个限制,分片在那里是纯成本、零收益。**
+///
+/// 所以顺序反过来:**先试整份,写不下才分片**。macOS/Linux 落 1 个条目、弹 1 次;
+/// Windows 整份写失败后自动回退分片,行为与修之前完全一样。
+///
+/// **读取侧一行都不用改**:`parse_primary` 早就认得整份形式(那本是 v0.3.10 之前的
+/// 格式,为兼容存量用户保留的)——这次等于把那条"兼容旧格式"的路变回主路。
+///
+/// # 失败即回退,不挑错误类型
+///
+/// 整份写失败**一律**回退分片,不去匹配 `keyring::Error::TooLong`:各平台后端报什么
+/// 错并不统一,匹配特定错误比"失败就换个写法"更脆弱。真正写不进去时,分片那条路
+/// 会再失败一次,错误照常抛出去。
+///
+/// # 顺序不能动
+///
+/// 1. **先清旧分片**:无论最终走哪条路都要清——从分片格式改回整份时不清,残留的
+///    `.partN` 会在下次 `delete` 时被当成"这份凭证的一部分",也是泄漏面;
+/// 2. 分片路径**先写全部分片、最后写主条目清单**:反过来的话中途失败会留下一份
+///    指向半份内容的清单。
+fn write_secret<W>(account: &str, json: &str, mut write: W) -> Result<(), AppError>
+where
+    W: FnMut(&str, &str) -> Result<(), keyring::Error>,
+{
+    let save_err = |e: keyring::Error| {
+        AppError::new("AUTH_KEYRING", "凭据保存失败,请重新登录").with_detail(e.to_string())
+    };
+
+    if write(account, json).is_ok() {
+        return Ok(());
+    }
+
+    let parts = split_secret(json);
+    for (i, part) in parts.iter().enumerate() {
+        write(&KeyringStore::part_key(account, i), part).map_err(save_err)?;
+    }
+    let manifest = serde_json::to_string(&ChunkManifest { chunks: parts.len() })
+        .map_err(|e| AppError::new("AUTH_KEYRING", "凭据保存失败").with_detail(e.to_string()))?;
+    write(account, &manifest).map_err(save_err)
+}
+
 impl CredentialStore for KeyringStore {
     fn save(&self, account: &str, creds: &Credentials) -> Result<(), AppError> {
         let json = serde_json::to_string(creds).map_err(|e| {
             AppError::new("AUTH_KEYRING", "凭据保存失败").with_detail(e.to_string())
         })?;
-        let parts = split_secret(&json);
-        let save_err = |e: keyring::Error| {
-            AppError::new("AUTH_KEYRING", "凭据保存失败,请重新登录").with_detail(e.to_string())
-        };
 
-        // 先清旧分片:上一次可能存了更多片,残留会让下次读到拼接错误的内容
+        // 先清旧分片(理由见 write_secret 文档的「顺序不能动」)
         Self::delete_parts(account);
-        for (i, part) in parts.iter().enumerate() {
-            Self::entry(&Self::part_key(account, i))?
-                .set_password(part)
-                .map_err(save_err)?;
-        }
-        // 分片全部写成功后才更新主条目——反过来的话中途失败会留下指向半份内容的清单
-        let manifest = serde_json::to_string(&ChunkManifest { chunks: parts.len() })
-            .map_err(|e| AppError::new("AUTH_KEYRING", "凭据保存失败").with_detail(e.to_string()))?;
-        Self::entry(account)?.set_password(&manifest).map_err(save_err)
+        write_secret(account, &json, |key, value| {
+            // entry() 失败(钥匙串根本打不开)在这里退化成 NoEntry:让 write_secret
+            // 走它的回退分支去试分片,那条路上同样打不开时会把真错误抛出去。
+            match Self::entry(key) {
+                Ok(entry) => entry.set_password(value),
+                Err(_) => Err(keyring::Error::NoEntry),
+            }
+        })
     }
 
     fn load(&self, account: &str) -> Result<Option<Credentials>, AppError> {
@@ -831,6 +876,100 @@ mod tests {
     }
 
     /// 新格式的清单不能被误判成旧凭证,反之亦然。
+    /// 🔴 装得下就只写**一个**条目——macOS 钥匙串按条目逐个授权,N 个条目就是
+    /// 开一次应用点 N 次「允许」。2026-08-19 之前无条件分片(主条目清单 + 2 片),
+    /// 用户每次启动**被问三次**,这条测试就是那个体验缺陷的护栏。
+    #[test]
+    fn a_secret_that_fits_is_written_as_a_single_entry() {
+        let mut written: Vec<(String, String)> = Vec::new();
+        let json = r#"{"access_token":"short"}"#;
+
+        write_secret("company", json, |k, v| {
+            written.push((k.to_string(), v.to_string()));
+            Ok(())
+        })
+        .expect("装得下就该一次写成");
+
+        assert_eq!(written.len(), 1, "多写一个条目就多一次钥匙串弹窗: {written:?}");
+        assert_eq!(written[0].0, "company", "键必须是账号本身,不是 .part0");
+        assert_eq!(written[0].1, json, "整份写就该原样写进去,不是清单");
+    }
+
+    /// 写不下时回退分片——这是 Windows 凭据管理器 1280 字符上限那条路
+    /// (v0.3.10 登录失败的根因),**不能因为 macOS 舒服了就把它丢掉**。
+    ///
+    /// 假 writer 模拟"超过 N 个字符就写不进去",与真实 Windows 后端同构。
+    ///
+    /// ⚠️ `FAKE_LIMIT` **必须大于 `MAX_UTF16_UNITS_PER_CHUNK`**,否则分片本身也超限、
+    /// 回退那条路一样失败——这条测试第一版把假上限设成了 100,而分片是按 1200 切的,
+    /// 于是每片照样写不进去,验的根本不是"回退成功"(2026-08-19 自己踩的:
+    /// 当时 `head -15` 截断了输出,还以为它通过了)。
+    #[test]
+    fn a_secret_too_long_falls_back_to_chunks_with_the_manifest_written_last() {
+        const FAKE_LIMIT: usize = MAX_UTF16_UNITS_PER_CHUNK + 500;
+        let mut written: Vec<(String, String)> = Vec::new();
+        let json = "x".repeat(3000);
+
+        write_secret("company", &json, |k, v| {
+            if v.chars().count() > FAKE_LIMIT {
+                return Err(keyring::Error::TooLong(k.to_string(), FAKE_LIMIT as u32));
+            }
+            written.push((k.to_string(), v.to_string()));
+            Ok(())
+        })
+        .expect("回退分片后应当写成");
+
+        assert!(written.len() > 1, "写不下就必须分片: {:?}", written.len());
+        // 分片键连续、从 0 开始
+        for (i, (key, _)) in written.iter().take(written.len() - 1).enumerate() {
+            assert_eq!(*key, format!("company.part{i}"), "分片键必须连续");
+        }
+        // 清单最后写:反过来的话中途失败会留下指向半份内容的清单
+        let (last_key, last_value) = written.last().expect("至少写了一条");
+        assert_eq!(last_key, "company", "主条目(清单)必须最后写");
+        let manifest: ChunkManifest =
+            serde_json::from_str(last_value).expect("最后写的必须是分片清单");
+        assert_eq!(
+            manifest.chunks,
+            written.len() - 1,
+            "清单里的片数必须等于真正写下去的片数"
+        );
+
+        // 拼回来必须与原文逐字节相同(分片本身的往返另有 split_then_join_round_trips_exactly,
+        // 这里验的是"经过 write_secret 这条编排之后"仍然成立)
+        let joined: String = written[..written.len() - 1]
+            .iter()
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(joined, json, "分片拼回来必须与原文一致");
+    }
+
+    /// 分片路径写到一半失败要报错,**绝不能留下一份指向半份内容的清单**。
+    #[test]
+    fn a_failure_midway_through_chunks_reports_and_writes_no_manifest() {
+        let mut written: Vec<String> = Vec::new();
+        let json = "x".repeat(3000);
+
+        let err = write_secret("company", &json, |k, v| {
+            // 整份必失败(逼它走分片),第二片也失败
+            if k == "company" && v.len() > 50 {
+                return Err(keyring::Error::NoEntry);
+            }
+            if k == "company.part1" {
+                return Err(keyring::Error::NoEntry);
+            }
+            written.push(k.to_string());
+            Ok(())
+        })
+        .expect_err("分片中途失败必须报错");
+
+        assert_eq!(err.code, "AUTH_KEYRING");
+        assert!(
+            !written.contains(&"company".to_string()),
+            "失败之后绝不能写下清单——那会指向一份不完整的内容: {written:?}"
+        );
+    }
+
     #[test]
     fn manifest_and_legacy_forms_are_not_confused() {
         let manifest = serde_json::to_string(&ChunkManifest { chunks: 3 }).unwrap();
