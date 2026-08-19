@@ -335,7 +335,9 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 文本,M9 的详情与安装都在下整个仓的 zipball。四条实测 ground truth 记在
 「关键事实」的「技能广场的 blob 快照」一节,数字都是 2026-08-17 亲测。
 任务 1 blob 取数原语 + **内容等价性实证**(地基,不成立则任务 3 取消)→
-任务 2 详情改走 blob(用户可感知的 88 倍提速)→ 任务 3 安装的取数分流
+任务 2 详情改走 blob(**当时记的 88 倍是"只取内容"那一段;终审修复补上必需的
+仓库树请求后,端到端实测是 8.18s → 2.72s = 3 倍**,见下面「skillId 不是目录名」一条)
+→ 任务 3 安装的取数分流
 (保守白名单,纯文本走 blob、其余回退 zipball)→ 任务 4 空态展示全网热门
 (公司技能库同款卡片)→ 任务 5(本任务)`tracing::debug!` 修复 + 承诺同步。
 **任务 4 走了四轮修复才过**,三条教训值得记(都在「现役机制约束」有对应条目):
@@ -344,6 +346,11 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 另一半留成假话);③**文档里的日期不要用"第几审/第几轮"编号**——"审"数审查次数、
 "轮"数修复轮次,天然差一位,同一件事因此在同一个文件里得出两个日期。
 只标日期,读者可以直接对 `git log --date=short`。
+**终审又抓出一条任务 2 引入的回归**(2026-08-19,`d96b9c1`):blob 详情把
+`SkillDetail.dir_slug` 填成了 skills.sh 的 `skillId`,而两者经常不是一回事
+——那 17% 的技能点「获取」必然失败。判据、代价与三层测试见下面
+「skillId 不是仓内目录名」一条。**它的形状值得记住:任务 2 与任务 3 各自审查都过,
+坏在两个任务对同一个字段的口径不一致(详情当它是展示信息,安装当它是键)。**
 
 **M9 = 技能广场**(skills.sh 发现层接入,方案见本地 `docs/设计-技能广场-
 skills.sh发现层接入.md`,调查见本地 `docs/调查-npx-skills-find-开放API.md`,
@@ -426,7 +433,7 @@ tags 当时侥幸没出问题,是因为支持它的版本先到了用户机器�
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust **628** + 前端 **490** 测试通过(2026-08-19 M10 任务 5 收尾串行实测,
+- 本机:Rust **635** + 前端 **490** 测试通过(2026-08-19 M10 终审修复收尾串行实测,
   五道闸全绿,clippy **--all-targets** / eslint / tsc 干净)。
   ⚠️ **这个 Rust 数字是「docker 起着」的口径**:`gitea_live` 那两条真跑了
   (docker 停着时它们报 502 假红,见「测试要求」);而受 `SKILLSYNC_PLAZA_LIVE`
@@ -691,17 +698,21 @@ M10 新增的 IPC:`plaza_leaderboard`(无参 → `PlazaSkillCard[]`,全网热门
     - M9 当时的理由(响应把文件内容装成文本 JSON 字符串,二进制与可执行位语义
       不明;hash 口径与 `dir_content_hash` 不同)**只对「安装」成立**。安装要落盘,
       落盘就要管二进制与权限位。
-    - 但**对「详情」完全不成立**:详情面板只展示文本,不落盘、不算 hash、
-      不碰权限位。为了展示一段 Markdown 而下整个仓的 zipball,代价是
+    - 但**对「安装才要管的那几样」在详情上不成立**:详情面板只展示文本,不落盘、
+      不算 hash、不碰权限位(⚠️ 但详情**不是零风险**——它返回的 `dir_slug` 是安装键,
+      见 ground truth 5 与「取数分流」一条)。为了展示一段 Markdown 而下整个仓的 zipball,代价是
       **3,149,975 B / 50.4 s**,而 blob 是 **13,931 B / 0.57 s**(88 倍快、
       226 倍小,2026-08-17 实测同一个技能)。这个代价 M9 白付了一整个里程碑。
+      ⚠️ **这 88 倍是"取内容"那一段的对比,不是详情的端到端提速**:详情还必须拉一次
+      仓库树(下面 ground truth 5),端到端实测是 3 倍。
     - M10 的实测还推翻了"hash 口径不同"这条对安装的适用性:**blob 与 zipball 的
       同一文件逐字节相同**(见下面「技能广场的 blob 快照」一节),所以纯文本技能
       也可以走 blob 装,`content_hash` 等式照样成立。
-    - **现在的分工**:详情**一律先试 blob**、失败回退 zipball;安装**按内容分流**
+    - **现在的分工**:详情**先用仓库树把 skillId 校验成仓内目录名,命中才试 blob**、
+      否则回退 zipball(2026-08-19 终审修复,见下条);安装**按内容分流**
       (保守白名单,见下节)。二进制与可执行位的顾虑没有消失,只是被收窄到了
       它真正适用的那一档。
-- **技能广场的 blob 快照(M10,2026-08-17 亲测,四条 ground truth)**
+- **技能广场的 blob 快照(M10,2026-08-17 / 08-19 亲测,五条 ground truth)**
   ——`GET https://skills.sh/api/download/{owner}/{repo}/{slug}`
   → `{files:[{path, contents}], hash}`,`path` 是**技能目录内的相对路径**
   (实测 `SKILL.md`,不带仓前缀),`hash` 是上游自己的口径**我们不用**。
@@ -722,6 +733,25 @@ M10 新增的 IPC:`plaza_leaderboard`(无参 → `PlazaSkillCard[]`,全网热门
      **5.4 s 后 SSL 失败**——国内不可靠,**不采用**(别再想着"直接拉 raw 更简单")。
   4. **排行榜数据只在首页 SSR 的 RSC payload 里**,没有 JSON API(见上一条的订正)。
      字段:`{source, skillId, name, installs, weeklyInstalls[], isOfficial}`。
+  5. 🔴 **`skillId` 不是仓内目录名,是 SKILL.md 的 frontmatter `name`**
+     (2026-08-19 实测:4 次搜索 / 12 个仓 / 47 个技能里 **8 个不同**,而且命中的
+     全是安装量最大的旗舰仓)。样本:`vercel-labs/agent-skills` 的
+     `skillId = vercel-react-best-practices`,仓里是 `skills/react-best-practices/`,
+     该文件 frontmatter `name` 恰好就是 `vercel-react-best-practices`
+     ——**所以"名字对不对得上"这道闸拦不住它**。
+     - blob 端点对**两个键都返回 200 且内容逐字节相同**,所以 blob 自己也发现不了;
+       唯一的判据是 GitHub 仓库树(`github::resolve_skill_path`)。
+     - 为什么非管不可:`dir_slug` 是安装目录名、`state.installed` 记账键与
+       `.skill-lock.json` 键的唯一来源。填成 `skillId` 的后果有三层,一层比一层隐蔽:
+       ①「获取」当场报 `REPO_NOT_FOUND`;②就算装上了,`store::build_index` 按**目录名**
+       建索引,`hasUpdate` 永远匹配不到自己 → 「有可用更新」再也不亮;
+       ③前端 `refreshInstalled` 的 map 也按真实 `dirSlug` 建键 → 装完卡片仍显示「获取」。
+     - 上游 `npx skills` **自己在这件事上不自洽**(1.5.23 实测):clone/zipball 路径
+       `installName: entry.name`(目录名),blob 路径 `installName: blobSkill.name`
+       (frontmatter name)。**别拿"上游怎么做"当判据**,按本 app 索引/lock 键的口径走。
+     - 代价已接受:详情因此多一次 trees 请求(旗舰大仓 `wshobson/agents` 树 614KB,
+       端到端 8.18s→2.72s,匿名配额 1→2 次 GitHub 请求),换 100% 的广场技能装得上。
+       **要提速请并发发 trees 与 blob,不要放宽这道校验。**
 - **代理两档**(M3 任务 3,推翻 M1"一律直连"):内建源 `app_http_client()` 直连;
   外部源 `app_http_client_proxied()` 跟随系统代理;选择集中在 `commands::http_client_for`。
   不加每源开关(用户拍板)。
@@ -817,11 +847,17 @@ M10 新增的 IPC:`plaza_leaderboard`(无参 → `PlazaSkillCard[]`,全网热门
   `cardState`/`hasUpdate` 的判定不区分"这是商店浏览来的还是广场装的"——挂上仓之后
   它就在库切换器里以普通库的形态出现(走 `store_index` 的常规浏览/建索引路径),
   指纹判定天然精确,**不需要另开一条"广场专属"的判定分支**。
-- **取数分流:详情一律先试 blob,安装按内容分流**(M10 任务 2–3)。两条路的
-  风险等级完全不同,判据也不同:
-  - **详情零风险**:只展示文本,不落盘、不算 hash、不碰权限位。先 `fetch_blob`
-    组装 `SkillDetail`,blob 失败(404/超时/该仓不在上游索引里)**回退既有 zipball
-    路径**,行为不变。进程内缓存的键与语义不变(**别顺手补 head sha**,见下条)。
+- **取数分流:详情与安装都先试 blob,但各有一道自己的闸**(M10 任务 2–3 +
+  2026-08-19 终审修复)。两条路的风险等级不同,判据也不同:
+  - 🔴 **详情不是"零风险"**——任务 2 当时是这么判的,错在只看"展示"这一面:
+    `SkillDetail.dir_slug` 会被前端原样当**安装键**传回来。详情因此必须先拿仓库树
+    (`github::resolve_skill_path`,**与安装同一个函数**)把 skills.sh 的 `skillId`
+    校验成仓内真实目录名,唯一命中才走 blob,否则回退 zipball(那条路的 `dir_slug`
+    由 `store::build_index` 从压缩包目录结构算出,天然正确)。
+    `SkillDetail.path` 同时改成树给出的真实相对路径(任务 2 曾退化填目录名)。
+    进程内详情缓存的键与语义不变(**别顺手补 head sha**,见下条);
+    **树按 `(owner, repo, sha)` 与安装路径共用同一份 `repo_tree_cache`**
+    ——点开详情再点「获取」时,安装那步不重复拉树。
   - **安装是保守白名单**:blob 返回的文件**全部**命中纯数据文本扩展名才走 blob,
     **否则整个技能回退 zipball**。白名单 `.md .txt .json .yaml .yml .toml .csv`;
     **无扩展名的 `LICENSE` 这类也不放行**——拿不准就回退,回退只是慢,残缺是错。
