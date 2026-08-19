@@ -213,7 +213,9 @@ fn parse_cards(body: &str) -> Result<Vec<PlazaSkillCard>, AppError> {
             body.chars().take(400).collect::<String>()
         ))
     })?;
+    let total = parsed.skills.len();
     let mut cards: Vec<PlazaSkillCard> = parsed.skills.into_iter().filter_map(to_card).collect();
+    warn_if_dropped("搜索", total, cards.len());
     // 稳定排序:installs 相同时保留上游给的相对顺序,不引入无意义的抖动。
     cards.sort_by_key(|c| std::cmp::Reverse(c.installs));
     Ok(cards)
@@ -326,28 +328,66 @@ struct RawLeaderboardSkill {
     is_official: bool,
 }
 
-/// `owner/repo` 两段式的形状判据:恰好一条 `/`,两段都非空。
+/// `owner/repo` 两段式的判据**唯一实现**:恰好一条 `/`,两段都非空。合形状就把
+/// 两段切出来还给调用方,不合形状返回 `None`。
 ///
-/// **唯一实现**,三处调用方共用:`commands::parse_owner_repo`(用户/skills.sh
-/// 手填的广场坐标做输入校验,报 `REPO_INVALID_REGISTRY`)、[`to_leaderboard_card`]
-/// (排行榜条目过滤)与 [`to_card`](搜索结果条目过滤)——后两者数据里都可能混进
-/// `open.feishu.cn` 这种域名式来源(没有斜杠),这里判 false 就被当脏数据丢弃。
+/// 三处调用方共用:`commands::parse_owner_repo`(用户/skills.sh 手填的广场坐标做
+/// 输入校验,报 `REPO_INVALID_REGISTRY`,**要那两段**)、[`to_leaderboard_card`]
+/// (排行榜条目过滤)与 [`to_card`](搜索结果条目过滤,后两者只要布尔,走
+/// [`is_owner_repo_shaped`])——两个过滤器面对的数据里都混着 `open.feishu.cn`
+/// 这种域名式来源(没有斜杠),判 false 即当脏数据丢弃。
 ///
-/// 2026-08-17 审查修复(分两轮):
-/// - 第一轮只修了排行榜([`to_leaderboard_card`])。起因:`plaza_detail` 拿到
+/// **返回 `Option<(&str, &str)>` 而不是 `bool` 是 2026-08-19 三审的结论**:
+/// 原先 `parse_owner_repo` 先问一次 `is_owner_repo_shaped`、再
+/// `split_once().expect(...)`,那句 expect 的不变量只靠约定维系,判据一放宽就在
+/// Tauri command 里 panic(审查员注入实测复现)。切出来一起还,不变量就在类型里。
+///
+/// 审查修复分两轮(日期不同,别当成同一天的事):
+/// - **第一轮 2026-08-17**,只修了排行榜([`to_leaderboard_card`])。起因:`plaza_detail` 拿到
 ///   无斜杠的 `owner_repo` 会在 [`crate::commands::parse_owner_repo`] 那一层
 ///   直接报"技能坐标格式不对",而不是走到 GitHub API 才 404——排行榜是主动推给
 ///   用户的首屏内容,点一张必然报错、且报错文案与"点了一张热门技能卡片"这件事
 ///   毫不相关的卡片,不该摆出来(与 M6「绑不上就不摆那个按钮」同一个姿势:
 ///   不摆比解释好)。
-/// - 第二轮补上搜索([`to_card`]):点开搜索结果的失败机制与点开排行榜条目
+/// - **第二轮 2026-08-19**,补上搜索([`to_card`]):点开搜索结果的失败机制与点开排行榜条目
 ///   完全相同(同一个 `parse_owner_repo`、同一句报错),是**同一个缺陷的第二个
 ///   入口**,不是新范围——两处判定必须一致,散落各处正是缺陷温床(与
 ///   `cardState`/`hasUpdate` 三处共用同一判据是同一类先例)。
+pub(crate) fn split_owner_repo(s: &str) -> Option<(&str, &str)> {
+    let (owner, repo) = s.split_once('/')?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return None;
+    }
+    Some((owner, repo))
+}
+
+/// [`split_owner_repo`] 的布尔投影,给只关心"合不合形状"、不需要切出两段的调用方
+/// (两处过滤器)用。**判定逻辑不在这里**——它必须是那个函数的派生,不能各写一份,
+/// 否则"形状合法"与"能切成两段"就会漂成两件事。
 pub(crate) fn is_owner_repo_shaped(s: &str) -> bool {
-    match s.split_once('/') {
-        Some((owner, repo)) => !owner.is_empty() && !repo.is_empty() && !repo.contains('/'),
-        None => false,
+    split_owner_repo(s).is_some()
+}
+
+/// 丢了脏数据就记一行日志。**唯一目的是让真机排查有线索可查**。
+///
+/// 起因(2026-08-19 审查实测):`q=feishu` 上游返回 **20 条全是 `open.feishu.cn`**,
+/// 过滤完一条不剩,界面显示的是「没有匹配「feishu」的技能」——而上游明明给了 20 条。
+/// 这句话对用户是对的(那 20 条点开必然报坐标格式错误,摆出来不如不摆),但对排查的人
+/// 是**误导**:看界面完全分不出"上游没有"与"上游有但我们全丢了"。
+///
+/// 用 `warn!` 不用 `debug!`:本应用的日志订阅器没设 filter,默认级别 INFO,
+/// **`debug!` 一行都不会落盘**(见 `lib.rs` 的日志初始化)。
+///
+/// 只在真丢了东西时记,平时零噪音。
+fn warn_if_dropped(what: &str, total: usize, kept: usize) {
+    if kept < total {
+        tracing::warn!(
+            total,
+            kept,
+            dropped = total - kept,
+            "技能广场{what}:上游条目中有 {} 条不是 owner/repo 两段式坐标(或缺必填字段),已丢弃",
+            total - kept
+        );
     }
 }
 
@@ -445,8 +485,10 @@ fn parse_leaderboard(html: &str) -> Result<Vec<PlazaSkillCard>, AppError> {
         .map_err(|e| plaza_leaderboard_err(format!("热门榜片段反转义失败: {e}")))?;
     let raw: Vec<RawLeaderboardSkill> = serde_json::from_str(&json_text)
         .map_err(|e| plaza_leaderboard_err(format!("热门榜 JSON 解析失败: {e}")))?;
+    let total = raw.len();
     let mut cards: Vec<PlazaSkillCard> =
         raw.into_iter().filter_map(to_leaderboard_card).collect();
+    warn_if_dropped("热门榜", total, cards.len());
     // 上游数据本就按 installs 降序(实测),这里仍显式排序一遍——与 parse_cards
     // 同一套"不假设上游顺序,自己兜底"的姿势,稳定排序不引入无意义的抖动。
     cards.sort_by_key(|c| std::cmp::Reverse(c.installs));

@@ -2127,20 +2127,26 @@ pub async fn plaza_leaderboard() -> Result<Vec<plaza::PlazaSkillCard>, AppError>
 /// 拒绝多段路径(`a/b/c`)——广场只给单层坐标,多一段大概率是把 skills.sh 的
 /// `id`(`owner/repo/skill-name`)错传成了 `owner_repo`。
 ///
-/// 判据委派给 [`plaza::is_owner_repo_shaped`]——`plaza::to_leaderboard_card`
-/// 过滤排行榜脏条目用的是同一份逻辑,两处「这坐标像不像 owner/repo」的标准
-/// 必须一致,不能各写一份(2026-08-17 审查修复)。
+/// 判据委派给 [`plaza::split_owner_repo`],**三处**调用方共用同一份「这坐标像不像
+/// `owner/repo`」的标准,不能各写一份(审查修复,2026-08-17 排行榜 + 2026-08-19 搜索两轮):这里做输入
+/// 校验,`plaza::to_leaderboard_card` 过滤排行榜脏条目,`plaza::to_card` 过滤搜索
+/// 结果脏条目——后两者的数据里都混着 `open.feishu.cn` 这类域名式来源,不在解析阶段
+/// 丢掉的话,用户点一张卡片得到的就是**这个函数**报的那句"技能坐标格式不对",
+/// 而他根本没手填过任何坐标。
+///
+/// 拿的是 [`plaza::split_owner_repo`] 而不是 `is_owner_repo_shaped` + 再切一次:
+/// 后者要么重复劳动,要么留一句 `expect`,而那句 `expect` 的不变量只靠约定维系
+/// ——判据一旦放宽(比如将来想放行单段来源),这里就从"返回 AppError"变成
+/// **在 Tauri command 里 panic**(2026-08-19 审查员注入实测复现过)。返回
+/// `Option<(&str, &str)>` 把不变量落进类型,那条路径从结构上就不存在了。
 fn parse_owner_repo(owner_repo: &str) -> Result<(&str, &str), AppError> {
-    if plaza::is_owner_repo_shaped(owner_repo) {
-        // is_owner_repo_shaped 已经确认了 split_once('/') 会成功,这里不会 panic。
-        Ok(owner_repo.split_once('/').expect("is_owner_repo_shaped 已确认存在 '/'"))
-    } else {
-        Err(AppError::new(
+    plaza::split_owner_repo(owner_repo).ok_or_else(|| {
+        AppError::new(
             "REPO_INVALID_REGISTRY",
             "技能坐标格式不对,应为「拥有者/技能库名」这样的两段式",
         )
-        .with_detail(owner_repo.to_string()))
-    }
+        .with_detail(owner_repo.to_string())
+    })
 }
 
 /// 幂等挂仓(M9 任务 3):把广场搜索结果的 `owner/repo` 坐标写进
