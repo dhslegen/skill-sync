@@ -1262,7 +1262,7 @@ pub async fn store_skill_detail(args: StoreDetailArgs) -> Result<SkillDetail, Ap
     index.detail(&args.dir_slug).ok_or_else(|| {
         AppError::new(
             "REPO_NOT_FOUND",
-            "这个技能已不在公司技能库中,请返回列表刷新后再试",
+            "这个技能已不在该技能库中,请返回列表刷新后再试",
         )
     })
 }
@@ -2075,39 +2075,63 @@ pub async fn plaza_search(query: String) -> Result<Vec<plaza::PlazaSkillCard>, A
     plaza::search(&http, plaza::PLAZA_API_BASE, &query).await
 }
 
-/// 广场热门排行榜的进程内缓存(M10 任务 4):同一个道理与 `plaza_detail_cache`
-/// 一致——首页 950KB/1.8s,同一进程内多次打开广场空态不该每次都重下;**刻意不记
-/// 任何失效时机**(没有现成路径能给它喂"更该刷新了"的信号,理由与
-/// `plaza_detail_cache` 文档完全同款,不重复分析一遍)。
+/// 广场热门排行榜的进程内缓存(M10 任务 4):首页 950KB/1.8s,同一进程内多次打开
+/// 广场空态不该每次都重下。
 ///
-/// **只缓存非空结果**:`plaza::fetch_leaderboard` 本身已经把失败降级成空列表
-/// (见该函数文档),如果空列表也被缓存下来,一次网络抖动就会把"排行榜空态"钉死
-/// 一整个进程生命周期——而非空结果没有这个顾虑(缓存的就是"曾经成功过一次"这件事,
-/// 不需要过期)。空结果因此每次调用都会重新尝试,给瞬时故障一个自愈的机会。
-type PlazaLeaderboardCache = Mutex<Option<Vec<plaza::PlazaSkillCard>>>;
+/// # 为什么这份缓存有 TTL,而 `plaza_detail_cache` / `repo_tree_cache` 没有
+/// (2026-08-19 终审修复)
+///
+/// 那两份缓存装的是"用户这次点开的那个仓"(会话内的短时行为),而排行榜是**首屏
+/// 常驻内容**——本应用关窗只缩到托盘,进程可以连着开好几天,不设失效就意味着
+/// 「全网热门」可能一连几天是同一份快照,而它本身是**按安装量实时变化**的榜单。
+/// 语义不同,不能照抄那两份的"不需要失效"结论。
+///
+/// TTL 取 30 分钟:排行榜是"看个热闹"的内容,分钟级的陈旧完全无感,而一天几十次
+/// 打开广场只换来两三次真实请求——既不让首屏钉死,也不给 skills.sh 首页
+/// (950KB)增加没意义的流量。
+///
+/// **过期后取数失败不覆盖已有的好数据**:`plaza::fetch_leaderboard` 把一切失败降级成
+/// 空列表(见该函数文档),此时继续端出上一份(过期但真实)的榜单,比让首屏突然
+/// 变空好——上游临时抽风不该表现成"热门没了"。同理**空结果一开始就不写进缓存**,
+/// 免得一次网络抖动把空态钉死到 TTL 到期。
+type PlazaLeaderboardCache = Mutex<Option<(std::time::Instant, Vec<plaza::PlazaSkillCard>)>>;
+
+/// 见 [`PlazaLeaderboardCache`] 文档:排行榜是首屏常驻内容,必须会过期。
+const PLAZA_LEADERBOARD_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 fn plaza_leaderboard_cache() -> &'static PlazaLeaderboardCache {
     static CACHE: OnceLock<PlazaLeaderboardCache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
-/// 缓存优先地取热门排行榜:命中直接返回;否则调用 `plaza::fetch_leaderboard` 现拉
-/// 一次,非空结果才写回缓存(空结果不缓存的理由见 [`PlazaLeaderboardCache`] 上方文档)。
+/// 缓存优先地取热门排行榜:未过期的非空缓存直接返回;否则调用
+/// `plaza::fetch_leaderboard` 现拉一次,非空结果才写回缓存,拉到空且手上还有一份
+/// 过期数据时端出那一份(三条规则的理由都在 [`PlazaLeaderboardCache`] 文档里)。
 ///
-/// 单独抽出来(而不是内联进 `plaza_leaderboard`)是为了让缓存命中/不缓存空结果这两条
-/// 规则脱离进程级单例直接单测——与 `cached_plaza_detail` 同一个理由、同一个模式。
+/// `ttl` 与 `cache` 都是参数而不是直接读常量/单例:进程级单例会让并行测试互相脏读,
+/// 而 TTL 写死的话"过期要重拉"这条规则根本没法测(只能真等 30 分钟)——测试传
+/// `Duration::ZERO` 即可强制过期。与 `cached_plaza_detail` 同一个理由、同一个模式。
 async fn cached_plaza_leaderboard(
     cache: &PlazaLeaderboardCache,
     http: &reqwest::Client,
     home_url: &str,
+    ttl: std::time::Duration,
 ) -> Vec<plaza::PlazaSkillCard> {
-    if let Some(cached) = cache.lock().expect("广场排行榜缓存锁不该中毒").clone() {
-        return cached;
-    }
+    let stale = {
+        let guard = cache.lock().expect("广场排行榜缓存锁不该中毒");
+        match guard.as_ref() {
+            Some((at, cards)) if at.elapsed() < ttl => return cards.clone(),
+            Some((_, cards)) => Some(cards.clone()),
+            None => None,
+        }
+    };
     let cards = plaza::fetch_leaderboard(http, home_url).await;
-    if !cards.is_empty() {
-        *cache.lock().expect("广场排行榜缓存锁不该中毒") = Some(cards.clone());
+    if cards.is_empty() {
+        // 取数失败(已降级成空列表)时不动缓存:有旧数据就继续端旧的,没有就端空。
+        return stale.unwrap_or(cards);
     }
+    *cache.lock().expect("广场排行榜缓存锁不该中毒") =
+        Some((std::time::Instant::now(), cards.clone()));
     cards
 }
 
@@ -2120,7 +2144,13 @@ async fn cached_plaza_leaderboard(
 #[tauri::command]
 pub async fn plaza_leaderboard() -> Result<Vec<plaza::PlazaSkillCard>, AppError> {
     let http = crate::core::gitea::app_http_client_proxied()?;
-    Ok(cached_plaza_leaderboard(plaza_leaderboard_cache(), &http, plaza::PLAZA_HOME_URL).await)
+    Ok(cached_plaza_leaderboard(
+        plaza_leaderboard_cache(),
+        &http,
+        plaza::PLAZA_HOME_URL,
+        PLAZA_LEADERBOARD_TTL,
+    )
+    .await)
 }
 
 /// 校验广场坐标的形状:必须是恰好一层 `owner/repo`,两段都不能空。
@@ -2250,8 +2280,9 @@ pub struct PlazaDetailArgs {
     pub wanted_name: Option<String>,
 }
 
-/// blob 快路径(有 `skill_id`+`wanted_name` 才试)命中即返回单项列表;
-/// 拿不到 blob 结果的一切情况(缺参数、blob 失败、internal、名字对不上)都静默落到
+/// blob 快路径(有 `skill_id`+`wanted_name`,且 head/仓库树预取成功才试)命中即返回
+/// 单项列表;拿不到 blob 结果的一切情况(缺参数、预取失败、**skills.sh 的 skillId
+/// 不是仓内真实目录名**、blob 失败、internal、名字对不上)都静默落到
 /// 现拉整仓的 `cached_plaza_detail`——与 `plaza_detail` 改动前**完全同一条路径**,
 /// "多技能仓、名字对不上时显示列表"这条 M9 任务 5 的既有行为因此原样保留
 /// (见 `core::plaza::fetch_skill_detail_via_blob` 模块文档的判据清单)。
@@ -2269,19 +2300,56 @@ async fn plaza_detail_for_client(
     repo_ref: &RepoRef,
     cache: &PlazaDetailCache,
     cache_key: &str,
-    blob_api_base: &str,
-    skill_id: Option<&str>,
-    wanted_name: Option<&str>,
+    blob: PlazaBlobDetail<'_>,
 ) -> Result<Vec<SkillDetail>, AppError> {
-    if let (Some(id), Some(name)) = (skill_id, wanted_name) {
+    if let (Some(id), Some(name), Some((head, tree))) =
+        (blob.skill_id, blob.wanted_name, blob.prefetched)
+    {
         let http = crate::core::gitea::app_http_client_proxied()?;
         if let Ok(detail) =
-            plaza::fetch_skill_detail_via_blob(client, repo_ref, &http, blob_api_base, id, name).await
+            plaza::fetch_skill_detail_via_blob(repo_ref, &http, blob.api_base, id, name, head, tree)
+                .await
         {
             return Ok(vec![detail]);
         }
     }
     cached_plaza_detail(cache, cache_key, client, repo_ref).await
+}
+
+/// [`plaza_detail_for_client`] 走 blob 快路径所需的一切。打包成结构体是为了让参数表
+/// 不超过 clippy 的 `too_many_arguments` 阈值,顺带把"这几样是一体的"说清楚:
+/// 缺任何一样都退回整仓 zipball 路径。
+struct PlazaBlobDetail<'a> {
+    api_base: &'a str,
+    /// skills.sh 的 `id`(`owner/repo/skill-name`),点开的那条搜索结果自带。
+    skill_id: Option<&'a str>,
+    /// 点开的那条搜索结果的技能名,用于"名字对不上就显示列表"这条既有判据。
+    wanted_name: Option<&'a str>,
+    /// 调用方预取的 head 与仓库树(见 [`plaza_blob_prefetch`])。`None` = 放弃快路径。
+    prefetched: Option<(&'a crate::core::gitea::BranchHead, &'a github::RepoTree)>,
+}
+
+/// 预取 blob 详情快路径需要的两样东西:`branch_head`(commit sha / 时间)与仓库树
+/// (把 skills.sh 的 `skillId` 校验成仓内真实目录名,理由见
+/// [`plaza::fetch_skill_detail_via_blob`] 的「为什么必须拿仓库树校验一遍」)。
+///
+/// **任何一步失败都返回 `None`**——调用方据此放弃快路径,静默回退完全不动的整仓
+/// zipball 路径;这两个请求都只是加速的前置条件,失败不该变成用户可见的错误。
+///
+/// 树按 `(owner, repo, sha)` 走 [`cached_repo_tree`],**与安装路径共用同一份缓存**:
+/// 用户点开详情再点「获取」时,安装那一步不会重复拉一次几百 KB 的树。
+///
+/// 只在真的要试 blob(`skill_id` 与 `wanted_name` 都在)时才调用——否则这两次
+/// GitHub 请求(也吃匿名 60 次/小时的配额)就白花了。
+async fn plaza_blob_prefetch(
+    github_client: Option<&github::GithubClient>,
+    repo: &RepoRef,
+    tree_cache: &RepoTreeCache,
+) -> Option<(crate::core::gitea::BranchHead, github::RepoTree)> {
+    let github_client = github_client?;
+    let head = github_client.branch_head(repo).await.ok()?;
+    let tree = cached_repo_tree(tree_cache, github_client, repo, &head.sha).await.ok()?;
+    Some((head, tree))
 }
 
 /// 技能广场详情(M9 任务 4,M10 任务 2 改走 blob):点开搜索结果卡片时现拉该仓内容。
@@ -2307,16 +2375,33 @@ pub async fn plaza_detail(args: PlazaDetailArgs) -> Result<Vec<SkillDetail>, App
     let skill_id = args.skill_id.as_deref();
     let wanted_name = args.wanted_name.as_deref();
 
+    // blob 快路径要一次仓库树(把 skills.sh 的 skillId 校验成仓内真实目录名),而树只有
+    // GitHub client 拉得到;广场源的 kind 恒为 github(`registry.rs` 的锁定常量),
+    // 这里的 match 是类型上的必要动作,不是行为分支。
+    let want_blob = skill_id.is_some() && wanted_name.is_some();
+
     match read_source(registry::PLAZA_REGISTRY_ID, Some(&cache_key)).await {
         Ok((client, repo_ref)) => {
+            let github_client = match &client {
+                SourceClient::Github(c) => Some(c),
+                SourceClient::Gitea(_) => None,
+            };
+            let prefetched = if want_blob {
+                plaza_blob_prefetch(github_client, &repo_ref, repo_tree_cache()).await
+            } else {
+                None
+            };
             plaza_detail_for_client(
                 &client,
                 &repo_ref,
                 plaza_detail_cache(),
                 &cache_key,
-                plaza::PLAZA_API_BASE,
-                skill_id,
-                wanted_name,
+                PlazaBlobDetail {
+                    api_base: plaza::PLAZA_API_BASE,
+                    skill_id,
+                    wanted_name,
+                    prefetched: prefetched.as_ref().map(|(h, t)| (h, t)),
+                },
             )
             .await
         }
@@ -2327,14 +2412,22 @@ pub async fn plaza_detail(args: PlazaDetailArgs) -> Result<Vec<SkillDetail>, App
             let token = load_github_token(&KeyringStore, registry::PLAZA_REGISTRY_ID);
             let client = github::GithubClient::new(registry::PLAZA_BASE_URL, token, http);
             let repo_ref = RepoRef { owner: owner.to_string(), repo: repo.to_string(), branch };
+            let prefetched = if want_blob {
+                plaza_blob_prefetch(Some(&client), &repo_ref, repo_tree_cache()).await
+            } else {
+                None
+            };
             plaza_detail_for_client(
                 &client,
                 &repo_ref,
                 plaza_detail_cache(),
                 &cache_key,
-                plaza::PLAZA_API_BASE,
-                skill_id,
-                wanted_name,
+                PlazaBlobDetail {
+                    api_base: plaza::PLAZA_API_BASE,
+                    skill_id,
+                    wanted_name,
+                    prefetched: prefetched.as_ref().map(|(h, t)| (h, t)),
+                },
             )
             .await
         }
@@ -2712,9 +2805,12 @@ mod tests {
     /// 这不是任务分解禁止的"发现逻辑复制"——发现算法本身仍只调既有的
     /// `store::build_index`(见 `plaza::fetch_repo_skills`),这里只是喂给它的
     /// 原始压缩包数据,是测试 fixture,不是第二份解析实现。
-    fn fake_archive(slug: &str) -> crate::core::gitea::RepoArchive {
-        let path = format!("owner-repo-aaa1111/skills/{slug}/SKILL.md");
-        let text = format!("---\nname: {slug}\ndescription: {slug} 的说明\n---\n\n正文\n");
+    /// **目录名与 frontmatter `name` 分开给**——skills.sh 的 `skillId` 取的是
+    /// frontmatter `name`,与仓内目录名经常不同(2026-08-19 终审修复的根因),
+    /// 两个概念在 fixture 里必须能取不同值,否则它们的差别就测没了(空转模式 ③)。
+    fn fake_archive_named(dir_slug: &str, name: &str) -> crate::core::gitea::RepoArchive {
+        let path = format!("owner-repo-aaa1111/skills/{dir_slug}/SKILL.md");
+        let text = format!("---\nname: {name}\ndescription: {name} 的说明\n---\n\n正文\n");
         let mut archive = crate::core::gitea::RepoArchive {
             root: "owner-repo-aaa1111".to_string(),
             tree: crate::core::skills::MemTree::new().with_file(&path, &text),
@@ -2731,7 +2827,19 @@ mod tests {
     /// 统计 `download_archive` 被调用次数的假来源,供缓存命中测试用——不碰网络。
     struct CountingSource {
         calls: std::sync::atomic::AtomicUsize,
+        /// 仓内技能目录名。
         slug: &'static str,
+        /// SKILL.md frontmatter 的 `name`(= skills.sh 的 `skillId`)。默认与目录名
+        /// 相同,只有"两个标识不同"的用例才分开给,见 [`counting_source_named`]。
+        name: &'static str,
+    }
+
+    fn counting_source(slug: &'static str) -> CountingSource {
+        CountingSource { calls: Default::default(), slug, name: slug }
+    }
+
+    fn counting_source_named(slug: &'static str, name: &'static str) -> CountingSource {
+        CountingSource { calls: Default::default(), slug, name }
     }
 
     impl crate::core::gitea::RepoSource for CountingSource {
@@ -2749,7 +2857,7 @@ mod tests {
             _r: &RepoRef,
         ) -> Result<crate::core::gitea::RepoArchive, AppError> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(fake_archive(self.slug))
+            Ok(fake_archive_named(self.slug, self.name))
         }
     }
 
@@ -2760,7 +2868,7 @@ mod tests {
     #[tokio::test]
     async fn cached_plaza_detail_hits_cache_on_second_call_with_the_same_key() {
         let cache: PlazaDetailCache = Mutex::new(HashMap::new());
-        let client = CountingSource { calls: Default::default(), slug: "weekly-report" };
+        let client = counting_source("weekly-report");
         let repo = some_repo();
 
         let first = cached_plaza_detail(&cache, "vercel-labs/skills", &client, &repo)
@@ -2784,8 +2892,8 @@ mod tests {
     #[tokio::test]
     async fn cached_plaza_detail_does_not_conflate_different_repos() {
         let cache: PlazaDetailCache = Mutex::new(HashMap::new());
-        let client_a = CountingSource { calls: Default::default(), slug: "weekly-report" };
-        let client_b = CountingSource { calls: Default::default(), slug: "docx-to-markdown" };
+        let client_a = counting_source("weekly-report");
+        let client_b = counting_source("docx-to-markdown");
         let repo_a = some_repo();
         let repo_b = RepoRef { owner: "octocat".into(), repo: "hello-world".into(), branch: "main".into() };
 
@@ -2859,8 +2967,9 @@ mod tests {
         let http = test_http_client();
         let home_url = format!("{}/", server.uri());
 
-        let first = cached_plaza_leaderboard(&cache, &http, &home_url).await;
-        let second = cached_plaza_leaderboard(&cache, &http, &home_url).await;
+        let ttl = std::time::Duration::from_secs(600);
+        let first = cached_plaza_leaderboard(&cache, &http, &home_url, ttl).await;
+        let second = cached_plaza_leaderboard(&cache, &http, &home_url, ttl).await;
 
         assert_eq!(first, second);
         assert_eq!(first.len(), 1);
@@ -2887,11 +2996,62 @@ mod tests {
         let http = test_http_client();
         let home_url = format!("{}/", server.uri());
 
-        let first = cached_plaza_leaderboard(&cache, &http, &home_url).await;
+        let ttl = std::time::Duration::from_secs(600);
+        let first = cached_plaza_leaderboard(&cache, &http, &home_url, ttl).await;
         assert!(first.is_empty(), "第一轮应该降级为空列表: {first:?}");
 
-        let second = cached_plaza_leaderboard(&cache, &http, &home_url).await;
+        let second = cached_plaza_leaderboard(&cache, &http, &home_url, ttl).await;
         assert_eq!(second.len(), 1, "空结果不该被缓存,第二次应该重新尝试并拿到真数据");
+    }
+
+    /// TTL 到期必须重拉:排行榜是首屏常驻内容,进程可以连开好几天(关窗只缩托盘),
+    /// 不会过期的缓存等于「全网热门」被钉死一整个进程生命周期。
+    #[tokio::test]
+    async fn cached_plaza_leaderboard_refetches_after_the_ttl_expires() {
+        let server = wiremock::MockServer::start().await;
+        // `.expect(2)`:两次调用必须各发一次请求;少发一次(TTL 没生效)会在 drop 时炸。
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(one_official_skill_home_body()))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let cache: PlazaLeaderboardCache = Mutex::new(None);
+        let http = test_http_client();
+        let home_url = format!("{}/", server.uri());
+
+        let first = cached_plaza_leaderboard(&cache, &http, &home_url, std::time::Duration::ZERO).await;
+        let second = cached_plaza_leaderboard(&cache, &http, &home_url, std::time::Duration::ZERO).await;
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+    }
+
+    /// 过期后重拉失败(降级成空列表)时,端出**上一份过期但真实**的榜单
+    /// ——上游临时抽风不该让首屏突然变空。
+    #[tokio::test]
+    async fn cached_plaza_leaderboard_serves_stale_data_when_the_refetch_degrades_to_empty() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(one_official_skill_home_body()))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let cache: PlazaLeaderboardCache = Mutex::new(None);
+        let http = test_http_client();
+        let home_url = format!("{}/", server.uri());
+
+        let first = cached_plaza_leaderboard(&cache, &http, &home_url, std::time::Duration::ZERO).await;
+        assert_eq!(first.len(), 1, "第一轮应拿到真数据");
+
+        let second = cached_plaza_leaderboard(&cache, &http, &home_url, std::time::Duration::ZERO).await;
+        assert_eq!(second, first, "过期后重拉失败要继续端旧数据,不能让首屏变空");
     }
 
     // ============================================================ blob 快路径的回退编排(M10 任务 2)
@@ -2911,6 +3071,29 @@ mod tests {
             .await;
     }
 
+    /// blob 快路径的两个前置件:head 与仓库树。生产里由 `plaza_blob_prefetch` 现拉,
+    /// 测试里直接给——这几条用例要钉的是"拿到树之后怎么判",不是"树怎么拉下来"。
+    fn blob_head() -> crate::core::gitea::BranchHead {
+        crate::core::gitea::BranchHead {
+            sha: "aaa1111".into(),
+            committed_at: "2026-08-12T10:00:00Z".into(),
+        }
+    }
+
+    fn repo_tree(paths: &[&str]) -> github::RepoTree {
+        github::RepoTree {
+            paths: paths.iter().map(|p| (*p).to_string()).collect(),
+            truncated: false,
+        }
+    }
+
+    /// 仓库树里技能目录**故意放在嵌套路径下**(真实旗舰仓就是这个形状,如
+    /// `plugins/developer-essentials/skills/<slug>`):这样 `dir_slug` 与 `path`
+    /// 必然不同值,能钉住"两者不是同一个东西"。
+    fn nested_tree(dir_slug: &str) -> github::RepoTree {
+        repo_tree(&[&format!("plugins/team-pack/skills/{dir_slug}/SKILL.md")])
+    }
+
     #[tokio::test]
     async fn plaza_detail_for_client_uses_blob_and_skips_the_zipball_when_it_matches() {
         let skillssh = wiremock::MockServer::start().await;
@@ -2926,28 +3109,102 @@ mod tests {
         )
         .await;
         let cache: PlazaDetailCache = Mutex::new(HashMap::new());
-        let client = CountingSource { calls: Default::default(), slug: "weekly-report" };
+        let client = counting_source("weekly-report");
         let repo = some_repo();
+        let (head, tree) = (blob_head(), nested_tree("weekly-report"));
 
         let result = plaza_detail_for_client(
             &client,
             &repo,
             &cache,
             "vercel-labs/skills",
-            &skillssh.uri(),
-            Some("vercel-labs/skills/weekly-report"),
-            Some("weekly-report"),
+            PlazaBlobDetail {
+                api_base: &skillssh.uri(),
+                skill_id: Some("vercel-labs/skills/weekly-report"),
+                wanted_name: Some("weekly-report"),
+                prefetched: Some((&head, &tree)),
+            },
         )
         .await
         .unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].description, "从 blob 来的");
+        assert_eq!(result[0].dir_slug, "weekly-report", "dir_slug 必须是仓内目录名");
+        assert_eq!(
+            result[0].path, "plugins/team-pack/skills/weekly-report",
+            "path 必须是仓库树里的真实相对路径,不是目录名"
+        );
+        assert_ne!(
+            result[0].path, result[0].dir_slug,
+            "两个字段是两个概念,fixture 不许让它们取同值"
+        );
         assert_eq!(
             client.calls.load(std::sync::atomic::Ordering::SeqCst),
             0,
             "blob 命中时不该再下整仓压缩包"
         );
+    }
+
+    /// 🔴 2026-08-19 终审修复钉住的那条缺陷:**skills.sh 的 `skillId` 是 SKILL.md 的
+    /// frontmatter `name`,不是仓内目录名**(`vercel-react-best-practices` vs
+    /// `skills/react-best-practices`)。名字闸拦不住它(两者逐字相同),只有仓库树
+    /// 拦得住。此时必须回退整仓 zipball,拿回**真实目录名**——它是安装键,填错等于
+    /// 「获取」必然报 `REPO_NOT_FOUND`。
+    #[tokio::test]
+    async fn plaza_detail_for_client_falls_back_when_the_skills_sh_id_is_not_the_repo_dir_name() {
+        let skillssh = wiremock::MockServer::start().await;
+        // 挂上桩并 `.expect(0)`:树里对不上时**一个 blob 请求都不该发**(先校验后取数)。
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/download/vercel-labs/skills/vercel-react-best-practices",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "files": [{
+                    "path": "SKILL.md",
+                    "contents": "---\nname: vercel-react-best-practices\ndescription: 从 blob 来的\n---\n\n正文\n"
+                }]
+            })))
+            .expect(0)
+            .mount(&skillssh)
+            .await;
+        let cache: PlazaDetailCache = Mutex::new(HashMap::new());
+        // 仓内目录名 react-best-practices,frontmatter name(= skills.sh skillId)
+        // vercel-react-best-practices —— 两个标识**必须取不同值**。
+        let client = counting_source_named("react-best-practices", "vercel-react-best-practices");
+        let repo = some_repo();
+        let (head, tree) = (blob_head(), nested_tree("react-best-practices"));
+
+        let result = plaza_detail_for_client(
+            &client,
+            &repo,
+            &cache,
+            "vercel-labs/skills",
+            PlazaBlobDetail {
+                api_base: &skillssh.uri(),
+                skill_id: Some("vercel-labs/skills/vercel-react-best-practices"),
+                wanted_name: Some("vercel-react-best-practices"),
+                prefetched: Some((&head, &tree)),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            client.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "skillId 不是仓内目录名时必须回退到现拉整仓这条既有路径"
+        );
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].dir_slug, "react-best-practices",
+            "dir_slug 必须是仓内真实目录名(它是安装键)"
+        );
+        assert_ne!(
+            result[0].dir_slug, "vercel-react-best-practices",
+            "绝不能把 skills.sh 的 skillId 当成安装键"
+        );
+        assert_eq!(result[0].name, "vercel-react-best-practices", "展示名仍是 frontmatter 的 name");
     }
 
     /// 名字对不上是"多技能仓、名字对不上时显示列表"这条既有行为的触发条件
@@ -2968,17 +3225,21 @@ mod tests {
         )
         .await;
         let cache: PlazaDetailCache = Mutex::new(HashMap::new());
-        let client = CountingSource { calls: Default::default(), slug: "weekly-report" };
+        let client = counting_source("weekly-report");
         let repo = some_repo();
+        let (head, tree) = (blob_head(), nested_tree("weekly-report"));
 
         let result = plaza_detail_for_client(
             &client,
             &repo,
             &cache,
             "vercel-labs/skills",
-            &skillssh.uri(),
-            Some("vercel-labs/skills/weekly-report"),
-            Some("weekly-report"),
+            PlazaBlobDetail {
+                api_base: &skillssh.uri(),
+                skill_id: Some("vercel-labs/skills/weekly-report"),
+                wanted_name: Some("weekly-report"),
+                prefetched: Some((&head, &tree)),
+            },
         )
         .await
         .unwrap();
@@ -2999,7 +3260,44 @@ mod tests {
         let skillssh = wiremock::MockServer::start().await;
         mount_weekly_report_blob(&skillssh, 404, serde_json::json!({"error": "not found"})).await;
         let cache: PlazaDetailCache = Mutex::new(HashMap::new());
-        let client = CountingSource { calls: Default::default(), slug: "weekly-report" };
+        let client = counting_source("weekly-report");
+        let repo = some_repo();
+        let (head, tree) = (blob_head(), nested_tree("weekly-report"));
+
+        let result = plaza_detail_for_client(
+            &client,
+            &repo,
+            &cache,
+            "vercel-labs/skills",
+            PlazaBlobDetail {
+                api_base: &skillssh.uri(),
+                skill_id: Some("vercel-labs/skills/weekly-report"),
+                wanted_name: Some("weekly-report"),
+                prefetched: Some((&head, &tree)),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(result[0].dir_slug, "weekly-report");
+    }
+
+    /// 预取失败(head 或仓库树拉不到)必须静默回退,不能变成用户可见的错误
+    /// ——那两个请求只是加速的前置条件。
+    #[tokio::test]
+    async fn plaza_detail_for_client_falls_back_when_the_prefetch_is_missing() {
+        let skillssh = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/download/vercel-labs/skills/weekly-report",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({"files": []})))
+            .expect(0)
+            .mount(&skillssh)
+            .await;
+        let cache: PlazaDetailCache = Mutex::new(HashMap::new());
+        let client = counting_source("weekly-report");
         let repo = some_repo();
 
         let result = plaza_detail_for_client(
@@ -3007,9 +3305,12 @@ mod tests {
             &repo,
             &cache,
             "vercel-labs/skills",
-            &skillssh.uri(),
-            Some("vercel-labs/skills/weekly-report"),
-            Some("weekly-report"),
+            PlazaBlobDetail {
+                api_base: &skillssh.uri(),
+                skill_id: Some("vercel-labs/skills/weekly-report"),
+                wanted_name: Some("weekly-report"),
+                prefetched: None,
+            },
         )
         .await
         .unwrap();
@@ -3032,17 +3333,21 @@ mod tests {
             .mount(&skillssh)
             .await;
         let cache: PlazaDetailCache = Mutex::new(HashMap::new());
-        let client = CountingSource { calls: Default::default(), slug: "weekly-report" };
+        let client = counting_source("weekly-report");
         let repo = some_repo();
+        let (head, tree) = (blob_head(), nested_tree("weekly-report"));
 
         let result = plaza_detail_for_client(
             &client,
             &repo,
             &cache,
             "vercel-labs/skills",
-            &skillssh.uri(),
-            None,
-            None,
+            PlazaBlobDetail {
+                api_base: &skillssh.uri(),
+                skill_id: None,
+                wanted_name: None,
+                prefetched: Some((&head, &tree)),
+            },
         )
         .await
         .unwrap();

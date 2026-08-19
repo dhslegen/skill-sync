@@ -232,7 +232,7 @@ describe("DetailPanel", () => {
     useStoreIndex.setState({
       detailSlug: "weekly-report",
       detail: null,
-      detailError: { code: "REPO_NOT_FOUND", message: "这个技能已不在公司技能库中,请返回列表刷新后再试" },
+      detailError: { code: "REPO_NOT_FOUND", message: "这个技能已不在该技能库中,请返回列表刷新后再试" },
     });
     render(<DetailPanel />);
     expect(screen.getByText(/请返回列表刷新后再试/)).toBeInTheDocument();

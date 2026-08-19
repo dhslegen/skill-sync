@@ -38,9 +38,8 @@
 //!
 //! 2. 🔴 **blob 端点不给仓库内的真实相对路径**(它的 `slug` 参数是"技能目录名",
 //!    不是路径——`wshobson/agents` 的 `code-review-excellence`,真实路径是
-//!    `plugins/developer-essentials/skills/code-review-excellence`)。任务 2 的
-//!    详情面板能把这个信息缺口混过去(`SkillDetail.path` 退化填目录名,因为已核实
-//!    详情面板从不渲染这个字段);**安装不能**——这个值会被 `acquire::record`
+//!    `plugins/developer-essentials/skills/code-review-excellence`)。这个值会被
+//!    `acquire::record`
 //!    真实写进 `state.installed[].source.path` 与外部契约 `.skill-lock.json` 的
 //!    `skillPath`,`share.rs` 还拿它去定位"分享改动"要提交到仓库的哪个目录。
 //!    写错等于制造下一个 M6 sourceUrl/sourceType 那种坑(字段形状写错,下游判定
@@ -57,6 +56,11 @@
 //!    放弃了首次安装提速这个核心收益;方案 C「path 退化成目录名」会把错误路径
 //!    写进持久数据与外部契约,均已否决)。
 //!
+//!    ⚠️ **详情路径(任务 2)后来也补上了这次树请求**(2026-08-19 终审修复):
+//!    当时以为"详情不落盘、`path` 退化成目录名无害"就够了,漏掉的是
+//!    `SkillDetail.dir_slug` 同样被填成了 skills.sh 的 `skillId`,而它是安装键
+//!    ——见 [`fetch_skill_detail_via_blob`] 的「为什么必须拿仓库树校验一遍」。
+//!
 //! 这两条检查任一不过,本节的函数就返回 `Err`,调用方(`commands::skill_install`)
 //! 静默回退到完全不动的 [`fetch_repo_skills`](zipball)全链路——与详情面板同一套
 //! "宁可少加速一次,也不猜一个可能错的结果"的姿势。安装本身仍然**完整走
@@ -71,7 +75,10 @@
 //! 完全独立、互不改动——`commands::plaza_detail` 按"blob 能不能满足这次点击"
 //! 二选一,blob 失败或结果与点开的搜索结果对不上,一律回退 zipball,
 //! "多技能仓、名字对不上时显示列表"这条 M9 任务 5 的既有行为原样保留
-//! (细节与判据见该函数文档)。安装路径**这次没动**,仍然是任务 3 的事。
+//! (细节与判据见该函数文档)。
+//! **它与安装路径共用同一次仓库树请求**(2026-08-19 终审修复起):详情要靠树把
+//! skills.sh 的 `skillId` 校验成仓内真实目录名,安装要靠树解出仓内真实路径,
+//! 两者按 `(owner, repo, sha)` 命中 `commands::cached_repo_tree` 同一份进程内缓存。
 //!
 //! # 请求走外部源的 client
 //!
@@ -743,19 +750,25 @@ fn skill_name_from_id<'a>(id: &'a str, owner: &str, repo: &str) -> Option<&'a st
 ///   不新开错误分叉(与 [`fetch_blob`] 同一套"错误码只分类不分因"姿势)。
 /// - `has_scripts` 复用 `skills::is_script_extension`(同一份扩展名表,见该函数文档)
 ///   ——blob 的文件路径本来就是技能目录内的相对路径,不需要再剥前缀。
-/// - `path`/`tags`/`attribution` 是这条路径**拿不到**的信息(blob 端点不给仓内完整
-///   路径,也不读库根的 tags.json/authors.json——那两个文件多数广场仓根本没有,
-///   为它们多发请求违反 brief"不为 blob 做防腐层"的边界):`path` 退而求其次填
-///   技能目录名本身(这是**真值的一部分**,不是编造;而且广场详情面板压根不渲染
-///   `SkillDetail.path`,见 `DetailPanel.tsx` 的 `PanelBody`,`LocalPanelBody` 才用它);
-///   `tags` 给空、`attribution` 给 `None`,与"库里没有这两个文件"时的既有语义完全一致
-///   (`IndexedSkill.tags`/`attribution` 本来就是"没有就不摆",不算新行为)。
+/// - `dir_slug` 与 `path` **都由调用方给**,而且都必须来自**仓库树**
+///   ([`crate::core::github::resolve_skill_path`]),不能拿 skills.sh 的 `skillId` 顶替
+///   ——2026-08-19 终审修复的正是这一点:`skillId` 是 SKILL.md 的 frontmatter `name`,
+///   与仓内目录名**经常不同**(实测 47 个技能里 8 个不同,`vercel-labs/agent-skills`
+///   的 `vercel-react-best-practices` 对应的目录是 `skills/react-best-practices`)。
+///   `dir_slug` 是安装目录名、`state.installed` 记账键与 `.skill-lock.json` 键的唯一
+///   来源,填成 `skillId` 会让「获取」必然失败;见 [`fetch_skill_detail_via_blob`]。
+/// - `tags`/`attribution` 是这条路径**拿不到**的信息(blob 端点不读库根的
+///   tags.json/authors.json——那两个文件多数广场仓根本没有,为它们多发请求违反
+///   brief"不为 blob 做防腐层"的边界):`tags` 给空、`attribution` 给 `None`,
+///   与"库里没有这两个文件"时的既有语义完全一致(`IndexedSkill.tags`/`attribution`
+///   本来就是"没有就不摆",不算新行为)。
 /// - **`internal` 标记的技能一律当作 blob 不适用**:zipball 路径的
 ///   `discover_skills` 默认排除 `metadata.internal: true` 的技能
 ///   (`DiscoverOptions::default()`),blob 路径必须复现同一条规则,否则"某技能仓的
 ///   internal 技能不该出现在结果里"这条既有行为会被 blob 快路径悄悄破坏。
 fn detail_from_blob_files(
     dir_slug: &str,
+    path: &str,
     files: Vec<BlobFile>,
     commit_sha: String,
     committed_at: String,
@@ -795,7 +808,7 @@ fn detail_from_blob_files(
         name: parsed.name,
         dir_slug: dir_slug.to_string(),
         description: parsed.description,
-        path: dir_slug.to_string(),
+        path: path.to_string(),
         skill_md,
         files: skill_files,
         has_scripts,
@@ -815,6 +828,7 @@ fn detail_from_blob_files(
 /// 静默回退到完全不动的 [`fetch_repo_skills`] 路径(brief 明确要求:回退场景**必须**
 /// 走 zipball,不能用这条路径凑合出一个只有一项的"列表"):
 /// - `skill_slug` 形状不对(见 [`skill_name_from_id`]);
+/// - 🔴 **skills.sh 的 `skillId` 不是仓内目录名**(见下);
 /// - blob 请求失败(404/超时/解析失败,见 [`fetch_blob`]);
 /// - 技能标记为 `internal`(见 [`detail_from_blob_files`]);
 /// - **blob 拿到的技能名与用户点开那条搜索结果的名字对不上**——这正是 M9 任务 5
@@ -822,22 +836,59 @@ fn detail_from_blob_files(
 ///   对不上就必须落到能展示完整候选列表的 zipball 路径,而不是只给用户看这一个
 ///   可能文不对题的结果。
 ///
-/// `source`/`repo` 用于 [`gitea::RepoSource::branch_head`] 拿准确的
-/// `commit_sha`/`committed_at`(轻量请求,几百字节;这里不用 `download_archive`)。
+/// # 🔴 为什么必须拿仓库树校验一遍(2026-08-19 终审修复)
+///
+/// **skills.sh 的 `skillId` 是 SKILL.md 的 frontmatter `name`,不是仓库里的目录名**
+/// ——两者经常不同(实测 4 次搜索 / 12 个仓 / 47 个技能里 **8 个不同**,而且命中的
+/// 都是安装量最大的旗舰仓):`vercel-labs/agent-skills` 的
+/// `skillId = vercel-react-best-practices`,仓里的路径却是
+/// `skills/react-best-practices/SKILL.md`(该文件 frontmatter `name` 恰好就是
+/// `vercel-react-best-practices`,所以**名字闸拦不住**)。
+///
+/// 而 [`store::SkillDetail::dir_slug`] 是安装目录名、`state.installed` 记账键、
+/// `.skill-lock.json` 键的唯一来源(CLAUDE.md「命名与目录」:安装目录名取仓库里的
+/// 技能目录名,不取 frontmatter 的 `name`)。任务 2 曾把它直接填成 `skillId`,后果是
+/// 那 17% 的技能**点「获取」必然失败**:blob 安装路径按这个名字在树里找不到目录 →
+/// 回退 zipball → 索引里同样没有这个 `dir_slug` → `REPO_NOT_FOUND`。
+///
+/// 判据用**既有**的 [`crate::core::github::resolve_skill_path`](与安装路径同一个
+/// 函数,不另抄一份):树里恰好有一个 `…/{skill_slug}/SKILL.md` 才算"两个标识同名",
+/// 快路径成立且 `path` 一并拿到真值;命中不了就回退整仓 zipball——那条路径的
+/// `dir_slug` 由 `store::build_index` 从压缩包目录结构算出,天然正确。
+/// **代价是那 17% 退回慢路径,收益是 100% 装得上**——与安装侧"拿不准就回退,
+/// 回退只是慢、残缺是错"同一个姿势。
+///
+/// `head`/`tree` 都由调用方(`commands::plaza_detail`)预取并传入,不在这里现拉:
+/// 树必须按 `head.sha` 取(避免"树新内容旧"的撕裂),而调用方本来就要按
+/// `(owner, repo, sha)` 缓存它——安装路径随后会命中同一份缓存,不重复拉。
 pub async fn fetch_skill_detail_via_blob(
-    source: &impl gitea::RepoSource,
     repo: &gitea::RepoRef,
     blob_http: &reqwest::Client,
     blob_api_base: &str,
     id: &str,
     wanted_name: &str,
+    head: &gitea::BranchHead,
+    tree: &crate::core::github::RepoTree,
 ) -> Result<store::SkillDetail, AppError> {
     let skill_slug = skill_name_from_id(id, &repo.owner, &repo.repo)
         .ok_or_else(|| plaza_blob_err(format!("无法从 id 解出技能名: {id}")))?;
 
-    let head = source.branch_head(repo).await?;
+    // 先校验再取数:对不上就一个 blob 请求都不发(有 `.expect(0)` 的测试钉住顺序)。
+    let path = crate::core::github::resolve_skill_path(tree, skill_slug).ok_or_else(|| {
+        plaza_blob_err(format!(
+            "skills.sh 的 skillId({skill_slug})在仓库树里找不到唯一同名技能目录,回退整仓路径(sha={})",
+            head.sha
+        ))
+    })?;
+
     let files = fetch_blob(blob_http, blob_api_base, &repo.owner, &repo.repo, skill_slug).await?;
-    let detail = detail_from_blob_files(skill_slug, files, head.sha, head.committed_at)?;
+    let detail = detail_from_blob_files(
+        skill_slug,
+        &path,
+        files,
+        head.sha.clone(),
+        head.committed_at.clone(),
+    )?;
 
     if detail.name != wanted_name {
         return Err(plaza_blob_err(format!(

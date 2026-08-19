@@ -300,7 +300,7 @@ pub async fn acquire(
         .ok_or_else(|| {
             AppError::new(
                 "REPO_NOT_FOUND",
-                "这个技能已不在公司技能库中,请返回列表刷新后再试",
+                "这个技能已不在该技能库中,请返回列表刷新后再试",
             )
             .with_detail(format!("dir_slug not in index: {}", req.dir_slug))
         })?;
@@ -368,7 +368,7 @@ async fn finish(
     if payload.is_empty() {
         return Err(AppError::new(
             "REPO_EMPTY_SKILL",
-            "这个技能在公司技能库里是空的,请联系它的维护者",
+            "这个技能在该技能库里是空的,请联系它的维护者",
         )
         .with_detail(format!("empty payload for {}", skill.path)));
     }
@@ -548,7 +548,7 @@ fn install_one_from_archive(
 ) -> BatchOutcome {
     let Some(skill) = index.skills.iter().find(|s| s.dir_slug == dir_slug) else {
         return BatchOutcome::Skipped {
-            reason: "已不在公司技能库中".into(),
+            reason: "已不在该技能库中".into(),
         };
     };
 
@@ -601,7 +601,7 @@ fn install_one_from_archive(
         if payload.is_empty() {
             return Err(AppError::new(
                 "REPO_EMPTY_SKILL",
-                "这个技能在公司技能库里是空的,请联系它的维护者",
+                "这个技能在该技能库里是空的,请联系它的维护者",
             ));
         }
         let report = installer.install(dir_slug, &payload, agent_names, OnOccupied::Fail)?;
