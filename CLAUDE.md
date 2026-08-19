@@ -163,6 +163,17 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
 ## 测试要求
 - core 模块单测覆盖:installer 降级链、SKILL.md 解析边界、state 迁移、同名预检三分支
 - Gitea client 用 wiremock-rs 模拟;e2e 用 docker compose 起 gitea(见 fixtures/)
+- ⚠️ **本机跑 `cargo test --workspace` 前先确认 docker 起着**(`docker ps` 里要有
+  `skillsync-fixture-gitea`):`tests/gitea_live.rs` 的跳过判据是
+  "`fixtures/.env.local` **文件在不在**",**不是"服务通不通"**——docker 停着时
+  那两条测试必红(HTTP 502),**看起来像代码回归**(2026-08-19 真被绊过一次,
+  排查后才发现是 OrbStack 没起)。CI 上没有该文件所以不受影响。
+- 🔴 **默认跳过的 live 测试"通过"是零信息量的**:它们走早退分支、`eprintln!` 一句
+  就返回,**照样打印 `ok`、照样计进测试总数**。所以"Rust 全绿"这句话对它们
+  **什么都没证明**。受 `SKILLSYNC_PLAZA_LIVE` 门控的有三个文件
+  (`plaza_live` / `plaza_blob_live` / `plaza_install_blob_live`),其中后两个是
+  **blob↔zipball 逐字节等价**这条地基仅有的哨兵——那条等式一破,界面会永远误报
+  "有更新"。**发版前必须手动跑一次**,见「发版」一节。
 - Windows 相关(junction、路径、CRLF)必须在 Windows CI runner 上跑,不得只测 macOS
 - **路径一律按 `Path` 比,不按字符串比**(M4 任务 4 的 CI 教训):`home.join(".agents/skills")`
   在 Windows 上产出 `.agents/skills\x`,而分段 join 产出 `.agents\skills\x`——同一个目录,
@@ -310,12 +321,29 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
   它就是这个项目的开发者文档。**别按全局规则把它加进 exclude 或重写历史**。
   仍然适用的部分:`docs/*`(除放行的两个)、`_*.md`、AI 流程产物一律不进版本控制。
 
-## 当前进度(2026-08-12,M9 完成但尚未发版,M7 完成 + M8 任务 1-3 完成,现役 v0.3.13)
+## 当前进度(2026-08-19,M10 完成 + M9 完成,**两者都尚未发版**;M7 完成 + M8 任务 1-3 完成,现役 v0.3.13)
 
-**⚠️ M9 已经完成,但现役版本 `v0.3.13` 不含它**——`v0.3.13` 是 M9 开工前发的版本,
-M9 的全部提交都在 v0.3.13 之后。同事装的任何已发布版本目前都还搜不到、装不了
-技能广场,这不是缺陷,是还没发版。下次发版前把它带上,并在 `RELEASE_NOTES.md`
-写清楚(否则发版脚本会拒绝发布)。
+**⚠️ M9 与 M10 都已完成,但现役版本 `v0.3.13` 一个都不含**——`v0.3.13` 是 M9 开工前
+发的版本,M9 与 M10 的全部提交都在它之后。同事装的任何已发布版本目前都还
+**搜不到技能广场,也拿不到 M10 的提速**,这不是缺陷,是还没发版。下次发版前把两个
+里程碑一起带上,并在 `RELEASE_NOTES.md` 写清楚(否则发版脚本会拒绝发布)。
+
+**M10 = 技能广场提速与排行榜**(起因是 2026-08-17 用户真机验收提的两条:①广场空态
+太空,官网有排行榜我们没有;②读详情与安装太慢,"是不是国内 GitHub 太慢"。
+方案与任务分解在本地 `docs/M10-任务分解.md`,不进版本控制)。
+**结论先行:慢的根因不是"国内 GitHub 慢",是我们下多了**——为了展示一个技能的
+文本,M9 的详情与安装都在下整个仓的 zipball。四条实测 ground truth 记在
+「关键事实」的「技能广场的 blob 快照」一节,数字都是 2026-08-17 亲测。
+任务 1 blob 取数原语 + **内容等价性实证**(地基,不成立则任务 3 取消)→
+任务 2 详情改走 blob(用户可感知的 88 倍提速)→ 任务 3 安装的取数分流
+(保守白名单,纯文本走 blob、其余回退 zipball)→ 任务 4 空态展示全网热门
+(公司技能库同款卡片)→ 任务 5(本任务)`tracing::debug!` 修复 + 承诺同步。
+**任务 4 走了四轮修复才过**,三条教训值得记(都在「现役机制约束」有对应条目):
+①"同一判定必须在所有入口生效"——排行榜与搜索是同一个缺陷的两个入口,
+第一轮只修了一个;②修"注释说谎"的那笔提交自己也在说谎(把一半文档改对、
+另一半留成假话);③**文档里的日期不要用"第几审/第几轮"编号**——"审"数审查次数、
+"轮"数修复轮次,天然差一位,同一件事因此在同一个文件里得出两个日期。
+只标日期,读者可以直接对 `git log --date=short`。
 
 **M9 = 技能广场**(skills.sh 发现层接入,方案见本地 `docs/设计-技能广场-
 skills.sh发现层接入.md`,调查见本地 `docs/调查-npx-skills-find-开放API.md`,
@@ -398,13 +426,16 @@ tags 当时侥幸没出问题,是因为支持它的版本先到了用户机器�
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust **542**(含 M9 新增的 6 个 `plaza_*` 集成测试文件,以及 `plaza_live` 的
-  2 条——默认跳过时它们走早退分支、仍算通过计进这个数,真正联网跑的那次结果记在
-  「M9 = 技能广场」一节)+ 前端 **483** 测试通过(2026-08-12 M9 终审修复后串行
-  实测,五道闸全绿;任务 6 收尾时是 480,终审 fix wave 又加了 3 条),
-  clippy(**--all-targets**)/eslint/tsc 干净。此前 v0.3.13 发版时
-  记的是 Rust 483 + 前端 411——**这行数字每次任务收尾自己重跑,不要照抄上一版**。
-  `pnpm dev` 启动冒烟通过(带内网配置实测:商店读到真实库 30 个技能,此前记录)
+- 本机:Rust **628** + 前端 **490** 测试通过(2026-08-19 M10 任务 5 收尾串行实测,
+  五道闸全绿,clippy **--all-targets** / eslint / tsc 干净)。
+  ⚠️ **这个 Rust 数字是「docker 起着」的口径**:`gitea_live` 那两条真跑了
+  (docker 停着时它们报 502 假红,见「测试要求」);而受 `SKILLSYNC_PLAZA_LIVE`
+  门控的三条 `plaza_*_live` **是默认跳过的早退分支,照样计进这个数**——
+  **它们算"通过"什么都没证明**,发版前要手动跑,见「发版」一节。
+  M9 收尾时是 Rust 542 + 前端 483,v0.3.13 发版时是 Rust 483 + 前端 411——
+  **这行数字每次任务收尾自己重跑,不要照抄上一版**。
+  `pnpm dev` 启动冒烟通过(M10 任务 5 实测:默认档 INFO 3 行、DEBUG 0 行,
+  `RUST_LOG=skillsync=debug` 档 debug 行确实打印——两档控制变量对照)
 - **双平台 CI**:M9 全部八笔提交(任务 1–5 七笔 + 任务 6 一笔)**逐笔** `gh run view`
   核实 macOS + Windows 两个 job 都是 ✓(2026-08-12 实测,不是只看 `gh run list`
   的整体状态):
@@ -469,6 +500,11 @@ M9 新增的 IPC:`plaza_search`(query → `PlazaSkillCard[]`,skills.sh 搜索薄
 ——广场技能一旦挂仓就走既有的 `store_index`/`skill_acquire` 常规路径,
 不需要专属的进度或变更事件。新增错误码 `NET_PLAZA_SEARCH`(搜索失败)、
 `NET_PLAZA_REPO`(挂仓探测失败),归 `NET_*` 族。
+M10 新增的 IPC:`plaza_leaderboard`(无参 → `PlazaSkillCard[]`,全网热门,
+**解析失败一律 `Ok(空)`不报错**——上游改首页渲染时降级成原来的空态提示,
+不是弹错误框)。**没有**新增事件。新增错误码 `NET_PLAZA_LEADERBOARD`、
+`NET_PLAZA_BLOB`,同归 `NET_*` 族。`PlazaSkillCard` 新增 `isOfficial` 字段
+(搜索端点没有这个字段,那一侧恒 `false`)。
 
 ### 现役机制约束(动相关代码前必读)
 
@@ -643,13 +679,49 @@ M9 新增的 IPC:`plaza_search`(query → `PlazaSkillCard[]`,skills.sh 搜索薄
     协议层不必再造一遍;
   - **无文档必须宽容解析**:`core/plaza.rs` 的 `RawSkill` 每个字段都是 `Option`,
     缺 `name`/`source`/`id` 任一即判定该条脏数据、跳过不拖垮整批,未知字段忽略;
-  - **只有搜索一条发现路径**:`/api/trending`、`/api/skills` 实测均 404,没有"浏览
-    全量"端点,广场 UI 因此是"搜索优先"而非"逛列表";
-  - **blob 下载 API(`/api/download/{owner}/{repo}/{slug}`)刻意不用**:响应把文件
-    内容装成文本 JSON 字符串,二进制与可执行位语义不明(与 Gitea 压缩包早年吃过的
-    同一种亏),且它的 hash 口径与本项目 `dir_content_hash` 不同——用它等于引入
-    第三种归档格式的全套成本,上游自己也只拿它当"快路径,失败即回退 git clone"。
-    广场安装走的是**既有的** GitHub zipball 路径,不碰这个端点。
+  - ~~**只有搜索一条发现路径**~~ ⚠️ **这条 M9 的结论不完整,M10 已订正**:
+    `/api/trending`、`/api/leaderboard`、`/api/skills`、`/api/popular`、`/api/stats`
+    在两个域名下确实**全部 404**(没有排行榜 JSON API 这一半是对的),但**首页本身
+    有数据**——在 SSR 的 RSC payload 里(`leaderboardBySource` + `initialSkills`),
+    955 KB / 1.8 s,实测可稳定解析出 600 条。M9 当时漏判的原因是**请求没跟随重定向**:
+    `skills.sh` 会 308 跳 `www.skills.sh`,不跟随就看不到首页内容。
+    **教训:判定"某个来源有没有数据"之前,先确认自己真的拿到了那个页面。**
+  - ⚠️ **~~blob 下载 API 刻意不用~~ 这条判断在 M10 被推翻了一半,原委必须写清楚**
+    ——因为它是"把两个需求混在一起判断"的典型失误,不是简单的信息更新:
+    - M9 当时的理由(响应把文件内容装成文本 JSON 字符串,二进制与可执行位语义
+      不明;hash 口径与 `dir_content_hash` 不同)**只对「安装」成立**。安装要落盘,
+      落盘就要管二进制与权限位。
+    - 但**对「详情」完全不成立**:详情面板只展示文本,不落盘、不算 hash、
+      不碰权限位。为了展示一段 Markdown 而下整个仓的 zipball,代价是
+      **3,149,975 B / 50.4 s**,而 blob 是 **13,931 B / 0.57 s**(88 倍快、
+      226 倍小,2026-08-17 实测同一个技能)。这个代价 M9 白付了一整个里程碑。
+    - M10 的实测还推翻了"hash 口径不同"这条对安装的适用性:**blob 与 zipball 的
+      同一文件逐字节相同**(见下面「技能广场的 blob 快照」一节),所以纯文本技能
+      也可以走 blob 装,`content_hash` 等式照样成立。
+    - **现在的分工**:详情**一律先试 blob**、失败回退 zipball;安装**按内容分流**
+      (保守白名单,见下节)。二进制与可执行位的顾虑没有消失,只是被收窄到了
+      它真正适用的那一档。
+- **技能广场的 blob 快照(M10,2026-08-17 亲测,四条 ground truth)**
+  ——`GET https://skills.sh/api/download/{owner}/{repo}/{slug}`
+  → `{files:[{path, contents}], hash}`,`path` 是**技能目录内的相对路径**
+  (实测 `SKILL.md`,不带仓前缀),`hash` 是上游自己的口径**我们不用**。
+  1. 🔴 **blob 与 zipball 的同一文件逐字节相同**(实测 13225 B 完全一致)。
+     这是"安装也能走 blob"的**唯一地基**:索引里的 `content_hash` 是从 zipball
+     算的,blob 装出来若差一个字节,`dir_content_hash` 就不等 →
+     **界面永远误报"有更新"**,比没有这个功能更糟。
+     ⚠️ blob 的 `contents` 是**字符串**:该文件字符串长 13112、UTF-8 编码后 13225
+     字节——**比对与 hash 一律按字节,不按字符数**。
+  2. 🔴 **上游的 blob 落盘路径不 chmod**(v1.5.22 源码实证):zipball/clone 那条有
+     `chmod(destPath, sourceStats.mode & 0o777)`(installer.ts:496),多文件
+     (`skill.files`)那条只有 `writeFile`,**没有任何 chmod**。
+     → **blob 装必然丢可执行位**,所以取数分流的白名单必须把"可能需要执行位"的
+     也排除,不只是排除二进制。
+  3. **三条取数路径的实测对比**(同一个技能 `wshobson/agents` 的
+     `code-review-excellence`):zipball **3,149,975 B / 50.4 s**;
+     blob **13,931 B / 0.57 s**;`raw.githubusercontent.com` 单文件
+     **5.4 s 后 SSL 失败**——国内不可靠,**不采用**(别再想着"直接拉 raw 更简单")。
+  4. **排行榜数据只在首页 SSR 的 RSC payload 里**,没有 JSON API(见上一条的订正)。
+     字段:`{source, skillId, name, installs, weeklyInstalls[], isOfficial}`。
 - **代理两档**(M3 任务 3,推翻 M1"一律直连"):内建源 `app_http_client()` 直连;
   外部源 `app_http_client_proxied()` 跟随系统代理;选择集中在 `commands::http_client_for`。
   不加每源开关(用户拍板)。
@@ -745,6 +817,53 @@ M9 新增的 IPC:`plaza_search`(query → `PlazaSkillCard[]`,skills.sh 搜索薄
   `cardState`/`hasUpdate` 的判定不区分"这是商店浏览来的还是广场装的"——挂上仓之后
   它就在库切换器里以普通库的形态出现(走 `store_index` 的常规浏览/建索引路径),
   指纹判定天然精确,**不需要另开一条"广场专属"的判定分支**。
+- **取数分流:详情一律先试 blob,安装按内容分流**(M10 任务 2–3)。两条路的
+  风险等级完全不同,判据也不同:
+  - **详情零风险**:只展示文本,不落盘、不算 hash、不碰权限位。先 `fetch_blob`
+    组装 `SkillDetail`,blob 失败(404/超时/该仓不在上游索引里)**回退既有 zipball
+    路径**,行为不变。进程内缓存的键与语义不变(**别顺手补 head sha**,见下条)。
+  - **安装是保守白名单**:blob 返回的文件**全部**命中纯数据文本扩展名才走 blob,
+    **否则整个技能回退 zipball**。白名单 `.md .txt .json .yaml .yml .toml .csv`;
+    **无扩展名的 `LICENSE` 这类也不放行**——拿不准就回退,回退只是慢,残缺是错。
+    一律回退的:`.sh .py .js` 等**可能需要可执行位**的(blob 落盘必丢执行位,
+    见「关键事实」)、二进制、**任何未知扩展名**。
+  - 🔴 **落盘、记账、建链、lock 双写、`content_hash` 计算全部走同一条尾巴**
+    (`acquire::finish`,`acquire()` 与 `acquire_prefetched()` 共用)——两条取数路
+    在预检与记账上**零分叉**是设计要求,不是巧合。装完
+    `fsops::dir_content_hash(canonical)` **必须等于**索引里的 `content_hash`,
+    有测试正面断言这条等式,它是"永远误报有更新"的唯一护栏。
+  - ⚠️ **白名单与 `SCRIPT_EXTS` 两张表必须无交集**,且有一条不变量测试钉着。
+    M10 任务 3 起初在白名单之后**又判了一次** `is_script_extension`,那道闸
+    **永远不触发**(两表不相交),于是它**吞掉了注入信号**——把白名单放宽到 `.sh`
+    的注入本该让回退测试变红,却被第二道闸兜住变成绿的,实现者据此误判为
+    "纵深防御生效"。删掉冗余那道之后,同一个注入让 5 条测试变红。
+    这是 CLAUDE.md 记的空转模式 ①(同一条规则查了两遍)最贵的一次复现。
+- **广场卡片的坐标形状判据只有一份实现,三处调用方共用**(M10 任务 4):
+  `plaza::split_owner_repo` 返回 `Option<(&str, &str)>`,`is_owner_repo_shaped`
+  是它的布尔投影。调用方:`commands::parse_owner_repo`(输入校验,**要那两段**)、
+  `plaza::to_card`(搜索结果过滤)、`plaza::to_leaderboard_card`(排行榜过滤)。
+  - **两个过滤器缺一不可**:真实数据里混着 `open.feishu.cn` 这类**域名式来源**
+    (600 条排行榜里 31 条,全是裸域名零斜杠;`q=feishu` 更是 20 条全中)。
+    不在解析阶段丢掉的话,用户点一张卡片得到的是 `parse_owner_repo` 报的
+    「技能坐标格式不对,应为「拥有者/技能库名」这样的两段式」——**而他根本没手填过
+    任何坐标**。与 M6「绑不上就不摆那个按钮」同一个姿势:不摆比解释好。
+  - **返回 `Option` 而不是 `bool` 是为了消灭一条 panic 路径**:原先
+    `parse_owner_repo` 先问一次判据、再 `split_once().expect(...)`,那句 expect 的
+    不变量只靠约定维系,判据一放宽就**在 Tauri command 里 panic** 而不是返回
+    `AppError`(审查员注入实测复现过)。切出来一起还,不变量就落进类型。
+  - **丢弃时记一行 `warn!`**(`plaza::warn_if_dropped`,两处汇聚点各调一次):
+    过滤后为空时界面显示「没有匹配的技能」,这句话对用户是对的,但对**排查的人是
+    误导**——看界面分不出"上游没有"与"上游有但我们全丢了"。
+    **刻意用 `warn!` 不用 `debug!`**:见下面日志那条。
+- **日志默认 INFO,`RUST_LOG` 可临时调高**(M10 任务 5 修的真实缺陷):
+  `init_tracing` 此前**没设任何 filter**,走 builder 默认的 `LevelFilter::INFO`
+  ——代码里那 6 处 `tracing::debug!` **一行都不会落到 `~/.skillsync/logs/`**。
+  写了日志却打不开,排查时会误判成"那段代码根本没走到",比没写日志更误导。
+  现在默认值 `DEFAULT_LOG_FILTER = "info"` 与修之前**逐字等价**(常态日志体积不变),
+  排查时 `RUST_LOG=skillsync=debug pnpm dev` 能看到那几行。
+  **给开关可以,动默认不行**——默认级别决定每个用户磁盘上的常态日志体积。
+  守卫 `bundle_config.rs::log_subscriber_keeps_a_filter_and_a_conservative_default`
+  是文本级的(runtime 路径单测走不到,与 `plugins.updater` 空占位那条同款)。
 - **scheduler 逐源且常驻**(M3 任务 2):`run_all_sources_check` 一个源失败不拦其他源,
   全失败则本轮**不上报**(报 NothingInstalled 等于撒谎);合并在 `scheduler::merge_reports`。
 - **删自定义源**:已装技能保留(界面标"来源已移除",更新/回推按钮消失),该源凭证与
@@ -971,8 +1090,19 @@ M9 新增的 IPC:`plaza_search`(query → `PlazaSkillCard[]`,skills.sh 搜索薄
    ——**已完成,即 M9「技能广场」**(2026-08-12,六个任务全部做完,详见
    「当前进度」与「现役机制约束」)。结论是"技术上完全可行且代价集中在一个搜索
    调用":搜索结果本身就是 GitHub `owner/repo` 坐标,安装/更新直接复用既有
-   GitHub 源机制,协议层零新代码。**⚠️ 尚未随任何版本号发出去,v0.3.13 不含它**
-   ——下次发版前记得在 `RELEASE_NOTES.md` 补一段。
+   GitHub 源机制,协议层零新代码。**⚠️ M9 与 M10 都尚未随任何版本号发出去,
+   v0.3.13 一个都不含**——下次发版前记得在 `RELEASE_NOTES.md` 补一段
+   (两个里程碑的内容合起来写,别只写一个)。
+
+**M10 遗留(记录,不是待办)**
+- **搜索结果被过滤后没有补位**:排行榜是"先过滤后截断"(600 条里丢 31 条仍够 24 条,
+  用户无感),搜索是"先按 `limit=20` 取、再过滤",可见条数会**静默缩水**
+  ——`q=feishu` 实测 20 条全被丢,界面显示「没有匹配的技能」。这是"不摆比解释好"
+  这条已拍板取舍的必然结果,不是缺陷;丢弃时有 `warn!` 记条数,排查时有线索。
+  真要补位得加大 limit 重取,是新行为,当时判定不在 M10 范围。
+- **`to_card`/`to_leaderboard_card` 对空串字段仍放行**:两者只用 `?` 挡 `None`,
+  `Some("")` 会过(`source` 被形状判据顺带挡住了,`name`/`id` 没有对应保护)。
+  真实数据实测 660 条里空串各 0 条,纯理论缺口。
 
 **功能缺口**
 - **存量 lock 条目仍是旧形状**(M6 任务 6 顺带发现,不打算修):`sourceUrl` 的写入已
@@ -1042,6 +1172,19 @@ M9 新增的 IPC:`plaza_search`(query → `PlazaSkillCard[]`,skills.sh 搜索薄
 (`*.local` 已被 .gitignore 排除,权限 600)。minisign 密钥对在 `~/.tauri/skillsync.key`
 (**丢了这批已发出去的包永远收不到更新**)。更新源 = 内网 Gitea 发布仓
 `skills/skillsync-releases` 的固定 `latest` 标签(URL 因此恒定)。
+
+**发版前必须手动跑一次广场 live 测试**(M10 加,2026-08-19):
+
+```
+cd src-tauri && SKILLSYNC_PLAZA_LIVE=1 cargo test --test plaza_live \
+  --test plaza_blob_live --test plaza_install_blob_live -- --nocapture
+```
+
+理由:`plaza_blob_live`(详情侧)与 `plaza_install_blob_live`(安装侧)是
+**blob↔zipball 逐字节等价**这条地基**仅有的哨兵**。上游 skills.sh 一旦改了 blob 的
+编码/换行/BOM 处理,五道闸与双平台 CI **全绿**,而用户侧的表现是所有 blob 装的技能
+**永远显示"有更新"**——比没有这个功能更糟。这三条默认跳过,**"测试全绿"对它们
+零信息量**(早退分支也算 passed),不手动跑就等于没有护栏。
 
 **发版前必须先写发版说明**(2026-08-07 用户拍板,指定记进项目记忆):
 在 `RELEASE_NOTES.md` 顶部加一段 `## <版本号> —— 一句话主题`,写给**使用者**看
