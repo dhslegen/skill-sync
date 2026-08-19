@@ -2128,7 +2128,7 @@ pub async fn plaza_leaderboard() -> Result<Vec<plaza::PlazaSkillCard>, AppError>
 /// `id`(`owner/repo/skill-name`)错传成了 `owner_repo`。
 ///
 /// 判据委派给 [`plaza::split_owner_repo`],**三处**调用方共用同一份「这坐标像不像
-/// `owner/repo`」的标准,不能各写一份(审查修复,2026-08-17 排行榜 + 2026-08-19 搜索两轮):这里做输入
+/// `owner/repo`」的标准,不能各写一份(2026-08-17 先修排行榜、2026-08-19 补搜索):这里做输入
 /// 校验,`plaza::to_leaderboard_card` 过滤排行榜脏条目,`plaza::to_card` 过滤搜索
 /// 结果脏条目——后两者的数据里都混着 `open.feishu.cn` 这类域名式来源,不在解析阶段
 /// 丢掉的话,用户点一张卡片得到的就是**这个函数**报的那句"技能坐标格式不对",

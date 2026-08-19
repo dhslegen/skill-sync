@@ -181,8 +181,8 @@ async fn skips_entry_missing_name_keeps_the_rest() {
     assert_eq!(names, vec!["five", "four", "three", "one"]);
 }
 
-/// 2026-08-17 二审修复:搜索结果里同样可能混进 `open.feishu.cn` 这类域名式来源
-/// (没有斜杠,不是 `owner/repo` 两段式)——排行榜端点第一轮修过这个缺陷
+/// 2026-08-19 补:搜索结果里同样可能混进 `open.feishu.cn` 这类域名式来源
+/// (没有斜杠,不是 `owner/repo` 两段式)——排行榜端点 2026-08-17 先修过这个缺陷
 /// (`core::plaza::to_leaderboard_card`),搜索是同一个缺陷的第二个入口:点开
 /// 这类条目会在 `commands::parse_owner_repo` 就地报"技能坐标格式不对",与
 /// "点了一张搜索结果卡片"这件事毫不相关,必须在解析这一步就过滤掉。
