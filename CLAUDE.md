@@ -257,9 +257,26 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
   两处都是视觉验证时才看出来的——单测断言的是"有没有这个词",没人断言"是不是人话"。
 
 **命名与目录**
-- 安装目录名取「**仓库中的技能目录名**」,不是 frontmatter 的 `name`——对齐上游远端安装
-  (`installer.ts` 用 `installName: entry.name`)。真实公司技能库现有 **20 个技能,全为 ASCII kebab-case**。
-  `Installer::install(dir_slug, ...)` 的第一个参数就是它。
+- 安装目录名取「**仓库中的技能目录名**」,不是 frontmatter 的 `name`。
+  `Installer::install(dir_slug, ...)` 的第一个参数就是它。真实公司技能库现有
+  **20 个技能,全为 ASCII kebab-case**(所以这两个口径在公司库上恰好从不冲突)。
+  - 🔴 **这条原先写着"对齐上游远端安装(`installer.ts` 用 `installName: entry.name`)"
+    ——那句话从 M1 起就是错的,2026-08-19 查上游产物证伪**:1.5.20 与 1.5.23 的远端
+    clone 安装路径用的都是 `sanitizeName(skill.name || basename(skill.path))`
+    (`dist/cli.mjs`,**frontmatter `name` 优先**,目录名只是 name 缺失时的兜底);
+    `installName: entry.name` 出现在 `fetchSkillByEntry`/`fetchLegacySkillByEntry`
+    ——那是 **well-known 索引**那条路径,`entry.name` 是索引 JSON 的字段,不是仓库目录名。
+    blob 路径同理用 `blobSkill.name`。**上游两条路都用 frontmatter name,它是自洽的;
+    分叉的是我们。**
+  - **决策不改,但理由要换成真的**:用目录名是因为它是
+    `store::build_index` 的索引键、`state.installed` 的记账键与 `.skill-lock.json`
+    键的**同一把尺子**,内部自洽;而 frontmatter `name` 可以随时被改(改了就等于
+    换了个技能)。**这是刻意的分叉,不是对齐。**
+  - ⚠️ **分叉有真实后果,记在这里**:对 `frontmatter name ≠ 目录名` 的技能
+    (广场实测 47 个里 8 个),`npx skills` 会装进 name 目录、本 app 装进目录名,
+    **两边的 lock 键对不上**——铁律 4「canonical 布局与 npx skills 兼容」在这批技能上
+    是有张力的。目前没有实际用户报告(公司库全是两者相同的 kebab-case),
+    但接了技能广场之后这批技能进来了。**要不要改口径是个独立议题,见「待处理」。**
 - 纯中文名会被 `sanitize_name` 整体折成 `unnamed-skill`,两个中文技能会装进同一目录互相覆盖。
   installer 对"信息全丢"的名字报 `FS_UNUSABLE_NAME` 拒绝,**不放宽 `sanitize_name`**
   (它同时决定 `.skill-lock.json` 的键)。**中文名技能的分享策略已定**(任务 11,见 share.rs
@@ -433,7 +450,7 @@ tags 当时侥幸没出问题,是因为支持它的版本先到了用户机器�
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust **635** + 前端 **490** 测试通过(2026-08-19 M10 终审修复收尾串行实测,
+- 本机:Rust **637** + 前端 **490** 测试通过(2026-08-19 M10 复审修复收尾串行实测,
   五道闸全绿,clippy **--all-targets** / eslint / tsc 干净)。
   ⚠️ **这个 Rust 数字是「docker 起着」的口径**:`gitea_live` 那两条真跑了
   (docker 停着时它们报 502 假红,见「测试要求」);而受 `SKILLSYNC_PLAZA_LIVE`
@@ -746,9 +763,11 @@ M10 新增的 IPC:`plaza_leaderboard`(无参 → `PlazaSkillCard[]`,全网热门
        ①「获取」当场报 `REPO_NOT_FOUND`;②就算装上了,`store::build_index` 按**目录名**
        建索引,`hasUpdate` 永远匹配不到自己 → 「有可用更新」再也不亮;
        ③前端 `refreshInstalled` 的 map 也按真实 `dirSlug` 建键 → 装完卡片仍显示「获取」。
-     - 上游 `npx skills` **自己在这件事上不自洽**(1.5.23 实测):clone/zipball 路径
-       `installName: entry.name`(目录名),blob 路径 `installName: blobSkill.name`
-       (frontmatter name)。**别拿"上游怎么做"当判据**,按本 app 索引/lock 键的口径走。
+     - ⚠️ **这里原先写着"上游自己不自洽",2026-08-19 复审证伪、控制者复核确认**:
+       上游 1.5.20 与 1.5.23 的 clone 与 blob 两条路**都用 frontmatter `name`,是自洽的**
+       (那三处 `installName: entry.name` 属于 well-known 索引路径,不是 clone 安装)。
+       **分叉的是本 app**,而且是刻意的——见上面「命名与目录」一节的完整原委。
+       **别拿"上游怎么做"当判据**,按本 app 索引/记账/lock 键的同一把尺子走。
      - 代价已接受:详情因此多一次 trees 请求(旗舰大仓 `wshobson/agents` 树 614KB,
        端到端 8.18s→2.72s,匿名配额 1→2 次 GitHub 请求),换 100% 的广场技能装得上。
        **要提速请并发发 trees 与 blob,不要放宽这道校验。**
@@ -1129,6 +1148,22 @@ M10 新增的 IPC:`plaza_leaderboard`(无参 → `PlazaSkillCard[]`,全网热门
    GitHub 源机制,协议层零新代码。**⚠️ M9 与 M10 都尚未随任何版本号发出去,
    v0.3.13 一个都不含**——下次发版前记得在 `RELEASE_NOTES.md` 补一段
    (两个里程碑的内容合起来写,别只写一个)。
+
+**新登记的独立议题(2026-08-19 发现,⚠️ 需要用户拍板,别自行决定)**
+
+- **本 app 的安装目录名与 `npx skills` 一直是分叉的**,而 M1 的记载把它写成了"对齐"
+  (完整原委见「关键事实」的「命名与目录」一节)。上游 1.5.20/1.5.23 两条安装路径
+  都用 frontmatter `name`,本 app 用仓库目录名。
+  - **为什么以前没出事**:公司技能库 20 个技能全是 ASCII kebab-case,两个口径恰好
+    相同,从未分叉过;
+  - **为什么现在浮出来**:技能广场把外部技能引进来了,实测 47 个里 8 个
+    `frontmatter name ≠ 目录名`。同一个技能,`npx skills` 装进
+    `vercel-react-best-practices/`、本 app 装进 `react-best-practices/`,
+    **两边的 `.skill-lock.json` 键对不上**——铁律 4 的兼容性承诺在这批技能上有张力;
+  - **三个选项各有代价,不要替用户选**:①维持现状(承认分叉,在文档里说清);
+    ②改成跟上游一致(所有存量记账全部失配,要写迁移,而且 frontmatter name
+    可被随意改动,当键不稳);③只对广场来源的技能跟上游(两套口径,最坏)。
+  - **目前无任何用户报告**,不是紧急事项。
 
 **M10 遗留(记录,不是待办)**
 - **搜索结果被过滤后没有补位**:排行榜是"先过滤后截断"(600 条里丢 31 条仍够 24 条,

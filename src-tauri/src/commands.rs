@@ -3657,6 +3657,120 @@ mod tests {
         assert_eq!(first.paths, second.paths);
     }
 
+    /// 详情预取的树必须用 **`head.sha`** 当缓存键,安装那一步才能命中同一份。
+    ///
+    /// 上一条测的是 `cached_repo_tree` 自己认不认同一个 sha;**这一条测的是
+    /// `plaza_blob_prefetch` 到底把什么传给了它**——两者是两回事。
+    /// 2026-08-19 复审的注入实测证明了这个缺口:把 `&head.sha` 换成 `&repo.branch`,
+    /// `cargo test --workspace` **635 条一条都没红**。
+    ///
+    /// 键退化成分支名的后果有两层:①详情与安装不再共用同一份树(文档承诺的
+    /// "省一次几百 KB 请求"消失,而广场大仓的树实测 614 KB);②同一进程里 head
+    /// 前移之后,详情会拿一份**旧树**去配新 `head.sha`,解出的 path 可能已经过期。
+    ///
+    /// 判据是 `.expect(1)`:预取发一次树请求,随后按 sha 取必须命中缓存、不再发第二次。
+    #[tokio::test]
+    async fn prefetch_keys_the_tree_cache_by_head_sha_so_the_install_step_reuses_it() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/v3/repos/vercel-labs/skills/branches/main",
+            ))
+            // GitHub 的形状:sha 在 commit.sha,时间在 commit.commit.committer.date
+            // (与 Gitea 的 commit.id/timestamp 不同,别照搬——录制见 tests/github_client.rs)
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "main",
+                "commit": {
+                    "sha": "bbb2222",
+                    "commit": {"committer": {"date": "2026-08-19T00:00:00Z"}}
+                }
+            })))
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/v3/repos/vercel-labs/skills/git/trees/bbb2222",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"sha": "bbb2222", "truncated": false, "tree": []}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let github_client = github::GithubClient::new(&server.uri(), None, reqwest::Client::new());
+        let cache: RepoTreeCache = Mutex::new(HashMap::new());
+        let repo = some_repo();
+
+        let (head, _tree) = plaza_blob_prefetch(Some(&github_client), &repo, &cache)
+            .await
+            .expect("预取该成功");
+        assert_eq!(head.sha, "bbb2222");
+
+        // 安装那一步的取法:同一个 cache、同一个 sha。命中则不再发请求,
+        // `.expect(1)` 因此成立;键若退化成分支名,这里会 miss 并发第二次请求。
+        let _ = cached_repo_tree(&cache, &github_client, &repo, &head.sha).await.unwrap();
+    }
+
+    /// 预取的任一步失败都返回 `None`,由调用方静默回退 zipball——**绝不把广场详情
+    /// 变成一个会报错的功能**(上游或 GitHub 抽风时,用户该看到的是稍慢的详情,
+    /// 不是一句错误提示)。
+    ///
+    /// 这条补的是"什么时候产出 `None`";既有的
+    /// `plaza_detail_for_client_falls_back_when_the_prefetch_is_missing`
+    /// 测的是"拿到 `None` 之后怎么办",两者缺一不可。
+    #[tokio::test]
+    async fn prefetch_returns_none_when_any_step_fails() {
+        // ① 没有 GitHub client(未配置)——一次请求都不该发
+        let cache: RepoTreeCache = Mutex::new(HashMap::new());
+        assert!(plaza_blob_prefetch(None, &some_repo(), &cache).await.is_none());
+
+        // ② branch_head 失败(仓不存在)
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let github_client = github::GithubClient::new(&server.uri(), None, reqwest::Client::new());
+        assert!(
+            plaza_blob_prefetch(Some(&github_client), &some_repo(), &cache)
+                .await
+                .is_none(),
+            "branch_head 失败必须静默回退,不能把错误抛给详情面板"
+        );
+
+        // ③ head 成功但树请求失败
+        let server2 = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/v3/repos/vercel-labs/skills/branches/main",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "main",
+                "commit": {
+                    "sha": "ccc3333",
+                    "commit": {"committer": {"date": "2026-08-19T00:00:00Z"}}
+                }
+            })))
+            .mount(&server2)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/v3/repos/vercel-labs/skills/git/trees/ccc3333",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .mount(&server2)
+            .await;
+        let client2 = github::GithubClient::new(&server2.uri(), None, reqwest::Client::new());
+        let cache2: RepoTreeCache = Mutex::new(HashMap::new());
+        assert!(
+            plaza_blob_prefetch(Some(&client2), &some_repo(), &cache2)
+                .await
+                .is_none(),
+            "树请求失败必须静默回退"
+        );
+    }
+
     /// 用 zip crate 构建一个与 blob mock 内容逐字节相同的压缩包,顶层前缀模拟 GitHub
     /// 的 `{owner}-{repo}-{短sha}/` 形态,技能放在与旗舰样本同款的嵌套路径下——
     /// path 缺口那道护栏必须在"嵌套目录"这个真实会发生的场景下验证,顶层技能测不出
