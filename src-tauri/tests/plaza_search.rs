@@ -181,6 +181,38 @@ async fn skips_entry_missing_name_keeps_the_rest() {
     assert_eq!(names, vec!["five", "four", "three", "one"]);
 }
 
+/// 2026-08-17 二审修复:搜索结果里同样可能混进 `open.feishu.cn` 这类域名式来源
+/// (没有斜杠,不是 `owner/repo` 两段式)——排行榜端点第一轮修过这个缺陷
+/// (`core::plaza::to_leaderboard_card`),搜索是同一个缺陷的第二个入口:点开
+/// 这类条目会在 `commands::parse_owner_repo` 就地报"技能坐标格式不对",与
+/// "点了一张搜索结果卡片"这件事毫不相关,必须在解析这一步就过滤掉。
+#[tokio::test]
+async fn skips_an_entry_whose_source_is_not_owner_repo_shaped() {
+    let server = MockServer::start().await;
+    let body = serde_json::json!({
+        "skills": [
+            {"id": "a/a/one", "name": "one", "installs": 10, "source": "a/a"},
+            // 真实样本:open.feishu.cn 下的 lark-doc,source 没有斜杠。
+            {"id": "open.feishu.cn/lark-doc", "name": "lark-doc", "installs": 20, "source": "open.feishu.cn"},
+            {"id": "c/c/three", "name": "three", "installs": 30, "source": "c/c"},
+        ]
+    })
+    .to_string();
+    mount_search(&server, "q6", body, 200).await;
+
+    let got = plaza::search(&http(), &server.uri(), "q6")
+        .await
+        .expect("单条脏数据不应让整批失败");
+
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(
+        got.iter().all(|c| c.owner_repo != "open.feishu.cn"),
+        "域名式来源不该出现在结果里: {got:?}"
+    );
+    let names: Vec<&str> = got.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["three", "one"]);
+}
+
 // ---------------------------------------------------------------- 4. 未知字段宽容
 
 #[tokio::test]

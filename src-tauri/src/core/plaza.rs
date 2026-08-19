@@ -180,10 +180,21 @@ fn query_too_short(query: &str) -> bool {
 /// 缺 `name`、`source`、`id` 任意一个都视为脏数据跳过——`id` 虽然 brief 没有点名
 /// 必填,但它是拼 skills.sh 页面链接的唯一来源,没有它这张卡片点不出详情页,
 /// 保守起见按同等的"脏数据"处理。
+///
+/// **`source` 形状不像 `owner/repo` 也一律跳过**(2026-08-17 二审修复,判据见
+/// [`is_owner_repo_shaped`])——这是排行榜过滤(见 [`to_leaderboard_card`])同一个
+/// 缺陷的第二个入口:搜索结果里同样会混进 `open.feishu.cn` 这类域名式来源,
+/// 点开会在 `commands::parse_owner_repo` 就地报"坐标格式不对",与"点了一张搜索
+/// 结果卡片"这件事毫不相关。两个入口共享同一个 [`PlazaSkillCard`],共享同一份
+/// "点了不能报一个文不对题的错"的要求,因此也共用同一份判据、同一套姿势(缺字段
+/// 即跳过),不是新规则。
 fn to_card(raw: RawSkill) -> Option<PlazaSkillCard> {
     let name = raw.name?;
     let owner_repo = raw.source?;
     let slug = raw.id?;
+    if !is_owner_repo_shaped(&owner_repo) {
+        return None;
+    }
     Some(PlazaSkillCard {
         name,
         slug,
@@ -317,17 +328,22 @@ struct RawLeaderboardSkill {
 
 /// `owner/repo` 两段式的形状判据:恰好一条 `/`,两段都非空。
 ///
-/// **唯一实现**,两处调用方共用:`commands::parse_owner_repo`(用户/skills.sh
-/// 手填的广场坐标做输入校验,报 `REPO_INVALID_REGISTRY`)与
-/// [`to_leaderboard_card`](排行榜条目过滤,数据里混进的域名式来源如
-/// `open.feishu.cn` 没有斜杠,这里判 false 就被当脏数据丢弃)。
+/// **唯一实现**,三处调用方共用:`commands::parse_owner_repo`(用户/skills.sh
+/// 手填的广场坐标做输入校验,报 `REPO_INVALID_REGISTRY`)、[`to_leaderboard_card`]
+/// (排行榜条目过滤)与 [`to_card`](搜索结果条目过滤)——后两者数据里都可能混进
+/// `open.feishu.cn` 这种域名式来源(没有斜杠),这里判 false 就被当脏数据丢弃。
 ///
-/// 2026-08-17 审查修复:排行榜条目本来没有过这道判据,`plaza_detail` 拿到
-/// 无斜杠的 `owner_repo` 会在 [`crate::commands::parse_owner_repo`] 那一层
-/// 直接报"技能坐标格式不对",而不是走到 GitHub API 才 404——排行榜是主动推给
-/// 用户的首屏内容,点一张必然报错、且报错文案与"点了一张热门技能卡片"这件事
-/// 毫不相关的卡片,不该摆出来(与 M6「绑不上就不摆那个按钮」同一个姿势:
-/// 不摆比解释好)。
+/// 2026-08-17 审查修复(分两轮):
+/// - 第一轮只修了排行榜([`to_leaderboard_card`])。起因:`plaza_detail` 拿到
+///   无斜杠的 `owner_repo` 会在 [`crate::commands::parse_owner_repo`] 那一层
+///   直接报"技能坐标格式不对",而不是走到 GitHub API 才 404——排行榜是主动推给
+///   用户的首屏内容,点一张必然报错、且报错文案与"点了一张热门技能卡片"这件事
+///   毫不相关的卡片,不该摆出来(与 M6「绑不上就不摆那个按钮」同一个姿势:
+///   不摆比解释好)。
+/// - 第二轮补上搜索([`to_card`]):点开搜索结果的失败机制与点开排行榜条目
+///   完全相同(同一个 `parse_owner_repo`、同一句报错),是**同一个缺陷的第二个
+///   入口**,不是新范围——两处判定必须一致,散落各处正是缺陷温床(与
+///   `cardState`/`hasUpdate` 三处共用同一判据是同一类先例)。
 pub(crate) fn is_owner_repo_shaped(s: &str) -> bool {
     match s.split_once('/') {
         Some((owner, repo)) => !owner.is_empty() && !repo.is_empty() && !repo.contains('/'),
