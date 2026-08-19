@@ -109,9 +109,13 @@ async fn discovers_skills_in_a_real_github_repo_via_fetch_repo_skills() {
 /// 真实拉一次 skills.sh 首页热门排行榜(M10 任务 4),断言"非空,且字段形状齐全"。
 ///
 /// 与上面两条同一套姿势:不断言具体名字/排名(会随安装量漂移),只断言结构;
-/// 这条额外验证了 brief 点名的两个 ground truth——**跟随了 308 重定向**(不跟随
-/// 拿到的是跳转页,解析必然失败,`cards` 会是空的)与 `PLAZA_LEADERBOARD_LIMIT`
-/// 生效(真实首页有 600 条,这里必须已经截到常量设的上限)。
+/// 这条额外验证了 brief 点名的 ground truth——**跟随了 308 重定向**(不跟随
+/// 拿到的是跳转页,解析必然失败,`cards` 会是空的)。
+///
+/// `PLAZA_LEADERBOARD_LIMIT` 自 2026-08-19 起是 **sanity 上限**(2000)而不是展示上限:
+/// 真实首页那 600 条现在会**整批**回来给前端的"滚到底自动加载更多"用,正常情况下
+/// 根本触不到这个上限。所以这里的断言也随之变成两头:既不许超上限(防爆),
+/// 也必须**明显多于一屏**(旧的 24)——后者才是本次改动真正要守住的东西。
 #[tokio::test]
 async fn fetches_the_real_trending_leaderboard_from_the_skills_sh_homepage() {
     if !live_enabled() {
@@ -129,7 +133,13 @@ async fn fetches_the_real_trending_leaderboard_from_the_skills_sh_homepage() {
     );
     assert!(
         cards.len() <= plaza::PLAZA_LEADERBOARD_LIMIT,
-        "截断应当生效,实际 {} 条",
+        "sanity 上限应当生效,实际 {} 条",
+        cards.len()
+    );
+    assert!(
+        cards.len() > 24,
+        "上游首页实测一次给 600 条,这里应当整批留下(旧口径截到 24 条一屏),实际 {} 条\
+         ——若这条断红,先怀疑热门榜又被谁截回了一屏,那会让前端的滚动加载无料可加",
         cards.len()
     );
     for card in &cards {

@@ -1,5 +1,5 @@
 import { WifiOff } from "lucide-react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Icon } from "@/components/Icon";
 import { PlazaCard } from "@/components/PlazaCard";
@@ -343,10 +343,25 @@ function PlazaResults() {
   return <PlazaCardGrid cards={results} onOpen={openDetail} className="mt-2.5" />;
 }
 
+/** 每批渲染的卡片数。24 ≈ 一屏,沿用热门榜旧的"一屏够看"实测值。 */
+const PLAZA_PAGE_SIZE = 24;
+
 /**
  * 广场卡片网格,搜索结果区与排行榜(M10 任务 4)共用——两处除了外层间距
  * (排行榜网格上面还有一行"全网热门"标题,搜索结果区没有)之外逐行相同,
  * 之前各写一份是本项目已经因 DRY 问题返工过三次的那类重复,这里收成一处。
+ *
+ * **滚到底自动加载更多**(2026-08-19,对齐 skills.sh 官网观感)也落在这里,同样
+ * 是为了搜索与热门两边行为自动一致——不在 `PlazaResults`/`PlazaLeaderboard` 里
+ * 各写一份。要点:
+ * - **零新请求**:数据本来就整批在手里(热门榜上游首页一次给 600 条;搜索上游
+ *   没有分页、`offset` 实测无效,只能一次要 `PLAZA_SEARCH_LIMIT` 条)。这里做的
+ *   纯粹是"先渲染前 N 张卡片",滚到底再切下一批;
+ * - 🔴 **`cards` 一变就必须回到第一批**:换搜索词、清空搜索框切回热门,都得从头
+ *   开始。不重置的话用户搜个新词,看到的是上一次滚到的那个条数;
+ * - **全部渲染完之后哨兵整个不摆**,也不显示"没有更多了"之类的噪音(UI 规范:
+ *   信息密度对齐 Demo,不加装饰性文案)。切换是瞬时的(数据在内存里),
+ *   也就没有"加载中"可言。
  */
 function PlazaCardGrid({
   cards,
@@ -357,16 +372,61 @@ function PlazaCardGrid({
   onOpen: (ownerRepo: string, name: string, slug: string) => void;
   className?: string;
 }) {
+  const [visibleCount, setVisibleCount] = useState(PLAZA_PAGE_SIZE);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
+  // 换了一批卡片就回到第一批(见上面的 🔴)。
+  useEffect(() => {
+    setVisibleCount(PLAZA_PAGE_SIZE);
+  }, [cards]);
+
+  const hasMore = visibleCount < cards.length;
+
+  useEffect(() => {
+    if (!hasMore) return;
+    if (typeof IntersectionObserver === "undefined") {
+      // 老 webview 没有 IntersectionObserver:一次全渲染。列表长一点无所谓,
+      // 把剩下的条目永久藏起来才是死路——界面上没有"加载更多"按钮可点。
+      setVisibleCount(cards.length);
+      return;
+    }
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // 必须查 isIntersecting:真实 IntersectionObserver 在 observe() 那一刻就会
+        // 用**当前**状态回调一次,哨兵还在首屏之下时那一次是 false。不查的话
+        // 一挂载就会白白多渲染一批(而 jsdom 里的替身不会自己触发,这种偏差
+        // 恰恰是本地测试看不见、只有真机才暴露的那一类)。
+        if (!entries.some((e) => e.isIntersecting)) return;
+        setVisibleCount((count) => Math.min(count + PLAZA_PAGE_SIZE, cards.length));
+      },
+      // 提前一屏开始加载,滚到底时下一批已经在了,不给用户看见空白
+      { rootMargin: "400px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+    // 依赖里带 visibleCount 是有意的:每加载一批就重建观察者,重新 observe 会用
+    // 当前状态立刻回调一次——哨兵若仍在视口内(比如窗口很高、一批填不满),
+    // 就继续加载下一批直到填满,不会卡在第二批上。
+  }, [hasMore, cards.length, visibleCount]);
+
   return (
-    <div className={cn("grid grid-cols-[repeat(auto-fill,minmax(288px,1fr))] gap-2.5", className)}>
-      {cards.map((card) => (
-        <PlazaCard
-          key={card.ownerRepo + "/" + card.slug}
-          card={card}
-          onOpen={() => onOpen(card.ownerRepo, card.name, card.slug)}
-        />
-      ))}
-    </div>
+    <>
+      <div className={cn("grid grid-cols-[repeat(auto-fill,minmax(288px,1fr))] gap-2.5", className)}>
+        {cards.slice(0, visibleCount).map((card) => (
+          <PlazaCard
+            key={card.ownerRepo + "/" + card.slug}
+            card={card}
+            onOpen={() => onOpen(card.ownerRepo, card.name, card.slug)}
+          />
+        ))}
+      </div>
+      {/* 哨兵放在网格**外面**:放进去会占掉一个网格单元,在卡片之间留一个空位 */}
+      {hasMore && (
+        <div ref={sentinelRef} data-testid="plaza-scroll-sentinel" aria-hidden className="h-px" />
+      )}
+    </>
   );
 }
 

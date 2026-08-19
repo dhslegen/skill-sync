@@ -34,12 +34,15 @@ fn card(name: &str, slug: &str, owner_repo: &str, installs: u64) -> PlazaSkillCa
     }
 }
 
-/// 挂一条 `/api/search` 桩,固定按我们的 client 实际会发的 `limit=20`(`PLAZA_SEARCH_LIMIT`)匹配。
+/// 挂一条 `/api/search` 桩,固定按我们的 client 实际会发的 `limit`(`PLAZA_SEARCH_LIMIT`,
+/// 2026-08-19 起是 50——上游没有分页,只能靠一次要更大的 limit,理由见该常量文档)匹配。
+/// 这里不硬写 "50" 而是从常量取:硬写的话改常量会让这些桩全部匹配不上,
+/// 报的却是一句与 limit 毫无关系的"没有匹配的 mock"。
 async fn mount_search(server: &MockServer, q: &str, body: String, status: u16) {
     Mock::given(method("GET"))
         .and(path("/api/search"))
         .and(query_param("q", q))
-        .and(query_param("limit", "20"))
+        .and(query_param("limit", plaza::PLAZA_SEARCH_LIMIT.to_string()))
         .respond_with(ResponseTemplate::new(status).set_body_string(body))
         .mount(server)
         .await;
@@ -305,10 +308,15 @@ async fn request_hits_the_expected_path_and_query_params() {
     .to_string();
     // 严格匹配路径与 q/limit 值;匹配不上 wiremock 不会命中这条桩,search 就会
     // 拿到默认的 404,从而以 NET_PLAZA_SEARCH 报错——本测试断言"确实命中且只命中一次"。
+    //
+    // limit 取常量而不是字面量(2026-08-19:这里原先硬编码 `"20"`,常量提到 50 时
+    // 漏改了这一处,测试当场红——**红得对**:它守的是"发出去的 limit 与
+    // `PLAZA_SEARCH_LIMIT` 一致",代码里写死一个数就该被抓到,而常量本身该是多少
+    // 由它自己的文档注释负责)。
     Mock::given(method("GET"))
         .and(path("/api/search"))
         .and(query_param("q", "hello"))
-        .and(query_param("limit", "20"))
+        .and(query_param("limit", plaza::PLAZA_SEARCH_LIMIT.to_string()))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
         .expect(1)
         .mount(&server)

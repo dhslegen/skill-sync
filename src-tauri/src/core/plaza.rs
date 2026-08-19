@@ -110,8 +110,24 @@ use crate::error::AppError;
 /// skills.sh 搜索 API 的 base。公开地址,硬编码不涉铁律 5(铁律 5 管的是内网地址与
 /// OAuth secret);测试经参数注入 wiremock,不依赖这个常量本身可覆盖。
 pub const PLAZA_API_BASE: &str = "https://skills.sh";
-/// 与上游 CLI(`npx skills find`)同款的默认 limit。
-pub const PLAZA_SEARCH_LIMIT: u32 = 20;
+/// 搜索一次要回来的条数。
+///
+/// **上游没有分页**:`offset` 参数实测无效(`?q=react&limit=20&offset=20` 与不带
+/// `offset` 返回**完全相同**的 20 条,2026-08-19 实测),想多给用户几条**只能**靠
+/// 一次要更大的 `limit`。前端的"滚到底自动加载更多"因此是**纯前端切片**、零新请求
+/// (见 `StorePage.tsx` 的 `PlazaCardGrid`),这一个数字就是那条列表的天花板。
+///
+/// 取 50 而不是上游 CLI 同款的 20、也不是上限附近的 100,依据是 2026-08-19 的实测:
+///
+/// | limit | 响应体积 | 耗时  |
+/// |-------|---------|-------|
+/// | 20    | 3.4 KB  | 1.25s |
+/// | **50**| 8.5 KB  | **1.25s** |
+/// | 100   | 16.7 KB | 2.12s |
+///
+/// 50 相对 20 **耗时零代价**;100 要多花 0.9 秒首屏,而用户上一轮真机验收抱怨的
+/// 正是慢——多给的那 50 条不值这个价。(上游的 `limit` 硬上限实测落在 51–100 之间。)
+pub const PLAZA_SEARCH_LIMIT: u32 = 50;
 /// 挂仓时探测 `default_branch` 用的 GitHub REST API base(M9 任务 3)。
 /// 与 [`PLAZA_API_BASE`] 是两个不同域名:后者只用于 skills.sh **搜索**,
 /// 广场技能一旦要装,坐标就落到 `github.com`——与 `core::registry::PLAZA_BASE_URL`
@@ -127,10 +143,18 @@ pub const PLAZA_GITHUB_API_BASE: &str = "https://api.github.com";
 /// [`fetch_blob`] 也在用)。这与 [`PLAZA_API_BASE`] 是两回事:那是 skills.sh 的
 /// **搜索 API**(无重定向、无 HTML),这里是它的**首页**(有重定向、是完整 HTML)。
 pub const PLAZA_HOME_URL: &str = "https://skills.sh/";
-/// 排行榜展示的条数上限(brief 建议 24,一屏够看)。截断发生在
-/// [`parse_leaderboard`](纯逻辑),不是前端切片——省下没用得上的 (600-24) 条,
-/// 不必经 IPC 搬过去又被前端扔掉。
-pub const PLAZA_LEADERBOARD_LIMIT: usize = 24;
+/// 热门榜条数的 **sanity 上限**,不是"展示上限"(2026-08-19 语义变更)。
+///
+/// 原先这里是 24("一屏够看"),于是上游首页一次给的 **600 条**里有 576 条当场被扔掉。
+/// 前端加了"滚到底自动加载更多"之后,那 576 条正是要滚出来的东西——而它们**本来就在
+/// 这一次请求的响应里**(上游首页把全量数据内联进 HTML),多留不多花一个字节的网络。
+/// 所以这里改成"全都留着",只保留一个防爆上限。
+///
+/// 取 2000 的理由:实测原始 600 条(过滤掉 31 条域名式脏数据后约 569 条),留 3 倍余量;
+/// 一条卡片序列化后约 150 字节,2000 条约 300 KB 经 IPC 搬一次,可忽略。它只在上游哪天
+/// 返回巨量数据时才生效,防的是把内存吃掉,**不是**用来控制界面展示多少条
+/// ——展示多少条由前端的分批渲染决定。
+pub const PLAZA_LEADERBOARD_LIMIT: usize = 2000;
 
 /// 一条技能广场搜索结果,供前端渲染卡片。
 ///
@@ -501,6 +525,7 @@ fn parse_leaderboard(html: &str) -> Result<Vec<PlazaSkillCard>, AppError> {
     // 上游数据本就按 installs 降序(实测),这里仍显式排序一遍——与 parse_cards
     // 同一套"不假设上游顺序,自己兜底"的姿势,稳定排序不引入无意义的抖动。
     cards.sort_by_key(|c| std::cmp::Reverse(c.installs));
+    // sanity 上限,不是展示上限:界面展示多少条由前端分批渲染决定(见常量文档)。
     cards.truncate(PLAZA_LEADERBOARD_LIMIT);
     Ok(cards)
 }
@@ -1183,8 +1208,20 @@ mod tests {
         );
     }
 
+    /// 上限仍然要守(防上游哪天返回巨量数据),但它是 **sanity 上限**不是展示上限
+    /// ——2026-08-19 起前端"滚到底自动加载更多",600 条要全部留着给它滚。
+    /// 这条用例同时钉住两件事:超过上限时确实截断(喂 上限+10 条);
+    /// 上限本身远高于旧的一屏 24(否则改了常量却没改语义,这里当场变红)。
     #[test]
-    fn parse_leaderboard_truncates_to_the_display_limit() {
+    fn parse_leaderboard_caps_at_the_sanity_limit_not_at_one_screenful() {
+        // const 块 = **编译期**断言:常量被改回一屏大小时连编译都过不去,
+        // 比运行时 assert 更早拦住(clippy 的 assertions_on_constants 也正是要求这个)。
+        const {
+            assert!(
+                PLAZA_LEADERBOARD_LIMIT > 600,
+                "上限必须容得下上游首页实测的 600 条原始数据,否则热门榜又会被截成一屏"
+            )
+        };
         let objs: Vec<String> = (0..(PLAZA_LEADERBOARD_LIMIT + 10) as u64)
             .map(|i| skill_obj("a/a", &format!("s{i}"), &format!("s{i}"), i))
             .collect();

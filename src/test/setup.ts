@@ -5,6 +5,11 @@
 import { afterEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
 
+import {
+  installIntersectionObserverMock,
+  resetIntersectionObservers,
+} from "./intersection-observer";
+
 const hasDom = typeof window !== "undefined";
 
 if (hasDom) {
@@ -37,6 +42,13 @@ if (hasDom) {
   // ——症状是查询突然报 "found multiple elements",而被测代码其实没问题。
   const { cleanup } = await import("@testing-library/react");
   afterEach(cleanup);
+
+  // jsdom 不实现 IntersectionObserver,而广场列表的"滚到底自动加载更多"靠它。
+  // 默认装一个**不会自己触发**的替身:绝大多数用例不关心滚动,装上之后它们的
+  // 表现与真实浏览器里"首屏还没滚到底"一致(只渲染第一批);要测追加加载的用例
+  // 自己 import `triggerIntersection()` 显式触发。
+  installIntersectionObserverMock();
+  afterEach(resetIntersectionObservers);
 
   // jsdom 不实现 matchMedia,而"跟随系统主题"就靠它。默认按浅色作答,
   // 需要断言深色的用例自行覆写 window.matchMedia。

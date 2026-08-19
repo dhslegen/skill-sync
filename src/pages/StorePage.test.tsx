@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,6 +8,7 @@ import { useInstall } from "@/store/install";
 import { usePlaza } from "@/store/plaza";
 import { useRegistries } from "@/store/registries";
 import { useStoreIndex } from "@/store/store-index";
+import { triggerIntersection } from "@/test/intersection-observer";
 
 // 顶层广场"空查询"分支现在会挂载 PlazaLeaderboard(M10 任务 4),它的 useEffect
 // 会真的调一次 `invoke("plaza_leaderboard")`——绝大多数用例不关心这次调用,把
@@ -678,5 +679,147 @@ describe("卡片作者展示(M7 任务 2)", () => {
     // 无作者的卡片不摆占位(界面上不会出现空短横或"未知")
     expect(screen.queryByText("未知")).not.toBeInTheDocument();
     expect(screen.queryByText("—")).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================ 滚动加载(2026-08-19 追加)
+//
+// 广场列表"滚到底自动加载更多"(对齐 skills.sh 官网观感)。它是**纯前端切片**:
+// 数据整批在手里,滚动只决定渲染多少张卡片,不发任何请求——所以这里全部用
+// `usePlaza.setState` 直接喂数据,没有 invoke 的戏份。
+//
+// jsdom 没有 IntersectionObserver,全局 setup 装了一个不会自己触发的替身
+// (`src/test/intersection-observer.ts`),这里显式 `triggerIntersection()` 模拟滚到底。
+describe("广场列表滚动加载", () => {
+  const PAGE = 24; // 与 StorePage.tsx 的 PLAZA_PAGE_SIZE 对齐
+
+  const many = (count: number, prefix = "技能"): PlazaSkillCard[] =>
+    Array.from({ length: count }, (_, i) => ({
+      name: `${prefix}${i + 1}`,
+      slug: `owner/repo/${prefix}-${i + 1}`,
+      ownerRepo: "owner/repo",
+      installs: count - i,
+      isOfficial: false,
+    }));
+
+  // 这一档里能出现的 role="button" 只有广场卡片本身:registries 为 null 时
+  // SourcePicker 整个不渲染(见它自己的早退),所以按钮数就是卡片数。
+  const cardCount = () => screen.queryAllByRole("button").length;
+
+  const scrollToBottom = async (isIntersecting = true) => {
+    await act(async () => {
+      triggerIntersection(isIntersecting);
+    });
+  };
+
+  beforeEach(() => {
+    useInstall.setState({ installed: new Map() });
+    useRegistries.setState({ list: null });
+    useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: null, index: null, status: "idle", error: null });
+    usePlaza.setState({
+      query: "react",
+      results: [],
+      status: "ready",
+      error: null,
+      leaderboard: [],
+      leaderboardStatus: "ready",
+    });
+  });
+
+  it("初始只渲染第一批,不是把全部结果一次铺上去", () => {
+    usePlaza.setState({ results: many(50) });
+    render(<StorePage />);
+
+    expect(cardCount()).toBe(PAGE);
+    expect(screen.getByRole("button", { name: "技能24" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "技能25" })).not.toBeInTheDocument();
+    // 还有没渲染的,哨兵就得在——它是"还能再加载"的唯一出口
+    expect(screen.getByTestId("plaza-scroll-sentinel")).toBeInTheDocument();
+  });
+
+  it("滚到底(哨兵进入视口)追加下一批", async () => {
+    usePlaza.setState({ results: many(50) });
+    render(<StorePage />);
+
+    await scrollToBottom();
+
+    expect(cardCount()).toBe(PAGE * 2);
+    expect(screen.getByRole("button", { name: "技能48" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "技能49" })).not.toBeInTheDocument();
+  });
+
+  it("哨兵回调说「没进视口」时一条都不追加", async () => {
+    // 真实 IntersectionObserver 在 observe() 那一刻就会用当前状态回调一次
+    // (哨兵在首屏之下时是 false)。不查 isIntersecting 的话,一挂载就白多渲染一批。
+    usePlaza.setState({ results: many(50) });
+    render(<StorePage />);
+
+    await scrollToBottom(false);
+
+    expect(cardCount()).toBe(PAGE);
+  });
+
+  it("🔴 换一批卡片(改搜索词)后计数重置回第一批", async () => {
+    usePlaza.setState({ results: many(50) });
+    const { rerender } = render(<StorePage />);
+    await scrollToBottom();
+    expect(cardCount()).toBe(PAGE * 2);
+
+    // 换搜索词 = 换一份结果数组;不重置的话用户会看到"上一次滚到的条数"
+    usePlaza.setState({ query: "vue", results: many(50, "别的技能") });
+    rerender(<StorePage />);
+
+    expect(cardCount()).toBe(PAGE);
+    expect(screen.getByRole("button", { name: "别的技能1" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "别的技能25" })).not.toBeInTheDocument();
+  });
+
+  it("清空搜索框切回热门榜也从第一批开始", async () => {
+    usePlaza.setState({ results: many(50) });
+    const { rerender } = render(<StorePage />);
+    await scrollToBottom();
+    expect(cardCount()).toBe(PAGE * 2);
+
+    usePlaza.setState({ query: "", results: [], status: "idle", leaderboard: many(50, "热门") });
+    rerender(<StorePage />);
+
+    expect(cardCount()).toBe(PAGE);
+    expect(screen.getByRole("button", { name: "热门1" })).toBeInTheDocument();
+  });
+
+  it("全部渲染完之后哨兵撤掉,再触发也不会多出东西", async () => {
+    usePlaza.setState({ results: many(30) });
+    render(<StorePage />);
+
+    await scrollToBottom();
+    expect(cardCount()).toBe(30);
+    // 加载完就不摆哨兵,也不摆"没有更多了"这类噪音文案
+    expect(screen.queryByTestId("plaza-scroll-sentinel")).not.toBeInTheDocument();
+
+    await scrollToBottom();
+    expect(cardCount()).toBe(30);
+  });
+
+  it("结果本来就不足一批时,哨兵一开始就不摆", () => {
+    usePlaza.setState({ results: many(5) });
+    render(<StorePage />);
+
+    expect(cardCount()).toBe(5);
+    expect(screen.queryByTestId("plaza-scroll-sentinel")).not.toBeInTheDocument();
+  });
+
+  it("环境没有 IntersectionObserver 时一次全渲染,不把剩下的条目永久藏起来", () => {
+    // 老 webview 的兜底:界面上没有「加载更多」按钮可点,滚动是唯一出口,
+    // 出口没了就只能全铺出来——列表长一点无所谓,藏起来才是死路。
+    const saved = globalThis.IntersectionObserver;
+    // @ts-expect-error 故意删掉全局能力,模拟不支持的环境
+    delete globalThis.IntersectionObserver;
+    try {
+      usePlaza.setState({ results: many(50) });
+      render(<StorePage />);
+      expect(cardCount()).toBe(50);
+    } finally {
+      Object.defineProperty(globalThis, "IntersectionObserver", { value: saved, configurable: true, writable: true });
+    }
   });
 });
