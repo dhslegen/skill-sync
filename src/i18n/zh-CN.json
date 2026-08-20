@@ -335,5 +335,7 @@
   "plaza.openInBrowser": "在浏览器中查看",
   "plaza.detailAmbiguous": "这个技能库里有多个技能,请选择要查看的一个",
   "plaza.trendingLabel": "全网热门",
-  "plaza.officialBadge": "官方"
+  "plaza.officialBadge": "官方",
+  "plaza.searchAction": "搜索",
+  "plaza.searching": "正在搜索…"
 }

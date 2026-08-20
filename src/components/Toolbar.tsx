@@ -1,4 +1,4 @@
-import { Moon, RefreshCw, Sun } from "lucide-react";
+import { Loader2, Moon, RefreshCw, Search, Sun } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
 import { SearchBox } from "@/components/SearchBox";
@@ -37,12 +37,16 @@ export function Toolbar() {
   const dark = resolveTheme(mode, prefersDark) === "dark";
 
   // 技能广场的"搜索态"(registryId=plaza, repo=null):同一个搜索框(现有组件,
-  // IME/防抖不重写)改喂广场的查询状态,而不是再摆一个第二实例
+  // IME 处理不重写)改喂广场的查询状态,而不是再摆一个第二实例
   // ——`SearchBox` 的 id/data-testid 是写死的单例,重复挂载会撞。
+  // 差别在触发方式:广场要发跨外网请求,所以只在这一档传 `onSubmit`(回车)
+  // 并额外摆一个「搜索」按钮;公司技能库那一档是本地过滤,输入即搜照旧。
   const isPlazaSearch = activeRegistry === PLAZA_REGISTRY_ID && activeRepo === null;
   const plazaQuery = usePlaza((s) => s.query);
   const setPlazaQuery = usePlaza((s) => s.setQuery);
+  const submitPlazaSearch = usePlaza((s) => s.submitSearch);
   const plazaStatus = usePlaza((s) => s.status);
+  const plazaSearching = isPlazaSearch && plazaStatus === "loading";
 
   return (
     <div
@@ -55,8 +59,26 @@ export function Toolbar() {
         <SearchBox
           value={isPlazaSearch ? plazaQuery : query}
           onChange={isPlazaSearch ? setPlazaQuery : setQuery}
+          onSubmit={isPlazaSearch ? (value) => submitPlazaSearch(value) : undefined}
           kbdHint="⌘K"
         />
+      )}
+
+      {page === "store" && isPlazaSearch && (
+        <button
+          type="button"
+          // 🔴 搜索中**绝不禁用**:用户要的正是"短时间多次搜索确保实时响应"。
+          // 再点一次就是新的一轮,旧的在途响应由 store 的序号判定丢弃
+          // (注意是丢弃不是取消,见 `store/plaza.ts` 的 runSearch 注释)。
+          onClick={() => submitPlazaSearch()}
+          className="flex h-7 flex-none items-center gap-1.5 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+        >
+          <Icon
+            icon={plazaSearching ? Loader2 : Search}
+            className={plazaSearching ? "animate-spin" : undefined}
+          />
+          {t("plaza.searchAction")}
+        </button>
       )}
 
       <div className="flex-1" />
@@ -82,8 +104,10 @@ export function Toolbar() {
       <IconButton
         label={t("toolbar.refresh")}
         // 广场搜索态没有"索引"可刷新(它是搜索态,不是浏览态):按当前查询词
-        // 重新触发一次搜索——`setQuery` 本身就是"输入即触发",同值调用同样安全。
-        onClick={() => (isPlazaSearch ? setPlazaQuery(plazaQuery) : load(true))}
+        // 重新提交一次搜索,与搜索按钮走同一个入口。
+        // ⚠️ 这里以前写的是 `setPlazaQuery(plazaQuery)`,靠"输入即触发"顺带发请求;
+        // 改成显式触发之后那句话会**静默失效**(设了个同值的 query,什么都不发生)。
+        onClick={() => (isPlazaSearch ? submitPlazaSearch() : load(true))}
         icon={RefreshCw}
         spinning={isPlazaSearch ? plazaStatus === "loading" : status === "loading"}
       />

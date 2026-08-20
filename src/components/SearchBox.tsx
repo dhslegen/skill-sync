@@ -12,14 +12,21 @@ import { useUi } from "@/store/ui";
  * onChange,值是半截拼音("zhoub")。拿它去过滤会让列表在打字过程中反复变空,
  * 用户以为搜不到东西。因此组合期间只更新本地草稿,`compositionend` 才向上派发一次。
  * 同时把组合状态记进 ui store——全局快捷键在这期间必须让路。
+ *
+ * **`onSubmit` 是可选的**(M10 追加):只有技能广场那一档传它——广场搜索要发跨外网
+ * 请求,改成了显式触发(回车 / 搜索按钮);公司技能库那一档是纯本地过滤、零网络,
+ * 输入即搜本来就跟手,一个字都不改(不传 `onSubmit` 时回车没有任何副作用)。
  */
 export function SearchBox({
   value,
   onChange,
+  onSubmit,
   kbdHint,
 }: {
   value: string;
   onChange: (value: string) => void;
+  /** 传了才有"回车提交"这回事;不传时按回车什么都不发生。 */
+  onSubmit?: (value: string) => void;
   kbdHint?: string;
 }) {
   const [draft, setDraft] = useState(value);
@@ -58,6 +65,18 @@ export function SearchBox({
           const next = e.target.value;
           setDraft(next);
           if (!composingRef.current) onChange(next);
+        }}
+        onKeyDown={(e) => {
+          if (!onSubmit || e.key !== "Enter") return;
+          // IME 组合期间的回车是"选词上屏",不是"提交搜索"。三重守卫缺一不可:
+          // - `composingRef`:compositionstart/end 之间;
+          // - `isComposing`:同一件事的原生标志,浏览器之间实现有出入,两个都查;
+          // - `keyCode === 229`:🔴 关键的第三道。WebKit(macOS 的 Tauri webview 就是
+          //   WKWebView)在候选上屏那一下,**先**发 compositionend、**后**发确认键的
+          //   keydown——此时前两个标志都已经是 false,只查它们的话中文用户选个词就
+          //   会被当成点了搜索。229 是 IME 处理中的按键在各家浏览器里的统一约定值。
+          if (composingRef.current || e.nativeEvent.isComposing || e.keyCode === 229) return;
+          onSubmit(e.currentTarget.value);
         }}
       />
       {kbdHint && (

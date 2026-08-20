@@ -453,6 +453,7 @@ describe("广场搜索态渲染(M9 任务 5)", () => {
     useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: null, index: null, status: "idle", error: null });
     usePlaza.setState({
       query: "",
+      submittedQuery: "",
       results: [],
       status: "idle",
       error: null,
@@ -464,7 +465,7 @@ describe("广场搜索态渲染(M9 任务 5)", () => {
     });
   });
 
-  it("查询不足 2 字符且没有热门数据:退回原来的空态提示,不渲染网格", async () => {
+  it("还没提交过搜索且没有热门数据:退回原来的空态提示,不渲染网格", async () => {
     // 挂载瞬间(effect 还没跑完)先走 loading 分支;core 侧 invoke 默认回
     // undefined,`?? []` 兜底成空数组,最终稳定态才是这句空态提示——用 findByText
     // 等它落定,不断言"挂载那一刻"的过渡态(有热门数据的分支见下面
@@ -474,7 +475,7 @@ describe("广场搜索态渲染(M9 任务 5)", () => {
   });
 
   it("搜索失败:失败态文案,不是错误弹窗", () => {
-    usePlaza.setState({ query: "react", status: "error", results: [] });
+    usePlaza.setState({ submittedQuery: "react", status: "error", results: [] });
     render(<StorePage />);
     expect(screen.getByText("技能广场暂时连不上,不影响公司技能库")).toBeInTheDocument();
   });
@@ -487,7 +488,7 @@ describe("广场搜索态渲染(M9 任务 5)", () => {
       installs: 625414,
       isOfficial: false,
     };
-    usePlaza.setState({ query: "react", status: "ready", results: [card] });
+    usePlaza.setState({ submittedQuery: "react", status: "ready", results: [card] });
     const openDetail = vi.fn();
     usePlaza.setState({ openDetail });
     render(<StorePage />);
@@ -500,8 +501,29 @@ describe("广场搜索态渲染(M9 任务 5)", () => {
     );
   });
 
-  it("查询够长但零结果:复用「没有匹配」空态,不新造一份措辞", () => {
-    usePlaza.setState({ query: "找不到的东西", status: "ready", results: [] });
+  it("首次搜索(手上还没结果)给明确的加载提示", () => {
+    usePlaza.setState({ submittedQuery: "react", status: "loading", results: [] });
+    render(<StorePage />);
+    expect(screen.getByText("正在搜索…")).toBeInTheDocument();
+  });
+
+  it("🔴 已有结果时再搜:旧结果留着不闪空(转圈在顶栏的搜索按钮上)", () => {
+    const card = {
+      name: "React 最佳实践",
+      slug: "vercel-labs/skills/react-best-practices",
+      ownerRepo: "vercel-labs/skills",
+      installs: 625414,
+      isOfficial: false,
+    };
+    usePlaza.setState({ submittedQuery: "react", status: "loading", results: [card] });
+    render(<StorePage />);
+
+    expect(screen.getByRole("button", { name: "React 最佳实践" })).toBeInTheDocument();
+    expect(screen.queryByText("正在搜索…")).not.toBeInTheDocument();
+  });
+
+  it("搜过了但零结果:复用「没有匹配」空态,不新造一份措辞", () => {
+    usePlaza.setState({ submittedQuery: "找不到的东西", status: "ready", results: [] });
     render(<StorePage />);
     expect(screen.getByText("没有匹配「找不到的东西」的技能。")).toBeInTheDocument();
   });
@@ -531,6 +553,7 @@ describe("全网热门排行榜(M10 任务 4)", () => {
     useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: null, index: null, status: "idle", error: null });
     usePlaza.setState({
       query: "",
+      submittedQuery: "",
       results: [],
       status: "idle",
       error: null,
@@ -567,14 +590,16 @@ describe("全网热门排行榜(M10 任务 4)", () => {
     expect(screen.queryByText("全网热门")).not.toBeInTheDocument();
   });
 
-  it("搜索框一输入(够长)就切回搜索结果,排行榜网格不再渲染", async () => {
+  it("提交一次搜索就切到搜索结果,排行榜网格不再渲染", async () => {
     invoke.mockImplementation(async (cmd: string) => (cmd === "plaza_leaderboard" ? trending : undefined));
     const { rerender } = render(<StorePage />);
     expect(await screen.findByText("全网热门")).toBeInTheDocument();
 
     // 用 rerender(而不是再调一次 render)替换同一棵树:后者会在文档里叠加第二份,
     // 读不出"排行榜有没有真的让位",这条测试的关键就是它不再存在,不是"还有别的"。
-    usePlaza.setState({ query: "react", status: "ready", results: [] });
+    // 判据是 `submittedQuery`(已提交的查询词)而不是输入框里的 `query`
+    // ——搜索改成显式触发之后,光打字不该让排行榜消失。
+    usePlaza.setState({ submittedQuery: "react", status: "ready", results: [] });
     rerender(<StorePage />);
     expect(screen.queryByText("全网热门")).not.toBeInTheDocument();
     expect(screen.getByText("没有匹配「react」的技能。")).toBeInTheDocument();
@@ -583,14 +608,14 @@ describe("全网热门排行榜(M10 任务 4)", () => {
   // 反向路径(与上一条互补,2026-08-17 审查补测):清空搜索框应该回到排行榜,
   // 不是停留在搜索结果那一档、也不是卡在空白——之前只测了"输入切走",没测过
   // "清空切回来"。
-  it("清空搜索框(回到不足 2 字符)重新渲染排行榜", async () => {
+  it("清空搜索框重新渲染排行榜", async () => {
     invoke.mockImplementation(async (cmd: string) => (cmd === "plaza_leaderboard" ? trending : undefined));
-    usePlaza.setState({ query: "react", status: "ready", results: [] });
+    usePlaza.setState({ submittedQuery: "react", status: "ready", results: [] });
     const { rerender } = render(<StorePage />);
     expect(screen.getByText("没有匹配「react」的技能。")).toBeInTheDocument();
     expect(screen.queryByText("全网热门")).not.toBeInTheDocument();
 
-    usePlaza.setState({ query: "", status: "idle", results: [] });
+    usePlaza.setState({ submittedQuery: "", status: "idle", results: [] });
     rerender(<StorePage />);
 
     expect(await screen.findByText("全网热门")).toBeInTheDocument();
@@ -717,7 +742,7 @@ describe("广场列表滚动加载", () => {
     useRegistries.setState({ list: null });
     useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: null, index: null, status: "idle", error: null });
     usePlaza.setState({
-      query: "react",
+      submittedQuery: "react",
       results: [],
       status: "ready",
       error: null,
@@ -765,8 +790,8 @@ describe("广场列表滚动加载", () => {
     await scrollToBottom();
     expect(cardCount()).toBe(PAGE * 2);
 
-    // 换搜索词 = 换一份结果数组;不重置的话用户会看到"上一次滚到的条数"
-    usePlaza.setState({ query: "vue", results: many(50, "别的技能") });
+    // 换搜索词并重新提交 = 换一份结果数组;不重置的话用户会看到"上一次滚到的条数"
+    usePlaza.setState({ submittedQuery: "vue", results: many(50, "别的技能") });
     rerender(<StorePage />);
 
     expect(cardCount()).toBe(PAGE);
@@ -780,7 +805,7 @@ describe("广场列表滚动加载", () => {
     await scrollToBottom();
     expect(cardCount()).toBe(PAGE * 2);
 
-    usePlaza.setState({ query: "", results: [], status: "idle", leaderboard: many(50, "热门") });
+    usePlaza.setState({ submittedQuery: "", results: [], status: "idle", leaderboard: many(50, "热门") });
     rerender(<StorePage />);
 
     expect(cardCount()).toBe(PAGE);

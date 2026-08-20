@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { locatePlazaSkill, usePlaza } from "./plaza";
 import type { SkillDetail } from "@/lib/ipc";
@@ -13,6 +13,7 @@ function reset() {
   invoke.mockReset();
   usePlaza.setState({
     query: "",
+    submittedQuery: "",
     results: [],
     status: "idle",
     error: null,
@@ -34,93 +35,151 @@ const card = (over: Partial<{ name: string; slug: string; ownerRepo: string; ins
   ...over,
 });
 
-describe("usePlaza 搜索(防抖 + 边界)", () => {
-  beforeEach(() => {
-    reset();
-    vi.useFakeTimers();
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
+// 搜索改成**显式触发**(M10 追加,推翻 M9 的"输入即搜 + 250ms 防抖"):
+// 输入框的值(`query`)与已提交的查询词(`submittedQuery`)是两个字段,
+// 只有 `submitSearch` 会发请求。
+describe("usePlaza 搜索(显式触发 + 边界)", () => {
+  beforeEach(reset);
 
-  it("去空白后不足 2 字符不发请求", async () => {
-    usePlaza.getState().setQuery("a");
-    await vi.advanceTimersByTimeAsync(300);
+  it("🔴 打字不触发搜索:setQuery 连敲五下,一个请求都不发", async () => {
+    for (const q of ["r", "re", "rea", "reac", "react"]) usePlaza.getState().setQuery(q);
+    await vi.waitFor(() => expect(usePlaza.getState().query).toBe("react"));
+
     expect(invoke).not.toHaveBeenCalled();
+    // 还没提交过:界面据此继续展示热门榜
+    expect(usePlaza.getState().submittedQuery).toBe("");
     expect(usePlaza.getState().status).toBe("idle");
-    expect(usePlaza.getState().results).toEqual([]);
   });
 
-  it("只有空白字符也不发请求", async () => {
-    usePlaza.getState().setQuery("  ");
-    await vi.advanceTimersByTimeAsync(300);
+  it("submitSearch 才发请求,并把查询词记进 submittedQuery", async () => {
+    invoke.mockResolvedValueOnce([card()]);
+    usePlaza.getState().setQuery("react");
+    usePlaza.getState().submitSearch();
+
+    await vi.waitFor(() => expect(usePlaza.getState().status).toBe("ready"));
+    expect(invoke).toHaveBeenCalledWith("plaza_search", { query: "react" });
+    expect(usePlaza.getState().results).toEqual([card()]);
+    expect(usePlaza.getState().submittedQuery).toBe("react");
+  });
+
+  it("submitSearch 带参数(回车那条路)时同时更新输入框的值", async () => {
+    invoke.mockResolvedValueOnce([card()]);
+    usePlaza.getState().submitSearch("  react  ");
+
+    await vi.waitFor(() => expect(usePlaza.getState().status).toBe("ready"));
+    // 请求与记账都用 trim 后的值,输入框保留用户敲的原样
+    expect(invoke).toHaveBeenCalledWith("plaza_search", { query: "react" });
+    expect(usePlaza.getState().submittedQuery).toBe("react");
+    expect(usePlaza.getState().query).toBe("  react  ");
+  });
+
+  it("2 字符起才发请求(中文按字符数,不是字节数)", async () => {
+    invoke.mockResolvedValueOnce([card()]);
+    usePlaza.getState().submitSearch("技能");
+    await vi.waitFor(() => expect(usePlaza.getState().status).toBe("ready"));
+    expect(invoke).toHaveBeenCalledWith("plaza_search", { query: "技能" });
+  });
+
+  it("提交不足 2 字符:不发请求,回到热门榜那一档", async () => {
+    usePlaza.getState().submitSearch("a");
+    await vi.waitFor(() => expect(usePlaza.getState().query).toBe("a"));
+    expect(invoke).not.toHaveBeenCalled();
+    expect(usePlaza.getState().submittedQuery).toBe("");
+    expect(usePlaza.getState().status).toBe("idle");
+  });
+
+  it("提交只有空白的查询词同样不发请求", async () => {
+    usePlaza.getState().submitSearch("  ");
+    await vi.waitFor(() => expect(usePlaza.getState().query).toBe("  "));
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("2 字符起会发请求(中文按字符数,不是字节数)", async () => {
+  it("清空输入框 = 立即回热门榜,不需要再点搜索、也不发请求", async () => {
     invoke.mockResolvedValueOnce([card()]);
-    usePlaza.getState().setQuery("技能");
-    await vi.advanceTimersByTimeAsync(300);
-    expect(invoke).toHaveBeenCalledWith("plaza_search", { query: "技能" });
-    expect(usePlaza.getState().results).toEqual([card()]);
-    expect(usePlaza.getState().status).toBe("ready");
+    usePlaza.getState().submitSearch("react");
+    await vi.waitFor(() => expect(usePlaza.getState().results).toHaveLength(1));
+
+    invoke.mockClear();
+    usePlaza.getState().setQuery("");
+
+    expect(usePlaza.getState().submittedQuery).toBe("");
+    expect(usePlaza.getState().results).toEqual([]);
+    expect(usePlaza.getState().status).toBe("idle");
+    expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("防抖:250ms 内连续输入只发最后一次请求", async () => {
-    invoke.mockResolvedValueOnce([card({ name: "最终结果" })]);
-    usePlaza.getState().setQuery("re");
-    await vi.advanceTimersByTimeAsync(100);
-    usePlaza.getState().setQuery("rea");
-    await vi.advanceTimersByTimeAsync(100);
-    usePlaza.getState().setQuery("react");
-    await vi.advanceTimersByTimeAsync(250);
+  it("假设:删到不足 2 字符但没删空时,上一次的结果留着不闪", async () => {
+    invoke.mockResolvedValueOnce([card()]);
+    usePlaza.getState().submitSearch("react");
+    await vi.waitFor(() => expect(usePlaza.getState().results).toHaveLength(1));
 
-    expect(invoke).toHaveBeenCalledTimes(1);
-    expect(invoke).toHaveBeenCalledWith("plaza_search", { query: "react" });
-    expect(usePlaza.getState().results[0].name).toBe("最终结果");
+    usePlaza.getState().setQuery("r");
+
+    expect(usePlaza.getState().submittedQuery).toBe("react");
+    expect(usePlaza.getState().results).toEqual([card()]);
   });
 
   it("错误进 error 态,不抛到调用方", async () => {
     invoke.mockRejectedValueOnce({ code: "NET_PLAZA_SEARCH", message: "技能广场搜索失败,请稍后重试" });
-    expect(() => usePlaza.getState().setQuery("react")).not.toThrow();
-    await vi.advanceTimersByTimeAsync(300);
+    expect(() => usePlaza.getState().submitSearch("react")).not.toThrow();
 
+    await vi.waitFor(() => expect(usePlaza.getState().status).toBe("error"));
     const s = usePlaza.getState();
-    expect(s.status).toBe("error");
     expect(s.error?.code).toBe("NET_PLAZA_SEARCH");
     expect(s.results).toEqual([]);
   });
 
   it("非 AppError 异常也被规整,不裸抛出去", async () => {
     invoke.mockRejectedValueOnce(new Error("network down"));
-    usePlaza.getState().setQuery("react");
-    await vi.advanceTimersByTimeAsync(300);
-    expect(usePlaza.getState().status).toBe("error");
+    usePlaza.getState().submitSearch("react");
+    await vi.waitFor(() => expect(usePlaza.getState().status).toBe("error"));
     expect(usePlaza.getState().error?.code).toBe("IPC_FAILED");
   });
 
-  it("请求还在飞时把查询删回短查询:迟到的响应不能把已清空的结果救回来", async () => {
+  it("🔴 搜索中再搜一次:以新的那次为准,先发的慢响应后到也不采纳", async () => {
     let resolveSlow!: (v: unknown) => void;
     invoke.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveSlow = resolve;
-        }),
+      () => new Promise((resolve) => { resolveSlow = resolve; }),
     );
-    usePlaza.getState().setQuery("re");
-    await vi.advanceTimersByTimeAsync(250); // 触发那次搜索,请求"挂起"
+    usePlaza.getState().submitSearch("react");
+    await vi.waitFor(() => expect(usePlaza.getState().status).toBe("loading"));
 
-    usePlaza.getState().setQuery("r"); // 删回 1 个字符:不足 2,立即清空
+    // 不等上一次回来,直接再搜一次(界面上就是"搜索按钮没禁用,又点了一下")
+    invoke.mockResolvedValueOnce([card({ name: "新的那次" })]);
+    usePlaza.getState().submitSearch("vue");
+    await vi.waitFor(() => expect(usePlaza.getState().results).toHaveLength(1));
+    expect(usePlaza.getState().results[0].name).toBe("新的那次");
+
+    resolveSlow([card({ name: "迟到的旧结果" })]);
+    // 只能靠冲刷微任务队列等它落地:这里等的是"**不该**发生的那次写入",
+    // 没有任何状态可供 waitFor 轮询(而 waitFor 一个已经成立的条件会立刻返回,
+    // 等于什么都没等——那样这条测试就是空转的)。
+    await Promise.resolve();
+    await Promise.resolve();
+    // 旧响应落地也不能把新结果盖掉
+    expect(usePlaza.getState().results[0].name).toBe("新的那次");
+    expect(usePlaza.getState().submittedQuery).toBe("vue");
+  });
+
+  it("请求还在飞时清空输入框:迟到的响应不能把已清空的结果救回来", async () => {
+    let resolveSlow!: (v: unknown) => void;
+    invoke.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveSlow = resolve; }),
+    );
+    usePlaza.getState().submitSearch("react");
+    await vi.waitFor(() => expect(usePlaza.getState().status).toBe("loading"));
+
+    usePlaza.getState().setQuery(""); // 清空:立即回热门榜
     expect(usePlaza.getState().results).toEqual([]);
     expect(usePlaza.getState().status).toBe("idle");
 
     resolveSlow([card()]); // 迟到的响应落地
-    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
     await Promise.resolve();
 
-    // 不能被旧响应覆盖回去
     expect(usePlaza.getState().results).toEqual([]);
     expect(usePlaza.getState().status).toBe("idle");
+    expect(usePlaza.getState().submittedQuery).toBe("");
   });
 });
 

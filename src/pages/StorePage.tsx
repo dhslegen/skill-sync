@@ -313,31 +313,44 @@ function SourcePicker() {
 }
 
 /**
- * 技能广场的搜索结果区(M9 任务 5)。四档:空查询("全网热门"排行榜,见
+ * 技能广场的搜索结果区(M9 任务 5)。四档:还没搜过("全网热门"排行榜,见
  * {@link PlazaLeaderboard},M10 任务 4)/ 搜索失败 / 空结果 / 结果网格。
- * 搜索框在 Toolbar 里(复用现有 SearchBox,IME/防抖行为不重写),这里只管结果展示。
+ * 搜索框在 Toolbar 里(复用现有 SearchBox,IME 处理不重写),这里只管结果展示。
+ *
+ * 🔴 判据是 **`submittedQuery`(已提交的查询词)而不是 `query`(输入框里的文本)**
+ * (M10 追加,搜索改成显式触发之后):按输入框判的话,用户刚敲下第一个字、还没点
+ * 搜索,热门榜就整片消失换成"没有匹配"——什么都没发生却像是坏了。
+ * `submittedQuery` 已经是 trim 后的值(见 store),这里不再重复 trim。
+ *
+ * 加载态分两档:**首次搜索**(手上还没有结果)给一句加载提示;**已有结果时再搜**
+ * 保持旧结果可见、不闪空(与上面浏览态刷新的既有做法一致),转圈由顶栏的搜索
+ * 按钮承担——整片闪白是最差的做法。
  */
 function PlazaResults() {
-  const query = usePlaza((s) => s.query);
+  const submittedQuery = usePlaza((s) => s.submittedQuery);
   const results = usePlaza((s) => s.results);
   const status = usePlaza((s) => s.status);
   const openDetail = usePlaza((s) => s.openDetail);
 
-  const trimmed = query.trim();
-  if (trimmed.length < 2) {
-    // 空查询不再是一片空白:打开就有"全网热门"排行榜(用户明确要求"适配公司
-    // 技能库的展示风格");搜索框一输入(够长)就切到下面的搜索结果分支,
-    // 排行榜整个不渲染——两者互斥,不会同屏叠加。
+  if (submittedQuery === "") {
+    // 还没搜过不是一片空白:打开就有"全网热门"排行榜(用户明确要求"适配公司
+    // 技能库的展示风格");提交一次搜索就切到下面的搜索结果分支,排行榜整个
+    // 不渲染——两者互斥,不会同屏叠加。
     return <PlazaLeaderboard />;
   }
   if (status === "error") {
     return <p className="py-6 text-[12.5px] text-text-3">{t("plaza.searchFailed")}</p>;
   }
   if (status === "loading" && results.length === 0) {
-    return <p className="py-6 text-[12.5px] text-text-3">{t("store.loading")}</p>;
+    // 搜索用自己的文案:这一档读的不是"技能列表"(那是浏览态的措辞)。
+    return <p className="py-6 text-[12.5px] text-text-3">{t("plaza.searching")}</p>;
   }
   if (results.length === 0) {
-    return <p className="py-6 text-[12.5px] text-text-3">{t("store.emptySearch", { query: trimmed })}</p>;
+    return (
+      <p className="py-6 text-[12.5px] text-text-3">
+        {t("store.emptySearch", { query: submittedQuery })}
+      </p>
+    );
   }
 
   return <PlazaCardGrid cards={results} onOpen={openDetail} className="mt-2.5" />;

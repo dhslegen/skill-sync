@@ -1,9 +1,21 @@
 // 技能广场(skills.sh 发现层,M9)的前端状态:搜索 + 详情。
 //
 // 设计文档 §2.1/§2.2 的两条前端约束都落在这里:
-// - 搜索去空白后不足 2 字符不发请求(上游 400 的边界),防抖 250ms 合并连续键入;
+// - 搜索去空白后不足 2 字符不发请求(上游 400 的边界);
 // - 详情是"详情面板不联网"承诺的唯一破例,范围钉死在广场——core 侧已把这条边界
 //   写进 `core/plaza.rs` 模块头,这里只是消费它,不重复越界。
+//
+// **搜索是显式触发的**(M10 追加,推翻 M9 的"输入即搜 + 250ms 防抖"):真机验收时
+// 用户反馈"按输入不跟手、有延迟"——根因是每敲一个字都在发一次跨外网请求,而
+// skills.sh 在公司网络下很慢,界面一路抖动。现在拆成两个字段:
+// - `query` = 输入框里的文本,**改它一个请求都不发**,输入完全跟手;
+// - `submittedQuery` = 已提交的查询词(**存 trim 后的值**),决定界面展示什么。
+// 触发口只有 `submitSearch`(回车 / 搜索按钮 / 顶栏刷新按钮共用)。
+// 唯一的例外是"清空输入框":它不需要任何网络请求,立即回到热门榜——显式搜索
+// 是为了免掉无谓的请求,不是为了让用户多点一下。
+// 假设:输入框非空但不足 2 字符(比如把 "react" 删成 "r")时**保留上一次的结果**
+// 不清空——那是用户在改写查询词的中间态,把结果闪掉再闪回来比留着更糟;
+// 与 M9 "输入即搜"时代的行为不同,那时它必须清(因为结果与输入框是同一个真相)。
 import { create } from "zustand";
 
 import { t } from "@/i18n";
@@ -21,8 +33,6 @@ type Status = "idle" | "loading" | "ready" | "error";
 
 /** 上游 400 的边界:去空白后不足这个字符数就不发请求。 */
 const MIN_QUERY_CHARS = 2;
-/** 防抖窗口,对齐上游 CLI(`npx skills find`)交互手感的既有约定。 */
-const SEARCH_DEBOUNCE_MS = 250;
 
 function toAppError(raw: unknown): AppError {
   return isAppError(raw)
@@ -31,12 +41,17 @@ function toAppError(raw: unknown): AppError {
 }
 
 interface PlazaState {
+  /** 输入框里的文本。改它**不发任何请求**。 */
   query: string;
+  /** 已提交的查询词(trim 后)。空串 = 还没搜过,界面展示热门榜。 */
+  submittedQuery: string;
   results: PlazaSkillCard[];
   status: Status;
   error: AppError | null;
-  /** 输入即触发(内部防抖 + 边界判定),调用方不用自己管定时器。 */
+  /** 只更新输入框的值;清空(trim 后为空)时顺带回到热门榜,见模块头。 */
   setQuery: (query: string) => void;
+  /** 显式提交一次搜索(回车 / 搜索按钮 / 顶栏刷新按钮)。不传参数就用当前 `query`。 */
+  submitSearch: (query?: string) => void;
 
   // ---- 首页热门排行榜(M10 任务 4:广场空态打开就有内容) ----
   leaderboard: PlazaSkillCard[];
@@ -67,17 +82,27 @@ interface PlazaState {
 }
 
 export const usePlaza = create<PlazaState>((set, get) => {
-  // 防抖定时器与请求序号是这个 store 实例私有的实现细节,不进 state——
-  // 它们不该触发订阅者重渲染,也没有界面需要读它们。
-  let debounceHandle: ReturnType<typeof setTimeout> | undefined;
+  // 请求序号是这个 store 实例私有的实现细节,不进 state——它不该触发订阅者
+  // 重渲染,也没有界面需要读它。
   let searchSeq = 0;
+
+  /** 回到"还没搜过"的状态,并让在途的旧请求作废。 */
+  function resetSearch() {
+    // bump 序号是关键:否则仍在飞的那次响应落地时,`seq === searchSeq` 的判定
+    // 仍然成立,会把已经清空的结果又救回来(热门榜瞬间被旧搜索结果盖掉)。
+    searchSeq += 1;
+    set({ submittedQuery: "", results: [], status: "idle", error: null });
+  }
 
   async function runSearch(query: string) {
     const seq = (searchSeq += 1);
-    set({ status: "loading", error: null });
+    set({ submittedQuery: query, status: "loading", error: null });
     try {
       const results = await plazaSearch(query);
-      // 连续输入时,先发的慢请求可能后回来:只有"我还是最新这一次"才准写结果
+      // 短时间内连搜几次时,先发的慢请求可能后回来:只有"我还是最新这一次"
+      // 才准写结果。⚠️ 这是**丢弃**不是**取消**:Tauri 的 `invoke` 没有 abort
+      // 通道,旧请求仍会在 core 侧跑完(网络往返照发、core 的缓存照写),
+      // 我们只是不采纳它的结果。别误以为再点一次搜索就把上一次掐断了。
       if (seq === searchSeq) set({ results, status: "ready" });
     } catch (raw) {
       if (seq === searchSeq) set({ error: toAppError(raw), status: "error", results: [] });
@@ -86,23 +111,28 @@ export const usePlaza = create<PlazaState>((set, get) => {
 
   return {
     query: "",
+    submittedQuery: "",
     results: [],
     status: "idle",
     error: null,
 
     setQuery: (query) => {
       set({ query });
-      if (debounceHandle) clearTimeout(debounceHandle);
-      const trimmed = query.trim();
+      // 清空输入框 = 立即回热门榜,不需要再点一次搜索(零网络请求,见模块头)。
+      // 非空但不足 2 字符是改写查询词的中间态,保留上一次的结果不动。
+      if (query.trim() === "") resetSearch();
+    },
+
+    submitSearch: (query) => {
+      const trimmed = (query ?? get().query).trim();
+      if (query !== undefined) set({ query });
       if (trimmed.length < MIN_QUERY_CHARS) {
-        // 不发请求直接回到空态。同时让在途的旧请求作废(bump 序号)——否则
-        // "输两个字触发请求 → 又删成一个字" 时,那个仍在飞的响应落地后会用
-        // `seq === searchSeq` 的旧判定通过检查,把已经清空的结果又救回来。
-        searchSeq += 1;
-        set({ results: [], status: "idle", error: null });
+        // 搜不了的词(上游 400 的边界)当作"回到热门榜"处理,而不是让按钮
+        // 点下去毫无反应——空态那句提示本身就写着"至少 2 个字符"。
+        resetSearch();
         return;
       }
-      debounceHandle = setTimeout(() => void runSearch(query), SEARCH_DEBOUNCE_MS);
+      void runSearch(trimmed);
     },
 
     leaderboard: [],
