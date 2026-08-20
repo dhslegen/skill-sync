@@ -1,6 +1,6 @@
 [package]
 name = "skillsync"
-version = "0.3.13"
+version = "0.4.0"
 description = "企业内网 AI Skill 共享桌面客户端"
 authors = ["zhaowenhao"]
 edition = "2021"
