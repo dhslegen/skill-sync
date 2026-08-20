@@ -10,7 +10,8 @@
 // skills.sh 在公司网络下很慢,界面一路抖动。现在拆成两个字段:
 // - `query` = 输入框里的文本,**改它一个请求都不发**,输入完全跟手;
 // - `submittedQuery` = 已提交的查询词(**存 trim 后的值**),决定界面展示什么。
-// 触发口只有 `submitSearch`(回车 / 搜索按钮 / 顶栏刷新按钮共用)。
+// 触发口只有 `submitSearch`(回车 / 顶栏刷新按钮共用;**不摆搜索按钮**,
+// 2026-08-19 用户看过真机后拍板撤掉,理由见 `Toolbar.tsx` 的注释)。
 // 唯一的例外是"清空输入框":它不需要任何网络请求,立即回到热门榜——显式搜索
 // 是为了免掉无谓的请求,不是为了让用户多点一下。
 // 假设:输入框非空但不足 2 字符(比如把 "react" 删成 "r")时**保留上一次的结果**
@@ -50,7 +51,7 @@ interface PlazaState {
   error: AppError | null;
   /** 只更新输入框的值;清空(trim 后为空)时顺带回到热门榜,见模块头。 */
   setQuery: (query: string) => void;
-  /** 显式提交一次搜索(回车 / 搜索按钮 / 顶栏刷新按钮)。不传参数就用当前 `query`。 */
+  /** 显式提交一次搜索(回车 / 顶栏刷新按钮)。不传参数就用当前 `query`。 */
   submitSearch: (query?: string) => void;
 
   // ---- 首页热门排行榜(M10 任务 4:广场空态打开就有内容) ----
@@ -126,9 +127,17 @@ export const usePlaza = create<PlazaState>((set, get) => {
     submitSearch: (query) => {
       const trimmed = (query ?? get().query).trim();
       if (query !== undefined) set({ query });
+      // 防连击:**同一个词、且正在搜它** → 忽略。连按五次回车搜同一个词,发五个
+      // 一模一样的请求纯属浪费,网络慢时尤其明显。
+      // 🔴 判据必须同时含"同一个词"这一半:退化成"搜索中一律忽略"就成了
+      //    "等待上次响应",正是用户明确反对的那个行为——**换了词必须立即以新的
+      //    为准**(交给下面的 runSearch + searchSeq,不等旧的回来)。
+      //    `submittedQuery` 在 runSearch 一开始就写好了,status=loading 期间
+      //    它就是"正在飞的那个词"。
+      if (get().status === "loading" && trimmed === get().submittedQuery) return;
       if (trimmed.length < MIN_QUERY_CHARS) {
-        // 搜不了的词(上游 400 的边界)当作"回到热门榜"处理,而不是让按钮
-        // 点下去毫无反应——空态那句提示本身就写着"至少 2 个字符"。
+        // 搜不了的词(上游 400 的边界)当作"回到热门榜"处理,而不是按了回车
+        // 毫无反应——空态那句提示本身就写着"至少 2 个字符"。
         resetSearch();
         return;
       }

@@ -74,34 +74,36 @@ describe("Toolbar 搜索框在技能广场搜索态的接线(M9 任务 5)", () =
     expect(submitSearch).toHaveBeenCalledWith("react");
   });
 
-  it("广场搜索态:点「搜索」按钮提交", () => {
+  // 2026-08-19 用户看过真机后拍板:**不摆「搜索」按钮**(Demo 里没有这个控件,
+  // 多摆一个就与整体割裂)。回车是唯一的新增触发口,转圈挂在既有的刷新按钮上。
+  it("顶栏控件集合:广场档与公司技能库档完全一致,没有为搜索新造按钮", () => {
+    // 不写死"叫某某名字的按钮不存在"(改个文案那条守卫就失效),而是钉住两档的
+    // 控件集合相等——广场档多出任何一个控件都会红。
+    const labelsOf = (c: HTMLElement) =>
+      Array.from(c.querySelectorAll("button")).map((b) => b.getAttribute("aria-label"));
+
+    useStoreIndex.setState({ activeRegistry: "company", activeRepo: null });
+    const company = render(<Toolbar />);
+    const companyLabels = labelsOf(company.container);
+    company.unmount();
+
     useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: null });
-    const submitSearch = vi.fn();
-    usePlaza.setState({ submitSearch, query: "react" });
-    render(<Toolbar />);
-
-    fireEvent.click(screen.getByRole("button", { name: "搜索" }));
-    expect(submitSearch).toHaveBeenCalledTimes(1);
+    const plaza = render(<Toolbar />);
+    expect(labelsOf(plaza.container)).toEqual(companyLabels);
   });
 
-  it("「搜索」按钮只在广场那一档出现,公司技能库不摆", () => {
-    render(<Toolbar />);
-    expect(screen.queryByRole("button", { name: "搜索" })).not.toBeInTheDocument();
-  });
-
-  it("🔴 搜索中按钮不禁用,还能再点一次(要的就是以最新一次为准)", () => {
+  it("🔴 搜索中回车照样能提交(防连击在 store 里按词判定,界面不禁用任何东西)", () => {
     useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: null });
     const submitSearch = vi.fn();
     usePlaza.setState({ submitSearch, query: "react", status: "loading" });
     render(<Toolbar />);
 
-    const button = screen.getByRole("button", { name: "搜索" });
-    expect(button).not.toBeDisabled();
-    // 搜索中图标转圈,给"正在搜"的明确指示
-    expect(button.querySelector("svg")?.getAttribute("class")).toContain("animate-spin");
+    const input = screen.getByTestId("store-search");
+    expect(input).not.toBeDisabled();
+    fireEvent.change(input, { target: { value: "vue" } });
+    fireEvent.keyDown(input, { key: "Enter" });
 
-    fireEvent.click(button);
-    expect(submitSearch).toHaveBeenCalledTimes(1);
+    expect(submitSearch).toHaveBeenCalledWith("vue");
   });
 
   it("刷新按钮在广场搜索态走同一个提交入口(不再靠输入即触发)", () => {
@@ -114,7 +116,7 @@ describe("Toolbar 搜索框在技能广场搜索态的接线(M9 任务 5)", () =
     expect(submitSearch).toHaveBeenCalledTimes(1);
   });
 
-  it("刷新按钮的转圈状态:广场搜索态跟广场的 status,不跟商店的", () => {
+  it("搜索中的加载指示挂在既有的刷新按钮上(不为它新造控件)", () => {
     useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: null, status: "ready" });
     usePlaza.setState({ status: "loading" });
     render(<Toolbar />);

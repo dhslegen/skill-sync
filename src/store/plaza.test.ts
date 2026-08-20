@@ -136,6 +136,47 @@ describe("usePlaza 搜索(显式触发 + 边界)", () => {
     expect(usePlaza.getState().error?.code).toBe("IPC_FAILED");
   });
 
+  it("🔴 防连击:同一个词正在搜时连按两次回车,只发一次请求", async () => {
+    invoke.mockImplementationOnce(() => new Promise(() => {})); // 永远挂起,模拟慢网络
+    usePlaza.getState().submitSearch("react");
+    await vi.waitFor(() => expect(usePlaza.getState().status).toBe("loading"));
+
+    // 用户等得不耐烦,又连按了几次回车——同一个词,一个新请求都不该发
+    usePlaza.getState().submitSearch("react");
+    usePlaza.getState().submitSearch("react");
+    usePlaza.getState().submitSearch("  react  "); // 去空白后同词,同样算连击
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("🔴 防连击不能拖累换词:连着提交两个不同的词,第二次立即算数(不等第一次)", async () => {
+    invoke.mockImplementationOnce(() => new Promise(() => {})); // 第一个词永远挂起
+    invoke.mockResolvedValueOnce([card({ name: "第二个词的结果" })]);
+
+    usePlaza.getState().submitSearch("react");
+    usePlaza.getState().submitSearch("vue"); // 不等第一次回来
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke).toHaveBeenNthCalledWith(1, "plaza_search", { query: "react" });
+    expect(invoke).toHaveBeenNthCalledWith(2, "plaza_search", { query: "vue" });
+
+    await vi.waitFor(() => expect(usePlaza.getState().status).toBe("ready"));
+    expect(usePlaza.getState().results[0].name).toBe("第二个词的结果");
+    expect(usePlaza.getState().submittedQuery).toBe("vue");
+  });
+
+  it("搜完之后再搜同一个词照样发请求(防的是连击,不是同词)", async () => {
+    invoke.mockResolvedValueOnce([card()]);
+    usePlaza.getState().submitSearch("react");
+    await vi.waitFor(() => expect(usePlaza.getState().status).toBe("ready"));
+
+    // 顶栏刷新按钮走的就是这条路:同一个词,但上一次已经落地了
+    invoke.mockResolvedValueOnce([card({ name: "刷新后的结果" })]);
+    usePlaza.getState().submitSearch("react");
+    await vi.waitFor(() => expect(usePlaza.getState().results[0].name).toBe("刷新后的结果"));
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
   it("🔴 搜索中再搜一次:以新的那次为准,先发的慢响应后到也不采纳", async () => {
     let resolveSlow!: (v: unknown) => void;
     invoke.mockImplementationOnce(

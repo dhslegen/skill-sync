@@ -1,4 +1,4 @@
-import { Loader2, Moon, RefreshCw, Search, Sun } from "lucide-react";
+import { Moon, RefreshCw, Sun } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
 import { SearchBox } from "@/components/SearchBox";
@@ -39,14 +39,17 @@ export function Toolbar() {
   // 技能广场的"搜索态"(registryId=plaza, repo=null):同一个搜索框(现有组件,
   // IME 处理不重写)改喂广场的查询状态,而不是再摆一个第二实例
   // ——`SearchBox` 的 id/data-testid 是写死的单例,重复挂载会撞。
-  // 差别在触发方式:广场要发跨外网请求,所以只在这一档传 `onSubmit`(回车)
-  // 并额外摆一个「搜索」按钮;公司技能库那一档是本地过滤,输入即搜照旧。
+  // 差别在触发方式:广场要发跨外网请求,所以只在这一档传 `onSubmit`(回车);
+  // 公司技能库那一档是本地过滤,输入即搜照旧。
+  // ⚠️ **不摆「搜索」按钮**(2026-08-19 用户看过真机后拍板撤掉):Demo 里没有这个
+  //   控件,多摆一个就与整体割裂(UI 规范:信息密度对齐 Demo,不加装饰性控件)。
+  //   回车是唯一的新增触发口;"再搜一次"用下面那个既有的刷新按钮,
+  //   搜索中的转圈也挂在它身上——不为加载指示新造控件。
   const isPlazaSearch = activeRegistry === PLAZA_REGISTRY_ID && activeRepo === null;
   const plazaQuery = usePlaza((s) => s.query);
   const setPlazaQuery = usePlaza((s) => s.setQuery);
   const submitPlazaSearch = usePlaza((s) => s.submitSearch);
   const plazaStatus = usePlaza((s) => s.status);
-  const plazaSearching = isPlazaSearch && plazaStatus === "loading";
 
   return (
     <div
@@ -62,23 +65,6 @@ export function Toolbar() {
           onSubmit={isPlazaSearch ? (value) => submitPlazaSearch(value) : undefined}
           kbdHint="⌘K"
         />
-      )}
-
-      {page === "store" && isPlazaSearch && (
-        <button
-          type="button"
-          // 🔴 搜索中**绝不禁用**:用户要的正是"短时间多次搜索确保实时响应"。
-          // 再点一次就是新的一轮,旧的在途响应由 store 的序号判定丢弃
-          // (注意是丢弃不是取消,见 `store/plaza.ts` 的 runSearch 注释)。
-          onClick={() => submitPlazaSearch()}
-          className="flex h-7 flex-none items-center gap-1.5 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
-        >
-          <Icon
-            icon={plazaSearching ? Loader2 : Search}
-            className={plazaSearching ? "animate-spin" : undefined}
-          />
-          {t("plaza.searchAction")}
-        </button>
       )}
 
       <div className="flex-1" />
