@@ -90,7 +90,7 @@ export function Toolbar() {
       <IconButton
         label={t("toolbar.refresh")}
         // 广场搜索态没有"索引"可刷新(它是搜索态,不是浏览态):按当前查询词
-        // 重新提交一次搜索,与搜索按钮走同一个入口。
+        // 重新提交一次搜索,与回车走同一个入口。
         // ⚠️ 这里以前写的是 `setPlazaQuery(plazaQuery)`,靠"输入即触发"顺带发请求;
         // 改成显式触发之后那句话会**静默失效**(设了个同值的 query,什么都不发生)。
         onClick={() => (isPlazaSearch ? submitPlazaSearch() : load(true))}

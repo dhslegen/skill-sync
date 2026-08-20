@@ -185,7 +185,7 @@ describe("usePlaza 搜索(显式触发 + 边界)", () => {
     usePlaza.getState().submitSearch("react");
     await vi.waitFor(() => expect(usePlaza.getState().status).toBe("loading"));
 
-    // 不等上一次回来,直接再搜一次(界面上就是"搜索按钮没禁用,又点了一下")
+    // 不等上一次回来,直接换个词再搜(界面上就是"改了词又按了一次回车")
     invoke.mockResolvedValueOnce([card({ name: "新的那次" })]);
     usePlaza.getState().submitSearch("vue");
     await vi.waitFor(() => expect(usePlaza.getState().results).toHaveLength(1));

@@ -323,8 +323,8 @@ function SourcePicker() {
  * `submittedQuery` 已经是 trim 后的值(见 store),这里不再重复 trim。
  *
  * 加载态分两档:**首次搜索**(手上还没有结果)给一句加载提示;**已有结果时再搜**
- * 保持旧结果可见、不闪空(与上面浏览态刷新的既有做法一致),转圈由顶栏的搜索
- * 按钮承担——整片闪白是最差的做法。
+ * 保持旧结果可见、不闪空(与上面浏览态刷新的既有做法一致),转圈由顶栏那个**既有的
+ * 刷新按钮**承担(不为加载指示新造控件)——整片闪白是最差的做法。
  */
 function PlazaResults() {
   const submittedQuery = usePlaza((s) => s.submittedQuery);

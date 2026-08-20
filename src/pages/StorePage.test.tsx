@@ -507,7 +507,7 @@ describe("广场搜索态渲染(M9 任务 5)", () => {
     expect(screen.getByText("正在搜索…")).toBeInTheDocument();
   });
 
-  it("🔴 已有结果时再搜:旧结果留着不闪空(转圈在顶栏的搜索按钮上)", () => {
+  it("🔴 已有结果时再搜:旧结果留着不闪空(转圈在顶栏的刷新按钮上)", () => {
     const card = {
       name: "React 最佳实践",
       slug: "vercel-labs/skills/react-best-practices",
