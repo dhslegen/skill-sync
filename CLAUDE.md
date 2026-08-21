@@ -476,7 +476,7 @@ tags 当时侥幸没出问题,是因为支持它的版本先到了用户机器�
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust **705** + 前端 **547** 测试通过(2026-08-21 M11 任务 3 收尾时串行实测,
+- 本机:Rust **711** + 前端 **547** 测试通过(2026-08-21 M11 收尾时串行实测,
   五道闸全绿,clippy **--all-targets** / eslint / tsc 干净,`pnpm dev` 启动冒烟通过)。
   ⚠️ **这个 Rust 数字是「docker 起着」的口径**:`gitea_live` 那两条真跑了
   (docker 停着时它们报 502 假红,见「测试要求」);而受 `SKILLSYNC_PLAZA_LIVE`
@@ -585,6 +585,9 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
     复制到 `target/debug/`),本地怎么试都正常。已实测两档:dev 解析到
     `target/debug/RELEASE_NOTES.md`,打包后是 `Contents/Resources/RELEASE_NOTES.md`,
     两边都真读出 18 段。守卫 `bundle_config.rs::release_notes_must_ship_inside_the_bundle`。
+    ⚠️ **第三档(Windows NSIS 安装布局)本地验不了**,已列进「只能在真机验的」清单;
+    `commands::log_release_notes` 那行 debug 日志(`RUST_LOG=skillsync=debug`)
+    就是为它准备的诊断——真机上一眼看出是"文件没进包"还是"判定认为不用显示"。
   - 🔴 **该显示哪几段的起点是「当前版本那一段」,不是文件开头**:发版纪律是
     **先写发版说明、脚本才肯发版**,所以"说明已进仓、包还没发"这段窗口里,文件里
     必然有一段比当前运行的版本更新——从开头取起就会把还没发出去的那一版显示给用户。
@@ -1443,6 +1446,10 @@ M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重�
 > (macOS 侧同一条链路 2026-08-11 当天真机走通两次:0.3.11→0.3.12、0.3.12→0.3.13,
 > 日志四行齐全——但那证明不了 Windows,两个平台的"装好"根本不是一件事。)
 
+- **Windows 上 `RELEASE_NOTES.md` 的包内落点未验**(M11):macOS 两档已实测
+  (dev 的 `target/debug/` 与 `.app` 的 `Contents/Resources/`),NSIS 装出来的布局
+  本地构造不了。表现如果错,是"升级后卡片永远不出现"——不报错、不崩,**看着像
+  功能没做**。真机上跑 `RUST_LOG=skillsync=debug` 看那行「发版说明:N 段」即可分辨。
 - **Windows 普通权限真机**(任务 6 欠的最后一档):CI 已验 Windows runner 上 junction
   建链/摘链真实通过,且断言"必须是 junction 而不是 symlink"(C11 的提权假阳性有护栏);
   但 runner 权限宽松 ≠ 普通员工受限机器。"不开开发者模式、普通用户权限下装成功且
