@@ -476,7 +476,7 @@ tags 当时侥幸没出问题,是因为支持它的版本先到了用户机器�
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust **676** + 前端 **533** 测试通过(2026-08-21 v5 任务 6 收尾时串行实测,
+- 本机:Rust **684** + 前端 **534** 测试通过(2026-08-21 v5 终审修复后串行实测,
   五道闸全绿,clippy **--all-targets** / eslint / tsc 干净,`pnpm dev` 启动冒烟通过)。
   ⚠️ **这个 Rust 数字是「docker 起着」的口径**:`gitea_live` 那两条真跑了
   (docker 停着时它们报 502 假红,见「测试要求」);而受 `SKILLSYNC_PLAZA_LIVE`
@@ -543,8 +543,9 @@ M7 的契约变更:`StoreSkillCard` 新增 `author`(`string | null`)、`SkillDet
 ——归因随索引一起下来,前端零新增请求。新增 core 原语 `gitea::file_content`
 (contents API 读单文件内容 + blob sha)。
 M9 新增的 IPC:`plaza_search`(query → `PlazaSkillCard[]`,skills.sh 搜索薄壳)、
-`plaza_ensure_repo`(owner/repo → `RepoView`,幂等挂仓,**唯一**被允许写
-`config.plazaRepos` 的入口)、`plaza_detail`(owner/repo → `SkillDetail[]`,
+`plaza_ensure_repo`(owner/repo → `RepoView`,幂等挂仓;写 `config.plazaRepos`
+的**实现**只有 `core::plaza::ensure_repo` 一处,允许调它的是这条 IPC 与
+`project_skill_install` —— 都是"用户按下了装"这个动作,详情面板看一眼不挂)、`plaza_detail`(owner/repo → `SkillDetail[]`,
 详情面板不联网承诺的唯一破例,命中进程内缓存或现拉)。三者均不接受
 `registryId` 参数(广场源固定,不需要调用方指明);**没有**新增事件
 ——广场技能一旦挂仓就走既有的 `store_index`/`skill_acquire` 常规路径,
@@ -620,6 +621,28 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
     那节「缺了起不来」是同一处坑的镜像;五道闸全拦不住,只有 `pnpm dev` 冒烟能发现。
     守卫 `bundle_config.rs::project_picker_requires_the_dialog_plugin_wiring`
     断言的是**类型**不只是存在性。
+  - 🔴 **广场技能装进项目,取数前必须先幂等挂仓**(v5 终审补的真实缺陷):
+    `registry::resolve(plaza, key)` 只认 `config.plazaRepos`,没挂过就报
+    `REPO_UNKNOWN_REPO`。全局那条路是**前端** `beginFromPlaza` 替我们挂的,
+    项目级没经过它——于是"搜到 → 点开详情 → 直接装进项目"在从没装过该仓的机器上
+    必然失败。现在 `project_skill_install` 自己调 `plaza::ensure_repo`。
+    与 M9 六处穿线清单里 `commands::source_state` 那条同构:**照抄先例仍会漏,
+    每加一个入口都要把清单重过一遍**。守卫是文本级的
+    (`plaza_ensure_repo.rs::every_install_entry_point_mounts_the_plaza_repo_before_fetching`,
+    断言**顺序**不只是存在性),⚠️ 它必须**先剥掉注释再搜**——函数体里的说明本身
+    就写着 `plaza::ensure_repo`,不剥的话删掉真实调用只留注释照样绿(注入验证复现过)。
+  - 🔴 **更新去处必须从 lock 还原,不能让前端缺省**(`project::update_target`):
+    项目级唯一的记账是 `skills-lock.json`,里面只有 `source`/`sourceUrl`/`sourceType`,
+    **没有 registryId**。缺省会落到内建源的**主仓**——点「更新」要么报找不到技能,
+    要么装进来一个同名但完全不同的技能(与 M4「更新必须带账上的仓库坐标」同一类)。
+    判定复用 `acquire::resolve_binding_of`(与「纳入管理」**同一份实现**,
+    为此把 `resolve_binding` 泛化成收 `(source, source_url)` 的形式);
+    绑不上但 `sourceUrl` 指向 github.com 时落**广场源**——项目 lock 是与 npx skills
+    共用的,里面的 GitHub 条目很可能不是本 app 写的、这台机器的 `plazaRepos` 里没有它,
+    而广场这一档按定义就是"任意 GitHub 仓"且取数前会挂仓,所以这不是猜。
+    其余一律 `None` → 不摆更新按钮(不摆比摆一个必然报错的按钮好)。
+    ⚠️ host 判定按 URL 的 `host_str()` 比,**不按字符串包含**
+    (`http://github.com.evil.internal/x/y` 含有 "github.com")。
   - **Zustand selector 里绝不能造新对象**(`store/project.ts` 有注释):
     `useProjects((s) => s.recent())` 每次返回新数组,按 `Object.is` 比引用永远判"变了"
     → 无限重渲染,当场打红 58 条测试。要派生就在组件里 `useMemo`。

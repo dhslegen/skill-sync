@@ -24,24 +24,19 @@ fn http() -> reqwest::Client {
         .unwrap()
 }
 
-/// 与 `commands::plaza_ensure_repo` 逐行同构的编排,只是 `Store` 换成注入的临时目录、
-/// `api_base` 换成 wiremock。**故意不调用 `commands::plaza_ensure_repo`**(它锁在真实
-/// `HOME` 上,见模块头)。返回 `Result` 而不是 `unwrap`——与真实命令一样,探测失败要
-/// 提前用 `?` 短路返回,不落一个字节。
+/// 调用**真实实现** `plaza::ensure_repo`,只把 `Store` 换成临时目录、`api_base`
+/// 换成 wiremock(两者本来就是它的参数)。
+///
+/// ⚠️ 这里原先是一份"与 command 逐行同构"的**拷贝**:实现改了它照样绿,等于
+/// 没有护栏(CLAUDE.md 记的空转模式——测试测的是自己那份代码)。挂仓编排在 v5
+/// 多出第二个调用方(装进项目)时下沉进了 `core::plaza`,这份测试随之改成测真东西。
 async fn ensure(
     store: &Store,
     server: &MockServer,
     owner: &str,
     repo: &str,
 ) -> Result<registry::RepoView, skillsync_lib::error::AppError> {
-    let mut config = store.load_config()?.value;
-    if let Some(view) = registry::find_plaza_repo(&config.plaza_repos, owner, repo) {
-        return Ok(view);
-    }
-    let branch = plaza::default_branch(&http(), &server.uri(), owner, repo).await?;
-    let view = registry::record_plaza_repo(&mut config.plaza_repos, owner, repo, branch);
-    store.save_config(&config)?;
-    Ok(view)
+    plaza::ensure_repo(store, &http(), &server.uri(), owner, repo).await
 }
 
 #[tokio::test]
@@ -127,4 +122,45 @@ async fn a_failed_probe_leaves_no_partial_config() {
     // config.json 要么没落过盘,要么落的是默认空值——两种情况 plaza_repos 都该是空的。
     let config = store.load_config().unwrap().value;
     assert!(config.plaza_repos.is_empty(), "探测失败不该留下半条记录: {:?}", config.plaza_repos);
+}
+
+/// 挂仓的**调用方清单**守卫:每一条"用户按下了装"的入口,取数前都必须先幂等挂仓。
+///
+/// 为什么是文本级的:这两个入口都是 `#[tauri::command]` 薄壳,锁在真实 `HOME` 与真实
+/// 网络上,单测够不到(同 `bundle_config.rs` 里那几条守卫的处境)。而漏掉这一步的
+/// 表现极隐蔽——**只在"这台机器从没装过这个广场仓"时**报 `REPO_UNKNOWN_REPO`,
+/// 开发机上往往早就挂过了,自己怎么试都是好的。v5 起初就漏在 `project_skill_install`
+/// 这一条上。
+///
+/// 断言顺序而不只是存在性:挂在 `read_source` 之后等于没挂(resolve 已经报错返回了)。
+#[test]
+fn every_install_entry_point_mounts_the_plaza_repo_before_fetching() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands.rs"),
+    )
+    .unwrap();
+
+    let start = src
+        .find("pub async fn project_skill_install(")
+        .expect("找不到 project_skill_install —— 改名了就把这条守卫一起改");
+    let body = &src[start..];
+    let end = body.find("\n/// 写进项目 lock 的 sourceUrl").unwrap_or(body.len());
+    // ⚠️ **必须先剥掉注释**:函数体里那段说明本身就写着 `plaza::ensure_repo`,
+    // 不剥的话把真实调用整段删掉、只留注释,这条守卫照样绿(注入验证当场复现)。
+    // 「同一个词在注释里也出现」是文本级守卫的固有陷阱,别省这一步。
+    let body: String = body[..end]
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body = body.as_str();
+
+    let mount = body
+        .find("plaza::ensure_repo")
+        .expect("project_skill_install 没有幂等挂仓:广场技能装进项目会报「未知的技能库」");
+    let fetch = body.find("read_source(").expect("找不到取数调用");
+    assert!(
+        mount < fetch,
+        "挂仓必须在取数之前——挂在 read_source 之后等于没挂(resolve 已经先报错返回了)"
+    );
 }

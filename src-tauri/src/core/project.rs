@@ -437,3 +437,61 @@ fn read_failed(path: &Path, detail: &str) -> AppError {
     AppError::new("FS_READ_FAILED", "读取技能目录失败,请重试")
         .with_detail(format!("read {}: {detail}", path.display()))
 }
+
+// ============================================================ 更新去处
+
+/// `sourceType` 里"来源可还原"的那几档。其余(`local` / `node_modules` /
+/// `well-known`)没有可重新取数的远端,摆更新按钮就是摆一个必然报错的按钮。
+const RESTORABLE_SOURCE_TYPES: [&str; 3] = ["github", "git", "gitlab"];
+
+/// 更新一条项目级记账时,该去**哪个源、哪个库**取数。`None` = 没有可信去处,
+/// 界面据此不摆更新按钮(M6「绑不上就不摆」同款姿势)。
+///
+/// 为什么非有这一层不可:项目级的唯一记账是项目根的 `skills-lock.json`,里面只有
+/// `source`/`sourceUrl`/`sourceType`,**没有 registryId**。不还原成"源 + 库坐标"
+/// 就把请求发出去,缺省会落到**内建源的主仓**——与 M4「更新必须带账上的仓库坐标」
+/// 同一类缺陷:要么报找不到技能,要么装进来一个同名但完全不同的技能。
+///
+/// 判定分两步:
+/// 1. 先走 [`acquire::resolve_binding_of`]——与「纳入管理」**同一份实现**,
+///    同源 + 库在源的列表里才算绑上;
+/// 2. 绑不上但来源指向 github.com → 落**广场源**。广场这一档按定义就是"任意
+///    GitHub 仓",而项目 lock 是与 `npx skills` 共用的,里面的条目很可能压根不是
+///    本 app 写的、这台机器的 `plazaRepos` 里当然没有它。取数前会幂等挂仓
+///    (见 `plaza::ensure_repo`),所以这不是猜,是这条路唯一正确的去处。
+pub fn update_target(
+    entry: &LocalEntry,
+    sources: &crate::core::acquire::BindingSources,
+) -> Option<(String, String)> {
+    if !RESTORABLE_SOURCE_TYPES.contains(&entry.source_type.as_str()) {
+        return None;
+    }
+    let source_url = entry.source_url.as_deref().unwrap_or_default();
+
+    // 坐标形状先收严:半边为空的话,拼出来的寻址键是 "owner/" 这种废话。
+    let (owner, repo) = entry.source.split_once('/')?;
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    let key = crate::core::registry::repo_key(owner, repo);
+
+    if let (crate::core::acquire::SourceBinding::Bound { registry_id, .. }, _, _) =
+        crate::core::acquire::resolve_binding_of(&entry.source, source_url, sources)
+    {
+        return Some((registry_id, key));
+    }
+
+    if is_github_url(source_url) {
+        return Some((crate::core::registry::PLAZA_REGISTRY_ID.to_string(), key));
+    }
+    None
+}
+
+/// `sourceUrl` 是不是指向 github.com。**按 URL 的 host 判,不按字符串包含**
+/// ——`http://github.com.evil.internal/x/y` 含有 "github.com",而它不是 GitHub。
+fn is_github_url(source_url: &str) -> bool {
+    url::Url::parse(source_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.eq_ignore_ascii_case("github.com")))
+        .unwrap_or(false)
+}

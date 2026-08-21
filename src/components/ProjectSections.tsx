@@ -161,6 +161,11 @@ function ProjectSkillRow({
       // 拿 key 取数会 REPO_NOT_FOUND。core 侧从 lock 的 skillPath 推出来,
       // 推不出来时 updatable 为 false,这个按钮根本不会渲染。
       dirSlug: skill.dirSlug ?? skill.key,
+      // 源与库坐标按**账上**的来源走,不能缺省——缺省是内建源主仓,
+      // 广场技能与多库场景下会装错内容(M4「更新必须带账上的仓库坐标」)。
+      // core 已从 lock 的 source/sourceUrl 还原好,这里只是原样送回去。
+      registryId: skill.registryId ?? undefined,
+      repo: skill.repo ?? undefined,
       agentIds: defaultSelectedAgents(detected.agents),
     });
   };

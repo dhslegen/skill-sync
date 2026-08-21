@@ -700,6 +700,14 @@ export interface ProjectSkillView {
    */
   dirSlug: string | null;
   /**
+   * 更新时该去哪个源取数。**必须原样传回 `project_skill_update`**——
+   * 缺省会落到内建源的主仓,而项目里的技能完全可能来自广场或另一个技能库,
+   * 那样点「更新」要么报找不到技能,要么装进来一个同名但完全不同的技能。
+   */
+  registryId: string | null;
+  /** 更新时的寻址键 `owner/repo`,同上必须原样传回。 */
+  repo: string | null;
+  /**
    * 能不能更新。`sourceType` 为 local/node_modules/well-known 的还原不了来源,
    * 推不出仓库目录名的也不行。界面据此**不摆更新按钮**
    * ——不摆比摆一个必然报错的按钮好(M6「绑不上就不摆」同款)。

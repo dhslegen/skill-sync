@@ -19,6 +19,8 @@ function skill(over: Partial<ProjectSkillView> = {}): ProjectSkillView {
     source: "vercel-labs/agent-skills",
     sourceType: "github",
     dirSlug: "react-best-practices",
+    registryId: "plaza",
+    repo: "vercel-labs/agent-skills",
     updatable: true,
     ...over,
   };
@@ -82,6 +84,24 @@ describe("项目分区", () => {
       const args = (call![1] as { args: Record<string, unknown> }).args;
       expect(args.dirSlug).toBe("react-best-practices");
       expect(args.key).toBe("vercel-react-best-practices");
+    });
+  });
+
+  it("更新带上账上的源与库坐标 —— 缺省会打到内建源主仓,装错技能", async () => {
+    seed([group()]);
+    render(<ProjectSections />);
+    await screen.findByText("React 最佳实践");
+
+    await userEvent.click(screen.getByRole("button", { name: "更新" }));
+
+    await waitFor(() => {
+      const call = invoke.mock.calls.find(([cmd]) => cmd === "project_skill_update");
+      expect(call).toBeTruthy();
+      const args = (call![1] as { args: Record<string, unknown> }).args;
+      // 项目 lock 里只有 source/sourceUrl,core 已把它还原成"源 + 库坐标";
+      // 这一层不传下去等于白还原(M4「更新必须带账上的仓库坐标」同一类缺陷)
+      expect(args.registryId).toBe("plaza");
+      expect(args.repo).toBe("vercel-labs/agent-skills");
     });
   });
 

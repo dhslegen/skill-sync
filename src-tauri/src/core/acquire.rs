@@ -1185,15 +1185,20 @@ fn bind_source(
 /// 2. **`sourceUrl` 不是 URL** → 只能按 `owner/repo` 找,**唯一命中才绑**。
 ///    本 app 自己写的 lock 条目就是这一档(`sourceUrl` 存的是 `"owner/repo"`)。
 ///    多个源都有同名库时绑谁都是猜,宁可不绑——与"任一侧指纹缺失按没有更新处理"同一姿态。
-fn resolve_binding(
-    entry: &skill_lock::UpstreamEntry,
+///
+/// 参数是 `(source, source_url)` 而不是某一种 lock 条目:全局 lock(v3)与项目级
+/// `skills-lock.json`(v1)是两份不同的契约,但"这个来源对应哪个已配置源"这件事
+/// 两边**必须是同一把尺子**——各写一份正是 M6「认领对主线场景从来没生效过」那类
+/// 静默失效的温床。项目级的调用方见 [`crate::core::project::update_target`]。
+pub fn resolve_binding_of(
+    source: &str,
+    source_url: &str,
     sources: &BindingSources,
 ) -> (SourceBinding, String, String) {
-    let (owner, repo) = entry
-        .source
+    let (owner, repo) = source
         .split_once('/')
         .map(|(o, r)| (o.to_string(), r.to_string()))
-        .unwrap_or_else(|| (entry.source.clone(), String::new()));
+        .unwrap_or_else(|| (source.to_string(), String::new()));
     let bound = |id: &str| {
         (
             SourceBinding::Bound {
@@ -1207,10 +1212,10 @@ fn resolve_binding(
     };
     let candidates = sources.candidates();
 
-    if url::Url::parse(&entry.source_url).is_ok() {
+    if url::Url::parse(source_url).is_ok() {
         let same_origin: Vec<&Candidate> = candidates
             .iter()
-            .filter(|(_, base, _, _)| crate::core::gitea::is_same_origin(base, &entry.source_url))
+            .filter(|(_, base, _, _)| crate::core::gitea::is_same_origin(base, source_url))
             .collect();
         if let Some((id, _, _, _)) = same_origin
             .iter()
@@ -1230,6 +1235,14 @@ fn resolve_binding(
         (Some((id, _, _, _)), None) => bound(id),
         _ => (SourceBinding::NoSource, owner, repo),
     }
+}
+
+/// 全局 lock(v3)条目的绑定解析。判定全在 [`resolve_binding_of`],这里只负责取字段。
+fn resolve_binding(
+    entry: &skill_lock::UpstreamEntry,
+    sources: &BindingSources,
+) -> (SourceBinding, String, String) {
+    resolve_binding_of(&entry.source, &entry.source_url, sources)
 }
 
 #[cfg(test)]

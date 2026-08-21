@@ -722,6 +722,42 @@ pub async fn default_branch(
     Ok(view.default_branch)
 }
 
+/// 幂等挂仓:把一个广场仓记进 `config.plazaRepos`,已经在里面就直接返回。
+///
+/// # 为什么写入实现只能有这一处
+///
+/// `config.plazaRepos` 是广场源的**全部真相**——`registry::resolve(plaza, key)`
+/// 只认这份清单,不在里面就报 `REPO_UNKNOWN_REPO`。挂仓这个动作因此必须严格绑在
+/// "用户明确要装这个技能"上:详情面板看一眼**不挂**(临时探分支直连,见
+/// `commands::plaza_detail`),否则随手翻几页就给用户攒一堆从未安装过的仓。
+///
+/// 允许调用它的只有两处,都是"用户按下了装"这个动作:
+/// - `commands::plaza_ensure_repo`(全局安装,前端 `beginFromPlaza` 先调它);
+/// - `commands::project_skill_install`(装进项目)。
+///
+/// 🔴 **第二处是补上来的**:v5 起初只在全局那条路挂仓,于是"从广场详情直接装进
+/// 项目"在没装过全局的机器上**必然报未知仓**——与 M9 六处穿线清单里
+/// `commands::source_state` 那条同构:**照抄先例仍会漏,新入口要逐个过一遍**。
+///
+/// 编排本身是三步:查清单 →(按需)探默认分支 → 记账 + 落盘。探测失败用 `?`
+/// 提前短路,**不落一个字节**。
+pub async fn ensure_repo(
+    store: &crate::core::state::Store,
+    http: &reqwest::Client,
+    api_base: &str,
+    owner: &str,
+    repo: &str,
+) -> Result<crate::core::registry::RepoView, AppError> {
+    let mut config = store.load_config()?.value;
+    if let Some(view) = crate::core::registry::find_plaza_repo(&config.plaza_repos, owner, repo) {
+        return Ok(view);
+    }
+    let branch = default_branch(http, api_base, owner, repo).await?;
+    let view = crate::core::registry::record_plaza_repo(&mut config.plaza_repos, owner, repo, branch);
+    store.save_config(&config)?;
+    Ok(view)
+}
+
 /// 拉某个仓库现有全部技能的详情(广场专用,M9 任务 4)。
 ///
 /// **这是详情面板"不联网"承诺的唯一破例,范围钉死在广场**(设计文档 §2.2):

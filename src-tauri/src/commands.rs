@@ -2189,26 +2189,15 @@ fn parse_owner_repo(owner_repo: &str) -> Result<(&str, &str), AppError> {
 ///
 /// **绝不经 `registry::add_repo`**:那条入口对 `PLAZA_REGISTRY_ID` 报
 /// `REPO_BUILTIN_LOCKED`(M9 任务 2 刻意加的守卫——广场坐标只能由"装了一个搜索结果"
-/// 这件事产生,不许手填 owner/repo)。本命令直接操作 `config.plaza_repos`,
-/// 是唯一被允许绕过该守卫的调用方。
+/// 这件事产生,不许手填 owner/repo)。写入实现只有 `plaza::ensure_repo` 一处,
+/// 它是唯一被允许绕过该守卫的地方;调用它的只有本命令与 `project_skill_install`
+/// (装进项目那条路,见那边的说明)。
 #[tauri::command]
 pub async fn plaza_ensure_repo(owner_repo: String) -> Result<registry::RepoView, AppError> {
     let (owner, repo) = parse_owner_repo(&owner_repo)?;
-
-    let store = app_store()?;
-    let mut config = store.load_config()?.value;
-
-    if let Some(view) = registry::find_plaza_repo(&config.plaza_repos, owner, repo) {
-        return Ok(view);
-    }
-
     // 外部服务,跟随系统代理(M3 决策),与 plaza_search 同一支 client。
     let http = crate::core::gitea::app_http_client_proxied()?;
-    let branch = plaza::default_branch(&http, plaza::PLAZA_GITHUB_API_BASE, owner, repo).await?;
-
-    let view = registry::record_plaza_repo(&mut config.plaza_repos, owner, repo, branch);
-    store.save_config(&config)?;
-    Ok(view)
+    plaza::ensure_repo(&app_store()?, &http, plaza::PLAZA_GITHUB_API_BASE, owner, repo).await
 }
 
 /// 广场详情的进程内缓存(M9 任务 4):键 `owner/repo`,值该仓全部技能的详情。
@@ -2488,8 +2477,16 @@ pub struct ProjectSkillView {
     /// 表现就是"那些技能永远更新不了"(与 M10 终审抓到的 skillId 缺陷同构)。
     /// 推不出来时为 `None`,前端据此不摆更新按钮。
     pub dir_slug: Option<String>,
-    /// 能不能"更新"。`sourceType` 为 local/node_modules/well-known 的还原不了,
-    /// 或推不出仓库目录名的,都不行——**摆不出来就不摆**(不摆比解释好)。
+    /// 更新时该去哪个源取数(`registry::resolve` 的源 id)。`None` = 还原不出来。
+    ///
+    /// 🔴 **必须随行,不能让前端缺省**:缺省会落到内建源的**主仓**,而项目 lock 里
+    /// 的技能完全可能来自广场或另一个技能库——那样点「更新」要么报找不到技能,
+    /// 要么装进来一个同名但完全不同的技能(与 M4「更新必须带账上的仓库坐标」同一类)。
+    pub registry_id: Option<String>,
+    /// 更新时的寻址键 `owner/repo`,同上必须随行。
+    pub repo: Option<String>,
+    /// 能不能"更新"。要同时满足:推得出仓库目录名 + 还原得出取数去处。
+    /// 差任何一样都**不摆按钮**——不摆比摆一个必然报错的按钮好。
     pub updatable: bool,
 }
 
@@ -2563,14 +2560,21 @@ pub async fn project_pick(app: tauri::AppHandle) -> Result<Option<String>, AppEr
 #[tauri::command]
 pub async fn project_list() -> Result<Vec<ProjectGroupView>, AppError> {
     let config = app_store()?.load_config()?.value;
+    let builtin = registry::BuiltinSource::from_build();
+    // 更新去处要按**账上**的来源还原(见 `ProjectSkillView::registry_id`),
+    // 所以整份已配置源清单得带下去——与「纳入管理」用的是同一份判定。
+    let sources = binding_sources(&builtin, &config);
     Ok(config
         .projects
         .iter()
-        .map(|path| project_group(std::path::Path::new(path)))
+        .map(|path| project_group(std::path::Path::new(path), &sources))
         .collect())
 }
 
-fn project_group(root: &std::path::Path) -> ProjectGroupView {
+fn project_group(
+    root: &std::path::Path,
+    sources: &acquire::BindingSources,
+) -> ProjectGroupView {
     let folder_name = root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -2600,14 +2604,16 @@ fn project_group(root: &std::path::Path) -> ProjectGroupView {
             .ok()
             .and_then(|raw| crate::core::skills::parse_skill_md(&raw).ok());
             let dir_slug = dir_slug_from_skill_path(e.skill_path.as_deref());
+            let target = project::update_target(&e, sources);
             ProjectSkillView {
                 display_name: parsed
                     .as_ref()
                     .map(|p| p.name.clone())
                     .unwrap_or_else(|| key.clone()),
                 description: parsed.map(|p| p.description).unwrap_or_default(),
-                updatable: matches!(e.source_type.as_str(), "github" | "git" | "gitlab")
-                    && dir_slug.is_some(),
+                updatable: target.is_some() && dir_slug.is_some(),
+                registry_id: target.as_ref().map(|(id, _)| id.clone()),
+                repo: target.map(|(_, key)| key),
                 dir_slug,
                 source: e.source,
                 source_type: e.source_type,
@@ -2672,6 +2678,22 @@ pub async fn project_skill_install(
 ) -> Result<ProjectInstallOutcome, AppError> {
     let root = std::path::PathBuf::from(&args.project_path);
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+
+    // 🔴 广场源必须**先幂等挂仓**再取数:`registry::resolve(plaza, key)` 只认
+    // `config.plazaRepos`,没挂过就报 `REPO_UNKNOWN_REPO`——而广场技能的常见路径
+    // 恰恰是"搜到 → 点开详情 → 直接装进项目",全程没走过全局安装那条
+    // `beginFromPlaza`(前端在那条路上替我们挂了仓)。更新也走这里:项目 lock 是
+    // 与 npx skills 共用的,里面的 GitHub 条目很可能压根不是本 app 写的,
+    // 这台机器的 plazaRepos 里当然没有它。挂仓写实现只有 `plaza::ensure_repo` 一处。
+    if registry_id == registry::PLAZA_REGISTRY_ID {
+        if let Some(key) = args.repo.as_deref() {
+            let (owner, name) = parse_owner_repo(key)?;
+            let http = crate::core::gitea::app_http_client_proxied()?;
+            plaza::ensure_repo(&app_store()?, &http, plaza::PLAZA_GITHUB_API_BASE, owner, name)
+                .await?;
+        }
+    }
+
     let (client, repo) = read_source(registry_id, args.repo.as_deref()).await?;
     let (kind, base_url) = source_meta_parts(registry_id, args.repo.as_deref())?;
 
