@@ -493,3 +493,28 @@ fn project_picker_requires_the_dialog_plugin_wiring() {
          用户点「装到项目」什么都不会发生,而前端看不出任何异常"
     );
 }
+
+/// 发版说明必须**打进安装包**(目标 ②:升级后首屏显示本版改了什么)。
+///
+/// 这条守卫的必要性在于失效方式极具迷惑性:dev 下工作目录里本来就有
+/// `RELEASE_NOTES.md`,`cargo build` 又会把 resources 复制到 `target/debug/`,
+/// 于是**本地怎么试都正常**;漏了这一节的话,只有打出来的包里没有那个文件,
+/// 用户升级后看到的是"什么都没发生"。与 `plugins.dialog` 那条同一类
+/// ——只在打包后才成立的配置,必须有一条不依赖运行时的守卫。
+///
+/// 断言用 **map 形式**(源路径 → 包内路径)而不只是"数组里有这一项":
+/// 裸写 `["../RELEASE_NOTES.md"]` 时包内落点叫什么要靠猜(`../` 怎么映射是
+/// 实现细节),而 core 侧是按固定文件名去 resource 目录找的。写死映射,歧义消失。
+#[test]
+fn release_notes_must_ship_inside_the_bundle() {
+    let resources = &conf()["bundle"]["resources"];
+    assert!(
+        resources.is_object(),
+        "bundle.resources 必须是 map 形式(源路径 → 包内路径),不能是数组:\
+         数组形式下包内落点名靠猜,而运行时是按固定文件名找的"
+    );
+    assert_eq!(
+        resources["../RELEASE_NOTES.md"], "RELEASE_NOTES.md",
+        "发版说明没进安装包 —— 升级后的更新日志会永远是空的,而本地 dev 照常能读"
+    );
+}

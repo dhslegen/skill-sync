@@ -15,6 +15,7 @@ pub mod plaza;
 pub mod project;
 pub mod project_lock;
 pub mod registry;
+pub mod release_notes;
 pub mod remove;
 pub mod scheduler;
 pub mod session;

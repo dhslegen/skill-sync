@@ -279,3 +279,58 @@ fn error_messages_are_written_in_chinese() {
         );
     }
 }
+
+// ============================================================ 发版说明(第三条通道)
+
+/// 版本段落的文本(标题主题句 + 正文)。**只取会上界面的部分**:文件开头的前言
+/// 是写给维护者看的,永远不显示给用户,拿它去过禁词表只会制造假红。
+fn release_note_texts() -> Vec<(String, String)> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("RELEASE_NOTES.md");
+    let notes = skillsync_lib::core::release_notes::read(&path);
+    assert!(
+        !notes.is_empty(),
+        "一段发版说明都没解析出来 —— 要么文件挪了位置,要么格式变了。\
+         这条守卫的自保:解析器失灵时下面几条会静默变成空转"
+    );
+    notes
+        .into_iter()
+        .map(|n| (n.versions.join(" / "), format!("{}\n{}", n.theme, n.body)))
+        .collect()
+}
+
+/// 发版说明是用户可见文案的**第三条通道**,两道现有守卫都扫不到它:
+/// `src/i18n/index.test.ts` 只扫 i18n 资源,本文件其余测试只扒 `AppError::new`。
+/// 而这个文件的正文自 v5 起会直接显示在升级后的首屏卡片与设置页里。
+///
+/// (加这条守卫的当场就抓到一处:0.4.0 段落里写着「整个代码仓库」。)
+#[test]
+fn release_notes_use_no_git_terminology_in_chinese() {
+    let banned = ["仓库", "分支", "拉取", "推送", "克隆", "合并", "代码库"];
+    for (version, text) in release_note_texts() {
+        for word in banned {
+            assert!(
+                !text.contains(word),
+                "发版说明 {version} 里出现 git 术语「{word}」\
+                 —— 这段文字会显示给用户,见 docs/terminology.md"
+            );
+        }
+    }
+}
+
+#[test]
+fn release_notes_contain_no_emoji() {
+    let is_emoji = |c: char| {
+        matches!(c,
+            '\u{1F000}'..='\u{1FAFF}' | '\u{2600}'..='\u{27BF}' | '\u{2B00}'..='\u{2BFF}' | '\u{FE0F}'
+        )
+    };
+    for (version, text) in release_note_texts() {
+        assert!(
+            !text.chars().any(is_emoji),
+            "发版说明 {version} 里出现 emoji(UI 规范 §2 全站禁 emoji)"
+        );
+    }
+}

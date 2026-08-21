@@ -51,6 +51,9 @@
     },
     "macOS": {
       "minimumSystemVersion": "10.15"
+    },
+    "resources": {
+      "../RELEASE_NOTES.md": "RELEASE_NOTES.md"
     }
   },
   "plugins": {

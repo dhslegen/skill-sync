@@ -158,6 +158,8 @@ pub fn run() {
             commands::spawn_app_update_probe(app.handle().clone());
             // 本地技能目录的文件监听(M4 任务 6c 级别 3)。起不来只记日志不拦启动。
             commands::spawn_watcher(app.handle().clone());
+            // 只记一行 debug(默认不打印),给"升级后没看到更新日志"留一条排查线索
+            commands::log_release_notes(app.handle());
             Ok(())
         })
         // 关窗 = 缩到托盘(已拍板):拦下关闭请求,只隐藏窗口。

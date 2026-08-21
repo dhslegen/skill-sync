@@ -2457,6 +2457,38 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 
+// ============================================================ 发版说明(目标 ②)
+
+/// 发版说明在安装包里的位置。
+///
+/// `RELEASE_NOTES.md` 经 `bundle.resources` 打进包(守卫见
+/// `bundle_config.rs::release_notes_must_ship_inside_the_bundle`),包内落点固定叫
+/// `RELEASE_NOTES.md`——配置用的是 map 形式,写死了目标名,不靠猜 `../` 怎么映射。
+///
+/// 解析不出路径就是没有日志,不是错误(见 `core::release_notes` 模块头的宽容解析)。
+fn release_notes_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    use tauri::Manager as _;
+    app.path()
+        .resolve("RELEASE_NOTES.md", tauri::path::BaseDirectory::Resource)
+        .ok()
+}
+
+/// 启动时记一行"读到了几段发版说明"。
+///
+/// 默认 INFO 档看不到(见 `init_tracing` 的 `DEFAULT_LOG_FILTER`),
+/// 排查时 `RUST_LOG=skillsync=debug` 才打印。它值这一行:用户报"升级后没看到
+/// 更新日志"时,**第一件要分清的事就是"文件没打进包"还是"判定认为不用显示"**
+/// ——没有这行就只能靠猜。
+pub fn log_release_notes(app: &tauri::AppHandle) {
+    match release_notes_path(app) {
+        Some(path) => {
+            let count = crate::core::release_notes::read(&path).len();
+            tracing::debug!("发版说明:{count} 段(path={})", path.display());
+        }
+        None => tracing::debug!("发版说明:解析不出 resource 路径"),
+    }
+}
+
 // ============================================================ 项目级安装(v5)
 
 /// 项目分组视图里的一个技能条目。
