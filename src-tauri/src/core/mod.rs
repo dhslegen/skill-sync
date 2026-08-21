@@ -12,6 +12,7 @@ pub mod github;
 pub mod installer;
 pub mod local_detail;
 pub mod plaza;
+pub mod project;
 pub mod project_lock;
 pub mod registry;
 pub mod remove;
