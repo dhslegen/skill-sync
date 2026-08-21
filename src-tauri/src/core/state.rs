@@ -74,6 +74,21 @@ pub struct Config {
     /// 与 `Some(默认值)` 是两种不同状态,所以不能用 `#[serde(default)]` 折掉。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<UiPrefs>,
+    /// 用户上次看过更新日志的版本号(目标 ②)。
+    ///
+    /// **必须落盘,不能用进程内状态**:`app_update::ReadyState` 记的是"装好了等重启",
+    /// 重启即作废——而"刚升级完"这件事恰恰只在重启之后才成立。落盘还顺带覆盖了
+    /// 自更新之外的升级方式(同事直接发个新包过来),那条路根本不经过 updater。
+    ///
+    /// 🔴 **刻意放在顶层而不是塞进 `ui`**:上面那个 `Option` 的 `None` 有独立语义
+    /// (从未设置过外观 → 前端做 localStorage 一次性迁移)。把这个标记放进去的话,
+    /// 第一次写"已读"就会把 `ui` 物化成 `Some(默认值)`,**用户存在 localStorage 里的
+    /// 主题从此丢失**——一个与外观毫无关系的动作,毁掉外观设置。它也确实不是外观偏好。
+    ///
+    /// 缺席时分不出"存量用户第一次升上来"与"全新安装",靠 `ui.wizard_done` 区分
+    /// (见 `release_notes::pending`)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_version: Option<String>,
     /// 用户在设置页关掉的 agent(存 agent name)。语义只有一条:**不进默认勾选**
     /// (获取流程与向导);已装技能的既有关联不动,手动勾选也不拦。
     /// 假设(M2 任务 2,文档未覆盖):按"禁用名单"记而不是"启用名单"——
@@ -179,6 +194,7 @@ impl Default for Config {
             projects: Vec::new(),
             auto_update: AutoUpdate::default(),
             ui: None,
+            last_seen_version: None,
             disabled_agents: Vec::new(),
         }
     }
@@ -860,6 +876,26 @@ mod tests {
     // ============================================================ projects(v5)
 
     /// 旧 config 没有 `projects`,必须读得出且落成空列表、**不降只读**。
+    #[test]
+    fn an_old_config_without_the_last_seen_version_reads_as_absent() {
+        // 加可选字段是兼容变更,不升 schemaVersion(同 projects / plazaRepos 先例)。
+        // 缺席**不能**被读成空串:空串会在文件里匹配不到任何段落,
+        // 判定就退回"只给当前版本",与"新装不打扰"那一档混成一档。
+        let (_tmp, s) = store();
+        std::fs::create_dir_all(s.dir()).unwrap();
+        std::fs::write(
+            s.dir().join("config.json"),
+            r#"{"schemaVersion":2,"registries":[],"autoUpdate":{"skills":{"enabled":true,"intervalMinutes":5},"app":true}}"#,
+        )
+        .unwrap();
+
+        let loaded = s.load_config().unwrap();
+
+        assert!(matches!(loaded.access, Access::ReadWrite), "加可选字段不该降只读");
+        assert_eq!(loaded.value.last_seen_version, None);
+        assert!(loaded.value.ui.is_none(), "读一份旧 config 不该凭空物化出 ui");
+    }
+
     #[test]
     fn an_old_config_without_projects_reads_as_empty() {
         let (_tmp, s) = store();

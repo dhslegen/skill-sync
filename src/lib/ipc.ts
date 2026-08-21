@@ -687,6 +687,33 @@ export const plazaDetail = (ownerRepo: string, skillId?: string, wantedName?: st
 // ============================================================ 项目级安装(v5)
 
 /** 项目分组里的一个技能。`key` 是内部标识,界面一律展示 `displayName`。 */
+/** 一段版本说明。`versions` 是一组:仓库里真实存在 `## 0.3.5 / 0.3.4 —— …` 这种写法。 */
+export interface ReleaseNote {
+  versions: string[];
+  /** 标题里「——」之后的主题句,给界面当副标题。 */
+  theme: string;
+  /** 正文,原样 Markdown。 */
+  body: string;
+}
+
+export interface ReleaseNotesState {
+  /** 当前运行的版本。卡片标题用它,不用日志里最新那段的版本号。 */
+  current: string;
+  /** 这一次该给用户看的段落(新到旧)。空 = 不显示卡片。 */
+  pending: ReleaseNote[];
+  /** 全部段落,设置页的「版本历史」用。 */
+  all: ReleaseNote[];
+}
+
+export async function releaseNotesState(): Promise<ReleaseNotesState> {
+  return call<ReleaseNotesState>("release_notes_state");
+}
+
+/** 记下「这一版的更新日志我看过了」。由用户**关掉卡片**触发,不是显示就写。 */
+export async function releaseNotesAck(): Promise<void> {
+  return call<void>("release_notes_ack");
+}
+
 export interface ProjectSkillView {
   key: string;
   displayName: string;

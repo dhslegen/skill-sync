@@ -103,6 +103,54 @@ fn is_version(token: &str) -> bool {
     ok && parts.next().is_none()
 }
 
+
+/// 这一次启动该给用户看哪几段(新到旧)。空 = 不显示卡片。
+///
+/// 判定只看三样,全部由调用方给:当前版本、上次见过的版本、首次启动向导做没做完。
+/// **不碰磁盘、不看时间**,所以可以逐档单测。
+///
+/// 五档:
+/// - 记的就是当前版本 → 空(已经看过了);
+/// - 记的是别的版本且在文件里找得到 → 从当前版本那一段取到它(不含)为止;
+/// - 记的版本在文件里找不到(降级过、或那一版没写说明)→ 只给当前版本那一段;
+/// - 没有记录 + 向导做完了 → 存量用户第一次升上来,给当前版本那一段;
+/// - 没有记录 + 向导还没做 → 全新安装,空。对新人说"已更新到 x"是假话。
+///
+/// 🔴 **起点是当前版本那一段,不是文件开头**:发版流程要求**先写发版说明再发版**,
+/// 所以"说明已进仓、包还没发"这个窗口里,文件里必然存在比当前版本更新的段落。
+/// 从开头取起就会把还没发出去的那一版显示给用户。
+///
+/// 降级(记的版本比当前版本新)返回空——说"已更新到"是假话。
+pub fn pending<'a>(
+    notes: &'a [ReleaseNote],
+    current: &str,
+    last_seen: Option<&str>,
+    wizard_done: bool,
+) -> &'a [ReleaseNote] {
+    let Some(from) = index_of(notes, current) else {
+        return &[]; // 当前版本没写说明:不编一段出来
+    };
+    match last_seen {
+        Some(seen) if seen == current => &[],
+        Some(seen) => match index_of(notes, seen) {
+            // 索引越小越新。基线不比当前版本旧 = 降级或原地,没有"更新"可言。
+            // 这条分支不是可选的:去掉它,降级时切片会是 `notes[大..小]` 直接 panic。
+            Some(to) if to <= from => &[],
+            Some(to) => &notes[from..to],
+            None => &notes[from..=from],
+        },
+        None if wizard_done => &notes[from..=from],
+        None => &[],
+    }
+}
+
+/// 某个版本落在第几段。一段可以覆盖多个版本,所以是 `contains` 不是相等。
+fn index_of(notes: &[ReleaseNote], version: &str) -> Option<usize> {
+    notes
+        .iter()
+        .position(|n| n.versions.iter().any(|v| v == version))
+}
+
 /// 读并解析。**读不到就是没有日志,不是错误**(见模块头的宽容解析)。
 pub fn read(path: &Path) -> Vec<ReleaseNote> {
     match std::fs::read_to_string(path) {
@@ -142,6 +190,103 @@ mod tests {
 
 最早那一版。
 ";
+
+
+    fn notes() -> Vec<ReleaseNote> {
+        parse(
+            "\
+## 0.6.0 —— 还没发出去的那一版
+
+发版流程要求先写说明再发版,所以开发期文件里常常已经有比当前版本更新的段落。
+
+## 0.5.0 —— 项目级安装
+
+正文 5
+
+## 0.4.0 —— 技能广场
+
+正文 4
+
+## 0.3.13 —— 窗口能拖动了
+
+正文 3
+",
+        )
+    }
+
+    fn shown(current: &str, last_seen: Option<&str>, wizard_done: bool) -> Vec<String> {
+        pending(&notes(), current, last_seen, wizard_done)
+            .iter()
+            .map(|n| n.versions[0].clone())
+            .collect()
+    }
+
+    #[test]
+    fn seeing_the_current_version_already_means_nothing_to_show() {
+        assert!(shown("0.5.0", Some("0.5.0"), true).is_empty());
+    }
+
+    #[test]
+    fn a_normal_upgrade_shows_just_the_new_version() {
+        assert_eq!(shown("0.5.0", Some("0.4.0"), true), ["0.5.0"]);
+    }
+
+    #[test]
+    fn skipping_versions_lists_every_missed_one_newest_first() {
+        // 内网发版很密,一口气跨好几版是常态。用户拍板:漏掉的全部列出。
+        assert_eq!(shown("0.5.0", Some("0.3.13"), true), ["0.5.0", "0.4.0"]);
+    }
+
+    #[test]
+    fn a_section_newer_than_the_running_build_is_never_shown() {
+        // 🔴 这不是假想:发版流程**要求先写发版说明再发版**,所以开发期与
+        // "说明已进仓、包还没发"的窗口里,文件里必然存在比当前版本更新的段落。
+        // 从文件开头取起就会把还没发出去的那一版显示给用户。
+        assert_eq!(shown("0.5.0", Some("0.3.13"), true), ["0.5.0", "0.4.0"]);
+        assert_eq!(shown("0.4.0", Some("0.3.13"), true), ["0.4.0"]);
+    }
+
+    #[test]
+    fn a_brand_new_install_is_not_greeted_with_a_changelog() {
+        // wizardDone=false 才分得出"全新安装"与"存量用户第一次升上来"
+        // ——两者的 lastSeenVersion 都是缺席的。对新人说"已更新到 0.5.0"是假话。
+        assert!(shown("0.5.0", None, false).is_empty());
+    }
+
+    #[test]
+    fn an_existing_user_upgrading_for_the_first_time_sees_this_version() {
+        // 这个功能的第一批受益者:0.4.0 升到 0.5.0 的人,那时字段还不存在。
+        assert_eq!(shown("0.5.0", None, true), ["0.5.0"]);
+    }
+
+    #[test]
+    fn an_unknown_baseline_falls_back_to_just_this_version_instead_of_flooding() {
+        // 记的版本在文件里找不到(降级过、或那一版没写说明)。宁可少列,不刷屏。
+        assert_eq!(shown("0.5.0", Some("0.9.9"), true), ["0.5.0"]);
+    }
+
+    #[test]
+    fn a_downgrade_shows_nothing_rather_than_claiming_an_update() {
+        // 上次见到的比现在跑的还新 = 用户装回了旧版。说"已更新到"是假话。
+        assert!(shown("0.4.0", Some("0.5.0"), true).is_empty());
+    }
+
+    #[test]
+    fn two_versions_sharing_one_section_count_as_already_seen() {
+        // `## 0.3.5 / 0.3.4 —— …` 是仓库里真实存在的写法。从 0.3.4 升到 0.3.5 时,
+        // 基线与当前版本落在**同一段**(to == from),没有可看的新内容。
+        // (判据里 `<=` 与 `<` 在这一档是等价的——`notes[i..i]` 是合法空切片。
+        // 真正 load-bearing 的是这条分支**存在**:删掉它,降级那条用例会以
+        // `slice index starts at 2 but ends at 1` panic,实测过。)
+        let multi = parse("## 0.5.0 —— 新的\n\n正文\n\n## 0.3.5 / 0.3.4 —— 一段两版\n\n正文\n");
+        let got = pending(&multi, "0.3.5", Some("0.3.4"), true);
+        assert!(got.is_empty(), "同一段里的两个版本之间没有可看的新内容");
+    }
+
+    #[test]
+    fn a_version_with_no_section_shows_nothing_instead_of_inventing_one() {
+        assert!(shown("0.5.1", Some("0.4.0"), true).is_empty());
+    }
 
     #[test]
     fn sections_come_out_newest_first_and_the_preamble_is_not_one_of_them() {

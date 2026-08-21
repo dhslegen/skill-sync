@@ -171,6 +171,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
+            commands::release_notes_state,
+            commands::release_notes_ack,
             commands::agents_detected,
             commands::ui_prefs_get,
             commands::ui_prefs_set,
