@@ -19,6 +19,7 @@ use crate::core::github;
 use crate::core::installer::{self, InstallReport, Installer};
 use crate::core::local_detail;
 use crate::core::plaza;
+use crate::core::project;
 use crate::core::registry::{self, BUILTIN_REGISTRY_ID};
 use crate::core::remove;
 use crate::core::scheduler;
@@ -2463,6 +2464,269 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+
+// ============================================================ 项目级安装(v5)
+
+/// 项目分组视图里的一个技能条目。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSkillView {
+    /// 安装键(= sanitize 后的 frontmatter name),也是目录名与 lock 的键。
+    pub key: String,
+    /// 展示名:优先 SKILL.md 的 frontmatter name(界面绝不露内部键)。
+    pub display_name: String,
+    pub description: String,
+    pub source: String,
+    pub source_type: String,
+    /// 能不能"更新"。`sourceType` 为 local/node_modules/well-known 的还原不了
+    /// ——**摆不出来就不摆**(不摆比解释好),前端据此决定要不要渲染更新按钮。
+    pub updatable: bool,
+}
+
+/// 一个项目及它里面的技能。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectGroupView {
+    pub path: String,
+    /// 文件夹名,界面当组标题用。
+    pub folder_name: String,
+    /// 目录不在了(被删或移走)。此时 `skills` 必为空,界面只提供「从列表移除」。
+    pub missing: bool,
+    /// lock 存在但版本不认识/损坏 → 只读展示,不写一个字节。
+    pub read_only: bool,
+    pub skills: Vec<ProjectSkillView>,
+}
+
+/// 弹目录选择框,返回校验通过的项目路径;用户取消返回 `None`。
+#[tauri::command]
+pub async fn project_pick(app: tauri::AppHandle) -> Result<Option<String>, AppError> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let picked = app
+        .dialog()
+        .file()
+        .blocking_pick_folder()
+        .and_then(|p| p.into_path().ok());
+    let Some(picked) = picked else {
+        return Ok(None); // 用户取消,不是错误
+    };
+
+    let env = SystemEnv;
+    let home = crate::core::agents::AgentEnv::home(&env)
+        .ok_or_else(|| AppError::new("FS_NO_HOME", "找不到用户主目录"))?;
+    let canonical = AgentRegistry::builtin()
+        .canonical_global_dir(&env)
+        .ok_or_else(|| AppError::new("FS_NO_HOME", "找不到技能目录"))?;
+
+    // core 返回枚举不返回中文句子(两道术语门都扫不到 core 里的散装文案),
+    // 用户可读文案在这一层拼。
+    project::validate_project_path(&picked, &home, &canonical)
+        .map(|p| Some(p.to_string_lossy().into_owned()))
+        .map_err(|e| {
+            let msg = match e {
+                project::ProjectPathError::NotFound => "选中的文件夹不存在,请重新选择",
+                project::ProjectPathError::NotADirectory => "请选择一个文件夹,不是文件",
+                project::ProjectPathError::IsHome => {
+                    "不能选用户主目录。请选择一个具体的工作文件夹"
+                }
+                project::ProjectPathError::InsideCanonical => {
+                    "不能选技能存放目录本身或它里面的位置,请另选一个工作文件夹"
+                }
+            };
+            AppError::new("FS_BAD_PROJECT_PATH", msg).with_detail(format!("{e:?}: {}", picked.display()))
+        })
+}
+
+/// 列出清单里的全部项目及各自的技能。
+#[tauri::command]
+pub async fn project_list() -> Result<Vec<ProjectGroupView>, AppError> {
+    let config = app_store()?.load_config()?.value;
+    Ok(config
+        .projects
+        .iter()
+        .map(|path| project_group(std::path::Path::new(path)))
+        .collect())
+}
+
+fn project_group(root: &std::path::Path) -> ProjectGroupView {
+    let folder_name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| root.to_string_lossy().into_owned());
+    let base = ProjectGroupView {
+        path: root.to_string_lossy().into_owned(),
+        folder_name,
+        missing: !root.is_dir(),
+        read_only: false,
+        skills: Vec::new(),
+    };
+    if base.missing {
+        return base;
+    }
+
+    let lock = crate::core::project_lock::lock_path(root);
+    // 文件存在却读不出条目 = 版本不认识或坏 JSON → 只读(读侧与写侧同一立场)。
+    let entries = crate::core::project_lock::read_entries(&lock);
+    let read_only = lock.is_file() && entries.is_empty() && lock_unreadable(&lock);
+
+    let skills = entries
+        .into_iter()
+        .map(|(key, e)| {
+            let parsed = std::fs::read_to_string(
+                project::body_dir(root, &key).join(crate::core::skills::SKILL_FILE),
+            )
+            .ok()
+            .and_then(|raw| crate::core::skills::parse_skill_md(&raw).ok());
+            ProjectSkillView {
+                display_name: parsed
+                    .as_ref()
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| key.clone()),
+                description: parsed.map(|p| p.description).unwrap_or_default(),
+                updatable: matches!(e.source_type.as_str(), "github" | "git" | "gitlab"),
+                source: e.source,
+                source_type: e.source_type,
+                key,
+            }
+        })
+        .collect();
+
+    ProjectGroupView { read_only, skills, ..base }
+}
+
+/// lock 文件在、但我们读不懂(版本不认识或坏 JSON)。
+///
+/// 与"合法 v1 但里面是空的"要分开:后者是正常状态(上游移除最后一条也留空文件),
+/// 谎报只读会让用户以为坏了。
+fn lock_unreadable(lock: &std::path::Path) -> bool {
+    match std::fs::read_to_string(lock) {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(v) => v["version"].as_u64() != Some(crate::core::project_lock::LOCAL_LOCK_SCHEMA_VERSION),
+            Err(_) => true,
+        },
+        Err(_) => false,
+    }
+}
+
+/// 从清单移除。**纯记账**,磁盘一个字节不动。
+#[tauri::command]
+pub async fn project_forget(path: String) -> Result<(), AppError> {
+    let store = app_store()?;
+    let mut config = store.load_config()?.value;
+    project::forget_project(&mut config.projects, std::path::Path::new(&path));
+    store.save_config(&config)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectInstallArgs {
+    pub project_path: String,
+    pub dir_slug: String,
+    pub registry_id: Option<String>,
+    pub repo: Option<String>,
+    pub agent_ids: Vec<String>,
+    /// 用户已确认覆盖。缺省时撞上同名不同内容会返回 `needsDecision`。
+    #[serde(default)]
+    pub confirmed_replace: bool,
+}
+
+/// 项目级安装的回报。`needsDecision` 时磁盘一个字节都没动过。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum ProjectInstallOutcome {
+    Installed { key: String, linked_agents: Vec<String> },
+    AlreadyInstalled { key: String },
+    NeedsDecision { key: String },
+}
+
+/// 把一个技能装进指定项目。取数走**与全局完全相同**的那条路(read_source + 建索引),
+/// 只是落盘与记账换成项目级。
+#[tauri::command]
+pub async fn project_skill_install(
+    args: ProjectInstallArgs,
+) -> Result<ProjectInstallOutcome, AppError> {
+    let root = std::path::PathBuf::from(&args.project_path);
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    let (client, repo) = read_source(registry_id, args.repo.as_deref()).await?;
+    let (kind, base_url) = source_meta_parts(registry_id, args.repo.as_deref())?;
+
+    // 与全局安装同一条取数路径(trait 分发,对来源类型无感)。
+    use crate::core::gitea::RepoSource as _;
+    let head = client.branch_head(&repo).await?;
+    let archive = client.download_archive(&repo).await?;
+    // fetched_at 传 0:这份索引只在本次调用里用来定位技能,不落任何缓存文件
+    // (项目级不建索引缓存——缓存是按「源+仓」存的,与项目无关)。
+    let index = store::build_index(registry_id, &repo, &head, &archive, 0);
+    let skill = index
+        .skills
+        .iter()
+        .find(|s| s.dir_slug == args.dir_slug)
+        .ok_or_else(|| {
+            AppError::new("REPO_NOT_FOUND", "在技能库里找不到这个技能,请刷新后重试")
+                .with_detail(format!("dir_slug={}", args.dir_slug))
+        })?;
+    let payload = acquire::extract_payload(&archive, skill);
+
+    match project::precheck(&root, &args.dir_slug, &payload)? {
+        project::ProjectPrecheck::AlreadyInstalled => {
+            let key = project::install_key(&args.dir_slug, &payload)?;
+            return Ok(ProjectInstallOutcome::AlreadyInstalled { key });
+        }
+        project::ProjectPrecheck::NeedsDecision { .. } if !args.confirmed_replace => {
+            let key = project::install_key(&args.dir_slug, &payload)?;
+            return Ok(ProjectInstallOutcome::NeedsDecision { key });
+        }
+        _ => {}
+    }
+
+    let entry = crate::core::project_lock::LocalEntry {
+        source: format!("{}/{}", repo.owner, repo.repo),
+        // git 档必须带完整 sourceUrl,否则 npx 还原不了(见 project_lock 模块头)。
+        source_url: Some(project_lock_source_url(kind, &base_url, &repo)),
+        git_ref: Some(repo.branch.clone()),
+        source_type: if kind == "github" { "github".into() } else { "git".into() },
+        skill_path: Some(format!("{}/{}", skill.path, crate::core::skills::SKILL_FILE)),
+        computed_hash: String::new(), // 由 project::install 用落盘后现算的值覆盖
+    };
+    let done = project::install(&root, &args.dir_slug, &payload, &args.agent_ids, &entry)?;
+
+    // **装成功才登记**,pick 了没装不登记(不造孤儿)。
+    let store = app_store()?;
+    let mut config = store.load_config()?.value;
+    project::register_project(&mut config.projects, &root);
+    store.save_config(&config)?;
+
+    Ok(ProjectInstallOutcome::Installed {
+        key: done.key,
+        linked_agents: done.linked_agents,
+    })
+}
+
+/// 写进项目 lock 的 sourceUrl。
+fn project_lock_source_url(kind: &str, base_url: &str, repo: &RepoRef) -> String {
+    if kind == "github" {
+        format!("https://github.com/{}/{}", repo.owner, repo.repo)
+    } else {
+        format!("{}/{}/{}.git", base_url.trim_end_matches('/'), repo.owner, repo.repo)
+    }
+}
+
+/// 从项目里移除一个技能。破坏性操作,`confirmed` 由前端带确认结果传入(铁律 7)。
+#[tauri::command]
+pub async fn project_skill_remove(
+    project_path: String,
+    key: String,
+    confirmed: bool,
+) -> Result<project::RemoveDone, AppError> {
+    if !confirmed {
+        return Err(AppError::new(
+            "CONFLICT_NOT_CONFIRMED",
+            "移除技能需要先确认",
+        ));
+    }
+    project::remove(std::path::Path::new(&project_path), &key)
 }
 
 #[cfg(test)]

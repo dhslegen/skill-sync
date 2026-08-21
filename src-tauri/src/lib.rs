@@ -145,6 +145,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // 定时更新检查(M2 任务 3)。内建库没配置(本地开发构建)就不起——
@@ -210,7 +211,12 @@ pub fn run() {
             commands::plaza_search,
             commands::plaza_ensure_repo,
             commands::plaza_detail,
-            commands::plaza_leaderboard
+            commands::plaza_leaderboard,
+            commands::project_pick,
+            commands::project_list,
+            commands::project_forget,
+            commands::project_skill_install,
+            commands::project_skill_remove
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -449,3 +449,47 @@ fn log_subscriber_keeps_a_filter_and_a_conservative_default() {
          默认级别决定每个用户磁盘上的常态日志体积,不是排查方便与否的问题"
     );
 }
+
+/// 项目级安装要弹目录选择框,`dialog` 插件的三处配置必须齐(v5 任务 3)。
+///
+/// 与 `allow-start-dragging` 那条同一种缺陷形状:**缺了不报错,只是永远弹不出来**。
+/// 三处各管一段,少任一处表现都不同:
+/// - Cargo 依赖缺 → 编译不过(这条最善良,不需要守卫);
+/// - `tauri.conf.json` 的 `plugins.dialog` 节缺 → 插件 setup 反序列化失败,
+///   **应用直接起不来**(M2 任务 5 用 updater 撞过一次);
+/// - capability 缺 `dialog:allow-open` → ACL 静默拒掉,前端零痕迹。
+#[test]
+fn project_picker_requires_the_dialog_plugin_wiring() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+
+    let lib_rs = std::fs::read_to_string(root.join("src-tauri/src/lib.rs")).unwrap();
+    if !lib_rs.contains("tauri_plugin_dialog") {
+        return; // 不再用 dialog 插件,这条守卫无从谈起
+    }
+
+    let conf: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("src-tauri/tauri.conf.json")).unwrap())
+            .unwrap();
+    let dialog = conf["plugins"].get("dialog");
+    assert!(
+        dialog.is_some(),
+        "接了 dialog 插件却没有 plugins.dialog 节:插件 setup 会反序列化它,\
+         缺该节应用**起不来**(不是功能失效,是直接 panic)"
+    );
+    // ⚠️ 值必须是 null,**不能是 `{}`**(2026-08-21 启动冒烟实测):dialog 的配置
+    // 类型是 unit,给空对象会报
+    // `PluginInitialization("dialog", "invalid type: map, expected unit")`
+    // ——应用同样起不来。与 updater 那节「缺了起不来」是同一处坑的镜像:
+    // 一个是缺节,一个是节的类型不对,五道闸都拦不住,只有 `pnpm dev` 冒烟能发现。
+    assert!(
+        dialog.is_some_and(|v| v.is_null()),
+        "plugins.dialog 必须是 null(它的配置类型是 unit)。写成 {{}} 会让应用启动即 panic"
+    );
+
+    let cap = std::fs::read_to_string(root.join("src-tauri/capabilities/default.json")).unwrap();
+    assert!(
+        cap.contains("dialog:allow-open"),
+        "接了 dialog 插件却没授 dialog:allow-open:ACL 会静默拒掉打开目录选择框的 IPC,\
+         用户点「装到项目」什么都不会发生,而前端看不出任何异常"
+    );
+}

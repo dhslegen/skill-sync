@@ -57,6 +57,7 @@
     "updater": {
       "pubkey": "",
       "endpoints": []
-    }
+    },
+    "dialog": null
   }
 }

@@ -1,12 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "主窗口的权限。allow-start-dragging 必须显式加:core:window:default 里没有它,而 data-tauri-drag-region 最终就是靠这条 IPC 挪窗口——缺了它前端毫无异常、窗口就是拖不动(守卫见 tests/bundle_config.rs)",
-  "windows": ["main"],
+  "description": "主窗口的权限。allow-start-dragging 必须显式加:core:window:default 里没有它,而 data-tauri-drag-region 最终就是靠这条 IPC 挪窗口——缺了它前端毫无异常、窗口就是拖不动(守卫见 tests/bundle_config.rs)。dialog:allow-open 同理:项目级安装要弹目录选择框,缺了它前端点「装到项目」不会报错、只是永远弹不出来。",
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "opener:default",
     "notification:default",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "dialog:allow-open"
   ]
 }

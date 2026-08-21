@@ -59,6 +59,15 @@ pub struct Config {
     /// 加可选字段不升 `SCHEMA_VERSION`(先例见上一条字段)。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plaza_repos: Vec<RepoConfig>,
+    /// 用户装过技能的项目目录路径,最近用的在前(v5)。
+    ///
+    /// **只是路径清单,不是技能记账**:项目里装了什么、装的哪个版本,真相全在各项目根的
+    /// `skills-lock.json` 里(与 `npx skills` 共用同一份,天然互认)。这里记路径只为了
+    /// 界面能把「我的技能」的项目分区列出来、以及提供「最近项目」快捷入口。
+    /// 项目被删或移走时这条记录天然降级成"目录不存在",不留孤儿记账。
+    /// 加可选字段不升 `SCHEMA_VERSION`(先例见 `plaza_repos`)。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<String>,
     #[serde(default)]
     pub auto_update: AutoUpdate,
     /// 界面偏好。`None` = 从未设置过(前端据此做 localStorage 一次性迁移),
@@ -167,6 +176,7 @@ impl Default for Config {
             registries: Vec::new(),
             builtin_extra_repos: Vec::new(),
             plaza_repos: Vec::new(),
+            projects: Vec::new(),
             auto_update: AutoUpdate::default(),
             ui: None,
             disabled_agents: Vec::new(),
@@ -845,6 +855,47 @@ mod tests {
         // 全新安装默认盯得紧一点(2026-08-06 用户拍板):新人装上就能及时拿到
         // 技能库的新内容,不用先去设置里找档位。老用户的档位由迁移原样带过来,不受影响。
         assert_eq!(cfg.auto_update.skills.interval_minutes, 5);
+    }
+
+    // ============================================================ projects(v5)
+
+    /// 旧 config 没有 `projects`,必须读得出且落成空列表、**不降只读**。
+    #[test]
+    fn an_old_config_without_projects_reads_as_empty() {
+        let (_tmp, s) = store();
+        std::fs::create_dir_all(s.dir()).unwrap();
+        std::fs::write(
+            s.dir().join("config.json"),
+            r#"{"schemaVersion":2,"registries":[],"autoUpdate":{"skills":{"enabled":true,"intervalMinutes":5},"app":true}}"#,
+        )
+        .unwrap();
+
+        let loaded = s.load_config().unwrap();
+
+        assert!(matches!(loaded.access, Access::ReadWrite), "加可选字段不该降只读");
+        assert_eq!(loaded.value.schema_version, SCHEMA_VERSION);
+        assert!(loaded.value.projects.is_empty());
+    }
+
+    /// 往返保住 `projects` 的**顺序**(最近用的在前,界面靠它取「最近项目」)
+    /// 以及 config 其余部分。
+    #[test]
+    fn config_roundtrip_preserves_projects_in_order() {
+        let (_tmp, s) = store();
+        let mut config = s.load_config().unwrap().value;
+        config.projects = vec!["/w/最近".into(), "/w/更早".into()];
+        config.plaza_repos.push(RepoConfig {
+            owner: "vercel-labs".into(),
+            repo: "agent-skills".into(),
+            branch: "main".into(),
+            name: None,
+        });
+        s.save_config(&config).unwrap();
+
+        let back = s.load_config().unwrap().value;
+
+        assert_eq!(back.projects, vec!["/w/最近".to_string(), "/w/更早".to_string()]);
+        assert_eq!(back.plaza_repos.len(), 1, "其余字段必须原样保留");
     }
 
     // ============================================================ plaza_repos(M9 任务 2)

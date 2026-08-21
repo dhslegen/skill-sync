@@ -64,14 +64,16 @@ pub enum ProjectPrecheck {
 }
 
 /// 卸载时**没有删掉**的东西,必须回报给调用方,由界面告诉用户。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
 pub enum RemovedItem {
     /// agent 目录下是实体目录且内容与本体不同——可能是用户自己的东西,留着。
     KeptForeignDir { dir: String },
 }
 
 /// 卸载结果。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoveDone {
     pub body_removed: bool,
     pub unlinked: Vec<String>,
@@ -81,6 +83,84 @@ pub struct RemoveDone {
 /// 技能本体目录:`<项目>/.agents/skills/<键>`。
 pub fn body_dir(project_root: &Path, key: &str) -> PathBuf {
     project_root.join(PROJECT_BODY_DIR).join(key)
+}
+
+// ============================================================ 项目路径守卫
+
+/// 选中的目录不能当项目用的理由。
+///
+/// core 返回**枚举不返回中文句子**:两道术语门都扫不到 core 里的散装文案
+/// (`tests/terminology.rs` 只扒 `AppError::new`,前端守卫只扫 `src/`)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectPathError {
+    NotFound,
+    NotADirectory,
+    /// 家目录本身。往这里装会把 `.agents/` 变成全局那一份。
+    IsHome,
+    /// canonical 自身、它的祖先(如 `~/.agents`)或它之下的任何位置。
+    ///
+    /// **"之下"这一档是重点**:选进 `~/.agents/skills/<某技能>/` 会把
+    /// `skills-lock.json` 与 `.agents/` 写进那个已装技能的本体,
+    /// `fsops::dir_content_hash` 当场漂移 → 全站误报「你改过这个技能」。
+    InsideCanonical,
+}
+
+/// 校验一个目录能否作为项目根,通过则返回归一化后的绝对路径。
+///
+/// **一律按 `Path` 比,不按字符串比**(M4 任务 4 的 CI 教训:`home.join(".agents/skills")`
+/// 在 Windows 上产出 `.agents/skills\x`,分段 join 产出 `.agents\skills\x`,
+/// 同一个目录字符串却不等)。
+pub fn validate_project_path(
+    picked: &Path,
+    home: &Path,
+    canonical: &Path,
+) -> Result<PathBuf, ProjectPathError> {
+    let meta = std::fs::symlink_metadata(picked).map_err(|_| ProjectPathError::NotFound)?;
+    if !picked.is_dir() {
+        // symlink_metadata 不跟随链接,所以这里用 is_dir()(跟随)判断:
+        // 指向目录的链接是可以当项目用的。
+        let _ = meta;
+        return Err(ProjectPathError::NotADirectory);
+    }
+
+    // 比较前各自 canonicalize:HOME 本身是软链的机器上(macOS 的 /tmp → /private/tmp
+    // 就是这种)不做解析会比出假阴性。解析失败退回原路径,不因此放行。
+    let resolved = std::fs::canonicalize(picked).unwrap_or_else(|_| picked.to_path_buf());
+    let home_r = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    let canonical_r =
+        std::fs::canonicalize(canonical).unwrap_or_else(|_| canonical.to_path_buf());
+
+    if resolved == home_r {
+        return Err(ProjectPathError::IsHome);
+    }
+    // 三档一起判:canonical 自身、canonical 之下、canonical 的祖先。
+    if resolved == canonical_r
+        || resolved.starts_with(&canonical_r)
+        || canonical_r.starts_with(&resolved)
+    {
+        return Err(ProjectPathError::InsideCanonical);
+    }
+
+    Ok(resolved)
+}
+
+// ============================================================ 项目清单
+
+/// 把项目登记进清单(最近用的排前面)。**幂等**:同一路径只留一条。
+///
+/// 清单只是"用户碰过哪些项目"的路径列表——技能级真相在各项目的 `skills-lock.json` 里。
+/// 项目目录被删或移走时,这条记录天然降级为"目录不存在",不留孤儿记账。
+pub fn register_project(list: &mut Vec<String>, path: &Path) {
+    let key = path.to_string_lossy().into_owned();
+    list.retain(|p| Path::new(p) != path);
+    list.insert(0, key);
+    // 最近用的在前,但插入位置是 0 而列表原本有序——重新登记等于置顶。
+    // 注意测试断言的是"置顶后 a 仍在 b 前",不是"顺序不变"。
+}
+
+/// 从清单移除。**纯记账**:磁盘一个字节都不动(用户的技能仍在项目里)。
+pub fn forget_project(list: &mut Vec<String>, path: &Path) {
+    list.retain(|p| Path::new(p) != path);
 }
 
 /// 从载荷里取出安装键。
