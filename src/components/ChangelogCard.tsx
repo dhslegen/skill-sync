@@ -58,7 +58,14 @@ export function ChangelogCard() {
         </button>
       </div>
 
-      <div className="mt-2 text-[12.5px]">
+      {/* 🔴 正文必须限高:真机自查发现 0.4.0 那一段(六条要点 + 两段说明)让卡片
+          吃掉了首屏近一半,技能卡片被挤到看不见——而"打扰最低"正是选卡片而不是
+          弹窗的理由,不限高等于自己把这个理由作废。信息一条不少,超出的滚动看。
+          设计里只为"跨版本"做了折叠,漏掉了"单段本身就很长"这一档。 */}
+      <div
+        data-testid="changelog-body"
+        className="mt-2 max-h-[168px] overflow-y-auto pr-1 text-[12.5px]"
+      >
         <Markdown source={head.body} />
       </div>
 

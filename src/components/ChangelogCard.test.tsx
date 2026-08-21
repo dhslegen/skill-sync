@@ -45,6 +45,17 @@ describe("升级后的更新日志卡片", () => {
     expect(screen.getByText(/0.5.0 的要点/)).toBeTruthy();
   });
 
+  it("正文限高可滚 —— 一段说明本身就可能很长,卡片不能吃掉首屏", async () => {
+    // 真机自查抓到的:0.4.0 那一段有六条要点,不限高的话技能卡片被挤到看不见。
+    // 而"打扰最低"正是选卡片而不是弹窗的理由。
+    seed([note("0.5.0", "项目级安装")]);
+    render(<ChangelogCard />);
+
+    const body = await screen.findByTestId("changelog-body");
+    expect(body.className).toContain("max-h-");
+    expect(body.className).toContain("overflow-y-auto");
+  });
+
   it("跨版本时当前版本展开、漏看的收成一行,点开才展", async () => {
     // 内网发版很密,一口气跨好几版是常态。全展开会把首屏吃掉。
     seed([note("0.5.0", "项目级安装"), note("0.4.0", "技能广场")]);
