@@ -338,7 +338,24 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
   它就是这个项目的开发者文档。**别按全局规则把它加进 exclude 或重写历史**。
   仍然适用的部分:`docs/*`(除放行的两个)、`_*.md`、AI 流程产物一律不进版本控制。
 
-## 当前进度(2026-08-20,**现役 v0.4.0 已发布**;M9 + M10 完成,M7 完成 + M8 任务 1-3 完成)
+## 当前进度(2026-08-21,现役 **v0.4.0**;**v5「项目级安装」六个任务已完成、尚未发版**)
+
+**v5 = 技能装到指定项目**(2026-08-20 brainstorming 拍板,任务分解与设计在本地
+`docs/设计-v5-项目级安装.md` / `docs/v5-任务分解.md`,上游取证在 `docs/v5-上游取证/`)。
+任务 1 lock v1 契约 + 上游 hash 口径 + 差分 fixture → 任务 2 安装/卸载编排 →
+任务 3 清单记账 + 六条 IPC + dialog 插件 → 任务 4+5 界面(作用域下拉 + 项目分区 +
+手动更新)→ 任务 6 承诺同步。**核心承诺是与 `npx skills` 完全互通**:同一套布局、
+同一份 `skills-lock.json`,两边互相认得出对方装的技能。
+⚠️ **尚未发版**,`RELEASE_NOTES.md` 的 0.5.0 段落已写好。
+
+**这一轮有三条被实测推翻的设计假设**,都已写回文档(它们比代码值钱):
+1. 「ASCII 下字节序等于 localeCompare」——**错**,几乎每个技能都受影响(见
+   「现役机制约束」的 hash 一条);
+2. 「fsops 要加相对 symlink 档」——**不用改**,M1 早就为全局做对了,实测产出与
+   上游项目级逐字节相同;
+3. 「`plugins.dialog` 给空对象即可」——**应用起不来**,必须是 `null`。
+
+**M9 + M10 已随 v0.4.0 一起发出**(2026-08-20 发布,逐项 curl 核实过终态,
 
 **✅ M9 与 M10 已随 v0.4.0 一起发出**(2026-08-20 发布,逐项 curl 核实过终态,
 不是照抄脚本输出):内网发布仓 `v0.4.0` **五个产物齐全**(dmg 17.1MB / x64-setup.exe
@@ -459,8 +476,8 @@ tags 当时侥幸没出问题,是因为支持它的版本先到了用户机器�
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust **640** + 前端 **518** 测试通过(2026-08-20 洁癖收尾时串行实测,
-  五道闸全绿,clippy **--all-targets** / eslint / tsc 干净)。
+- 本机:Rust **676** + 前端 **533** 测试通过(2026-08-21 v5 任务 6 收尾时串行实测,
+  五道闸全绿,clippy **--all-targets** / eslint / tsc 干净,`pnpm dev` 启动冒烟通过)。
   ⚠️ **这个 Rust 数字是「docker 起着」的口径**:`gitea_live` 那两条真跑了
   (docker 停着时它们报 502 假红,见「测试要求」);而受 `SKILLSYNC_PLAZA_LIVE`
   门控的三条 `plaza_*_live` **是默认跳过的早退分支,照样计进这个数**——
@@ -538,10 +555,74 @@ M10 新增的 IPC:`plaza_leaderboard`(无参 → `PlazaSkillCard[]`,全网热门
 不是弹错误框)。**没有**新增事件。新增错误码 `NET_PLAZA_LEADERBOARD`、
 `NET_PLAZA_BLOB`,同归 `NET_*` 族。`PlazaSkillCard` 新增 `isOfficial` 字段
 (搜索端点没有这个字段,那一侧恒 `false`)。
+v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路径守卫,
+用户取消返回 `Ok(None)` 不是错误)、`project_list`(→ `ProjectGroupView[]`,
+按项目分组,含 `missing`/`readOnly` 两种降级态)、`project_forget`(纯记账)、
+`project_skill_install`(→ `Installed`/`AlreadyInstalled`/`NeedsDecision` 三档,
+最后一档时磁盘零写入)、`project_skill_update`(→ `Updated`/`AlreadyLatest`/
+`HasLocalEdits`)、`project_skill_remove`(`confirmed` 由前端带确认结果传入,
+返回值含 `kept`——**没删掉的东西要如实回报**)、`project_reveal`
+(守卫是"必须在清单里",**不复用 `skill_reveal`**——那条只放行含 SKILL.md 的目录)。
+**没有**新增事件(项目级不联动 scheduler,也没有需要进度上报的长任务)。
+新增错误码 `FS_BAD_PROJECT_PATH`;`config.projects` 是新增可选字段,不升 schemaVersion。
 
 ### 现役机制约束(动相关代码前必读)
 
 这些**都已实现**,列在这里是因为它们的不变量不看就会破坏。已完成的过程叙事在 git log。
+
+- **项目级安装(v5)与全局是两条并行链路,不共用记账**(`core/project.rs` +
+  `core/project_lock.rs`,模块头有完整原委)。动它们之前必读:
+  - **不改 `installer.rs`**:canonical 无条件清空重建、守卫在 `acquire` 而不在它
+    自己身上,那是全局链路的地基;把 base 目录参数化就等于把项目级语义搅进那条路。
+    项目级只复用**原语**(fsops 建链/安全删除/safe_join、skills 解析、SkillPayload)。
+  - **安装键取 frontmatter `name`,与全局取仓库目录名刻意相反**(用户拍板,原委见
+    「待处理」)。项目级零存量,跟上游一致才能让两边 lock 的键对得上。
+  - **记账就是项目根的 `skills-lock.json` 本身**,不进 `state.installed`。
+    `config.projects` 只是"用户碰过哪些项目"的**路径清单**,技能级真相全在 lock 里
+    ——零双份记账,项目被删/移走时天然降级成"目录不存在",不留孤儿。
+  - 🔴 **`skills-lock.json`(v1)与全局 `.skill-lock.json`(v3)是两份完全不同的契约**:
+    文件名无点前缀、**有尾随换行**、键写入前排序、不含时间戳、指纹按磁盘内容现算。
+    版本闸门比上游保守:看不懂就**一个字节不写**(上游会整份重建、抹掉他人条目,
+    而这个文件通常进了用户的版本控制)。
+  - 🔴 **`upstream_folder_hash` 的排序必须是 collation,不能是字节序**
+    (2026-08-21 实测,推翻了设计初稿):上游按 `localeCompare` 排相对路径,
+    primary 级**不分大小写**,于是真实技能里 `metadata.json` 排在 `AGENTS.md` 与
+    `README.md` 之间,而字节序把大写全排在小写前——**任何同时含 `SKILL.md` 与
+    小写文件的技能都不一致,也就是几乎全部**。按字节序算出的 hash 与 npx 永不相等,
+    后果是 npx 每次 update 都把我们装的技能当"改过了"重装一遍。
+    ⚠️ 非 ASCII 文件名**上游自己就不确定**(`localeCompare` 不带参数用系统 locale,
+    中文名在 zh-CN 按拼音、en-US 按另一种),不去匹配,我方自洽即可。
+    与 `fsops::dir_content_hash` 是**两把尺子**(那把排除 metadata.json、还喂长度前缀),
+    绝不互串,有防互串的注入验证钉着。
+  - **卸载比上游啰嗦一档**:lock 没有 link-mode 字段(上游 schema,不擅自加),
+    看到 agent 目录下的实体目录无从判断是我们降级复制的还是用户放的。上游直接删,
+    本 app 按铁律 7——**内容与本体逐字节相同才删,不同就留着并在结果里报告**。
+  - **`project_pick` 的守卫要拦四档**:不存在 / 不是目录 / HOME 本身 /
+    canonical **自身、祖先或其之下**。最后那档最隐蔽:选进 `~/.agents/skills/<技能>/`
+    会把 `skills-lock.json` 与 `.agents/` 写进已装技能的本体,`dir_content_hash`
+    当场漂移 → 全站误报「你改过这个技能」。比较前各自 `canonicalize`
+    (macOS 的 `/var`→`/private/var` 是软链,不解析会比出假阴性)。
+  - 🔴 **更新要用 `dirSlug`(仓库目录名)取数,不是 `key`(frontmatter name)**:
+    两者在广场技能里常不同(实测 47 个里 8 个,全是旗舰仓),拿 key 取必然
+    `REPO_NOT_FOUND`。core 从 lock 的 `skillPath` 倒数第二段推,推不出来则
+    `updatable=false` 不摆按钮(**不摆比摆一个必然报错的按钮好**)。
+    与 M10 终审抓到的 skillId 缺陷同构——**这类"两个字段看起来都像标识符"的地方,
+    每次都要问一句:取数用的到底是哪一个**。
+  - **`link_dirs` 是 pub 的,因为 universal 跳过必须在它自己那一层被测到**:
+    universal agent 的 `skillsDir` 恰好就是 `.agents/skills`,链接路径与本体相同,
+    `fsops` 的 `SameLocation` 守卫会兜住——删掉 `is_universal()` 跳过之后
+    **端到端测试照样全绿**(空转模式 #1)。规则要在它自己那一层断言,
+    别靠下层的巧合守卫。
+  - **第一版不联动**:scheduler 定时更新与分享回推仍只管全局(README「已知限制」
+    已如实写明)。要加之前先想清楚冲突保护与多项目失败隔离。
+  - **`plugins.dialog` 必须是 `null` 不能是 `{}`**:它的配置类型是 unit,写成空对象
+    会让应用**启动即 panic**(`invalid type: map, expected unit`)。与 updater
+    那节「缺了起不来」是同一处坑的镜像;五道闸全拦不住,只有 `pnpm dev` 冒烟能发现。
+    守卫 `bundle_config.rs::project_picker_requires_the_dialog_plugin_wiring`
+    断言的是**类型**不只是存在性。
+  - **Zustand selector 里绝不能造新对象**(`store/project.ts` 有注释):
+    `useProjects((s) => s.recent())` 每次返回新数组,按 `Object.is` 比引用永远判"变了"
+    → 无限重渲染,当场打红 58 条测试。要派生就在组件里 `useMemo`。
 
 - **术语:「认领」已于 M6 任务 4 改名为「纳入管理」**(反向 = 「移出管理」),
   分区标题「npx skills 安装」→「其他工具装的」、「商店安装」→「由技能库管理」。
@@ -1211,14 +1292,9 @@ M10 新增的 IPC:`plaza_leaderboard`(无参 → `PlazaSkillCard[]`,全网热门
 ⚠️ **本次会话只登记,没有做任何设计**。动它之前**先走 brainstorming 与用户对齐,
 再做任务分解给他拍板**,别把下面几行当成已拍板的方向。
 
-1. 🔴 **技能装到指定项目里,不只是全局**(用户 2026-08-12 就点名保留、08-20 确认为
-   v5 主目标)。现在全链路只有 canonical 全局目录一条路(`~/.agents/skills/` +
-   按目录建链),"装到某个项目下"整个不存在。
-   已知会牵动的面(**仅供估量,不是方案**):`installer` / `state.installed` 的记账
-   粒度、`.skill-lock.json` 的落点(**上游对项目级有自己的约定,先去录 ground truth**)、
-   `installed_list` 的三档语义、卸载与更新要按哪个作用域走。
-   ⚠️ 顺带提醒:上一条「安装目录名与上游分叉」的独立议题(见下)与这条撞在同一个
-   面上——录项目级 ground truth 时**一并把上游的目录名口径录清楚**,别分两次查。
+1. ~~**技能装到指定项目里**~~ —— **已完成**(v5 任务 1–6,2026-08-21),
+   见「现役机制约束」的「项目级安装」一节。顺带把下面那条目录名分叉议题也拍板了。
+   **尚未发版**(RELEASE_NOTES 已写 0.5.0 段落)。
 2. **应用更新后,更新日志首屏显示;其他情况版本日志收敛到设置里**。
    即"刚升级完这一次"要让用户看见这版改了什么,平时不打扰;历史版本日志放设置页。
    现有素材:`RELEASE_NOTES.md` 是发版说明的唯一真相(内网 release 正文与 README
@@ -1240,10 +1316,14 @@ M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重�
     `frontmatter name ≠ 目录名`。同一个技能,`npx skills` 装进
     `vercel-react-best-practices/`、本 app 装进 `react-best-practices/`,
     **两边的 `.skill-lock.json` 键对不上**——铁律 4 的兼容性承诺在这批技能上有张力;
-  - **三个选项各有代价,不要替用户选**:①维持现状(承认分叉,在文档里说清);
-    ②改成跟上游一致(所有存量记账全部失配,要写迁移,而且 frontmatter name
-    可被随意改动,当键不稳);③只对广场来源的技能跟上游(两套口径,最坏)。
-  - **目前无任何用户报告**,不是紧急事项。
+  - ✅ **2026-08-21 用户拍板:项目级跟上游(frontmatter name),全局维持现状**
+    (仓库目录名)。这是**刻意的两级分叉**,不是遗留问题:
+    - 项目级是新链路、零存量,跟上游一致才能让两边的 `skills-lock.json` 键对得上,
+      互操作性是这一档的核心承诺;
+    - 全局链路的键已经是索引/记账/lock 的同一把尺子,迁移代价大且 frontmatter name
+      可被随意改动、当键不稳。
+    - 代价已接受:同一个技能装到两级时目录名可能不同。两条链路各自内部自洽,
+      不共用记账,所以不会互相干扰。
 
 **M10 遗留(记录,不是待办)**
 - **搜索结果被过滤后没有补位**:排行榜是"先过滤后截断"(600 条丢 31 条,剩下的
