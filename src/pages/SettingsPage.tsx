@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { LogIn } from "lucide-react";
+import { ChevronDown, ChevronRight, LogIn } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
 import { Markdown } from "@/components/Markdown";
@@ -88,11 +88,17 @@ function VersionRow({ note }: { note: ReleaseNote }) {
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="w-full text-left"
+        className="flex w-full items-center gap-1.5 text-left"
       >
+        {/* 没有这个指示的话,真机上一眼看不出这些行是能点开的(自查发现) */}
+        <Icon
+          icon={open ? ChevronDown : ChevronRight}
+          size={13}
+          className="shrink-0 text-text-3"
+        />
         {/* 版本号用等宽字体(UI 规范:slug/sha/版本号一律等宽) */}
         <span className="font-mono text-[12px] text-text-2">{note.versions.join(" / ")}</span>
-        {note.theme && <span className="ml-2 text-[12.5px] text-text">{note.theme}</span>}
+        {note.theme && <span className="text-[12.5px] text-text">{note.theme}</span>}
       </button>
       {open && (
         <div className="mt-1.5 text-[12.5px]">

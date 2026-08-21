@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { ChevronDown, ChevronRight, X } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
 import { Markdown } from "@/components/Markdown";
@@ -88,11 +88,15 @@ function MissedVersion({ note }: { note: ReleaseNote }) {
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="text-[12px] text-text-2 hover:text-text"
+        className="flex items-center gap-1 text-[12px] text-text-2 hover:text-text"
       >
-        {open ? "▾ " : "▸ "}
-        {label}
-        {note.theme && <span className="text-text-3">:{note.theme}</span>}
+        {/* 图标一律 Lucide(UI 规范硬规则)。原先用的是 ▸/▾ 字符 —— 真机自查一眼看出
+            它与全站图标不是一套:字重、基线、大小都对不上,还随字体变。 */}
+        <Icon icon={open ? ChevronDown : ChevronRight} size={13} className="shrink-0" />
+        <span>
+          {label}
+          {note.theme && <span className="text-text-3">:{note.theme}</span>}
+        </span>
       </button>
       {open && (
         <div className="mt-1.5 text-[12.5px]">
