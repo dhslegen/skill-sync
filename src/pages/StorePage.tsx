@@ -1,6 +1,7 @@
 import { WifiOff } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { ChangelogCard } from "@/components/ChangelogCard";
 import { Icon } from "@/components/Icon";
 import { PlazaCard } from "@/components/PlazaCard";
 import { SkillCard } from "@/components/SkillCard";
@@ -21,7 +22,21 @@ const FILTERS: { id: StoreFilter; label: MessageKey }[] = [
   { id: "installed", label: "store.filterInstalled" },
 ];
 
+/**
+ * 商店页。**外壳只负责在内容之上摆升级后的更新日志卡片**,页面本身的逻辑
+ * 一行没动——`StoreBody` 里有好几处早退分支(广场搜索态、加载中、出错),
+ * 把卡片逐个塞进每条分支既啰嗦又必然漏掉一条,包一层是唯一不重复的写法。
+ */
 export function StorePage() {
+  return (
+    <>
+      <ChangelogCard />
+      <StoreBody />
+    </>
+  );
+}
+
+function StoreBody() {
   const {
     index,
     status,

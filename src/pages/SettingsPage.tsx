@@ -3,11 +3,13 @@ import { useEffect, useState } from "react";
 import { LogIn } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
+import { Markdown } from "@/components/Markdown";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
-import { PLAZA_REGISTRY_ID, type Accent, type CheckReport, type RegistryView, type RepoView, type ThemeMode } from "@/lib/ipc";
+import { PLAZA_REGISTRY_ID, type Accent, type CheckReport, type RegistryView, type ReleaseNote, type RepoView, type ThemeMode } from "@/lib/ipc";
 import { skillGlyph } from "@/lib/tint";
 import { ACCENT_LABEL_KEY, ACCENT_SWATCH, useAppearance } from "@/store/appearance";
+import { useChangelog } from "@/store/changelog";
 import { useRegistries } from "@/store/registries";
 import { useSession } from "@/store/session";
 import { useSettings } from "@/store/settings";
@@ -41,6 +43,62 @@ export function SettingsPage() {
       </Section>
       <AgentsSection />
       <UpdatesSection />
+      <VersionHistorySection />
+    </div>
+  );
+}
+
+/**
+ * 版本历史:全部发版说明,默认全收起。
+ *
+ * 与商店页那张升级后卡片是**同一份数据的两个出口**(`store/changelog.ts` 的
+ * `all` 与 `pending`),不各拉一次、更不各解析一份——口径一漂就是"卡片说改了三条、
+ * 设置页里那一版只有两条"。
+ *
+ * 默认全收起是因为标题本身就是一句话主题(`## 0.3.13 —— 窗口终于能用鼠标拖动了`),
+ * 扫一眼就够;要读正文才点开。
+ */
+function VersionHistorySection() {
+  const all = useChangelog((s) => s.all);
+  const load = useChangelog((s) => s.load);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <Section title="settings.sectionVersionHistory">
+      {all.length === 0 ? (
+        <Row>
+          <span className="text-[12.5px] text-text-3">{t("settings.versionHistoryEmpty")}</span>
+        </Row>
+      ) : (
+        all.map((note) => <VersionRow key={note.versions.join("/")} note={note} />)
+      )}
+    </Section>
+  );
+}
+
+function VersionRow({ note }: { note: ReleaseNote }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="border-t border-border px-3.5 py-2.5 first:border-t-0">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="w-full text-left"
+      >
+        {/* 版本号用等宽字体(UI 规范:slug/sha/版本号一律等宽) */}
+        <span className="font-mono text-[12px] text-text-2">{note.versions.join(" / ")}</span>
+        {note.theme && <span className="ml-2 text-[12.5px] text-text">{note.theme}</span>}
+      </button>
+      {open && (
+        <div className="mt-1.5 text-[12.5px]">
+          <Markdown source={note.body} />
+        </div>
+      )}
     </div>
   );
 }

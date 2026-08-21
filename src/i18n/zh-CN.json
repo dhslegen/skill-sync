@@ -368,5 +368,10 @@
   "mine.projectLocalEditsConfirm": "覆盖我的改动",
   "mine.projectRemove": "移除",
   "mine.projectRemoveTitle": "从这个文件夹移除「{name}」?",
-  "mine.projectRemoveKept": "有 {count} 个位置没有清理:它们的内容与这个技能不一样,可能是你自己放的,已经原样留着。"
+  "mine.projectRemoveKept": "有 {count} 个位置没有清理:它们的内容与这个技能不一样,可能是你自己放的,已经原样留着。",
+  "changelog.updatedTo": "已更新到 {version}",
+  "changelog.alsoMissed": "还漏看了 {version}",
+  "changelog.dismiss": "知道了",
+  "settings.sectionVersionHistory": "版本历史",
+  "settings.versionHistoryEmpty": "没有可显示的版本说明。"
 }

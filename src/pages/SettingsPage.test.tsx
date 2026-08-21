@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsPage } from "./SettingsPage";
 import { initAppearance, useAppearance } from "@/store/appearance";
 import { useRegistries } from "@/store/registries";
+import { useChangelog } from "@/store/changelog";
 import { useSession } from "@/store/session";
 import { useSettings } from "@/store/settings";
 
@@ -26,6 +27,16 @@ function reset() {
   invoke.mockImplementation(async (cmd: string) => {
     if (cmd === "agents_detected") return AGENTS;
     if (cmd === "auto_update_get") return { skills: { enabled: true, intervalMinutes: 240 }, app: true };
+    if (cmd === "release_notes_state") {
+      return {
+        current: "0.5.0",
+        pending: [],
+        all: [
+          { versions: ["0.5.0"], theme: "项目级安装", body: "- 0.5.0 的要点" },
+          { versions: ["0.3.5", "0.3.4"], theme: "自更新链路验证", body: "- 0.3.5 的要点" },
+        ],
+      };
+    }
     return undefined;
   });
   localStorage.clear();
@@ -369,5 +380,47 @@ describe("设置页 · 技能库来源(M9 任务 5:广场行的计划补丁)", (
     await screen.findByText("技能广场");
     // 自定义源只有一个库:头部坐标已说清,不该重复展开一行 dept/tools
     expect(screen.queryByText("dept/tools")).not.toBeInTheDocument();
+  });
+});
+
+describe("版本历史", () => {
+  // 这个文件的 reset() 是**逐 describe 注册**的,漏掉它就会拿到上一条测试残留的
+  // mock —— 表现是"什么都没渲染出来",看着像实现坏了。
+  beforeEach(reset);
+  beforeEach(() => useChangelog.setState({ current: "", pending: [], all: [], dismissed: false }));
+
+  it("列出每一版的标题,默认收起 —— 平时不打扰,想看才点开", async () => {
+    render(<SettingsPage />);
+
+    // 一段覆盖两个版本时,两个都要露出来(仓库里真实存在这种写法)。
+    // 用 findBy 等异步 load —— 「版本历史」标题是静态渲染的,等它等于没等。
+    await screen.findByRole("button", { name: /0.3.5 \/ 0.3.4/ });
+    // 正文默认不展开
+    expect(screen.queryByText(/0.5.0 的要点/)).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: /0.5.0/ }));
+
+    expect(screen.getByText(/0.5.0 的要点/)).toBeTruthy();
+  });
+
+  it("一段说明都没有时说清楚,而不是留一片空白", async () => {
+    // ⚠️ 先塞一条进 store 再渲染:空态**恰好也是初始状态**,不这么做的话
+    // load 根本没跑这条测试也会绿(空转)。有了这一步,只有"读回来确实是空"才通过。
+    useChangelog.setState({
+      current: "0.4.0",
+      pending: [],
+      all: [{ versions: ["0.4.0"], theme: "旧的", body: "- 旧正文" }],
+      dismissed: false,
+    });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "auto_update_get") return { skills: { enabled: true, intervalMinutes: 240 }, app: true };
+      if (cmd === "release_notes_state") return { current: "0.5.0", pending: [], all: [] };
+      return undefined;
+    });
+    render(<SettingsPage />);
+
+    await screen.findByText("没有可显示的版本说明。");
+    expect(screen.queryByText("旧的")).toBeNull();
   });
 });

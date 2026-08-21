@@ -7,6 +7,7 @@ import type { PlazaSkillCard, StoreIndexView, StoreSkillCard } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { usePlaza } from "@/store/plaza";
 import { useRegistries } from "@/store/registries";
+import { useChangelog } from "@/store/changelog";
 import { useStoreIndex } from "@/store/store-index";
 import { triggerIntersection } from "@/test/intersection-observer";
 
@@ -846,5 +847,33 @@ describe("广场列表滚动加载", () => {
     } finally {
       Object.defineProperty(globalThis, "IntersectionObserver", { value: saved, configurable: true, writable: true });
     }
+  });
+});
+
+describe("升级后的更新日志", () => {
+  // ⚠️ 这条是注入验证逼出来的:删掉 StorePage 里那一行 `<ChangelogCard />`,
+  // 功能整个消失而全部测试照样绿 —— 卡片自己的用例只证明它渲染得对,
+  // **没有一条证明它真的挂在用户会看到的地方**。
+  beforeEach(() => {
+    useChangelog.setState({ current: "", pending: [], all: [], dismissed: false });
+  });
+
+  it("商店页会摆出它 —— 这是用户唯一会看到它的地方", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "release_notes_state") {
+        return {
+          current: "0.5.0",
+          pending: [{ versions: ["0.5.0"], theme: "项目级安装", body: "- 要点" }],
+          all: [],
+        };
+      }
+      if (cmd === "store_index") return index();
+      return undefined;
+    });
+    useStoreIndex.setState({ index: index(), status: "ready", error: null });
+
+    render(<StorePage />);
+
+    await screen.findByText("已更新到 0.5.0");
   });
 });
