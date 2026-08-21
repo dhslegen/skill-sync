@@ -2473,49 +2473,27 @@ fn release_notes_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
         .ok()
 }
 
-/// 更新日志的界面状态。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReleaseNotesState {
-    /// 当前运行的版本。卡片标题「已更新到 x」用它,不用日志里最新那段的版本号
-    /// ——文件里可能已经有一段还没发出去的版本(发版流程要求先写说明)。
-    pub current: String,
-    /// 这一次该弹出来给用户看的段落(新到旧)。空 = 不显示卡片。
-    pub pending: Vec<crate::core::release_notes::ReleaseNote>,
-    /// 全部段落,设置页的「版本历史」用。
-    pub all: Vec<crate::core::release_notes::ReleaseNote>,
-}
-
-/// 读更新日志与"该不该显示"的判定。**只读,不写记账**——写在 `release_notes_ack`,
-/// 由用户关掉卡片这个动作触发。分开是刻意的:显示即标记已读的话,
-/// 用户升级后立刻退出就永远看不到了。
+/// 读更新日志与"该不该显示"的判定。编排在 `core::release_notes::resolve`
+/// (它收 `Store`,因而可以脱离真实 `HOME` 单测,见 `tests/release_notes_baseline.rs`)。
+///
+/// ⚠️ **它不是纯读**:全新安装那一档会静默把当前版本记下来。不这么做的话,
+/// 用户走完首次启动向导、**第二次打开应用**时会被告知「已更新到 x」——他从没更新过。
+/// 存量用户看到日志时**不写**,那由 `release_notes_ack` 触发。
 #[tauri::command]
-pub fn release_notes_state(app: tauri::AppHandle) -> Result<ReleaseNotesState, AppError> {
+pub fn release_notes_state(
+    app: tauri::AppHandle,
+) -> Result<crate::core::release_notes::State, AppError> {
     let current = app.package_info().version.to_string();
     let all = release_notes_path(&app)
         .map(|p| crate::core::release_notes::read(&p))
         .unwrap_or_default();
-
-    let config = app_store()?.load_config()?.value;
-    let wizard_done = config.ui.as_ref().is_some_and(|u| u.wizard_done);
-    let pending = crate::core::release_notes::pending(
-        &all,
-        &current,
-        config.last_seen_version.as_deref(),
-        wizard_done,
-    )
-    .to_vec();
-
-    Ok(ReleaseNotesState { current, pending, all })
+    crate::core::release_notes::resolve(&app_store()?, all, &current)
 }
 
 /// 记下"这一版的更新日志我看过了"。由用户**关掉卡片**触发,不是显示就写。
 #[tauri::command]
 pub fn release_notes_ack(app: tauri::AppHandle) -> Result<(), AppError> {
-    let store = app_store()?;
-    let mut config = store.load_config()?.value;
-    config.last_seen_version = Some(app.package_info().version.to_string());
-    store.save_config(&config)
+    crate::core::release_notes::acknowledge(&app_store()?, &app.package_info().version.to_string())
 }
 
 /// 启动时记一行"读到了几段发版说明"。

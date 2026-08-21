@@ -23,6 +23,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use crate::error::AppError;
+
 /// 一个版本段落。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,43 +106,65 @@ fn is_version(token: &str) -> bool {
 }
 
 
-/// 这一次启动该给用户看哪几段(新到旧)。空 = 不显示卡片。
+/// 这一次启动该做什么。
+///
+/// 🔴 **刻意用枚举而不是"返回一个可能为空的列表"**:全新安装那一档不只是
+/// "不显示",还必须**把当前版本静静记下来**——`wizard_done` 是个一次性判据,
+/// 向导做完它就变成 `true`,那时若基线还是缺席,同一个从没更新过的人在
+/// **第二次启动**时就会被告知「已更新到 x」。用枚举的话调用方漏掉这一档
+/// 编译器会报错;用 bool 或空列表则会静默漏掉(v5 收尾时真漏了,靠推演抓到)。
+#[derive(Debug)]
+pub enum Decision<'a> {
+    /// 不显示,也不动记账。
+    Nothing,
+    /// 显示这几段(新到旧)。**这时候不写记账**——写了就等于"显示即已读",
+    /// 用户升级后立刻退出就永远看不到了。写入由「关掉卡片」触发。
+    Show(&'a [ReleaseNote]),
+    /// 全新安装:不显示,但把当前版本静静记下来。
+    AdoptBaseline,
+}
+
+/// 这一次启动该给用户看什么。
 ///
 /// 判定只看三样,全部由调用方给:当前版本、上次见过的版本、首次启动向导做没做完。
 /// **不碰磁盘、不看时间**,所以可以逐档单测。
 ///
 /// 五档:
-/// - 记的就是当前版本 → 空(已经看过了);
+/// - 记的就是当前版本 → 什么都不做(已经看过了);
 /// - 记的是别的版本且在文件里找得到 → 从当前版本那一段取到它(不含)为止;
 /// - 记的版本在文件里找不到(降级过、或那一版没写说明)→ 只给当前版本那一段;
 /// - 没有记录 + 向导做完了 → 存量用户第一次升上来,给当前版本那一段;
-/// - 没有记录 + 向导还没做 → 全新安装,空。对新人说"已更新到 x"是假话。
+/// - 没有记录 + 向导还没做 → 全新安装,静默采认基线。
 ///
 /// 🔴 **起点是当前版本那一段,不是文件开头**:发版流程要求**先写发版说明再发版**,
 /// 所以"说明已进仓、包还没发"这个窗口里,文件里必然存在比当前版本更新的段落。
 /// 从开头取起就会把还没发出去的那一版显示给用户。
 ///
-/// 降级(记的版本比当前版本新)返回空——说"已更新到"是假话。
-pub fn pending<'a>(
+/// 降级(记的版本比当前版本新)什么都不做——说"已更新到"是假话。
+pub fn decide<'a>(
     notes: &'a [ReleaseNote],
     current: &str,
     last_seen: Option<&str>,
     wizard_done: bool,
-) -> &'a [ReleaseNote] {
+) -> Decision<'a> {
+    // 全新安装这一档要先判:当前版本没写说明时也得记基线,否则下次启动照样误判。
+    if last_seen.is_none() && !wizard_done {
+        return Decision::AdoptBaseline;
+    }
     let Some(from) = index_of(notes, current) else {
-        return &[]; // 当前版本没写说明:不编一段出来
+        return Decision::Nothing; // 当前版本没写说明:不编一段出来
     };
     match last_seen {
-        Some(seen) if seen == current => &[],
+        Some(seen) if seen == current => Decision::Nothing,
         Some(seen) => match index_of(notes, seen) {
             // 索引越小越新。基线不比当前版本旧 = 降级或原地,没有"更新"可言。
             // 这条分支不是可选的:去掉它,降级时切片会是 `notes[大..小]` 直接 panic。
-            Some(to) if to <= from => &[],
-            Some(to) => &notes[from..to],
-            None => &notes[from..=from],
+            Some(to) if to <= from => Decision::Nothing,
+            Some(to) => Decision::Show(&notes[from..to]),
+            None => Decision::Show(&notes[from..=from]),
         },
-        None if wizard_done => &notes[from..=from],
-        None => &[],
+        // 存量用户第一次升上来(字段是这一版才有的)
+        None => Decision::Show(&notes[from..=from]),
     }
 }
 
@@ -160,6 +184,61 @@ pub fn read(path: &Path) -> Vec<ReleaseNote> {
             Vec::new()
         }
     }
+}
+
+/// 更新日志的界面状态。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct State {
+    /// 当前运行的版本。卡片标题「已更新到 x」用它,不用日志里最新那段的版本号
+    /// ——文件里可能已经有一段还没发出去的版本(发版流程要求先写说明)。
+    pub current: String,
+    /// 这一次该给用户看的段落(新到旧)。空 = 不显示卡片。
+    pub pending: Vec<ReleaseNote>,
+    /// 全部段落,设置页的「版本历史」用。
+    pub all: Vec<ReleaseNote>,
+}
+
+/// 读一次界面状态,**顺带在必要时静默采认基线**。
+///
+/// "写发生在读取路径上"与本项目 config/state 的 schema 迁移是同一个姿势
+/// (CLAUDE.md:「迁移发生在读取路径上,写回是惰性的」)。这里只有全新安装那一档
+/// 会写;存量用户看到日志时**不写**——那由「关掉卡片」触发,见 [`acknowledge`]。
+///
+/// 采认基线写失败不拦显示:最坏结果是下次启动再采认一次,而报错会把一个
+/// 用户根本没要求过的动作变成他脸上的错误框。
+pub fn resolve(
+    store: &crate::core::state::Store,
+    all: Vec<ReleaseNote>,
+    current: &str,
+) -> Result<State, AppError> {
+    let config = store.load_config()?.value;
+    let wizard_done = config.ui.as_ref().is_some_and(|u| u.wizard_done);
+
+    let pending = match decide(&all, current, config.last_seen_version.as_deref(), wizard_done) {
+        Decision::Show(notes) => notes.to_vec(),
+        Decision::Nothing => Vec::new(),
+        Decision::AdoptBaseline => {
+            let mut next = config;
+            next.last_seen_version = Some(current.to_string());
+            if let Err(e) = store.save_config(&next) {
+                tracing::debug!("采认更新日志基线失败,下次启动再试: {e:?}");
+            }
+            Vec::new()
+        }
+    };
+
+    Ok(State { current: current.to_string(), pending, all })
+}
+
+/// 记下"这一版的更新日志我看过了"。由用户**关掉卡片**触发。
+pub fn acknowledge(
+    store: &crate::core::state::Store,
+    current: &str,
+) -> Result<(), AppError> {
+    let mut config = store.load_config()?.value;
+    config.last_seen_version = Some(current.to_string());
+    store.save_config(&config)
 }
 
 #[cfg(test)]
@@ -215,10 +294,10 @@ mod tests {
     }
 
     fn shown(current: &str, last_seen: Option<&str>, wizard_done: bool) -> Vec<String> {
-        pending(&notes(), current, last_seen, wizard_done)
-            .iter()
-            .map(|n| n.versions[0].clone())
-            .collect()
+        match decide(&notes(), current, last_seen, wizard_done) {
+            Decision::Show(notes) => notes.iter().map(|n| n.versions[0].clone()).collect(),
+            _ => Vec::new(),
+        }
     }
 
     #[test]
@@ -247,10 +326,26 @@ mod tests {
     }
 
     #[test]
-    fn a_brand_new_install_is_not_greeted_with_a_changelog() {
+    fn a_brand_new_install_adopts_the_baseline_instead_of_being_greeted() {
         // wizardDone=false 才分得出"全新安装"与"存量用户第一次升上来"
         // ——两者的 lastSeenVersion 都是缺席的。对新人说"已更新到 0.5.0"是假话。
-        assert!(shown("0.5.0", None, false).is_empty());
+        //
+        // 🔴 断言的是 `AdoptBaseline` 而不是"空":原先只断言空,把它与 `Nothing`
+        // 混成一档,于是"要不要把基线记下来"这件事**根本没有测试**——真漏了,
+        // 后果是同一个人走完向导、第二次启动就被告知「已更新到 0.5.0」。
+        assert!(matches!(
+            decide(&notes(), "0.5.0", None, false),
+            Decision::AdoptBaseline
+        ));
+    }
+
+    #[test]
+    fn a_brand_new_install_adopts_the_baseline_even_with_no_section_for_this_version() {
+        // 当前版本没写说明时也得记基线,否则下次启动照样把新人误判成存量用户。
+        assert!(matches!(
+            decide(&notes(), "9.9.9", None, false),
+            Decision::AdoptBaseline
+        ));
     }
 
     #[test]
@@ -279,8 +374,11 @@ mod tests {
         // 真正 load-bearing 的是这条分支**存在**:删掉它,降级那条用例会以
         // `slice index starts at 2 but ends at 1` panic,实测过。)
         let multi = parse("## 0.5.0 —— 新的\n\n正文\n\n## 0.3.5 / 0.3.4 —— 一段两版\n\n正文\n");
-        let got = pending(&multi, "0.3.5", Some("0.3.4"), true);
-        assert!(got.is_empty(), "同一段里的两个版本之间没有可看的新内容");
+        let got = decide(&multi, "0.3.5", Some("0.3.4"), true);
+        assert!(
+            matches!(got, Decision::Nothing),
+            "同一段里的两个版本之间没有可看的新内容,得到 {got:?}"
+        );
     }
 
     #[test]
@@ -346,3 +444,4 @@ mod tests {
         assert_eq!(notes[0].versions, vec!["1.2.3"]);
     }
 }
+
