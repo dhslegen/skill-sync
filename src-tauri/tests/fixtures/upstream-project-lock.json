@@ -1,0 +1,421 @@
+{
+  "upstreamVersion": "v1.5.23",
+  "lockFileName": "skills-lock.json",
+  "schemaVersion": 1,
+  "scenarios": [
+    {
+      "name": "文件不存在时新建",
+      "initial": null,
+      "ops": [
+        {
+          "add": [
+            "weekly-report",
+            {
+              "source": "skills/skills",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills.git",
+              "ref": "main",
+              "sourceType": "git",
+              "skillPath": "skills/weekly-report/SKILL.md",
+              "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {\n    \"weekly-report\": {\n      \"source\": \"skills/skills\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills.git\",\n      \"ref\": \"main\",\n      \"sourceType\": \"git\",\n      \"skillPath\": \"skills/weekly-report/SKILL.md\",\n      \"computedHash\": \"0000000000000000000000000000000000000000000000000000000000000000\"\n    }\n  }\n}\n"
+    },
+    {
+      "name": "v1 文件中新增条目,保留他人条目",
+      "initial": "{\n  \"version\": 1,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    }\n  }\n}\n",
+      "ops": [
+        {
+          "add": [
+            "weekly-report",
+            {
+              "source": "skills/skills",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills.git",
+              "ref": "main",
+              "sourceType": "git",
+              "skillPath": "skills/weekly-report/SKILL.md",
+              "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    },\n    \"weekly-report\": {\n      \"source\": \"skills/skills\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills.git\",\n      \"ref\": \"main\",\n      \"sourceType\": \"git\",\n      \"skillPath\": \"skills/weekly-report/SKILL.md\",\n      \"computedHash\": \"0000000000000000000000000000000000000000000000000000000000000000\"\n    }\n  }\n}\n"
+    },
+    {
+      "name": "多条目乱序写入:产出必须按键字母序",
+      "initial": null,
+      "ops": [
+        {
+          "add": [
+            "zzz-last",
+            {
+              "source": "vercel-labs/agent-skills",
+              "sourceType": "github",
+              "skillPath": "skills/react-best-practices/SKILL.md",
+              "computedHash": "ca7b0c0c6e5f2750043f7f0cd72d16ac4e2abc48f9b5500d047a4b77a2506212"
+            }
+          ]
+        },
+        {
+          "add": [
+            "aaa-first",
+            {
+              "source": "skills/skills",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills.git",
+              "ref": "main",
+              "sourceType": "git",
+              "skillPath": "skills/weekly-report/SKILL.md",
+              "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        {
+          "add": [
+            "mmm-middle",
+            {
+              "source": "vercel-labs/agent-skills",
+              "sourceType": "github",
+              "skillPath": "skills/react-best-practices/SKILL.md",
+              "computedHash": "ca7b0c0c6e5f2750043f7f0cd72d16ac4e2abc48f9b5500d047a4b77a2506212"
+            }
+          ]
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {\n    \"aaa-first\": {\n      \"source\": \"skills/skills\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills.git\",\n      \"ref\": \"main\",\n      \"sourceType\": \"git\",\n      \"skillPath\": \"skills/weekly-report/SKILL.md\",\n      \"computedHash\": \"0000000000000000000000000000000000000000000000000000000000000000\"\n    },\n    \"mmm-middle\": {\n      \"source\": \"vercel-labs/agent-skills\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/react-best-practices/SKILL.md\",\n      \"computedHash\": \"ca7b0c0c6e5f2750043f7f0cd72d16ac4e2abc48f9b5500d047a4b77a2506212\"\n    },\n    \"zzz-last\": {\n      \"source\": \"vercel-labs/agent-skills\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/react-best-practices/SKILL.md\",\n      \"computedHash\": \"ca7b0c0c6e5f2750043f7f0cd72d16ac4e2abc48f9b5500d047a4b77a2506212\"\n    }\n  }\n}\n"
+    },
+    {
+      "name": "覆盖同名条目",
+      "initial": "{\n  \"version\": 1,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    }\n  }\n}\n",
+      "ops": [
+        {
+          "add": [
+            "weekly-report",
+            {
+              "source": "skills/skills",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills.git",
+              "ref": "main",
+              "sourceType": "git",
+              "skillPath": "skills/weekly-report/SKILL.md",
+              "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        {
+          "add": [
+            "weekly-report",
+            {
+              "source": "skills/skills",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills.git",
+              "ref": "dev",
+              "sourceType": "git",
+              "skillPath": "skills/weekly-report/SKILL.md",
+              "computedHash": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ]
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    },\n    \"weekly-report\": {\n      \"source\": \"skills/skills\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills.git\",\n      \"ref\": \"dev\",\n      \"sourceType\": \"git\",\n      \"skillPath\": \"skills/weekly-report/SKILL.md\",\n      \"computedHash\": \"1111111111111111111111111111111111111111111111111111111111111111\"\n    }\n  }\n}\n"
+    },
+    {
+      "name": "可选字段缺省:sourceUrl/ref/skillPath 全不给",
+      "initial": null,
+      "ops": [
+        {
+          "add": [
+            "minimal",
+            {
+              "source": "some-pkg",
+              "sourceType": "node_modules",
+              "computedHash": "2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ]
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {\n    \"minimal\": {\n      \"source\": \"some-pkg\",\n      \"sourceType\": \"node_modules\",\n      \"computedHash\": \"2222222222222222222222222222222222222222222222222222222222222222\"\n    }\n  }\n}\n"
+    },
+    {
+      "name": "移除条目",
+      "initial": "{\n  \"version\": 1,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    }\n  }\n}\n",
+      "ops": [
+        {
+          "add": [
+            "weekly-report",
+            {
+              "source": "skills/skills",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills.git",
+              "ref": "main",
+              "sourceType": "git",
+              "skillPath": "skills/weekly-report/SKILL.md",
+              "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        {
+          "remove": "weekly-report"
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    }\n  }\n}\n"
+    },
+    {
+      "name": "移除最后一条:空 skills 与文件都保留",
+      "initial": null,
+      "ops": [
+        {
+          "add": [
+            "only-one",
+            {
+              "source": "skills/skills",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills.git",
+              "ref": "main",
+              "sourceType": "git",
+              "skillPath": "skills/weekly-report/SKILL.md",
+              "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        {
+          "remove": "only-one"
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {}\n}\n"
+    },
+    {
+      "name": "移除不存在的条目",
+      "initial": "{\n  \"version\": 1,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    }\n  }\n}\n",
+      "ops": [
+        {
+          "remove": "从来没装过"
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    }\n  }\n}\n"
+    },
+    {
+      "name": "移除不存在的条目(初始键序未排序,不得改写文件)",
+      "initial": "{\n  \"version\": 1,\n  \"skills\": {\n    \"zzz-installed-first\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    },\n    \"aaa-installed-later\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    }\n  }\n}\n",
+      "ops": [
+        {
+          "remove": "从来没装过"
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {\n    \"zzz-installed-first\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    },\n    \"aaa-installed-later\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    }\n  }\n}\n"
+    },
+    {
+      "name": "乱序初始文件中新增条目:产出被排成字母序",
+      "initial": "{\n  \"version\": 1,\n  \"skills\": {\n    \"zzz-installed-first\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    },\n    \"aaa-installed-later\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    }\n  }\n}\n",
+      "ops": [
+        {
+          "add": [
+            "mmm-new",
+            {
+              "source": "skills/skills",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills.git",
+              "ref": "main",
+              "sourceType": "git",
+              "skillPath": "skills/weekly-report/SKILL.md",
+              "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {\n    \"aaa-installed-later\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    },\n    \"mmm-new\": {\n      \"source\": \"skills/skills\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills.git\",\n      \"ref\": \"main\",\n      \"sourceType\": \"git\",\n      \"skillPath\": \"skills/weekly-report/SKILL.md\",\n      \"computedHash\": \"0000000000000000000000000000000000000000000000000000000000000000\"\n    },\n    \"zzz-installed-first\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    }\n  }\n}\n"
+    },
+    {
+      "name": "更高版本 v2:上游整份丢弃重建(本 app 有意分歧)",
+      "initial": "{\n  \"version\": 2,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    }\n  }\n}\n",
+      "ops": [
+        {
+          "add": [
+            "weekly-report",
+            {
+              "source": "skills/skills",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills.git",
+              "ref": "main",
+              "sourceType": "git",
+              "skillPath": "skills/weekly-report/SKILL.md",
+              "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 2,\n  \"skills\": {\n    \"someone-elses-skill\": {\n      \"source\": \"other/repo\",\n      \"sourceType\": \"github\",\n      \"skillPath\": \"skills/pdf/SKILL.md\",\n      \"computedHash\": \"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\"\n    },\n    \"weekly-report\": {\n      \"source\": \"skills/skills\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills.git\",\n      \"ref\": \"main\",\n      \"sourceType\": \"git\",\n      \"skillPath\": \"skills/weekly-report/SKILL.md\",\n      \"computedHash\": \"0000000000000000000000000000000000000000000000000000000000000000\"\n    }\n  }\n}\n"
+    },
+    {
+      "name": "version 字段缺失",
+      "initial": "{\n  \"skills\": {}\n}\n",
+      "ops": [
+        {
+          "add": [
+            "weekly-report",
+            {
+              "source": "skills/skills",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills.git",
+              "ref": "main",
+              "sourceType": "git",
+              "skillPath": "skills/weekly-report/SKILL.md",
+              "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {\n    \"weekly-report\": {\n      \"source\": \"skills/skills\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills.git\",\n      \"ref\": \"main\",\n      \"sourceType\": \"git\",\n      \"skillPath\": \"skills/weekly-report/SKILL.md\",\n      \"computedHash\": \"0000000000000000000000000000000000000000000000000000000000000000\"\n    }\n  }\n}\n"
+    },
+    {
+      "name": "version 非数字",
+      "initial": "{\n  \"version\": \"1\",\n  \"skills\": {}\n}\n",
+      "ops": [
+        {
+          "add": [
+            "weekly-report",
+            {
+              "source": "skills/skills",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills.git",
+              "ref": "main",
+              "sourceType": "git",
+              "skillPath": "skills/weekly-report/SKILL.md",
+              "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {\n    \"weekly-report\": {\n      \"source\": \"skills/skills\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills.git\",\n      \"ref\": \"main\",\n      \"sourceType\": \"git\",\n      \"skillPath\": \"skills/weekly-report/SKILL.md\",\n      \"computedHash\": \"0000000000000000000000000000000000000000000000000000000000000000\"\n    }\n  }\n}\n"
+    },
+    {
+      "name": "JSON 损坏(合并冲突标记)",
+      "initial": "<<<<<<< HEAD\n{ 这不是合法 JSON\n",
+      "ops": [
+        {
+          "add": [
+            "weekly-report",
+            {
+              "source": "skills/skills",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills.git",
+              "ref": "main",
+              "sourceType": "git",
+              "skillPath": "skills/weekly-report/SKILL.md",
+              "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {\n    \"weekly-report\": {\n      \"source\": \"skills/skills\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills.git\",\n      \"ref\": \"main\",\n      \"sourceType\": \"git\",\n      \"skillPath\": \"skills/weekly-report/SKILL.md\",\n      \"computedHash\": \"0000000000000000000000000000000000000000000000000000000000000000\"\n    }\n  }\n}\n"
+    },
+    {
+      "name": "中文技能名作为键",
+      "initial": null,
+      "ops": [
+        {
+          "add": [
+            "周报生成",
+            {
+              "source": "skills/skills",
+              "sourceUrl": "http://gitea.example.internal:3000/skills/skills.git",
+              "ref": "main",
+              "sourceType": "git",
+              "skillPath": "skills/weekly-report/SKILL.md",
+              "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        }
+      ],
+      "exists": true,
+      "bytes": "{\n  \"version\": 1,\n  \"skills\": {\n    \"周报生成\": {\n      \"source\": \"skills/skills\",\n      \"sourceUrl\": \"http://gitea.example.internal:3000/skills/skills.git\",\n      \"ref\": \"main\",\n      \"sourceType\": \"git\",\n      \"skillPath\": \"skills/weekly-report/SKILL.md\",\n      \"computedHash\": \"0000000000000000000000000000000000000000000000000000000000000000\"\n    }\n  }\n}\n"
+    }
+  ],
+  "hashCases": [
+    {
+      "name": "单文件",
+      "files": {
+        "SKILL.md": "---\nname: x\n---\n正文\n"
+      },
+      "hash": "fed3b4c5229e481af9767c225eba8a8440263e6a094830954772104e47ef003e"
+    },
+    {
+      "name": "嵌套目录",
+      "files": {
+        "SKILL.md": "a",
+        "rules/one.md": "b",
+        "rules/nested/two.md": "c"
+      },
+      "hash": "8cd39648632a6cba5f1f9d74a6deb7826655a37c0c98264f9fc8db53888d899a"
+    },
+    {
+      "name": "排序分歧探针:连字符/下划线/数字/大小写混排",
+      "files": {
+        "a-b.md": "1",
+        "ab.md": "2",
+        "a_b.md": "3",
+        "a.md": "4",
+        "A.md": "5",
+        "a1.md": "6",
+        "a10.md": "7",
+        "a2.md": "8",
+        "a-.md": "9",
+        "a b.md": "10",
+        "-a.md": "11",
+        "_a.md": "12",
+        "1.md": "13"
+      },
+      "hash": "01893c78a57d424101c834e56bcfa91c880d658082c1d93e2d797971a548ca6a"
+    },
+    {
+      "name": "非 ASCII 文件名",
+      "files": {
+        "周报.md": "中文内容",
+        "SKILL.md": "x",
+        "café.md": "é"
+      },
+      "hash": "87d710f81f88ea66e3f262cab29529cb1b200707b8c09136392d9fcfa085e6bf"
+    },
+    {
+      "name": "二进制内容与空文件",
+      "files": {
+        "SKILL.md": "x",
+        "empty.txt": "",
+        "bin.dat": "\u0000\u0001ÿ"
+      },
+      "hash": "bc29408f49bbc34b6ca130a2d5c9e9b130274d3a1f30bc375bde2e85fb9b8e57"
+    },
+    {
+      "name": "排除 .git 与 node_modules,但保留 metadata.json",
+      "files": {
+        "SKILL.md": "x",
+        "metadata.json": "{\"a\":1}",
+        ".git/config": "should be skipped",
+        "node_modules/pkg/index.js": "should be skipped",
+        ".hidden": "kept"
+      },
+      "hash": "756a2770775c805eecc4b3106627793020bf1422e790567be6d4cfeff202f374"
+    }
+  ],
+  "realWorld": {
+    "name": "真实技能的文件名组合",
+    "files": {
+      "SKILL.md": "skill body",
+      "AGENTS.md": "agents body",
+      "README.md": "readme body",
+      "metadata.json": "{\"version\":\"1.0.0\"}",
+      "rules/_template.md": "t",
+      "rules/_sections.md": "s",
+      "rules/js-early-exit.md": "e",
+      "rules/rerender-memo.md": "m",
+      "rules/async-parallel.md": "p"
+    },
+    "hash": "91232fe9cff39eb63aa89f0a9a8413b1be720bce9eda4fcc9c690ef4d18a36e5"
+  }
+}
