@@ -2208,7 +2208,7 @@ pub async fn plaza_ensure_repo(owner_repo: String) -> Result<registry::RepoView,
 ///
 /// **刻意不记 head sha,没有任何失效机制**(2026-08-12 终审裁定,设计文档 §2.2
 /// 同步更新过——原文一度写"head sha 一起记",已证明是当时假设了一个并不存在的
-/// 失效时机)。别顺手"补全"这个字段:排查过 `plaza_ensure_repo`(只给分支名,
+/// 失效时机)。别顺手"补全"这个字段:排查过 `plaza::ensure_repo`(只给分支名,
 /// 没有 sha)、acquire/scheduler(走完全独立的 `store_index` 文件缓存,且只在
 /// 挂仓之后才生效)、`retryDetail`(没有强制刷新入口),**没有任何现成路径会给
 /// 这份缓存喂入"更新的 sha"**;唯一能让它派上用场的做法是每次命中都主动探一次
@@ -2350,7 +2350,8 @@ async fn plaza_blob_prefetch(
 ///
 /// 详情先于安装:仓未挂进 `config.plazaRepos` 时,`read_source` 会报
 /// `REPO_UNKNOWN_REPO`(未知仓),此时探测默认分支临时直连,**绝不写 config**
-/// ——挂仓只能由「装了一个搜索结果」这件事触发(见 `plaza_ensure_repo`)。这个分支
+/// ——挂仓只能由「装了一个搜索结果」这件事触发(写入实现见 `plaza::ensure_repo`,
+/// 调用方只有 `plaza_ensure_repo` 与 `project_skill_install`)。这个分支
 /// 与 `tests/plaza_detail.rs` 的 `detail_ref_for_unregistered_repo` 逐行同构
 /// (那份测试注入的是 `Store`,不依赖真实 `HOME`,断言调用后 `plaza_repos` 仍空)。
 ///

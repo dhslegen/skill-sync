@@ -941,9 +941,10 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
     `handle_callback_request` 在**拿到授权码的当场**回的,换令牌与存凭证都还没发生。
 - **技能广场(M9)是锁定源同款的第二个"不落 config.registries"源,保留 id 固定为
   `plaza`**(`registry::PLAZA_REGISTRY_ID`,kind=github,base_url=`https://github.com`
-  锁定不可删/不可加仓——用户挂仓的坐标经专用 IPC `plaza_ensure_repo` 写进
-  `config.plazaRepos`,不走通用 `registry::add_repo`,该入口对 `plaza` 报
-  `REPO_BUILTIN_LOCKED`)。**内建源当年只穿了一处就在 M6 造成"认领对主线场景
+  锁定不可删/不可加仓——用户挂仓的坐标经 `core::plaza::ensure_repo` 写进
+  `config.plazaRepos`(v5 起有两个调用方:`plaza_ensure_repo` 与
+  `project_skill_install`,都是"用户按下了装"这个动作),不走通用
+  `registry::add_repo`,该入口对 `plaza` 报 `REPO_BUILTIN_LOCKED`)。**内建源当年只穿了一处就在 M6 造成"认领对主线场景
   从来没生效过"的静默失效(见上面 `resolve_binding` 一条),广场因此照抄内建源的
   教训,逐处显式穿线并各自独立测试 + 注入验证,不许合并成一条笼统断言。
   六处穿线清单(M9 任务 2,`registry.rs`/`acquire.rs`/`commands.rs`/`state.rs`)**:
@@ -971,7 +972,8 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
   `HashMap`,`OnceLock` 单例,**不落盘**——避免为"很可能从未安装过"的仓积累
   孤儿缓存文件),只有广场页会调它。仓未挂进 `config.plazaRepos` 时详情仍要能看
   (`resolve` 报 `REPO_UNKNOWN_REPO` 时临时探测默认分支直连,**绝不写 config**
-  ——挂仓只能由「装了一个搜索结果」这个动作触发,即 `plaza_ensure_repo`)。
+  ——挂仓只能由「装了一个搜索结果」这个动作触发,写入实现是 `plaza::ensure_repo`,
+  调用方只有 `plaza_ensure_repo` 与 `project_skill_install`)。
 - 🔴 **登录是「源」级操作,不需要技能库坐标**(M9 终审抓到的跨任务缺陷,已修):
   `auth_device_start/wait`、`auth_login_token/oauth`、`auth_status` 五个 command 原先
   一律以 `resolve_registry(id, None)` 开头,而广场源**按设计没有主仓**(`key=None`
@@ -991,7 +993,7 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
     与改写后的 `SettingsPage.test.tsx`(真实点击 + 断言 invoke 带 `registryId:"plaza"`)。
     **加按钮时问一句:有没有测试真的点过它,还是只断言了它渲染出来。**
 - **广场详情缓存刻意不记 head sha**(M9 终审裁决,设计 §2.2 原写"记 sha"已被推翻):
-  逐条排查过每个可能喂入新 sha 的路径(`plaza_ensure_repo` 只给分支名、acquire/
+  逐条排查过每个可能喂入新 sha 的路径(`plaza::ensure_repo` 只给分支名、acquire/
   scheduler 走独立的 `store_index` 文件缓存且只在挂仓后生效、`retryDetail` 无强制
   刷新入口)——**不主动探测的前提下这份缓存没有任何天然失效时机**,记了就是写了
   用不上的字段。取舍:GitHub 匿名配额只有 60 次/时,缓存首要意义就是省它,
