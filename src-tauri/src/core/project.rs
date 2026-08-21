@@ -242,6 +242,32 @@ fn payload_hash(payload: &SkillPayload) -> String {
     hex
 }
 
+/// 这个技能的本体是否被用户改过(与 lock 里记的 hash 不符)。
+///
+/// **lock 里没有这条记账时按"没改过"处理**:宁可漏报,不误报——与全局
+/// 「指纹为空按没有更新处理」同一条取舍。手放进项目的技能就属于这一档,
+/// 它本来也没有"更新"可言(界面不会给它摆更新按钮)。
+pub fn has_local_edits(project_root: &Path, key: &str) -> Result<bool, AppError> {
+    let lock = project_lock::lock_path(project_root);
+    let Some((_, entry)) = project_lock::read_entries(&lock)
+        .into_iter()
+        .find(|(k, _)| k == key)
+    else {
+        return Ok(false);
+    };
+    if entry.computed_hash.is_empty() {
+        return Ok(false);
+    }
+
+    let body = body_dir(project_root, key);
+    if !body.exists() {
+        return Ok(false);
+    }
+    let current =
+        project_lock::upstream_folder_hash(&body).map_err(|e| read_failed(&body, &e.to_string()))?;
+    Ok(current != entry.computed_hash)
+}
+
 /// 安装:落本体 → 建链 → 写 lock。
 ///
 /// `entry` 里的 `computed_hash` 会被**实际落盘后现算的值覆盖**——调用方给什么都不算数,

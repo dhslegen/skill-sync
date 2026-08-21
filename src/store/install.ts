@@ -32,6 +32,18 @@ import {
 } from "@/lib/ipc";
 import { useRegistries } from "@/store/registries";
 
+
+/**
+ * 默认勾选哪些 agent:**装了的、且没在设置里被禁用的**。
+ *
+ * 抽成函数是因为项目级安装(store/project.ts 那条路)也要"沿用全局默认"
+ * ——两处各写一份的话口径会悄悄漂移(判定只有一处实现,是本项目反复吃过亏的一条)。
+ * 手动勾选不受它约束,它只决定默认值。
+ */
+export function defaultSelectedAgents(agents: DetectedAgent[]): string[] {
+  return agents.filter((a) => a.installed && !a.disabled).map((a) => a.name);
+}
+
 export type InstallPhase = "idle" | "choosing" | "running" | "conflict" | "done" | "error";
 
 interface InstallState {
@@ -171,9 +183,7 @@ export const useInstall = create<InstallState>((set, get) => ({
         agents: detected.agents,
         // 默认全选**已检测到**的(交接包 3.5 任务 9):没装的工具勾上也没意义;
         // 设置页关掉的也不进默认勾选(M2 任务 2),但手动勾选不拦
-        selected: new Set(
-          detected.agents.filter((a) => a.installed && !a.disabled).map((a) => a.name),
-        ),
+        selected: new Set(defaultSelectedAgents(detected.agents)),
       });
     } catch (raw) {
       set({ phase: "error", error: toAppError(raw) });
@@ -206,9 +216,7 @@ export const useInstall = create<InstallState>((set, get) => ({
       const [detected, repoView] = await Promise.all([agentsDetected(), plazaEnsureRepo(ownerRepo)]);
       set({
         agents: detected.agents,
-        selected: new Set(
-          detected.agents.filter((a) => a.installed && !a.disabled).map((a) => a.name),
-        ),
+        selected: new Set(defaultSelectedAgents(detected.agents)),
         repo: repoView.key,
       });
       // 库切换器的"已挂仓子条目"是 §2.4 更新徽标口径落地的关键(设计文档):

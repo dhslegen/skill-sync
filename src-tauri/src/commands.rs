@@ -2480,9 +2480,29 @@ pub struct ProjectSkillView {
     pub description: String,
     pub source: String,
     pub source_type: String,
-    /// 能不能"更新"。`sourceType` 为 local/node_modules/well-known 的还原不了
-    /// ——**摆不出来就不摆**(不摆比解释好),前端据此决定要不要渲染更新按钮。
+    /// 仓库里的技能目录名,取自 lock 的 `skillPath` 倒数第二段。
+    ///
+    /// 🔴 **不能拿 `key` 代替**:`key` 是 frontmatter name,而取数要按仓库目录名
+    /// (`store::build_index` 的索引键)。两者在广场技能里经常不同——实测 47 个里 8 个,
+    /// 且命中的全是安装量最大的旗舰仓。拿 key 去取数会 `REPO_NOT_FOUND`,
+    /// 表现就是"那些技能永远更新不了"(与 M10 终审抓到的 skillId 缺陷同构)。
+    /// 推不出来时为 `None`,前端据此不摆更新按钮。
+    pub dir_slug: Option<String>,
+    /// 能不能"更新"。`sourceType` 为 local/node_modules/well-known 的还原不了,
+    /// 或推不出仓库目录名的,都不行——**摆不出来就不摆**(不摆比解释好)。
     pub updatable: bool,
+}
+
+/// 从 lock 的 `skillPath` 推仓库目录名:`skills/react-best-practices/SKILL.md`
+/// → `react-best-practices`。形状不符(没有目录段)时返回 `None`,绝不猜。
+fn dir_slug_from_skill_path(skill_path: Option<&str>) -> Option<String> {
+    let path = skill_path?;
+    let mut parts = path.rsplit('/');
+    let file = parts.next()?;
+    if !file.eq_ignore_ascii_case(crate::core::skills::SKILL_FILE) {
+        return None;
+    }
+    parts.next().filter(|s| !s.is_empty()).map(str::to_string)
 }
 
 /// 一个项目及它里面的技能。
@@ -2579,13 +2599,16 @@ fn project_group(root: &std::path::Path) -> ProjectGroupView {
             )
             .ok()
             .and_then(|raw| crate::core::skills::parse_skill_md(&raw).ok());
+            let dir_slug = dir_slug_from_skill_path(e.skill_path.as_deref());
             ProjectSkillView {
                 display_name: parsed
                     .as_ref()
                     .map(|p| p.name.clone())
                     .unwrap_or_else(|| key.clone()),
                 description: parsed.map(|p| p.description).unwrap_or_default(),
-                updatable: matches!(e.source_type.as_str(), "github" | "git" | "gitlab"),
+                updatable: matches!(e.source_type.as_str(), "github" | "git" | "gitlab")
+                    && dir_slug.is_some(),
+                dir_slug,
                 source: e.source,
                 source_type: e.source_type,
                 key,
@@ -2713,6 +2736,92 @@ fn project_lock_source_url(kind: &str, base_url: &str, repo: &RepoRef) -> String
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectUpdateArgs {
+    pub project_path: String,
+    pub key: String,
+    pub registry_id: Option<String>,
+    pub repo: Option<String>,
+    pub dir_slug: String,
+    pub agent_ids: Vec<String>,
+    /// 用户已确认"丢弃我改的内容"。本体被改过且没带这个标记时返回 `hasLocalEdits`。
+    #[serde(default)]
+    pub discard_local_edits: bool,
+}
+
+/// 项目级更新的回报。`hasLocalEdits` 时磁盘一个字节都没动过。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum ProjectUpdateOutcome {
+    Updated { key: String },
+    AlreadyLatest { key: String },
+    /// 本体被用户改过,要先拍板。**不静默覆盖用户的改动**。
+    HasLocalEdits { key: String },
+}
+
+/// 更新项目里的一个技能:按 lock 记的来源重新取数覆盖。
+///
+/// 先判本体有没有被用户改过——改过且未确认就停下,磁盘零写入。
+#[tauri::command]
+pub async fn project_skill_update(
+    args: ProjectUpdateArgs,
+) -> Result<ProjectUpdateOutcome, AppError> {
+    let root = std::path::PathBuf::from(&args.project_path);
+
+    if !args.discard_local_edits && project::has_local_edits(&root, &args.key)? {
+        return Ok(ProjectUpdateOutcome::HasLocalEdits { key: args.key });
+    }
+
+    match project_skill_install(ProjectInstallArgs {
+        project_path: args.project_path,
+        dir_slug: args.dir_slug,
+        registry_id: args.registry_id,
+        repo: args.repo,
+        agent_ids: args.agent_ids,
+        // 改动检测已在上面做过,这里的"覆盖"是用户要的那个更新动作本身。
+        confirmed_replace: true,
+    })
+    .await?
+    {
+        ProjectInstallOutcome::Installed { key, .. } => Ok(ProjectUpdateOutcome::Updated { key }),
+        ProjectInstallOutcome::AlreadyInstalled { key } => {
+            Ok(ProjectUpdateOutcome::AlreadyLatest { key })
+        }
+        // confirmed_replace 恒真,走不到这一档;真走到了说明预检语义变了,
+        // 如实回报而不是假装更新成功。
+        ProjectInstallOutcome::NeedsDecision { key } => {
+            Ok(ProjectUpdateOutcome::HasLocalEdits { key })
+        }
+    }
+}
+
+/// 在文件管理器中显示项目文件夹。
+///
+/// **不复用 `skill_reveal`**:那条的守卫是 `local_detail::ensure_skill_dir`
+/// (只放行含 SKILL.md 的技能目录),项目根天然不符合。这里的守卫换成
+/// "必须在清单里",范围同样收得死——不接受任意路径,那是从 webview 通往系统的通道。
+#[tauri::command]
+pub async fn project_reveal(path: String) -> Result<(), AppError> {
+    let config = app_store()?.load_config()?.value;
+    let known = config
+        .projects
+        .iter()
+        .any(|p| std::path::Path::new(p) == std::path::Path::new(&path));
+    if !known {
+        return Err(AppError::new("FS_BAD_PROJECT_PATH", "这个文件夹不在你的项目列表里")
+            .with_detail(path));
+    }
+    let dir = std::path::PathBuf::from(&path);
+    if !dir.is_dir() {
+        return Err(AppError::new("FS_BAD_PROJECT_PATH", "这个文件夹不存在").with_detail(path));
+    }
+    tauri_plugin_opener::reveal_item_in_dir(&dir).map_err(|e| {
+        AppError::new("FS_REVEAL_FAILED", "没能在文件管理器中显示这个文件夹")
+            .with_detail(e.to_string())
+    })
+}
+
 /// 从项目里移除一个技能。破坏性操作,`confirmed` 由前端带确认结果传入(铁律 7)。
 #[tauri::command]
 pub async fn project_skill_remove(
@@ -2733,7 +2842,32 @@ pub async fn project_skill_remove(
 mod tests {
     use super::*;
 
+        /// `skillPath` → 仓库目录名的推导。
+    ///
+    /// 🔴 这是那批 `frontmatter name ≠ 仓库目录名` 的技能(广场实测 47 个里 8 个,
+    /// 且全是安装量最大的旗舰仓)能不能更新的**唯一判据**:更新要按仓库目录名取数,
+    /// 拿 `key`(frontmatter name)去取必然 REPO_NOT_FOUND。
     #[test]
+    fn dir_slug_comes_from_the_skill_path_not_the_lock_key() {
+        // 真实形态:键是 vercel-react-best-practices,仓里的目录却是 react-best-practices
+        assert_eq!(
+            dir_slug_from_skill_path(Some("skills/react-best-practices/SKILL.md")).as_deref(),
+            Some("react-best-practices")
+        );
+        // 深层嵌套只取最后一段目录
+        assert_eq!(
+            dir_slug_from_skill_path(Some("a/b/c/SKILL.md")).as_deref(),
+            Some("c")
+        );
+        // 推不出来一律 None,**绝不猜**:猜错会让更新打到别的技能上
+        assert_eq!(dir_slug_from_skill_path(None), None);
+        assert_eq!(dir_slug_from_skill_path(Some("SKILL.md")), None, "仓根技能没有目录段");
+        assert_eq!(dir_slug_from_skill_path(Some("skills/x/README.md")), None, "不是 SKILL.md");
+        assert_eq!(dir_slug_from_skill_path(Some("")), None);
+        assert_eq!(dir_slug_from_skill_path(Some("/SKILL.md")), None, "目录段是空串");
+    }
+
+#[test]
     fn iso8601_matches_the_lock_files_format() {
         assert_eq!(civil_from_days(20_664), (2026, 7, 30));
         // 闰年 2 月末与年初年末各查一处,这类手写历法最容易在边界上错

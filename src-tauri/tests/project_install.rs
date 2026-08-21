@@ -357,3 +357,61 @@ fn lock_entry_keeps_every_source_field() {
     assert_eq!(written.source_type, expected.source_type);
     assert_eq!(written.skill_path, expected.skill_path);
 }
+
+// ============================================================ 更新
+
+/// 更新前必须先判"用户改过没有":改过就要拍板,不能静默覆盖。
+#[test]
+fn update_precheck_flags_local_edits() {
+    let (_tmp, root) = project_dir();
+    project::install(
+        &root,
+        "weekly-report",
+        &payload("weekly-report", "原始正文"),
+        &[],
+        &entry("x"),
+    )
+    .unwrap();
+
+    // 用户手工改了本体。
+    std::fs::write(
+        root.join(".agents/skills/weekly-report/SKILL.md"),
+        "---\nname: weekly-report\ndescription: 测试用\n---\n我自己改的\n",
+    )
+    .unwrap();
+
+    assert!(
+        project::has_local_edits(&root, "weekly-report").unwrap(),
+        "本体与 lock 里的 hash 不符,应判为改过"
+    );
+}
+
+/// 没改过时不能误报——误报会让用户每次更新都被问一次莫须有的"要不要保留改动"。
+#[test]
+fn update_precheck_does_not_cry_wolf_on_an_untouched_skill() {
+    let (_tmp, root) = project_dir();
+    project::install(
+        &root,
+        "weekly-report",
+        &payload("weekly-report", "正文"),
+        &[],
+        &entry("x"),
+    )
+    .unwrap();
+
+    assert!(
+        !project::has_local_edits(&root, "weekly-report").unwrap(),
+        "刚装完没动过,不该判为改过"
+    );
+}
+
+/// lock 里没有这条记账时按"没改过"处理:宁可漏报,不误报
+/// (与全局「指纹为空按没有更新处理」同一条取舍)。
+#[test]
+fn a_skill_without_a_lock_entry_is_not_reported_as_edited() {
+    let (_tmp, root) = project_dir();
+    std::fs::create_dir_all(root.join(".agents/skills/手放的")).unwrap();
+    std::fs::write(root.join(".agents/skills/手放的/SKILL.md"), "x").unwrap();
+
+    assert!(!project::has_local_edits(&root, "手放的").unwrap());
+}

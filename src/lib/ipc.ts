@@ -683,3 +683,93 @@ export const plazaEnsureRepo = (ownerRepo: string) =>
  */
 export const plazaDetail = (ownerRepo: string, skillId?: string, wantedName?: string) =>
   call<SkillDetail[]>("plaza_detail", { args: { ownerRepo, skillId, wantedName } });
+
+// ============================================================ 项目级安装(v5)
+
+/** 项目分组里的一个技能。`key` 是内部标识,界面一律展示 `displayName`。 */
+export interface ProjectSkillView {
+  key: string;
+  displayName: string;
+  description: string;
+  source: string;
+  sourceType: string;
+  /**
+   * 仓库里的技能目录名(取数用)。**不是 `key`**——`key` 是 frontmatter name,
+   * 两者在广场技能里经常不同(实测 47 个里 8 个),拿 key 取数会 REPO_NOT_FOUND。
+   * 推不出来时为 null,此时 `updatable` 必为 false。
+   */
+  dirSlug: string | null;
+  /**
+   * 能不能更新。`sourceType` 为 local/node_modules/well-known 的还原不了来源,
+   * 推不出仓库目录名的也不行。界面据此**不摆更新按钮**
+   * ——不摆比摆一个必然报错的按钮好(M6「绑不上就不摆」同款)。
+   */
+  updatable: boolean;
+}
+
+/** 一个项目及它里面的技能。 */
+export interface ProjectGroupView {
+  path: string;
+  folderName: string;
+  /** 目录不在了(被删或移走)。此时只提供「从列表移除」。 */
+  missing: boolean;
+  /** 记账文件版本不认识或损坏 → 只读展示,本应用一个字节都不写。 */
+  readOnly: boolean;
+  skills: ProjectSkillView[];
+}
+
+export type ProjectInstallOutcome =
+  | { status: "installed"; key: string; linkedAgents: string[] }
+  | { status: "alreadyInstalled"; key: string }
+  | { status: "needsDecision"; key: string };
+
+export type ProjectUpdateOutcome =
+  | { status: "updated"; key: string }
+  | { status: "alreadyLatest"; key: string }
+  | { status: "hasLocalEdits"; key: string };
+
+export interface ProjectRemoveDone {
+  bodyRemoved: boolean;
+  unlinked: string[];
+  /** 没删掉的东西(内容与本体不同的实体目录),界面要如实告诉用户。 */
+  kept: { kind: "keptForeignDir"; dir: string }[];
+}
+
+/** 弹目录选择框。用户取消返回 `null`;选中的路径已过守卫校验。 */
+export const projectPick = () => call<string | null>("project_pick");
+
+export const projectList = () => call<ProjectGroupView[]>("project_list");
+
+/** 从清单移除。**纯记账**,项目里的技能一个字节都不动。 */
+export const projectForget = (path: string) => call<void>("project_forget", { path });
+
+export const projectSkillInstall = (args: {
+  projectPath: string;
+  dirSlug: string;
+  registryId?: string;
+  repo?: string;
+  agentIds: string[];
+  confirmedReplace?: boolean;
+}) => call<ProjectInstallOutcome>("project_skill_install", { args });
+
+export const projectSkillUpdate = (args: {
+  projectPath: string;
+  key: string;
+  dirSlug: string;
+  registryId?: string;
+  repo?: string;
+  agentIds: string[];
+  discardLocalEdits?: boolean;
+}) => call<ProjectUpdateOutcome>("project_skill_update", { args });
+
+/** 移除技能。破坏性操作,`confirmed` 必须是前端确认过的结果(铁律 7)。 */
+export const projectSkillRemove = (projectPath: string, key: string, confirmed: boolean) =>
+  call<ProjectRemoveDone>("project_skill_remove", { projectPath, key, confirmed });
+
+/**
+ * 在文件管理器中显示项目文件夹。
+ *
+ * 与 `skillReveal` 分开:那条的 core 守卫只放行含 SKILL.md 的技能目录,
+ * 项目根不符合。这条的守卫是"必须在项目清单里"——同样不接受任意路径。
+ */
+export const projectReveal = (path: string) => call<void>("project_reveal", { path });

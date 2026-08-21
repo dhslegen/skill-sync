@@ -2,11 +2,14 @@ import { Check, TriangleAlert } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
 import { InstallButton } from "@/components/InstallButton";
+import { InstallScopeMenu } from "@/components/InstallScopeMenu";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { PLAZA_REGISTRY_ID, type InstallStage } from "@/lib/ipc";
 import { cardState, remoteHashOf, type LibraryRef } from "@/lib/update";
-import { failedLinks, linkedAgents, useInstall } from "@/store/install";
+import { agentsDetected } from "@/lib/ipc";
+import { defaultSelectedAgents, failedLinks, linkedAgents, useInstall } from "@/store/install";
+import { useProjects } from "@/store/project";
 import { useStoreIndex } from "@/store/store-index";
 
 /** `owner/repo` → 广场坐标下的 `LibraryRef`。广场技能永远走固定的 `plaza` 源。 */
@@ -54,6 +57,8 @@ export function InstallPanel({
       <IdleFooter
         dirSlug={dirSlug}
         plaza={plaza}
+        activeRegistryId={activeRegistry}
+        activeRepoKey={activeRepo}
         onBegin={() =>
           plaza
             ? void beginFromPlaza(plaza.ownerRepo, dirSlug)
@@ -74,10 +79,15 @@ function IdleFooter({
   dirSlug,
   plaza,
   onBegin,
+  activeRegistryId,
+  activeRepoKey,
 }: {
   dirSlug: string;
   plaza?: { ownerRepo: string };
   onBegin: () => void;
+  /** 当前浏览的库坐标(装到项目时要原样带上,否则会打到主仓)。 */
+  activeRegistryId?: string | null;
+  activeRepoKey?: string | null;
 }) {
   const installed = useInstall((s) => s.installed);
   const index = useStoreIndex((s) => s.index);
@@ -97,25 +107,70 @@ function IdleFooter({
         index ? { registryId: index.registryId, owner: index.owner, repo: index.repo } : undefined,
       );
 
+  const installToProject = useProjects((s) => s.install);
+  const pickProject = useProjects((s) => s.pick);
+  const installing = useProjects((s) => s.installing);
+  const projectNotice = useProjects((s) => s.notice);
+
+  // 装到项目沿用全局默认 agent(2026-08-20 拍板:不再单独问一次)。
+  // 口径与全局安装共用 `defaultSelectedAgents`,不另写一份。
+  const runProjectInstall = async (projectPath: string) => {
+    const detected = await agentsDetected();
+    await installToProject({
+      projectPath,
+      dirSlug,
+      agentIds: defaultSelectedAgents(detected.agents),
+      registryId: plaza ? PLAZA_REGISTRY_ID : (activeRegistryId ?? undefined),
+      repo: plaza ? plaza.ownerRepo : (activeRepoKey ?? undefined),
+    });
+  };
+
   return (
-    <div className="flex items-center gap-2.5 border-t border-border px-5 py-3.5">
-      <InstallButton
-        state={state}
-        size="lg"
-        onClick={onBegin}
-        hint={
-          state === "otherLibrary" && record
-            ? t("skill.otherLibraryHint", {
-                library: `${record.sourceOwner}/${record.sourceRepo}`,
-              })
-            : undefined
-        }
-      />
-      {record?.localModified && (
-        <span className="text-[11.5px] text-text-3">{t("conflict.modifiedTitle")}</span>
+    <div className="border-t border-border px-5 py-3.5">
+      <div className="flex items-center gap-2.5">
+        <InstallButton
+          state={state}
+          size="lg"
+          onClick={onBegin}
+          hint={
+            state === "otherLibrary" && record
+              ? t("skill.otherLibraryHint", {
+                  library: `${record.sourceOwner}/${record.sourceRepo}`,
+                })
+              : undefined
+          }
+        />
+        <InstallScopeMenu
+          disabled={!!installing}
+          onGlobal={onBegin}
+          onPickProject={() => {
+            void (async () => {
+              const path = await pickProject();
+              if (path) await runProjectInstall(path);
+            })();
+          }}
+          onChooseRecent={(path) => void runProjectInstall(path)}
+        />
+        {record?.localModified && (
+          <span className="text-[11.5px] text-text-3">{t("conflict.modifiedTitle")}</span>
+        )}
+      </div>
+      {installing && (
+        <p className="mt-2 text-[11.5px] text-text-3">
+          {t("install.installingToProject", { project: folderNameOf(installing.projectPath) })}
+        </p>
+      )}
+      {!installing && projectNotice && (
+        <p className="mt-2 text-[11.5px] text-text-2">{projectNotice}</p>
       )}
     </div>
   );
+}
+
+/** 路径末段。界面不拿完整路径当标题(太长),完整路径挂在 title 上。 */
+function folderNameOf(path: string): string {
+  const parts = path.split(/[/\\]/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
 }
 
 function AgentChooser({ onCancel }: { onCancel: () => void }) {

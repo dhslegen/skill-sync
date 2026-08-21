@@ -216,7 +216,9 @@ pub fn run() {
             commands::project_list,
             commands::project_forget,
             commands::project_skill_install,
-            commands::project_skill_remove
+            commands::project_skill_remove,
+            commands::project_skill_update,
+            commands::project_reveal
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

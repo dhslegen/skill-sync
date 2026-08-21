@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ConflictDialog } from "@/components/ConflictDialog";
 import { DetailPanel } from "@/components/DetailPanel";
+import { ProjectDecisionDialog } from "@/components/ProjectDecisionDialog";
 import { RemoveDialog } from "@/components/RemoveDialog";
 import { RepairDialog } from "@/components/RepairDialog";
 import { ShareConflictDialog } from "@/components/ShareConflictDialog";
@@ -99,6 +100,7 @@ export default function App() {
       <CommandPalette />
       <ConflictDialog />
       <RemoveDialog />
+      <ProjectDecisionDialog />
       <RepairDialog />
       <ShareConflictDialog />
       <RetryLinkDialog />

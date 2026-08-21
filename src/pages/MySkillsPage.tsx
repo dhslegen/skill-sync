@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from "react";
 
+import { ProjectSections } from "@/components/ProjectSections";
 import { SkillIcon } from "@/components/SkillIcon";
 import { t, type MessageKey } from "@/i18n";
 import { relativeTimeFromIso } from "@/lib/format";
@@ -187,6 +188,9 @@ export function MySkillsPage() {
           </div>
         </section>
       ))}
+      {/* 第四区:装在项目里的。按项目分组,与上面三区的扁平列表结构不同,
+          所以是独立组件(数据源也不同:项目级真相在各项目的记账文件里)。 */}
+      <ProjectSections />
     </div>
   );
 }

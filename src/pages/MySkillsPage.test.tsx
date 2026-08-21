@@ -275,7 +275,10 @@ describe("我的技能页", () => {
 
     await screen.findByText("weekly-report");
     const headings = screen.getAllByRole("heading").map((h) => h.textContent);
-    expect(headings).toEqual(["由技能库管理", "本地创建", "其他工具装的"]);
+    // 第四区「装在项目里的」(v5)恒在最后:它按项目分组、数据源也不同
+    // (项目级真相在各项目的记账文件里),空的时候摆引导语而不是隐藏
+    // ——否则用户不知道有这条路。
+    expect(headings).toEqual(["由技能库管理", "本地创建", "其他工具装的", "装在项目里的"]);
   });
 
   it("空分区不显示标题", async () => {
@@ -284,7 +287,7 @@ describe("我的技能页", () => {
 
     await screen.findByText("weekly-report");
     const headings = screen.getAllByRole("heading").map((h) => h.textContent);
-    expect(headings).toEqual(["由技能库管理"]);
+    expect(headings).toEqual(["由技能库管理", "装在项目里的"]);
   });
 
   it("归类徽标(含 npx 警示色)彻底撤掉,分区标题即区分", async () => {
