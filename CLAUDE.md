@@ -48,6 +48,7 @@ cargo clippy --all-targets -- -D warnings   # --all-targets 必带,见下
 pnpm verify:agents     # 与上游 vercel-labs/skills 差分校验 agents.json 并重生成 fixture(需联网)
 pnpm verify:discovery  # 同上,校验技能发现规则
 pnpm verify:lock       # 同上,录制 .skill-lock.json(v3)的真实读写行为
+pnpm verify:project-lock  # 同上,录制项目级 skills-lock.json(v1)与上游 hash 口径(v5 新增)
 ```
 
 **提交前的四道闸**:`pnpm test` + `pnpm lint` + **`pnpm build:web`** + `cargo test --workspace`
@@ -80,6 +81,9 @@ src/
                  wizard/settings(agent 开关+更新档位+App 自更新)/prefs(偏好落盘协调)/
                  registries(多源)/local-detail(本地详情)/create(新建技能向导)
   components/    Sidebar/Toolbar/SearchBox/SkillCard/InstallButton/DetailPanel/CommandPalette/
+                 ChangelogCard(升级后的更新日志卡片)/InstalledScopes(详情页「已装到」)/
+                 InstallScopeMenu(作用域下拉)/ProjectSections(我的技能·项目分区)/
+                 ProjectDecisionDialog(项目级替换/本地改动拍板)/
                  Markdown/Icon/SkillIcon/InstallPanel/Wizard + 五个弹窗:
                  ConflictDialog(三选)/RemoveDialog(双确认)/RepairDialog(占位替换)/
                  ShareTakenDialog(占用三选)/RetryLinkDialog(重试时的占位替换)
@@ -338,7 +342,7 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
   它就是这个项目的开发者文档。**别按全局规则把它加进 exclude 或重写历史**。
   仍然适用的部分:`docs/*`(除放行的两个)、`_*.md`、AI 流程产物一律不进版本控制。
 
-## 当前进度(2026-08-21,现役 **v0.4.0**;**v5「项目级安装」六个任务已完成、尚未发版**)
+## 当前进度(2026-08-22,现役 **v0.5.0**)
 
 **v5 = 技能装到指定项目**(2026-08-20 brainstorming 拍板,任务分解与设计在本地
 `docs/设计-v5-项目级安装.md` / `docs/v5-任务分解.md`,上游取证在 `docs/v5-上游取证/`)。
@@ -346,7 +350,7 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 任务 3 清单记账 + 六条 IPC + dialog 插件 → 任务 4+5 界面(作用域下拉 + 项目分区 +
 手动更新)→ 任务 6 承诺同步。**核心承诺是与 `npx skills` 完全互通**:同一套布局、
 同一份 `skills-lock.json`,两边互相认得出对方装的技能。
-⚠️ **尚未发版**,`RELEASE_NOTES.md` 的 0.5.0 段落已写好。
+**已随 v0.5.0 发出**(2026-08-22)。
 
 **这一轮有三条被实测推翻的设计假设**,都已写回文档(它们比代码值钱):
 1. 「ASCII 下字节序等于 localeCompare」——**错**,几乎每个技能都受影响(见
@@ -440,7 +444,11 @@ macOS 交叉编译仍不通(aws-lc-sys 要 Windows SDK),但已无所谓——不
 
 **M1–M6 全部完成并提交**(M6 分解与拍板见 docs/M6-任务分解.md;任务 4/5 中途被用户
 推翻重做过,经过在 git log)。
-**现役版本 v0.4.0**(2026-08-20 发布,见「当前进度」的终态核实)。
+**现役版本 v0.5.0**(2026-08-22 发布)。
+**v0.5.0 = 项目级安装(v5)+ 升级后的更新日志(M11)**:技能可以只装进某个项目
+文件夹(与 `npx skills` 完全互通)、选完文件夹先确认再装、已装过可覆盖重装、
+详情页显示「已装到」哪些位置;升级后首屏卡片说清本版改动,历史版本(带日期)
+收在设置页。
 **v0.4.0 = 技能广场(M9)+ 广场提速与排行榜(M10)**:搜/装全网技能、首屏热门榜、
 滚到底自动加载、回车触发搜索、详情与安装走 blob 快照、macOS 钥匙串询问从三次减到一次。
 **v0.3.13**(2026-08-11)之前的版本历史:
@@ -1419,7 +1427,7 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
 
 ### 待处理
 
-**M11(工作代号「v5 开发」)两条目标全部完成,2026-08-21;⚠️ 尚未发版**
+**M11(工作代号「v5 开发」)两条目标全部完成并已随 v0.5.0 发出(2026-08-22)**
 
 1. ~~**技能装到指定项目里**~~ —— **已完成**(v5 任务 1–6),见「现役机制约束」的
    「项目级安装」一节。顺带把目录名分叉议题也拍板了。另有一笔终审修复
@@ -1431,10 +1439,8 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
    否则没法继续"的场合)、缺席记录时靠 `wizardDone` 区分新装与存量用户、
    跨版本时**漏掉的全部列出**(默认收起)。
 
-**发版待办**:`RELEASE_NOTES.md` 的 0.5.0 段落已写好并涵盖上面两件事。发版前
-按「发版」一节先手动跑三条 `plaza_*_live`。发出去这一版之后,存量用户(0.4.0)
-第一次打开就会看到 0.5.0 的卡片——**这个功能的第一批受益者就是升上来的人**,
-不用等下一版。
+**这一版之后,存量用户(0.4.0)第一次打开就会看到 0.5.0 的卡片**——更新日志
+这个功能的第一批受益者就是升上来的人,不用等下一版。
 
 ~~调查 `npx skills find` 有没有开放 API~~ ——**已完成并发布**,即 M9 技能广场 +
 M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重新调查一遍。**
@@ -1514,7 +1520,9 @@ M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重�
 > (macOS 侧同一条链路 2026-08-11 当天真机走通两次:0.3.11→0.3.12、0.3.12→0.3.13,
 > 日志四行齐全——但那证明不了 Windows,两个平台的"装好"根本不是一件事。)
 
-- **「关掉卡片 → 重启 → 不再弹」这条闭环未在真机上走过**(M11):真机验过的是三个
+- ~~**「关掉卡片 → 重启 → 不再弹」这条闭环未在真机上走过**~~ —— **用户已于
+  2026-08-22 真机验过**(连同项目安装确认条、覆盖重装、已装到回显一起)。
+  下面这段保留是因为**验法仍然有用**(将来改动这条链路时照着重验一遍):真机验过的是三个
   **显示**状态(单版本、跨版本折叠、设置页历史),以及"不关下次还在"(重启仍弹);
   **"关了下次不在"只有前端 mock 层覆盖**——真实 IPC → `acknowledge` → `save_config`
   → 重启后 `resolve` 读回,这一整条没跑过。验法两分钟:本机 `config.lastSeenVersion`
@@ -1561,6 +1569,12 @@ cd src-tauri && SKILLSYNC_PLAZA_LIVE=1 cargo test --test plaza_live \
   --test plaza_blob_live --test plaza_install_blob_live -- --nocapture
 ```
 
+⚠️ **`plaza_install_blob_live` 的断言比的是两次真实网络请求的耗时**
+(`blob+trees` 必须快过 `zipball`),网络波动会让它倒挂 → **偶发假红**
+(2026-08-22 实测:第一次红,立刻重跑 5.10s vs 2.25s = 2.3x 通过)。
+**重跑一次即可,连续多次才当回归**——与"苹果公证偶发超时不是脚本缺陷"同一档。
+别为了稳定去掉这条断言:它证明的事实(blob 路径确实更快)是这个改造的全部理由。
+
 理由:`plaza_blob_live`(详情侧)与 `plaza_install_blob_live`(安装侧)是
 **blob↔zipball 逐字节等价**这条地基**仅有的哨兵**。上游 skills.sh 一旦改了 blob 的
 编码/换行/BOM 处理,五道闸与双平台 CI **全绿**,而用户侧的表现是所有 blob 装的技能
@@ -1574,8 +1588,22 @@ cd src-tauri && SKILLSYNC_PLAZA_LIVE=1 cargo test --test plaza_live \
 不知道该不该升。这份文件是**发版说明的唯一真相**:内网 release 的 body 与
 README 的版本历史都从它来,不手抄第二份。README 的「版本历史」一节也要同步。
 
-**发版 = `./scripts/publish-release.sh <版本号>`**(完整环境变量与一次性准备见
-部署指南 §7.4)。它包办:改三处版本号 → **commit + tag + push**(tag 触发 GitHub CI
+**发版 = `./scripts/publish-release.sh <版本号>`**,但**光 source 那三个
+`.env.*.local` 不够**——另外三个变量不在任何文件里,要现场从密钥推导
+(2026-08-22 实测踩过:只 source 了三个 local 文件,脚本在前置校验就停,
+报缺 `SKILLSYNC_UPDATE_URL` / `SKILLSYNC_UPDATE_PUBKEY` /
+`TAURI_SIGNING_PRIVATE_KEY`)。**完整六行在脚本头部注释里,照抄即可**:
+
+```
+set -a; . fixtures/.env.gitea.local; . fixtures/.env.apple.local; . fixtures/.env.release.local; set +a
+export SKILLSYNC_UPDATE_URL="${SKILLSYNC_BUILTIN_GITEA_URL}/skills/skillsync-releases/releases/download/latest/latest.json"
+export SKILLSYNC_UPDATE_PUBKEY="$(cat ~/.tauri/skillsync.key.pub)"
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/skillsync.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+./scripts/publish-release.sh <版本号>
+```
+
+(一次性准备见部署指南 §7.4。)它包办:改三处版本号 → **commit + tag + push**(tag 触发 GitHub CI
 出 Windows 包,与本地构建并行;版本号必须先进 tag,这步没法留给人)→ 本地构建
 macOS(签名+公证)→ 打 dmg → 等 CI → 下载 exe 本地补签(私钥不进公开 CI)→
 建版本 release 传五个产物 → 重建**三平台** latest 公告牌 → curl 验收 →
