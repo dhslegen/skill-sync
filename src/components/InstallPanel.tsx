@@ -52,24 +52,38 @@ export function InstallPanel({
   const activeRepo = useStoreIndex((s) => s.activeRepo);
   const mine = active === dirSlug;
 
+  const scope = { dirSlug, plaza, activeRegistryId: activeRegistry, activeRepoKey: activeRepo };
+
+  // 项目安装的进行态/提示/待确认与**全局安装的 phase 无关**,所以在顶层渲染。
+  // 🔴 此前它们挂在 `IdleFooter` 内部,于是"装完那一屏"(done)里点最近项目,
+  // 确认条整个渲染不出来——用户看得到入口、点了却没反应。
+  const projectArea = <ProjectStatus />;
+
   if (!mine || phase === "idle") {
     return (
-      <IdleFooter
-        dirSlug={dirSlug}
-        plaza={plaza}
-        activeRegistryId={activeRegistry}
-        activeRepoKey={activeRepo}
-        onBegin={() =>
-          plaza
-            ? void beginFromPlaza(plaza.ownerRepo, dirSlug)
-            : void begin(dirSlug, activeRegistry, activeRepo)
-        }
-      />
+      <>
+        <IdleFooter
+          {...scope}
+          onBegin={() =>
+            plaza
+              ? void beginFromPlaza(plaza.ownerRepo, dirSlug)
+              : void begin(dirSlug, activeRegistry, activeRepo)
+          }
+        />
+        {projectArea}
+      </>
     );
   }
   if (phase === "choosing") return <AgentChooser onCancel={cancel} />;
   if (phase === "running") return <Running />;
-  if (phase === "done") return <DoneFooter />;
+  if (phase === "done") {
+    return (
+      <>
+        <DoneFooter {...scope} />
+        {projectArea}
+      </>
+    );
+  }
   if (phase === "error") return <ErrorFooter />;
   // conflict 由 ConflictDialog 接管,底部保持"安装中"的静态样子
   return <Running />;
@@ -107,7 +121,7 @@ function IdleFooter({
         index ? { registryId: index.registryId, owner: index.owner, repo: index.repo } : undefined,
       );
   const requestInstall = useProjects((s) => s.requestInstall);
-  const confirm = useProjects((s) => s.confirm);
+  const installing = useProjects((s) => s.installing);
   const dismissProjectNotice = useProjects((s) => s.dismissNotice);
   const cancelConfirm = useProjects((s) => s.cancelConfirm);
 
@@ -118,8 +132,6 @@ function IdleFooter({
     dismissProjectNotice();
     cancelConfirm();
   }, [dirSlug, dismissProjectNotice, cancelConfirm]);
-  const installing = useProjects((s) => s.installing);
-  const projectNotice = useProjects((s) => s.notice);
 
   // 装到项目沿用全局默认 agent(2026-08-20 拍板:不再单独问一次)。
   // 口径与全局安装共用 `defaultSelectedAgents`,不另写一份。
@@ -173,15 +185,7 @@ function IdleFooter({
           <span className="text-[11.5px] text-text-3">{t("conflict.modifiedTitle")}</span>
         )}
       </div>
-      {installing && (
-        <p className="mt-2 text-[11.5px] text-text-3">
-          {t("install.installingToProject", { project: folderNameOf(installing.projectPath) })}
-        </p>
-      )}
-      {!installing && projectNotice && (
-        <p className="mt-2 text-[11.5px] text-text-2">{projectNotice}</p>
-      )}
-      {confirm && <ConfirmBar />}
+
     </div>
   );
 }
@@ -190,6 +194,34 @@ function IdleFooter({
 function folderNameOf(path: string): string {
   const parts = path.split(/[/\\]/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
+}
+
+/**
+ * 项目安装的进行态 / 结果提示 / 待确认条。
+ *
+ * 🔴 **与全局安装的 phase 无关,所以在 `InstallPanel` 顶层渲染**:此前它们挂在
+ * `IdleFooter` 内部,于是"装完那一屏"(`phase === "done"`)里点最近项目,确认条
+ * 整个渲染不出来——用户看得到入口、点下去却没反应。这类"入口在这一屏、
+ * 反馈在另一屏"的错位,单测不特意跨 phase 构造就发现不了。
+ */
+function ProjectStatus() {
+  const installing = useProjects((s) => s.installing);
+  const notice = useProjects((s) => s.notice);
+  const confirm = useProjects((s) => s.confirm);
+
+  if (!installing && !notice && !confirm) return null;
+
+  return (
+    <div className="px-5 pb-3.5">
+      {installing && (
+        <p className="text-[11.5px] text-text-3">
+          {t("install.installingToProject", { project: folderNameOf(installing.projectPath) })}
+        </p>
+      )}
+      {!installing && notice && <p className="text-[11.5px] text-text-2">{notice}</p>}
+      {confirm && <ConfirmBar />}
+    </div>
+  );
 }
 
 /**
@@ -360,18 +392,57 @@ function Running() {
   );
 }
 
-function DoneFooter() {
-  const { report, localKept, shareResult, agents: detected } = useInstall();
+function DoneFooter({
+  dirSlug,
+  plaza,
+  activeRegistryId,
+  activeRepoKey,
+}: {
+  dirSlug: string;
+  plaza?: { ownerRepo: string };
+  activeRegistryId?: string | null;
+  activeRepoKey?: string | null;
+}) {
+  const { report, localKept, shareResult, agents: detected, begin, beginFromPlaza } = useInstall();
+  const requestInstall = useProjects((s) => s.requestInstall);
   const failed = failedLinks(report);
   const agents = linkedAgents(report, detected);
 
   return (
     <div className="border-t border-border px-5 py-3.5">
-      <div className="flex items-center gap-2 text-[12.5px] font-medium text-ok">
-        <Icon icon={Check} size={14} />
-        {agents.length > 0
-          ? t("install.done", { agents: agents.join(t("punct.listSeparator")) })
-          : t("install.doneCanonicalOnly")}
+      <div className="flex items-center gap-2">
+        <div className="flex flex-1 items-center gap-2 text-[12.5px] font-medium text-ok">
+          <Icon icon={Check} size={14} />
+          {agents.length > 0
+            ? t("install.done", { agents: agents.join(t("punct.listSeparator")) })
+            : t("install.doneCanonicalOnly")}
+        </div>
+        {/* 装完那一屏也要留出口(2026-08-22 用户反馈:"这时候也没有更多操作空间")。
+            与「已启用」终态同一形态:结果是状态,「装到项目…」是动作,并排摆。 */}
+        <InstallScopeMenu
+          dirSlug={dirSlug}
+          label={t("install.scopeProject")}
+          onGlobal={() =>
+            plaza
+              ? void beginFromPlaza(plaza.ownerRepo, dirSlug)
+              : void begin(dirSlug, activeRegistryId ?? undefined, activeRepoKey)
+          }
+          onPickProject={() =>
+            void requestInstall({
+              dirSlug,
+              registryId: plaza ? PLAZA_REGISTRY_ID : (activeRegistryId ?? undefined),
+              repo: plaza ? plaza.ownerRepo : (activeRepoKey ?? undefined),
+            })
+          }
+          onChooseRecent={(path) =>
+            void requestInstall({
+              dirSlug,
+              projectPath: path,
+              registryId: plaza ? PLAZA_REGISTRY_ID : (activeRegistryId ?? undefined),
+              repo: plaza ? plaza.ownerRepo : (activeRepoKey ?? undefined),
+            })
+          }
+        />
       </div>
       {/* 「保留并分享」的结果盖过普通的"已保留":它把下一步也交代了 */}
       {shareResult ? (

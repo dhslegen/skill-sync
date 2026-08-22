@@ -317,3 +317,53 @@ describe("已经装过之后的入口可见性", () => {
     expect(screen.getByRole("menuitem", { name: "装到项目…" })).toBeTruthy();
   });
 });
+
+describe("装完之后的出口", () => {
+  // 2026-08-22 用户反馈:"详情页直接点安装后,文案提示已启用到…,这时候也没有
+  // 更多操作空间"。与上一条(终态只有小三角)是**同一个病根的另一个入口**:
+  // 装完那一屏只有结果文案,零操作入口 —— 想再装到项目得关掉详情面板重开。
+  function seedDone() {
+    useInstall.setState({
+      phase: "done",
+      dirSlug: "weekly-report",
+      agents: [
+        { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, isUniversal: false, needsLink: true },
+      ],
+      report: {
+        dirSlug: "weekly-report",
+        links: [{ dir: "/x", result: { status: "linked", mode: "symlink" } }],
+      } as never,
+      localKept: false,
+      shareResult: null,
+    });
+  }
+
+  it("装完仍能看到「装到项目…」,不必关掉详情面板重开", async () => {
+    seedDone();
+    render(<InstallPanel dirSlug="weekly-report" />);
+
+    // 结果文案照常
+    expect(screen.getByText(/已启用/)).toBeTruthy();
+    // 但出口必须在
+    expect(screen.getByRole("button", { name: "装到项目…" })).toBeTruthy();
+  });
+
+  it("装完点最近项目,确认条照样出得来 —— 它不该只活在「未安装」那一屏", async () => {
+    // 结构问题:确认条此前挂在 IdleFooter 内部,done 档整个渲染不出来。
+    const groups = [
+      { path: "/w/我的项目", folderName: "我的项目", missing: false, readOnly: false, skills: [] },
+    ];
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "project_list") return groups;
+      return null;
+    });
+    seedDone();
+    render(<InstallPanel dirSlug="weekly-report" />);
+
+    await userEvent.click(screen.getByRole("button", { name: "装到项目…" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^我的项目/ }));
+
+    await screen.findByRole("button", { name: "装到这里" });
+  });
+});
