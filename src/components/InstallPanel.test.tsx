@@ -240,7 +240,10 @@ describe("最近的项目", () => {
     expect(invoke.mock.calls.filter(([c]) => c === "project_pick")).toHaveLength(0);
   });
 
-  it("点没装过的最近项目仍然一步到位", async () => {
+  it("点最近项目也走确认条 —— 它省掉的只是选文件夹那一步,后续完全一样", async () => {
+    // 2026-08-22 用户拍板,推翻了此前的"最近项目豁免确认":
+    // 两条路的差别**只应该是要不要弹系统选择框**,后续必须一致,否则同一个动作
+    // 在两个入口有两种行为,心流是断的。一致性比省一次点击值钱。
     const groups = [
       { path: "/w/新的", folderName: "新的", missing: false, readOnly: false, skills: [] },
     ];
@@ -254,6 +257,14 @@ describe("最近的项目", () => {
     await openScopeMenu();
 
     await userEvent.click(await screen.findByRole("menuitem", { name: /^新的/ }));
+
+    // 先出确认条,磁盘零写入
+    await screen.findByRole("button", { name: "装到这里" });
+    expect(invoke.mock.calls.filter(([c]) => c === "project_skill_install")).toHaveLength(0);
+    // 但**不再弹一次系统选择框** —— 项目已经指定了,那一步正是它省掉的
+    expect(invoke.mock.calls.filter(([c]) => c === "project_pick")).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole("button", { name: "装到这里" }));
 
     await waitFor(() => {
       expect(invoke.mock.calls.filter(([c]) => c === "project_skill_install")).toHaveLength(1);

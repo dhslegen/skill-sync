@@ -5,11 +5,10 @@ import { Icon } from "@/components/Icon";
 import { InstallButton } from "@/components/InstallButton";
 import { InstallScopeMenu } from "@/components/InstallScopeMenu";
 import { t, type MessageKey } from "@/i18n";
+import { failedLinks, linkedAgents, useInstall } from "@/store/install";
 import { cn } from "@/lib/cn";
 import { PLAZA_REGISTRY_ID, type InstallStage } from "@/lib/ipc";
 import { cardState, remoteHashOf, type LibraryRef } from "@/lib/update";
-import { agentsDetected } from "@/lib/ipc";
-import { defaultSelectedAgents, failedLinks, linkedAgents, useInstall } from "@/store/install";
 import { useProjects } from "@/store/project";
 import { useStoreIndex } from "@/store/store-index";
 
@@ -107,8 +106,6 @@ function IdleFooter({
         remoteHashOf(index, dirSlug),
         index ? { registryId: index.registryId, owner: index.owner, repo: index.repo } : undefined,
       );
-
-  const installToProject = useProjects((s) => s.install);
   const requestInstall = useProjects((s) => s.requestInstall);
   const confirm = useProjects((s) => s.confirm);
   const dismissProjectNotice = useProjects((s) => s.dismissNotice);
@@ -126,16 +123,6 @@ function IdleFooter({
 
   // 装到项目沿用全局默认 agent(2026-08-20 拍板:不再单独问一次)。
   // 口径与全局安装共用 `defaultSelectedAgents`,不另写一份。
-  const runProjectInstall = async (projectPath: string) => {
-    const detected = await agentsDetected();
-    await installToProject({
-      projectPath,
-      dirSlug,
-      agentIds: defaultSelectedAgents(detected.agents),
-      registryId: plaza ? PLAZA_REGISTRY_ID : (activeRegistryId ?? undefined),
-      repo: plaza ? plaza.ownerRepo : (activeRepoKey ?? undefined),
-    });
-  };
 
   return (
     <div className="border-t border-border px-5 py-3.5">
@@ -165,17 +152,17 @@ function IdleFooter({
               });
             })();
           }}
-          onChooseRecent={(path, already) =>
-            // 已经装过的**不豁免确认**:豁免了就直接调安装、拿回一句"已经有了",
-            // 用户依旧没有覆盖的机会。进确认条才有「覆盖重装」这条路。
-            already
-              ? void requestInstall({
-                  dirSlug,
-                  projectPath: path,
-                  registryId: plaza ? PLAZA_REGISTRY_ID : (activeRegistryId ?? undefined),
-                  repo: plaza ? plaza.ownerRepo : (activeRepoKey ?? undefined),
-                })
-              : void runProjectInstall(path)
+          onChooseRecent={(path) =>
+            // 「最近的项目」省掉的**只是选文件夹那一步**,后续与手选文件夹完全一样
+            // ——一样进确认条、一样点「装到这里」才写盘(2026-08-22 用户拍板,
+            // 推翻了此前"最近项目豁免确认"的设计)。同一个动作在两个入口两种行为,
+            // 心流是断的;一致性比省一次点击值钱。
+            void requestInstall({
+              dirSlug,
+              projectPath: path,
+              registryId: plaza ? PLAZA_REGISTRY_ID : (activeRegistryId ?? undefined),
+              repo: plaza ? plaza.ownerRepo : (activeRepoKey ?? undefined),
+            })
           }
         />
         {record?.localModified && (

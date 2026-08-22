@@ -26,8 +26,7 @@ export function InstallScopeMenu({
   dirSlug: string;
   /** 打开系统目录选择框。 */
   onPickProject: () => void;
-  /** 第二个参数 = 这个项目已经装过它了。调用方据此决定直接装还是先确认。 */
-  onChooseRecent: (path: string, alreadyInstalled: boolean) => void;
+  onChooseRecent: (path: string) => void;
   /** 主按钮那条路(装到这台电脑)。菜单里也摆一份,两条路才对称、用户看得懂。 */
   onGlobal: () => void;
   disabled?: boolean;
@@ -136,7 +135,7 @@ export function InstallScopeMenu({
                   title={g.path}
                   onClick={() => {
                     setOpen(false);
-                    onChooseRecent(g.path, already);
+                    onChooseRecent(g.path);
                   }}
                   className="block w-full px-3 py-1.5 text-left hover:bg-surface-2"
                 >
