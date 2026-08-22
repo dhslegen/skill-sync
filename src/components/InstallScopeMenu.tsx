@@ -26,7 +26,8 @@ export function InstallScopeMenu({
   dirSlug: string;
   /** 打开系统目录选择框。 */
   onPickProject: () => void;
-  onChooseRecent: (path: string) => void;
+  /** 第二个参数 = 这个项目已经装过它了。调用方据此决定直接装还是先确认。 */
+  onChooseRecent: (path: string, alreadyInstalled: boolean) => void;
   /** 主按钮那条路(装到这台电脑)。菜单里也摆一份,两条路才对称、用户看得懂。 */
   onGlobal: () => void;
   disabled?: boolean;
@@ -120,8 +121,11 @@ export function InstallScopeMenu({
                 {t("install.recentProjects")}
               </div>
               {recent.map((g) => {
-                // 已经装过就**不给点**:让用户点一下、等一整轮网络请求(下压缩包、
-                // 建索引)才被告知"已经有了",是这次真机反馈里最实的一条。
+                // 标出"这个项目已经装过它了",让用户**在点之前就知道**——省掉一整轮
+                // 网络请求(下压缩包、建索引)才被告知"已经有了"。
+                // ⚠️ **标注是知情,不是禁止**(2026-08-22 用户拍板:"保留足够权利"):
+                // 点它照样进确认条,在那里给「覆盖重装」。第一版做成 disabled,
+                // 把"已经装过"变成了死路。
                 // 判据是仓库目录名而不是安装键——两者在广场技能里经常不同。
                 const already = (g.skills ?? []).some((s) => s.dirSlug === dirSlug);
                 return (
@@ -130,12 +134,11 @@ export function InstallScopeMenu({
                   type="button"
                   role="menuitem"
                   title={g.path}
-                  disabled={already}
                   onClick={() => {
                     setOpen(false);
-                    onChooseRecent(g.path);
+                    onChooseRecent(g.path, already);
                   }}
-                  className="block w-full px-3 py-1.5 text-left hover:bg-surface-2 disabled:cursor-default disabled:opacity-55 disabled:hover:bg-transparent"
+                  className="block w-full px-3 py-1.5 text-left hover:bg-surface-2"
                 >
                   <span className="flex items-center gap-1.5">
                     <span className="min-w-0 flex-1 truncate text-[12.5px] text-text">

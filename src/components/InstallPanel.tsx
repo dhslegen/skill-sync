@@ -165,7 +165,18 @@ function IdleFooter({
               });
             })();
           }}
-          onChooseRecent={(path) => void runProjectInstall(path)}
+          onChooseRecent={(path, already) =>
+            // 已经装过的**不豁免确认**:豁免了就直接调安装、拿回一句"已经有了",
+            // 用户依旧没有覆盖的机会。进确认条才有「覆盖重装」这条路。
+            already
+              ? void requestInstall({
+                  dirSlug,
+                  projectPath: path,
+                  registryId: plaza ? PLAZA_REGISTRY_ID : (activeRegistryId ?? undefined),
+                  repo: plaza ? plaza.ownerRepo : (activeRepoKey ?? undefined),
+                })
+              : void runProjectInstall(path)
+          }
         />
         {record?.localModified && (
           <span className="text-[11.5px] text-text-3">{t("conflict.modifiedTitle")}</span>
@@ -203,6 +214,7 @@ function ConfirmBar() {
   const confirm = useProjects((s) => s.confirm)!;
   const confirmInstall = useProjects((s) => s.confirmInstall);
   const cancelConfirm = useProjects((s) => s.cancelConfirm);
+  const requestInstall = useProjects((s) => s.requestInstall);
 
   return (
     <div className="mt-2.5 rounded-card border border-border bg-surface-2 px-3 py-2.5">
@@ -225,9 +237,20 @@ function ConfirmBar() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          {/* 已经装过就不摆「装到这里」——摆一个点了也白点的按钮就是耍用户
-              (M6「绑不上就不摆」同款)。要更新去「我的技能」的项目分区。 */}
-          {!confirm.alreadyInstalled && (
+          {/* 已经装过时主动作换成「覆盖重装」而不是撤掉按钮(2026-08-22 用户拍板:
+              "装过的也能装,保留足够权利")。**这不违反「不摆比解释好」**——那条针对的是
+              点了必然报错的按钮;重装是完全合法的操作,内容一样时它仍会重建 agent 关联,
+              那正是用户想重装的理由。 */}
+          {confirm.alreadyInstalled ? (
+            <button
+              type="button"
+              title={t("install.confirmForceHint")}
+              onClick={() => void confirmInstall(true)}
+              className="h-7 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+            >
+              {t("install.confirmForce")}
+            </button>
+          ) : (
             <button
               type="button"
               onClick={() => void confirmInstall()}
@@ -236,6 +259,21 @@ function ConfirmBar() {
               {t("install.confirmGo")}
             </button>
           )}
+          {/* 就地换一个文件夹(2026-08-22 用户拍板:"装到一个目录不应该没有任何
+              可装到别的目录操作空间")。此前这一档只有「取消」,是条死路。 */}
+          <button
+            type="button"
+            onClick={() =>
+              void requestInstall({
+                dirSlug: confirm.dirSlug,
+                registryId: confirm.registryId,
+                repo: confirm.repo,
+              })
+            }
+            className="h-7 rounded-ctl px-2.5 text-[12px] font-medium text-text-2 hover:text-text"
+          >
+            {t("install.confirmPickOther")}
+          </button>
           <button
             type="button"
             onClick={cancelConfirm}

@@ -415,3 +415,58 @@ fn a_skill_without_a_lock_entry_is_not_reported_as_edited() {
 
     assert!(!project::has_local_edits(&root, "手放的").unwrap());
 }
+
+// ============================================================ 安装计划(强制覆盖)
+
+use skillsync_lib::core::project::{plan, InstallStep};
+
+/// 用户 2026-08-22 反馈:"装过的也能装,强制覆盖选项,保留足够权利"。
+///
+/// 此前 `AlreadyInstalled` 是**无条件早退**的,于是"已经装过"成了死路——
+/// 界面连一个能点的按钮都没有。而重装是完全合法的操作:内容一样时它仍然会
+/// **重建 agent 关联**(关联可能被别的工具删掉或改指),这正是用户要重装的理由。
+#[test]
+fn already_installed_skips_by_default_but_force_reinstalls() {
+    assert_eq!(plan(&ProjectPrecheck::AlreadyInstalled, false, false), InstallStep::SkipAlready);
+    assert_eq!(plan(&ProjectPrecheck::AlreadyInstalled, true, false), InstallStep::Install);
+}
+
+/// 🔴 **force 不蕴含"丢弃我的改动"**。两个开关管的是两件事:
+/// - `force` = "我知道已经装了,再装一遍"(跳过省事判定);
+/// - `confirmed_replace` = "我已确认丢弃本地改动"(铁律 7 要的那句确认)。
+///
+/// 混成一个的话,用户点「覆盖重装」就会**静默抹掉他自己改过的内容**。
+#[test]
+fn force_does_not_bypass_the_confirmation_for_local_edits() {
+    let changed = ProjectPrecheck::NeedsDecision { current_hash: "abc".into() };
+
+    assert_eq!(plan(&changed, true, false), InstallStep::NeedDecision, "force 不该绕过改动确认");
+    assert_eq!(plan(&changed, false, false), InstallStep::NeedDecision);
+    assert_eq!(plan(&changed, false, true), InstallStep::Install, "确认过就装");
+    assert_eq!(plan(&changed, true, true), InstallStep::Install);
+}
+
+#[test]
+fn a_fresh_target_always_installs() {
+    for force in [false, true] {
+        for confirmed in [false, true] {
+            assert_eq!(plan(&ProjectPrecheck::Fresh, force, confirmed), InstallStep::Install);
+        }
+    }
+}
+
+/// 「更新」与「覆盖重装」是两件事,判定表上必须分得开。
+///
+/// ⚠️ 这条是实现「覆盖重装」时**顺手改错、自己发现**的:给 `project_skill_update`
+/// 传 `force: true` 之后,"内容已经一样"那一档再也走不到,`AlreadyLatest`
+/// (已经是最新的)成了死代码——用户点「更新」会看到"已更新",而远端根本没有新内容。
+/// 「更新」问的是"远端有没有新内容";「覆盖重装」问的是"再装一遍(顺带重建关联)"。
+#[test]
+fn update_still_reports_already_latest_because_it_does_not_force() {
+    // 更新走的是 confirmed_replace=true / force=false 这一组
+    assert_eq!(
+        plan(&ProjectPrecheck::AlreadyInstalled, false, true),
+        InstallStep::SkipAlready,
+        "更新遇到内容一样时要如实说已是最新,不能装作更新过"
+    );
+}

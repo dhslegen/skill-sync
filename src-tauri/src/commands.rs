@@ -2715,6 +2715,12 @@ pub struct ProjectInstallArgs {
     /// 用户已确认覆盖。缺省时撞上同名不同内容会返回 `needsDecision`。
     #[serde(default)]
     pub confirmed_replace: bool,
+    /// 用户点了「覆盖重装」:已经装过也照装一遍(会重建 agent 关联)。
+    ///
+    /// 🔴 **不蕴含 `confirmed_replace`**:本体被改过时它仍会返回 `needsDecision`,
+    /// 由界面弹决策对话框。两者合并的话,点一下「覆盖重装」就静默抹掉用户的改动。
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// 项目级安装的回报。`needsDecision` 时磁盘一个字节都没动过。
@@ -2770,16 +2776,18 @@ pub async fn project_skill_install(
         })?;
     let payload = acquire::extract_payload(&archive, skill);
 
-    match project::precheck(&root, &args.dir_slug, &payload)? {
-        project::ProjectPrecheck::AlreadyInstalled => {
+    // 判定表在 core(纯函数、可单测),这里只负责按它分流。match 穷尽,漏一档编译不过。
+    let precheck = project::precheck(&root, &args.dir_slug, &payload)?;
+    match project::plan(&precheck, args.force, args.confirmed_replace) {
+        project::InstallStep::SkipAlready => {
             let key = project::install_key(&args.dir_slug, &payload)?;
             return Ok(ProjectInstallOutcome::AlreadyInstalled { key });
         }
-        project::ProjectPrecheck::NeedsDecision { .. } if !args.confirmed_replace => {
+        project::InstallStep::NeedDecision => {
             let key = project::install_key(&args.dir_slug, &payload)?;
             return Ok(ProjectInstallOutcome::NeedsDecision { key });
         }
-        _ => {}
+        project::InstallStep::Install => {}
     }
 
     let entry = crate::core::project_lock::LocalEntry {
@@ -2859,6 +2867,10 @@ pub async fn project_skill_update(
         agent_ids: args.agent_ids,
         // 改动检测已在上面做过,这里的"覆盖"是用户要的那个更新动作本身。
         confirmed_replace: true,
+        // 🔴 **不能给 force**:给了的话"内容已经一样"这一档就再也走不到,
+        // `AlreadyLatest`(已经是最新的)成了死代码,更新时会谎报"已更新"。
+        // 「更新」问的是"远端有没有新内容",与「覆盖重装」不是一回事。
+        force: false,
     })
     .await?
     {

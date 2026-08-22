@@ -100,6 +100,7 @@ interface ProjectState {
     registryId?: string;
     repo?: string;
     confirmedReplace?: boolean;
+    force?: boolean;
   }) => Promise<void>;
   update: (args: {
     projectPath: string;
@@ -110,14 +111,26 @@ interface ProjectState {
     repo?: string;
     discardLocalEdits?: boolean;
   }) => Promise<void>;
-  /** 弹选择框选一个文件夹,**只进入待确认,不装**。 */
+  /**
+   * 进入待确认态。不给 `projectPath` 就弹选择框让用户选一个。
+   *
+   * 给 `projectPath` 的用法是「最近的项目」里**已经装过**的那一项:那时项目已经
+   * 指定了,不该再弹一次选择框,但也不能直接装——直接装只会拿回一句"已经有了",
+   * 用户依旧没有覆盖的机会(2026-08-22 用户反馈的正是这个死路)。
+   */
   requestInstall: (args: {
     dirSlug: string;
     registryId?: string;
     repo?: string;
+    projectPath?: string;
   }) => Promise<void>;
-  /** 用户点了「装到这里」。 */
-  confirmInstall: () => Promise<void>;
+  /**
+   * 用户点了「装到这里」,或已装过时点了「覆盖重装」(`force`)。
+   *
+   * 🔴 `force` **不蕴含**"丢弃我的改动":本体被改过时 core 仍会返回 needsDecision,
+   * 走既有的决策对话框。合并成一个开关就是静默抹掉用户改过的内容。
+   */
+  confirmInstall: (force?: boolean) => Promise<void>;
   cancelConfirm: () => void;
   remove: (projectPath: string, key: string, confirmed: boolean) => Promise<void>;
   forget: (path: string) => Promise<void>;
@@ -170,8 +183,8 @@ export const useProjects = create<ProjectState>((set, get) => ({
     }
   },
 
-  requestInstall: async ({ dirSlug, registryId, repo }) => {
-    const projectPath = await get().pick();
+  requestInstall: async ({ dirSlug, registryId, repo, projectPath: known }) => {
+    const projectPath = known ?? (await get().pick());
     if (!projectPath) return; // 用户取消,什么都不发生
 
     // 关联工具沿用全局默认(设置页没禁用的那些),与「最近的项目」那条路一致。
@@ -199,7 +212,7 @@ export const useProjects = create<ProjectState>((set, get) => ({
     });
   },
 
-  confirmInstall: async () => {
+  confirmInstall: async (force) => {
     const confirm = get().confirm;
     if (!confirm) return;
     set({ confirm: null });
@@ -209,12 +222,13 @@ export const useProjects = create<ProjectState>((set, get) => ({
       agentIds: confirm.agentIds,
       registryId: confirm.registryId,
       repo: confirm.repo,
+      force,
     });
   },
 
   cancelConfirm: () => set({ confirm: null }),
 
-  install: async ({ projectPath, dirSlug, agentIds, registryId, repo, confirmedReplace }) => {
+  install: async ({ projectPath, dirSlug, agentIds, registryId, repo, confirmedReplace, force }) => {
     set({ installing: { projectPath, dirSlug }, error: null, notice: null });
     try {
       const outcome = await projectSkillInstall({
@@ -224,6 +238,7 @@ export const useProjects = create<ProjectState>((set, get) => ({
         registryId,
         repo,
         confirmedReplace,
+        force,
       });
       const project = folderNameOf(projectPath);
       if (outcome.status === "needsDecision") {

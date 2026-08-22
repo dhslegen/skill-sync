@@ -63,6 +63,48 @@ pub enum ProjectPrecheck {
     },
 }
 
+/// 预检之后该做什么。
+///
+/// 提成枚举 + 纯函数(而不是在 command 里写 match)有两个理由:
+/// 1. command 是薄壳、锁在真实 `HOME` 上,这张判定表在那里测不到;
+/// 2. 表里有一条**很容易写错且后果严重**的规则——见 [`plan`] 的文档。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallStep {
+    /// 装。
+    Install,
+    /// 已经一模一样了,不必白装一遍。
+    SkipAlready,
+    /// 本体被改过,要用户先拍板。到这一步磁盘一个字节都没动过。
+    NeedDecision,
+}
+
+/// 预检结果 + 两个开关 → 该做什么。
+///
+/// 🔴 **`force` 与 `confirmed_replace` 是两件事,绝不能合并**:
+/// - `force` = "我知道已经装了,再装一遍"。跳过的是"内容一样就别白装"这条省事判定;
+///   重装仍有实际价值——它会**重建 agent 关联**(关联可能被别的工具删掉或改指)。
+/// - `confirmed_replace` = "我已确认丢弃本地改动"。这是铁律 7 要的那句确认。
+///
+/// 合并的后果:用户点一下「覆盖重装」就**静默抹掉自己改过的内容**。所以
+/// `force` 遇上"本体被改过"仍然返回 [`InstallStep::NeedDecision`],
+/// 由界面弹既有的决策对话框。有测试正面钉住这一条。
+///
+/// (`AlreadyInstalled` 此前是无条件早退的,于是"已经装过"成了死路——界面上
+/// 连一个能点的按钮都没有。2026-08-22 用户反馈:"装过的也能装,保留足够权利"。)
+pub fn plan(
+    precheck: &ProjectPrecheck,
+    force: bool,
+    confirmed_replace: bool,
+) -> InstallStep {
+    match precheck {
+        ProjectPrecheck::Fresh => InstallStep::Install,
+        ProjectPrecheck::AlreadyInstalled if force => InstallStep::Install,
+        ProjectPrecheck::AlreadyInstalled => InstallStep::SkipAlready,
+        ProjectPrecheck::NeedsDecision { .. } if confirmed_replace => InstallStep::Install,
+        ProjectPrecheck::NeedsDecision { .. } => InstallStep::NeedDecision,
+    }
+}
+
 /// 卸载时**没有删掉**的东西,必须回报给调用方,由界面告诉用户。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]

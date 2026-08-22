@@ -787,6 +787,8 @@ export const projectSkillInstall = (args: {
   repo?: string;
   agentIds: string[];
   confirmedReplace?: boolean;
+  /** 已经装过也照装一遍(重建关联)。**不蕴含 confirmedReplace**:本体被改过时仍会问。 */
+  force?: boolean;
 }) => call<ProjectInstallOutcome>("project_skill_install", { args });
 
 export const projectSkillUpdate = (args: {
