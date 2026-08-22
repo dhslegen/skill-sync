@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { Icon } from "@/components/Icon";
 import { InstallPanel } from "@/components/InstallPanel";
+import { InstalledScopes } from "@/components/InstalledScopes";
 import { Markdown } from "@/components/Markdown";
 import { SkillIcon } from "@/components/SkillIcon";
 import { t } from "@/i18n";
@@ -412,6 +413,8 @@ function PanelBody({
           <FileTree detail={detail} />
         )}
       </div>
+
+      <InstalledScopes dirSlug={detail.dirSlug} />
 
       <InstallPanel dirSlug={detail.dirSlug} plaza={plaza ? { ownerRepo: plaza.ownerRepo } : undefined} />
     </>

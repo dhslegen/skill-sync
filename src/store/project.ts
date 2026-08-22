@@ -7,6 +7,7 @@ import { create } from "zustand";
 
 import { t } from "@/i18n";
 import {
+  agentsDetected,
   isAppError,
   projectForget,
   projectList,
@@ -15,6 +16,7 @@ import {
   projectSkillRemove,
   projectSkillUpdate,
   type AppError,
+  type DetectedAgent,
   type ProjectGroupView,
 } from "@/lib/ipc";
 
@@ -31,6 +33,37 @@ export const RECENT_PROJECT_LIMIT = 5;
  */
 export function recentProjects(groups: ProjectGroupView[]): ProjectGroupView[] {
   return groups.filter((g) => !g.missing).slice(0, RECENT_PROJECT_LIMIT);
+}
+
+/**
+ * 选完文件夹之后、真正写盘之前的待确认态。
+ *
+ * # 为什么要有这一步(2026-08-22 用户真机反馈后拍板)
+ *
+ * 原先是"选完路径立刻安装",用户的原话是"我以为是选完路径后点击安装,结果直接
+ * 安装了"。落差有个准确的名字:**选择位置 ≠ 确认写入**。系统选择框的按钮写着
+ * 「打开」,那是"选中"语义;而这一步要往用户的项目目录里写文件、建关联、
+ * 写 skills-lock.json —— 是写盘动作。业界对这条分得很清(克隆仓库、新建工程、
+ * 安装游戏都要在选完位置后再点一次执行;只有"打开文件夹"这类只读操作选完即执行)。
+ *
+ * ⚠️ 本想改系统选择框的按钮文案为「装到这里」,那样"选完即装"就名正言顺——
+ * **这条路不通**:`tauri-plugin-dialog` 2.7.2 的 `FileDialogBuilder` 只暴露
+ * `set_title`/`set_directory`/`set_parent`/`set_can_create_directories`,
+ * 没有按钮文案(底层 rfd 有 `set_button_label`,插件没转出来)。
+ *
+ * 「最近的项目」那条路**刻意豁免**这一步:用户点的是具体项目名,意图已经明确,
+ * 再问一遍"是不是这个项目"纯属啰嗦。
+ */
+export interface ProjectConfirm {
+  projectPath: string;
+  dirSlug: string;
+  agentIds: string[];
+  /** 会关联到的工具**展示名**。界面绝不露 agent name(内部标识不能露给用户)。 */
+  agentLabels: string[];
+  registryId?: string;
+  repo?: string;
+  /** 这个项目里已经有这个技能了。确认条据此改口,不当成一次新安装。 */
+  alreadyInstalled: boolean;
 }
 
 /** 一次「装到项目」的进行态。 */
@@ -54,6 +87,8 @@ interface ProjectState {
   notice: string | null;
   decision: ProjectDecision | null;
   busyKey: string | null;
+  /** 选完文件夹、等用户点「装到这里」。null = 没有待确认的。 */
+  confirm: ProjectConfirm | null;
 
   load: () => Promise<void>;
 
@@ -75,6 +110,15 @@ interface ProjectState {
     repo?: string;
     discardLocalEdits?: boolean;
   }) => Promise<void>;
+  /** 弹选择框选一个文件夹,**只进入待确认,不装**。 */
+  requestInstall: (args: {
+    dirSlug: string;
+    registryId?: string;
+    repo?: string;
+  }) => Promise<void>;
+  /** 用户点了「装到这里」。 */
+  confirmInstall: () => Promise<void>;
+  cancelConfirm: () => void;
   remove: (projectPath: string, key: string, confirmed: boolean) => Promise<void>;
   forget: (path: string) => Promise<void>;
 
@@ -102,6 +146,7 @@ export const useProjects = create<ProjectState>((set, get) => ({
   notice: null,
   decision: null,
   busyKey: null,
+  confirm: null,
 
   load: async () => {
     set({ loading: true, error: null });
@@ -124,6 +169,50 @@ export const useProjects = create<ProjectState>((set, get) => ({
       return null;
     }
   },
+
+  requestInstall: async ({ dirSlug, registryId, repo }) => {
+    const projectPath = await get().pick();
+    if (!projectPath) return; // 用户取消,什么都不发生
+
+    // 关联工具沿用全局默认(设置页没禁用的那些),与「最近的项目」那条路一致。
+    const detected = await agentsDetected().catch(() => ({ agents: [] as DetectedAgent[] }));
+    const chosen = detected.agents.filter((a) => a.installed && !a.disabled);
+
+    // 已装判定在**点之前**做:不这么做的话,用户要等一整轮网络请求
+    // (下压缩包、建索引)才被告知"已经有了"。判据是仓库目录名,不是安装键
+    // ——两者在广场技能里经常不同。
+    const already = get().groups.some(
+      (g) => g.path === projectPath && (g.skills ?? []).some((s) => s.dirSlug === dirSlug),
+    );
+
+    set({
+      notice: null,
+      confirm: {
+        projectPath,
+        dirSlug,
+        agentIds: chosen.map((a) => a.name),
+        agentLabels: chosen.map((a) => a.displayName),
+        registryId,
+        repo,
+        alreadyInstalled: already,
+      },
+    });
+  },
+
+  confirmInstall: async () => {
+    const confirm = get().confirm;
+    if (!confirm) return;
+    set({ confirm: null });
+    await get().install({
+      projectPath: confirm.projectPath,
+      dirSlug: confirm.dirSlug,
+      agentIds: confirm.agentIds,
+      registryId: confirm.registryId,
+      repo: confirm.repo,
+    });
+  },
+
+  cancelConfirm: () => set({ confirm: null }),
 
   install: async ({ projectPath, dirSlug, agentIds, registryId, repo, confirmedReplace }) => {
     set({ installing: { projectPath, dirSlug }, error: null, notice: null });

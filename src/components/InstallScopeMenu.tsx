@@ -16,11 +16,14 @@ import { recentProjects, useProjects } from "@/store/project";
  * 要改关联去「我的技能」里改。
  */
 export function InstallScopeMenu({
+  dirSlug,
   onPickProject,
   onChooseRecent,
   onGlobal,
   disabled,
 }: {
+  /** 正在安装的技能的**仓库目录名**。用来标出"这个项目已经装过它了"。 */
+  dirSlug: string;
   /** 打开系统目录选择框。 */
   onPickProject: () => void;
   onChooseRecent: (path: string) => void;
@@ -116,26 +119,42 @@ export function InstallScopeMenu({
               <div className="mt-1 border-t border-border px-3 pb-1 pt-1.5 text-[11px] text-text-3">
                 {t("install.recentProjects")}
               </div>
-              {recent.map((g) => (
+              {recent.map((g) => {
+                // 已经装过就**不给点**:让用户点一下、等一整轮网络请求(下压缩包、
+                // 建索引)才被告知"已经有了",是这次真机反馈里最实的一条。
+                // 判据是仓库目录名而不是安装键——两者在广场技能里经常不同。
+                const already = (g.skills ?? []).some((s) => s.dirSlug === dirSlug);
+                return (
                 <button
                   key={g.path}
                   type="button"
                   role="menuitem"
                   title={g.path}
+                  disabled={already}
                   onClick={() => {
                     setOpen(false);
                     onChooseRecent(g.path);
                   }}
-                  className="block w-full px-3 py-1.5 text-left hover:bg-surface-2"
+                  className="block w-full px-3 py-1.5 text-left hover:bg-surface-2 disabled:cursor-default disabled:opacity-55 disabled:hover:bg-transparent"
                 >
-                  <span className="block truncate text-[12.5px] text-text">{g.folderName}</span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="min-w-0 flex-1 truncate text-[12.5px] text-text">
+                      {g.folderName}
+                    </span>
+                    {already && (
+                      <span className="shrink-0 text-[10.5px] text-text-3">
+                        {t("install.recentAlready")}
+                      </span>
+                    )}
+                  </span>
                   {/* 路径用等宽字体(UI 规范:slug/路径类一律等宽),截断显示尾部更有用,
                       但 CSS 只能截尾——完整路径挂在 title 上 */}
                   <span className="block truncate font-mono text-[10.5px] text-text-3">
                     {g.path}
                   </span>
                 </button>
-              ))}
+                );
+              })}
             </>
           )}
         </div>

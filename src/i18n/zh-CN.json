@@ -373,5 +373,14 @@
   "changelog.alsoMissed": "还漏看了 {version}",
   "changelog.dismiss": "知道了",
   "settings.sectionVersionHistory": "版本历史",
-  "settings.versionHistoryEmpty": "没有可显示的版本说明。"
+  "settings.versionHistoryEmpty": "没有可显示的版本说明。",
+  "install.confirmTitle": "将装到",
+  "install.confirmAgents": "会关联到 {agents}",
+  "install.confirmNoAgents": "不建关联(这些工具直接读技能目录)",
+  "install.confirmGo": "装到这里",
+  "install.confirmAlready": "这个文件夹里已经有这个技能了",
+  "install.recentAlready": "已装",
+  "detail.installedScopes": "已装到",
+  "detail.scopeGlobal": "这台电脑",
+  "common.listSep": "、"
 }

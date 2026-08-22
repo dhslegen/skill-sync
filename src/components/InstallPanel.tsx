@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Check, TriangleAlert } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
@@ -108,7 +109,18 @@ function IdleFooter({
       );
 
   const installToProject = useProjects((s) => s.install);
-  const pickProject = useProjects((s) => s.pick);
+  const requestInstall = useProjects((s) => s.requestInstall);
+  const confirm = useProjects((s) => s.confirm);
+  const dismissProjectNotice = useProjects((s) => s.dismissNotice);
+  const cancelConfirm = useProjects((s) => s.cancelConfirm);
+
+  // 换一个技能看详情时,把上一次的提示与待确认收干净。
+  // 🔴 不清的话,提示说的是**另一个技能**的事(dismissNotice 此前定义了却一处没调用),
+  // 待确认条更糟——点「装到这里」装的是上一个技能。
+  useEffect(() => {
+    dismissProjectNotice();
+    cancelConfirm();
+  }, [dirSlug, dismissProjectNotice, cancelConfirm]);
   const installing = useProjects((s) => s.installing);
   const projectNotice = useProjects((s) => s.notice);
 
@@ -141,12 +153,16 @@ function IdleFooter({
           }
         />
         <InstallScopeMenu
+          dirSlug={dirSlug}
           disabled={!!installing}
           onGlobal={onBegin}
           onPickProject={() => {
             void (async () => {
-              const path = await pickProject();
-              if (path) await runProjectInstall(path);
+              await requestInstall({
+                dirSlug,
+                registryId: plaza ? PLAZA_REGISTRY_ID : (activeRegistryId ?? undefined),
+                repo: plaza ? plaza.ownerRepo : (activeRepoKey ?? undefined),
+              });
             })();
           }}
           onChooseRecent={(path) => void runProjectInstall(path)}
@@ -163,6 +179,7 @@ function IdleFooter({
       {!installing && projectNotice && (
         <p className="mt-2 text-[11.5px] text-text-2">{projectNotice}</p>
       )}
+      {confirm && <ConfirmBar />}
     </div>
   );
 }
@@ -171,6 +188,65 @@ function IdleFooter({
 function folderNameOf(path: string): string {
   const parts = path.split(/[/\\]/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
+}
+
+/**
+ * 选完文件夹之后的确认条(2026-08-22 用户真机反馈后加)。
+ *
+ * 原先是选完路径立刻写盘,用户的原话是"我以为是选完路径后点击安装,结果直接安装了"。
+ * 完整原委与"为什么不改系统选择框的按钮文案"见 `store/project.ts` 的 `ProjectConfirm`。
+ *
+ * 它同时是**成功反馈的锚点**:点下去之后原地变成结果提示,视线不用移动——
+ * 比在别处冒出一行小字可靠得多(用户另一条反馈:"安装提示不够明显")。
+ */
+function ConfirmBar() {
+  const confirm = useProjects((s) => s.confirm)!;
+  const confirmInstall = useProjects((s) => s.confirmInstall);
+  const cancelConfirm = useProjects((s) => s.cancelConfirm);
+
+  return (
+    <div className="mt-2.5 rounded-card border border-border bg-surface-2 px-3 py-2.5">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-[12px] text-text-3">{t("install.confirmTitle")}</div>
+          <div className="truncate text-[13px] font-[550]">{folderNameOf(confirm.projectPath)}</div>
+          {/* 路径用等宽(UI 规范),完整值挂 title —— CSS 只能截尾 */}
+          <div className="truncate font-mono text-[10.5px] text-text-3" title={confirm.projectPath}>
+            {confirm.projectPath}
+          </div>
+          <div className="mt-1 text-[11.5px] text-text-3">
+            {confirm.alreadyInstalled
+              ? t("install.confirmAlready")
+              : confirm.agentLabels.length > 0
+                ? t("install.confirmAgents", {
+                    agents: confirm.agentLabels.join(t("common.listSep")),
+                  })
+                : t("install.confirmNoAgents")}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {/* 已经装过就不摆「装到这里」——摆一个点了也白点的按钮就是耍用户
+              (M6「绑不上就不摆」同款)。要更新去「我的技能」的项目分区。 */}
+          {!confirm.alreadyInstalled && (
+            <button
+              type="button"
+              onClick={() => void confirmInstall()}
+              className="h-7 rounded-ctl bg-accent px-3 text-[12px] font-medium text-white hover:bg-accent-hover"
+            >
+              {t("install.confirmGo")}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={cancelConfirm}
+            className="h-7 rounded-ctl px-2.5 text-[12px] font-medium text-text-3 hover:text-text"
+          >
+            {t("conflict.cancel")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function AgentChooser({ onCancel }: { onCancel: () => void }) {
