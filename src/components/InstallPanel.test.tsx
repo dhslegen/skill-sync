@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -365,5 +365,76 @@ describe("装完之后的出口", () => {
     await userEvent.click(await screen.findByRole("menuitem", { name: /^我的项目/ }));
 
     await screen.findByRole("button", { name: "装到这里" });
+  });
+});
+
+describe("本次安装结果是临时态", () => {
+  // 2026-08-22 用户反馈:"已启用的详细消息应该是本次安装结果的临时态,详情关闭
+  // 就该丢失,再次打开显示简单的已启用,和所有其他没有在 app 激活期间安装的保持
+  // 一致,不然很割裂,目前只有重启才能回到已启用简易状态"。
+  //
+  // 「已启用到 Claude Code、Trae」说的是**这一次安装做了什么**,不是这个技能的属性。
+  // 上个月装的技能打开就是简简单单一句「已启用」,刚装的却永远带着一段结果报告
+  // ——同一个东西两种面孔。
+  function seedDone(dirSlug = "weekly-report") {
+    useInstall.setState({
+      phase: "done",
+      dirSlug,
+      agents: [
+        { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, isUniversal: false, needsLink: true },
+      ],
+      report: {
+        dirSlug,
+        links: [{ dir: "/x", result: { status: "linked", mode: "symlink" } }],
+      } as never,
+      installed: new Map([[dirSlug, { dirSlug, contentHash: "" } as never]]),
+      localKept: false,
+      shareResult: null,
+    });
+    useStoreIndex.setState({ index: null, activeRegistry: "company", activeRepo: "skills/skills" });
+  }
+
+  it("关掉详情面板再打开:回到简易的「已启用」,不再挂着上次的结果报告", async () => {
+    // ⚠️ 顺序必须真实:面板先以「未安装」挂载,用户点了安装才变成 done。
+    // 直接"挂载时就是 done"是构造不出来的状态,那样测的是另一回事。
+    const first = render(<InstallPanel dirSlug="weekly-report" />);
+    act(() => seedDone());
+    expect(screen.getByText(/已启用到/)).toBeTruthy();
+
+    first.unmount(); // 关掉详情面板
+    render(<InstallPanel dirSlug="weekly-report" />); // 再打开
+
+    expect(screen.queryByText(/已启用到/)).toBeNull();
+    expect(screen.getByRole("button", { name: /已启用/ })).toBeTruthy();
+  });
+
+  it("切到别的技能再切回来也一样", async () => {
+    const { rerender } = render(<InstallPanel dirSlug="weekly-report" />);
+    act(() => seedDone());
+    expect(screen.getByText(/已启用到/)).toBeTruthy();
+
+    rerender(<InstallPanel dirSlug="other-skill" />);
+    rerender(<InstallPanel dirSlug="weekly-report" />);
+
+    expect(screen.queryByText(/已启用到/)).toBeNull();
+  });
+
+  it("刚装完那一刻结果报告要留住 —— 别被自己的收尾逻辑一帧就清掉", async () => {
+    // 这条挡的是"把 phase 写进 effect 依赖"这个具体写法:那样 phase 一变成 done
+    // 就会立刻触发收尾、把结果清掉,用户什么都看不到。
+    render(<InstallPanel dirSlug="weekly-report" />);
+    act(() => seedDone());
+
+    expect(screen.getByText(/已启用到/)).toBeTruthy();
+    expect(useInstall.getState().phase).toBe("done");
+  });
+
+  it("🔴 安装**还在进行**时绝不能清 —— 那会把进行中的流程整个丢掉", async () => {
+    useInstall.setState({ phase: "running", dirSlug: "weekly-report", stage: "writing" });
+    const first = render(<InstallPanel dirSlug="weekly-report" />);
+    first.unmount();
+    render(<InstallPanel dirSlug="weekly-report" />);
+
+    expect(useInstall.getState().phase).toBe("running");
   });
 });

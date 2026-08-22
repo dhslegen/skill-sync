@@ -52,6 +52,30 @@ export function InstallPanel({
   const activeRepo = useStoreIndex((s) => s.activeRepo);
   const mine = active === dirSlug;
 
+  const dismissProjectNotice = useProjects((s) => s.dismissNotice);
+  const cancelConfirm = useProjects((s) => s.cancelConfirm);
+
+  // 打开(或换一个)技能详情时的收尾。三件事都与"这一次会话"绑定,不是技能的属性:
+  //
+  // 1. 上一次的项目安装提示与待确认条——不清的话提示说的是**另一个技能**的事,
+  //    待确认条更糟:点「装到这里」装的是上一个技能;
+  // 2. 🔴 **上一次安装的结果报告**(「已启用到 Claude Code、Trae」)。它是**本次安装
+  //    做了什么**的临时态,不是这个技能的属性。上个月装的技能打开就是简简单单一句
+  //    「已启用」,刚装的却永远带着一段结果报告,同一个东西两种面孔——而且此前
+  //    **只有重启应用才能回到简易态**(2026-08-22 用户反馈)。
+  //
+  // ⚠️ **进行中的流程绝不能清**(running/choosing/conflict):关掉详情面板时安装
+  //    可能还在跑,清掉状态等于把进行中的流程整个丢掉。只收终态。
+  //
+  // 用 `getState()` 读 phase 而不是订阅:订阅的话 phase 一变成 done 就会被这个
+  // effect 立刻清掉,结果报告一帧都看不到。
+  useEffect(() => {
+    dismissProjectNotice();
+    cancelConfirm();
+    const s = useInstall.getState();
+    if (s.phase === "done" || s.phase === "error") s.cancel();
+  }, [dirSlug, dismissProjectNotice, cancelConfirm]);
+
   const scope = { dirSlug, plaza, activeRegistryId: activeRegistry, activeRepoKey: activeRepo };
 
   // 项目安装的进行态/提示/待确认与**全局安装的 phase 无关**,所以在顶层渲染。
@@ -122,16 +146,7 @@ function IdleFooter({
       );
   const requestInstall = useProjects((s) => s.requestInstall);
   const installing = useProjects((s) => s.installing);
-  const dismissProjectNotice = useProjects((s) => s.dismissNotice);
-  const cancelConfirm = useProjects((s) => s.cancelConfirm);
 
-  // 换一个技能看详情时,把上一次的提示与待确认收干净。
-  // 🔴 不清的话,提示说的是**另一个技能**的事(dismissNotice 此前定义了却一处没调用),
-  // 待确认条更糟——点「装到这里」装的是上一个技能。
-  useEffect(() => {
-    dismissProjectNotice();
-    cancelConfirm();
-  }, [dirSlug, dismissProjectNotice, cancelConfirm]);
 
   // 装到项目沿用全局默认 agent(2026-08-20 拍板:不再单独问一次)。
   // 口径与全局安装共用 `defaultSelectedAgents`,不另写一份。
