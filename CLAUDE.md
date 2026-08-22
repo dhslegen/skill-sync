@@ -476,7 +476,7 @@ tags 当时侥幸没出问题,是因为支持它的版本先到了用户机器�
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust **711** + 前端 **547** 测试通过(2026-08-21 M11 收尾时串行实测,
+- 本机:Rust **716** + 前端 **568** 测试通过(2026-08-22 M11 追加任务收尾时串行实测,
   五道闸全绿,clippy **--all-targets** / eslint / tsc 干净,`pnpm dev` 启动冒烟通过)。
   ⚠️ **这个 Rust 数字是「docker 起着」的口径**:`gitea_live` 那两条真跑了
   (docker 停着时它们报 502 假红,见「测试要求」);而受 `SKILLSYNC_PLAZA_LIVE`
@@ -577,6 +577,27 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
 
 这些**都已实现**,列在这里是因为它们的不变量不看就会破坏。已完成的过程叙事在 git log。
 
+- **装到项目是"选完再确认",不是"选完即装"**(2026-08-22 用户真机反馈后改):
+  - 落差的准确名字是**选择位置 ≠ 确认写入**。系统选择框的按钮写着「打开」,那是
+    "选中"语义;而这一步要往用户的项目目录里写文件、建关联、写 `skills-lock.json`。
+    只读操作(打开文件夹)选完即执行,写盘操作(克隆仓库/新建工程/安装游戏)都要
+    再点一次执行——这是通用惯例,不是本项目的偏好。
+  - 🔴 **别再提议"把系统选择框的按钮文案改成「装到这里」"**:`tauri-plugin-dialog`
+    2.7.2 的 `FileDialogBuilder` 只暴露 `set_title` / `set_directory` / `set_parent` /
+    `set_can_create_directories`,**没有按钮文案**(底层 rfd 有 `set_button_label`,
+    插件没转出来)。已查源码确认,要改得先改插件。
+  - **「最近的项目」刻意豁免确认**:用户点的是具体项目名,意图已经明确。
+  - **已装判定必须在"点之前"**:最近项目菜单里已装的标「已装」且 disabled,
+    陌生文件夹在确认条上直说并撤掉「装到这里」。此前要等一整轮网络请求
+    (下压缩包、建索引)才被告知"已经有了"。判据是**仓库目录名 `dirSlug`**,
+    不是 lock 的 `key`——两者在广场技能里经常不同。
+  - **换技能看详情时必须清掉 notice 与 confirm**:`dismissNotice` 此前定义了却
+    一处没调用,提示永久留着、说的是另一个技能的事;待确认条不清更糟——
+    点「装到这里」装的是上一个技能。
+- **详情面板的「已装到」是零新 IPC 的派生视图**(`components/InstalledScopes.tsx`):
+  全局那档来自 `install.ts` 的 `installed` map,项目那档来自 `project_list`。
+  位置是**一等信息**(同 Steam 的多库文件夹在游戏详情页写「已安装于…」),
+  不是安装动作的副产品。匹配用 `dirSlug`,目录已不在的项目不列。
 - **升级后的更新日志(M11)有四条不变量,破一条就是可见缺陷或假话**
   (`core/release_notes.rs` + `components/ChangelogCard.tsx`):
   - 🔴 **`RELEASE_NOTES.md` 必须打进安装包**(`bundle.resources`,**map 形式**
@@ -585,6 +606,9 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
     复制到 `target/debug/`),本地怎么试都正常。已实测两档:dev 解析到
     `target/debug/RELEASE_NOTES.md`,打包后是 `Contents/Resources/RELEASE_NOTES.md`,
     两边都真读出 18 段。守卫 `bundle_config.rs::release_notes_must_ship_inside_the_bundle`。
+    发布日期由 `publish-release.sh` 在发版当天**自动写进标题**(`## 0.5.0 · 2026-08-22 ——`),
+    人不手写;那一步改的是工作区文件,所以 `git add` 必须带上 `RELEASE_NOTES.md`
+    ——漏了它日期不进 tag、发出去的包里没有日期,而本地看一切正常。
     ⚠️ **第三档(Windows NSIS 安装布局)本地验不了**,已列进「只能在真机验的」清单;
     `commands::log_release_notes` 那行 debug 日志(`RUST_LOG=skillsync=debug`)
     就是为它准备的诊断——真机上一眼看出是"文件没进包"还是"判定认为不用显示"。
