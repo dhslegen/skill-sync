@@ -47,6 +47,11 @@ export function ChangelogCard() {
             {t("changelog.updatedTo", { version: current || head.versions[0] })}
           </div>
           {head.theme && <div className="mt-0.5 text-[12px] text-text-2">{head.theme}</div>}
+          {/* 日期用等宽(UI 规范:日期/版本号/slug 一律等宽)。没有就整个不摆——
+              还没发出去的版本没有发布日期,这是事实,不编一个。 */}
+          {head.date && (
+            <div className="mt-0.5 font-mono text-[11px] text-text-3">{head.date}</div>
+          )}
         </div>
         <button
           type="button"

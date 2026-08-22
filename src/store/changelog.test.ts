@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 function note(version: string, theme: string): ReleaseNote {
-  return { versions: [version], theme, body: `${version} 的正文` };
+  return { versions: [version], date: null, theme, body: `${version} 的正文` };
 }
 
 beforeEach(() => {

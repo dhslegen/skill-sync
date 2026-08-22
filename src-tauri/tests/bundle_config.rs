@@ -518,3 +518,36 @@ fn release_notes_must_ship_inside_the_bundle() {
         "发版说明没进安装包 —— 升级后的更新日志会永远是空的,而本地 dev 照常能读"
     );
 }
+
+/// 发版脚本必须**自动**把发布日期写进 `RELEASE_NOTES.md` 的标题,并把它一起提交。
+///
+/// 两条缺一不可,而且第二条极易漏:补日期这一步改的是工作区文件,`git add` 那行
+/// 原先只加三个版本号文件——漏了它,日期改动留在工作区不进 tag,**发出去的包里
+/// 就没有日期**,而本地看一切正常(与 CLAUDE.md 记的「Cargo.lock 每次剩一笔」同类)。
+///
+/// 为什么是脚本自动补而不是人手写:日期是**发版这个动作的属性**。靠人写的话,
+/// 写的往往是"开始写发版说明那天",与实际发布日差好几天;忘了写就整段没有日期。
+#[test]
+fn the_publish_script_stamps_and_commits_the_release_date() {
+    let script = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("scripts/publish-release.sh"),
+    )
+    .unwrap();
+
+    assert!(
+        script.contains("已把发布日期"),
+        "发版脚本没有自动补发布日期这一步"
+    );
+    let add_line = script
+        .lines()
+        .find(|l| l.trim_start().starts_with("git add package.json"))
+        .expect("找不到提交版本号那行 git add");
+    assert!(
+        add_line.contains("RELEASE_NOTES.md"),
+        "补进去的发布日期没有被一起提交 —— 它会留在工作区、不进 tag,\
+         发出去的包里就没有日期,而本地看一切正常。实际那行:{add_line}"
+    );
+}

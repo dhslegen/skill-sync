@@ -863,7 +863,7 @@ describe("升级后的更新日志", () => {
       if (cmd === "release_notes_state") {
         return {
           current: "0.5.0",
-          pending: [{ versions: ["0.5.0"], theme: "项目级安装", body: "- 要点" }],
+          pending: [{ versions: ["0.5.0"], date: "2026-08-22", theme: "项目级安装", body: "- 要点" }],
           all: [],
         };
       }

@@ -98,7 +98,12 @@ function VersionRow({ note }: { note: ReleaseNote }) {
         />
         {/* 版本号用等宽字体(UI 规范:slug/sha/版本号一律等宽) */}
         <span className="font-mono text-[12px] text-text-2">{note.versions.join(" / ")}</span>
-        {note.theme && <span className="text-[12.5px] text-text">{note.theme}</span>}
+        {note.theme && <span className="flex-1 truncate text-[12.5px] text-text">{note.theme}</span>}
+        {/* 日期靠右:一列版本号里,"这是上周的还是去年的"是最先要看清的事。
+            没有日期的(还没发出去的那一版)整个不摆,不占位也不编。 */}
+        {note.date && (
+          <span className="shrink-0 font-mono text-[11px] text-text-3">{note.date}</span>
+        )}
       </button>
       {open && (
         <div className="mt-1.5 text-[12.5px]">

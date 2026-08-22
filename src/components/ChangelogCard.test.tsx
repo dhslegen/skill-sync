@@ -11,8 +11,8 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (cmd: string, args: unknown) => invoke(cmd, args),
 }));
 
-function note(version: string, theme: string): ReleaseNote {
-  return { versions: [version], theme, body: `- ${version} 的要点` };
+function note(version: string, theme: string, date: string | null = null): ReleaseNote {
+  return { versions: [version], date, theme, body: `- ${version} 的要点` };
 }
 
 function seed(pending: ReleaseNote[], current = "0.5.0") {
@@ -43,6 +43,14 @@ describe("升级后的更新日志卡片", () => {
     await screen.findByText("已更新到 0.5.0");
     expect(screen.getByText("项目级安装")).toBeTruthy();
     expect(screen.getByText(/0.5.0 的要点/)).toBeTruthy();
+  });
+
+  it("有发布日期就摆出来", async () => {
+    seed([note("0.5.0", "项目级安装", "2026-08-22")]);
+    render(<ChangelogCard />);
+
+    await screen.findByText("已更新到 0.5.0");
+    expect(screen.getByText("2026-08-22")).toBeTruthy();
   });
 
   it("正文限高可滚 —— 一段说明本身就可能很长,卡片不能吃掉首屏", async () => {

@@ -75,6 +75,33 @@ PYEOF
   exit 1
 }
 
+# ---------- 发布日期:缺就自动补进标题 ----------
+# 日期是**发版这个动作的属性**,不该靠人记得手写(手写还容易写成"开始写说明那天")。
+# 标题形如 `## 0.5.0 · 2026-08-22 —— 主题`;已有日期则一个字不动(重跑发版脚本
+# 不会把首发日期改成今天)。应用里的更新日志与设置页版本历史都读这个日期。
+python3 - "$VERSION" <<'PYEOF' || { echo "❌ 补发布日期失败" >&2; exit 1; }
+import re, sys, pathlib, subprocess
+version = sys.argv[1]
+path = pathlib.Path("RELEASE_NOTES.md")
+text = path.read_text(encoding="utf-8")
+m = re.search(rf"^(##\s+{re.escape(version)}\b[^\n]*)$", text, re.M)
+if not m:
+    sys.exit(f"RELEASE_NOTES.md 里没有 {version} 的章节")
+heading = m.group(1)
+if re.search(r"\d{4}-\d{2}-\d{2}", heading):
+    print(f"[发版] {version} 的标题已有日期,不动")
+    raise SystemExit(0)
+today = subprocess.run(["date", "+%Y-%m-%d"], capture_output=True, text=True).stdout.strip()
+sep = "——"
+if sep in heading:
+    left, right = heading.split(sep, 1)
+    new_heading = f"{left.rstrip()} · {today} {sep}{right}"
+else:
+    new_heading = f"{heading.rstrip()} · {today}"
+path.write_text(text.replace(heading, new_heading, 1), encoding="utf-8")
+print(f"[发版] 已把发布日期 {today} 写进 {version} 的标题")
+PYEOF
+
 # ---------- 前置校验:缺什么当场说清楚,不要构建了十分钟才失败 ----------
 fail=0
 for var in SKILLSYNC_BUILTIN_GITEA_URL SKILLSYNC_OAUTH_CLIENT_ID SKILLSYNC_BUILTIN_REPO \
@@ -137,7 +164,9 @@ PYEOF
 #            与下面的本地 macOS 构建并行(CI 6-10 分钟,mac 构建+公证更久)----------
 if [[ -z "$SKIP_WINDOWS" ]]; then
   echo "==> 提交版本号并推 tag v$VERSION(触发 GitHub CI 构建 Windows 包)"
-  git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+  # RELEASE_NOTES.md 也要 add:上面那步可能刚把发布日期补进标题,漏了它日期会留在
+  # 工作区不进 tag —— 而应用读的正是这个日期,发出去的包里就没有它。
+  git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml RELEASE_NOTES.md
   git diff --cached --quiet || git commit -m "发版 v$VERSION: 版本号三处对齐"
   git tag "v$VERSION" 2>/dev/null || echo "   tag v$VERSION 已存在,沿用(重跑场景)"
   git push origin HEAD "refs/tags/v$VERSION"

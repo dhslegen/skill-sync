@@ -32,8 +32,13 @@ function reset() {
         current: "0.5.0",
         pending: [],
         all: [
-          { versions: ["0.5.0"], theme: "项目级安装", body: "- 0.5.0 的要点" },
-          { versions: ["0.3.5", "0.3.4"], theme: "自更新链路验证", body: "- 0.3.5 的要点" },
+          { versions: ["0.5.0"], date: null, theme: "项目级安装", body: "- 0.5.0 的要点" },
+          {
+            versions: ["0.3.5", "0.3.4"],
+            date: "2026-08-07",
+            theme: "自更新链路验证",
+            body: "- 0.3.5 的要点",
+          },
         ],
       };
     }
@@ -403,13 +408,28 @@ describe("版本历史", () => {
     expect(screen.getByText(/0.5.0 的要点/)).toBeTruthy();
   });
 
+  it("每一版摆出发布日期 —— 没有它,一列版本号看不出是上周还是去年", async () => {
+    render(<SettingsPage />);
+
+    await screen.findByText("2026-08-07");
+  });
+
+  it("还没发出去的版本不编日期", async () => {
+    render(<SettingsPage />);
+
+    await screen.findByRole("button", { name: /0.5.0/ });
+    // 0.5.0 的 date 是 null:宁可不显示,不编一个
+    const row = screen.getByRole("button", { name: /0.5.0/ });
+    expect(row.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+  });
+
   it("一段说明都没有时说清楚,而不是留一片空白", async () => {
     // ⚠️ 先塞一条进 store 再渲染:空态**恰好也是初始状态**,不这么做的话
     // load 根本没跑这条测试也会绿(空转)。有了这一步,只有"读回来确实是空"才通过。
     useChangelog.setState({
       current: "0.4.0",
       pending: [],
-      all: [{ versions: ["0.4.0"], theme: "旧的", body: "- 旧正文" }],
+      all: [{ versions: ["0.4.0"], date: "2026-08-20", theme: "旧的", body: "- 旧正文" }],
       dismissed: false,
     });
     invoke.mockImplementation(async (cmd: string) => {

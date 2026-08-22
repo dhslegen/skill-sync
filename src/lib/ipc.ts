@@ -690,6 +690,8 @@ export const plazaDetail = (ownerRepo: string, skillId?: string, wantedName?: st
 /** 一段版本说明。`versions` 是一组:仓库里真实存在 `## 0.3.5 / 0.3.4 —— …` 这种写法。 */
 export interface ReleaseNote {
   versions: string[];
+  /** 发布日期 `YYYY-MM-DD`。null = 这一版还没发出去(发版脚本发版当天自动补)。 */
+  date: string | null;
   /** 标题里「——」之后的主题句,给界面当副标题。 */
   theme: string;
   /** 正文,原样 Markdown。 */

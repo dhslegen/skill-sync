@@ -37,6 +37,11 @@ pub struct ReleaseNote {
     /// ⚠️ 这里比 `publish-release.sh` 的正则宽(那条只认 `## ` 后的第一个 token):
     /// 两者用途不同——脚本要"取某一版的正文",这里要"判断某一版在不在这段里"。
     pub versions: Vec<String>,
+    /// 发布日期(`YYYY-MM-DD`),取自标题里版本号之后的那一段。
+    ///
+    /// `None` = 这一版还没发出去(发版脚本会在发版那天自动补)。**宁可不显示,
+    /// 不编一个**——同"任一侧指纹缺失按没有更新处理"的姿态。
+    pub date: Option<String>,
     /// 标题里 `——` 之后的主题句,给界面当副标题。没有分隔符时为空串。
     pub theme: String,
     /// 段落正文(原样 Markdown,到下一个 `## ` 为止)。
@@ -55,9 +60,9 @@ pub fn parse(text: &str) -> Vec<ReleaseNote> {
             if let Some(note) = current.take() {
                 out.push(finish(note));
             }
-            let (versions, theme) = split_heading(heading);
+            let (versions, date, theme) = split_heading(heading);
             if !versions.is_empty() {
-                current = Some(ReleaseNote { versions, theme, body: String::new() });
+                current = Some(ReleaseNote { versions, date, theme, body: String::new() });
             }
             continue;
         }
@@ -78,21 +83,40 @@ fn finish(mut note: ReleaseNote) -> ReleaseNote {
     note
 }
 
-/// 拆标题:`0.3.5 / 0.3.4 —— 自更新链路验证` → (["0.3.5","0.3.4"], "自更新链路验证")。
+/// 拆标题:`0.3.5 / 0.3.4 · 2026-08-07 —— 自更新链路验证`
+/// → (["0.3.5","0.3.4"], Some("2026-08-07"), "自更新链路验证")。
 ///
 /// 版本号必须是完整三段式(`\d+.\d+.\d+`)。放宽成两段会让 `## 0.5 —— …` 这类
-/// 笔误变成界面上一个根本不存在的版本号。
-fn split_heading(heading: &str) -> (Vec<String>, String) {
+/// 笔误变成界面上一个根本不存在的版本号。日期形状是 `YYYY-MM-DD`,与版本号
+/// 不可能互相误认(日期里没有点),但有测试正面钉住这一点。
+fn split_heading(heading: &str) -> (Vec<String>, Option<String>, String) {
     let (version_part, theme) = match heading.split_once("——") {
         Some((v, t)) => (v, t.trim().to_string()),
         None => (heading, String::new()),
     };
-    let versions = version_part
-        .split(|c: char| c.is_whitespace() || c == '/')
-        .filter(|t| is_version(t))
-        .map(str::to_string)
+    let tokens: Vec<&str> = version_part
+        .split(|c: char| c.is_whitespace() || c == '/' || c == '·')
+        .filter(|t| !t.is_empty())
         .collect();
-    (versions, theme)
+    let versions = tokens
+        .iter()
+        .filter(|t| is_version(t))
+        .map(|t| t.to_string())
+        .collect();
+    let date = tokens.iter().find(|t| is_date(t)).map(|t| t.to_string());
+    (versions, date, theme)
+}
+
+/// `YYYY-MM-DD`。只查形状不查合法性——真实数据由发版脚本生成,
+/// 这里要挡的是"把别的东西当成日期显示出去",不是校验日历。
+fn is_date(token: &str) -> bool {
+    let b = token.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
 fn is_version(token: &str) -> bool {
@@ -404,6 +428,42 @@ mod tests {
         assert!(notes[0].body.contains("要点一"));
         assert!(!notes[0].body.contains("版本历史"), "前言混进了第一段正文");
         assert!(!notes[0].body.contains("0.3.5"), "正文越界吃进了下一段");
+    }
+
+    #[test]
+    fn the_release_date_comes_out_of_the_heading() {
+        // 日期是版本历史里最重要的元素之一(用户 2026-08-22 提):没有它,
+        // 一列版本号看不出"这是上周的还是去年的"。
+        let notes = parse("## 0.5.0 · 2026-08-22 —— 项目级安装\n\n正文\n");
+        assert_eq!(notes[0].date.as_deref(), Some("2026-08-22"));
+        assert_eq!(notes[0].versions, vec!["0.5.0"], "日期不能被当成版本号");
+        assert_eq!(notes[0].theme, "项目级安装", "日期不能漏进主题句");
+    }
+
+    #[test]
+    fn a_heading_without_a_date_is_fine_and_just_has_none() {
+        // 还没发出去的版本**没有发布日期**,这是事实。宁可不显示,不编一个。
+        // 发版脚本会在发版那天自动补上(日期是发版这个动作的属性,不该靠人手写)。
+        let notes = parse(SAMPLE);
+        assert!(notes.iter().all(|n| n.date.is_none()));
+    }
+
+    #[test]
+    fn a_date_shaped_like_a_version_is_not_mistaken_for_one() {
+        // `2026-08-22` 里有两个连字符,split('.') 得不到三段——但这条得钉住,
+        // 因为放宽 is_version 的人未必想得到标题里还站着一个日期。
+        let notes = parse("## 1.2.3 · 2026-08-22 —— 主题\n\n正文\n");
+        assert_eq!(notes[0].versions, vec!["1.2.3"]);
+    }
+
+    #[test]
+    fn only_a_dash_separated_ten_char_date_counts() {
+        // 这条是注入验证逼出来的:原先只有正例,把形状判据整个放宽掉测试照样绿。
+        // 判据松了的后果是标题里随便一个十来字符的 token 都会被当作发布日期摆到界面上。
+        for bad in ["2026_08-22", "2026-08_22", "2026-8-22", "2026-08-222"] {
+            let notes = parse(&format!("## 1.2.3 · {bad} —— 主题\n\n正文\n"));
+            assert_eq!(notes[0].date, None, "{bad} 不是日期形状,不该被当成日期");
+        }
     }
 
     #[test]
