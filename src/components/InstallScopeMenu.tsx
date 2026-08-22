@@ -17,6 +17,7 @@ import { recentProjects, useProjects } from "@/store/project";
  */
 export function InstallScopeMenu({
   dirSlug,
+  label,
   onPickProject,
   onChooseRecent,
   onGlobal,
@@ -24,6 +25,15 @@ export function InstallScopeMenu({
 }: {
   /** 正在安装的技能的**仓库目录名**。用来标出"这个项目已经装过它了"。 */
   dirSlug: string;
+  /**
+   * 给了就渲染成**带文字的按钮**,否则是一个纯图标小三角。
+   *
+   * 用在主按钮已经是终态(「已启用」,disabled)的时候:那一档整块看起来就是
+   * "做完了",一个 24px 的图标不足以让人想到"还能装到别的项目"
+   * (2026-08-22 用户反馈)。**状态归状态,动作归动作**——终态时把动作显性化。
+   * 主按钮本身是可点动作时(获取/更新/替换)保持图标,免得两个按钮抢注意力。
+   */
+  label?: string;
   /** 打开系统目录选择框。 */
   onPickProject: () => void;
   onChooseRecent: (path: string) => void;
@@ -67,7 +77,7 @@ export function InstallScopeMenu({
         disabled={disabled}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={t("install.scopeMenu")}
+        aria-label={label ?? t("install.scopeMenu")}
         onClick={() => setOpen((v) => !v)}
         onKeyDown={(e) => {
           if (e.key === "Escape" && open) {
@@ -75,8 +85,13 @@ export function InstallScopeMenu({
             close();
           }
         }}
-        className="flex h-7 w-6 items-center justify-center rounded-ctl border border-border text-text-2 hover:border-border-strong hover:text-text disabled:opacity-60"
+        className={
+          label
+            ? "flex h-7 items-center gap-1 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-60"
+            : "flex h-7 w-6 items-center justify-center rounded-ctl border border-border text-text-2 hover:border-border-strong hover:text-text disabled:opacity-60"
+        }
       >
+        {label}
         <Icon icon={ChevronDown} size={13} />
       </button>
 

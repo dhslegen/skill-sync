@@ -141,6 +141,10 @@ function IdleFooter({
         />
         <InstallScopeMenu
           dirSlug={dirSlug}
+          // 主按钮是终态(「已启用」不可点)时,把作用域入口显性化成文字按钮
+          // ——那一档整块看起来就是"做完了",小三角不足以让人想到还能装到项目
+          // (2026-08-22 用户反馈)。可点动作那几档保持图标,免得抢注意力。
+          label={state === "installed" ? t("install.scopeProject") : undefined}
           disabled={!!installing}
           onGlobal={onBegin}
           onPickProject={() => {

@@ -271,3 +271,49 @@ describe("最近的项目", () => {
     });
   });
 });
+
+describe("已经装过之后的入口可见性", () => {
+  // 2026-08-22 用户反馈:"离系统安装和项目安装都满足的情况下,详情页只有已启用和
+  // 一个小三角,很难让人认为是可以继续安装到别的项目的"。
+  //
+  // 症结:「已启用」是 disabled 的透明终态,旁边只有一个 24px 纯图标 chevron。
+  // 整块看起来就是"做完了"。**状态归状态,动作归动作**——终态时把作用域入口
+  // 从图标提升成带文字的按钮。
+  function seedInstalledGlobally() {
+    useInstall.setState({
+      installed: new Map([
+        ["weekly-report", { dirSlug: "weekly-report", contentHash: "" } as never],
+      ]),
+    });
+    useStoreIndex.setState({ index: null, activeRegistry: "company", activeRepo: "skills/skills" });
+  }
+
+  it("全局已装时,作用域入口是**看得懂的文字按钮**,不是一个小三角", async () => {
+    seedInstalledGlobally();
+    render(<InstallPanel dirSlug="weekly-report" />);
+
+    // 主按钮仍如实显示终态
+    expect(screen.getByRole("button", { name: /已启用/ })).toBeTruthy();
+    // 但"还能装到项目"必须一眼看得出来
+    const entry = screen.getByRole("button", { name: "装到项目…" });
+    expect(entry.getAttribute("aria-haspopup")).toBe("menu");
+    expect(entry.textContent).toContain("装到项目");
+  });
+
+  it("还没装时不喧宾夺主 —— 主动作是「获取」,作用域入口保持小图标", async () => {
+    useInstall.setState({ installed: new Map() });
+    render(<InstallPanel dirSlug="weekly-report" />);
+
+    expect(screen.getByRole("button", { name: "选择安装位置" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "装到项目…" })).toBeNull();
+  });
+
+  it("文字按钮点开的还是同一个菜单", async () => {
+    seedInstalledGlobally();
+    render(<InstallPanel dirSlug="weekly-report" />);
+
+    await userEvent.click(screen.getByRole("button", { name: "装到项目…" }));
+
+    expect(screen.getByRole("menuitem", { name: "装到项目…" })).toBeTruthy();
+  });
+});
