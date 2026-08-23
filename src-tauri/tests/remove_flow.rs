@@ -9,7 +9,7 @@ use skillsync_lib::core::fsops;
 use skillsync_lib::core::installer::{Installer, LinkHealth, SkillPayload};
 use skillsync_lib::core::remove::{self, RemoveOutcome};
 use skillsync_lib::core::fsops::OnOccupied;
-use skillsync_lib::core::state::{InstalledSkill, LinkRecord, SkillSource, Store};
+use skillsync_lib::core::state::{InstalledSkill, LinkRecord, SharedSkill, SkillSource, Store};
 
 const NOW: &str = "2026-07-30T12:00:00.000Z";
 
@@ -604,4 +604,59 @@ fn link_health_treats_a_degraded_copy_as_healthy() {
     let (recorded, _) = remove::state_links_to_recorded(&state.installed[0].links);
     let health = installer.link_health("weekly-report", &recorded).unwrap();
     assert_eq!(health[0].health, LinkHealth::Healthy);
+}
+
+/// 移除必须把 `state.shared` 里指着这个目录的记账一并清掉(v6 任务 3 修复轮 1)。
+///
+/// 留着它就是一条谁也清不掉的孤儿:`create::create_skill` 曾经拿它拒绝同名新建,
+/// 于是「取回我分享的 → 移除 → 重新起草一个同名的」撞进死胡同,而报错说的
+/// 「已经被一个分享过的技能占用了」在本体已经删掉之后是假话。
+///
+/// v6 任务 3 给 `state.shared` 加了一个新的产生源(取回自己分享的技能时建内容基线),
+/// 把这条路径的命中率从"用户主动分享过"抬到了"取回过自己的技能"——后者是主线动作。
+///
+/// 断言的是**记账真的没了**,不是"移除成功"——后者分不出是哪一条规则在起作用。
+///
+/// ⚠️ 这里的 `local_path` 用 `join(".agents/skills")` 拼,在 Windows 上是
+/// `.agents/skills\x`,而 core 走分段 join 得到 `.agents\skills\x`——同一个目录、
+/// 字符串却不等(2026-08-04 CI 真红过,当时栽在 create.rs 上)。清理按 `Path` 比,
+/// 这条用例在 Windows runner 上就是它的护栏。
+#[test]
+fn removing_also_clears_the_shared_baseline_it_leaves_behind() {
+    let (c, env) = ctx();
+    install_one(&c, &env, "weekly-report");
+    install_one(&c, &env, "meeting-notes");
+
+    let mut state = c.store.load_state().unwrap().value;
+    for slug in ["weekly-report", "meeting-notes"] {
+        state.shared.push(SharedSkill {
+            // 远端目录名与本地目录名**刻意不同**(中文名技能就是这样分享的):
+            // 按 `name` 匹配的实现会一条都清不掉,这条用例就是它的照妖镜。
+            name: format!("remote-{slug}"),
+            local_path: canonical(&c, slug).to_string_lossy().into_owned(),
+            origin: "local".into(),
+            target: SkillSource {
+                registry_id: "company".into(),
+                owner: "skills".into(),
+                repo: "skills".into(),
+                path: format!("skills/remote-{slug}"),
+                git_ref: "main".into(),
+            },
+            last_pushed_sha: "aaa1111".into(),
+            content_hash: "hash".into(),
+        });
+    }
+    c.store.save_state(&state).unwrap();
+
+    do_remove(&c, &env, "weekly-report", false).unwrap();
+
+    let after = c.store.load_state().unwrap().value;
+    assert!(
+        !after.shared.iter().any(|s| Path::new(&s.local_path) == canonical(&c, "weekly-report")),
+        "移除之后不该留下指着已删目录的分享记账:{:?}",
+        after.shared.iter().map(|s| &s.local_path).collect::<Vec<_>>()
+    );
+    // 只清自己那条:别的技能的记账不许被误伤
+    assert_eq!(after.shared.len(), 1);
+    assert_eq!(after.shared[0].local_path, canonical(&c, "meeting-notes").to_string_lossy());
 }

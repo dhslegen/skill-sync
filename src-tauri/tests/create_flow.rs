@@ -243,31 +243,71 @@ fn refuses_when_name_is_taken_by_an_installed_record_without_files() {
     assert_eq!(after.installed.len(), 1);
 }
 
-/// 顺带钉住一条**只有 Windows 才测得到**的事:这里的 `local_path` 由 `Ctx::canonical`
-/// 用 `join(".agents/skills")` 拼出,在 Windows 上是 `.agents/skills\x`,而 core 走分段
-/// join 得到 `.agents\skills\x`——同一个目录,字符串却不等。core 原先按字符串比,
-/// 于是撞名检查在 Windows 上直接失配放行(2026-08-04 CI 真红)。macOS 上两种写法
-/// 恰好相同,本地怎么跑都是绿的。
-#[test]
-fn refuses_when_path_is_taken_by_a_shared_record_without_files() {
-    let (ctx, env) = ctx();
-    let installer = Installer::new(&ctx.registry, &env);
-    let mut state = State::default();
-    state.shared.push(SharedSkill {
-        name: "weekly-report".into(),
-        local_path: ctx.canonical("weekly-report").to_string_lossy().into_owned(),
+/// 造一条"分享过"的记账,指着 `slug` 的 canonical 位置。
+fn shared_record_pointing_at(ctx: &Ctx, slug: &str) -> SharedSkill {
+    SharedSkill {
+        name: slug.into(),
+        local_path: ctx.canonical(slug).to_string_lossy().into_owned(),
         origin: "local".into(),
         target: SkillSource {
             registry_id: "builtin".into(),
             owner: "skills".into(),
             repo: "skills".into(),
-            path: "skills/weekly-report".into(),
+            path: format!("skills/{slug}"),
             git_ref: "main".into(),
         },
         last_pushed_sha: "abc".into(),
         content_hash: "hash".into(),
-    });
+    }
+}
+
+/// 🔴 **存量孤儿必须放行**(v6 任务 3 修复轮 1,本用例从"拒绝"改成"放行")。
+///
+/// 老版本的 `adopt_into_management`、以及修复之前的移除流程,都会在 `state.shared` 里
+/// 留下指向已不存在目录的记账。create 原先拿它拒绝同名新建:「这个名字已经被一个
+/// 分享过的技能占用了」——而那个技能本地已经不在了,**「占用」是假话**,用户被堵在
+/// 一条永久的死路上(v5 收尾时用户明确反对过"把已经做过的事做成死路")。
+///
+/// "有没有被占用"的判据只有一个:磁盘上真的有没有东西。本体不在 = 没被占用。
+#[test]
+fn a_stale_shared_record_no_longer_blocks_a_new_skill_of_the_same_name() {
+    let (ctx, env) = ctx();
+    let installer = Installer::new(&ctx.registry, &env);
+    let mut state = State::default();
+    state.shared.push(shared_record_pointing_at(&ctx, "weekly-report"));
     ctx.store.save_state(&state).unwrap();
+    assert!(!ctx.canonical("weekly-report").exists(), "前提:本体确实不在了");
+
+    create::create_skill(
+        &installer,
+        &ctx.store,
+        &req("weekly-report", "周报生成", "每周汇总"),
+    )
+    .expect("本体已经不在,不该有什么被「占用」");
+
+    assert!(
+        ctx.canonical("weekly-report").join("SKILL.md").is_file(),
+        "放行了就要真的把文件建出来"
+    );
+}
+
+/// 对照组:分享过、而且**本体确实还在**的同名技能,照旧拒绝。
+///
+/// 没有这一条,把撞名判据整个删掉也能让上面那条通过。
+///
+/// 顺带说明一件事:这一档拒它的是"目录里有东西",不是任何一本账
+/// ——`state.shared` 那条判据已经删掉了(见 `create.rs` 的注释),
+/// 它在本体还在时从来轮不到、在本体不在时是假话。
+#[test]
+fn a_shared_skill_whose_files_are_still_here_is_still_refused() {
+    let (ctx, env) = ctx();
+    let installer = Installer::new(&ctx.registry, &env);
+    let mut state = State::default();
+    state.shared.push(shared_record_pointing_at(&ctx, "weekly-report"));
+    ctx.store.save_state(&state).unwrap();
+    // 本体还在
+    std::fs::create_dir_all(ctx.canonical("weekly-report")).unwrap();
+    std::fs::write(ctx.canonical("weekly-report").join("SKILL.md"), "原来的内容\n").unwrap();
 
     let err = create::create_skill(
         &installer,
@@ -277,7 +317,11 @@ fn refuses_when_path_is_taken_by_a_shared_record_without_files() {
     .unwrap_err();
 
     assert_eq!(err.code, "CONFLICT_NAME_TAKEN");
-    assert!(!ctx.canonical("weekly-report").exists(), "拒绝时不该建出目录");
+    assert_eq!(
+        std::fs::read_to_string(ctx.canonical("weekly-report").join("SKILL.md")).unwrap(),
+        "原来的内容\n",
+        "拒绝时一个字节都不该动"
+    );
 }
 
 /// 空目录放行:写 SKILL.md 失败(磁盘满 / 权限)会留下一个空壳,

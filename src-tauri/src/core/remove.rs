@@ -74,6 +74,24 @@ pub fn remove(
     // 磁盘动完才清账:uninstall 失败时账还在,用户可以重试
     let mut next = loaded.value.clone();
     next.installed.remove(idx);
+    // 分享记账也要一起清掉(v6 任务 3 修复轮 1)。它记的是"上次分享时这个**本地目录**
+    // 的内容基线",本体都删了,那条记账指向的位置已经不存在——留着就是一条谁也清不掉的
+    // 孤儿,而 `create::create_skill` 会拿它拒绝同名新建:「这个名字已经被一个分享过的
+    // 技能占用了」,可那个技能本地已经不在了。**「占用」在本体不存在时是假话**,
+    // 而"取回我分享的 → 移除 → 想重新起草一个同名的"是 v6 的主线路径。
+    //
+    // 丢掉它不丢信息:v6 的模型是「归属的真相在技能库、本地只是缓存」,
+    // 关系随时可以由 `ownership::relation` 从库根 authors.json 重新算出来。
+    //
+    // 🔴 **按 `local_path` 匹配,不按 `name`**,而且**按 `Path` 比不按字符串比**:
+    // - `name` 是**远端目录名**,中文名技能分享时会另起 ASCII 远端名,与本地目录名
+    //   不是一回事(share.rs 模块头);拿 `dir_slug` 去比 `name`,中文名技能的孤儿
+    //   一条都清不掉,还可能误删另一个本地目录以这个名字分享出去的那条记账。
+    //   `local_path` 说的正是"这条记账讲的就是我刚删掉的这个目录"。
+    // - 字符串比在 Windows 上会失配:`home.join(".agents/skills")` 产出
+    //   `.agents/skills\x`,分段 join 产出 `.agents\skills\x`,同一个目录字符串却不等
+    //   (2026-08-04 CI 真红过一次,当时栽在 create.rs 上)。
+    next.shared.retain(|s| Path::new(&s.local_path) != canonical);
     store.save_state(&next)?;
 
     // 外部契约同步。任何结果都不阻断——技能已经移除了,记账失败只该记日志。

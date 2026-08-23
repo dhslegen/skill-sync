@@ -136,11 +136,14 @@ pub struct PrecheckContext<'a> {
 
 /// 「技能库里记的分享者是不是我」。判定实现只有 [`ownership::relation`] 一处。
 ///
-/// `in_library` / `local_present` 在这里都是 `true` **由构造保证**:调用方只在技能
-/// 确实存在于索引里时才走到 precheck,而 canonical 不存在的情况在 [`precheck`] 开头
-/// 就早退成 `Fresh` 了。
-fn is_mine(ctx: &PrecheckContext<'_>) -> bool {
-    ownership::relation(ctx.me, ctx.author, true, true) == ownership::Relation::Shared
+/// `in_library` 恒 `true` **由构造保证**:调用方只在技能确实存在于索引里时才走到这里。
+/// `local_present` **必须传真实值**——它在 [`precheck`] 里确实恒真(canonical 不存在
+/// 已经早退成 `Fresh`),但 [`finish`] 是在早退之外调用的,`Fresh`(换电脑那一档)
+/// 的真实值是 `false`。今天两者结论相同只是因为 `in_library=true` 把 `local_present`
+/// 短路掉了,那是下层的巧合不是这一层的正确——`link_dirs` 的 universal 跳过就是这么
+/// 被下层守卫兜住、删掉之后端到端测试照样全绿的(CLAUDE.md 有记)。
+fn is_mine(ctx: &PrecheckContext<'_>, local_present: bool) -> bool {
+    ownership::relation(ctx.me, ctx.author, true, local_present) == ownership::Relation::Shared
 }
 
 /// 库里这一版与账上基线比,变没变。
@@ -186,7 +189,8 @@ pub fn precheck(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| dir_slug.to_string());
 
-    let mine = is_mine(&ctx);
+    // 这里 canonical 一定在(不在已经早退成 Fresh),传真实值即 true
+    let mine = is_mine(&ctx, true);
 
     let Some(recorded) = state.installed.iter().find(|s| s.name == dir_name) else {
         // 🔴 v6 的核心修复:**作者永远进不了 `Foreign`**。用户自己写的技能、直接推进
@@ -516,7 +520,7 @@ async fn finish(
     // 这里用它决定要不要给 `state.shared` 建内容基线——**换电脑那一档走的是
     // `Fresh`**(canonical 上什么都没有),压根不经过 Mine 的折叠,而它恰恰是
     // 这条基线最需要从无到有建起来的场景。
-    let mine = is_mine(&ctx);
+    let mine = is_mine(&ctx, installer.canonical_dir(req.dir_slug)?.exists());
     let checked = precheck(
         &installer,
         env,
@@ -718,13 +722,13 @@ fn install_one_from_archive(
         author: skill.attribution.as_ref().map(|a| a.author.as_str()),
         remote_content_hash: Some(skill.content_hash.as_str()),
     };
-    // 与逐个安装同一份判定:向导在新机器上一键全装,对「我分享的」技能同样要建
-    // 分享基线(那正是换电脑场景)。同一件事在两个入口给两种结果是本项目栽过的跟头。
-    let mine = is_mine(&ctx);
 
     // 每轮重新读 state:上一轮的记账已经写回,拿旧快照会互相覆盖
     let run = || -> Result<BatchOutcome, AppError> {
         let loaded = store.load_state()?;
+        // 与逐个安装同一份判定:向导在新机器上一键全装,对「我分享的」技能同样要建
+        // 分享基线(那正是换电脑场景)。同一件事在两个入口给两种结果是本项目栽过的跟头。
+        let mine = is_mine(&ctx, installer.canonical_dir(dir_slug)?.exists());
 
         // 链接目标:向导给统一列表;定时更新用账上的,绝不改写用户的关联
         let agent_names: Vec<String> = match agents {
