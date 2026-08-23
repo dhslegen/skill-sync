@@ -2,7 +2,7 @@
 //!
 //! `commands.rs` 里的 `#[tauri::command]` 函数依赖 `app_store()`(真实 `HOME`),
 //! 这个仓库一贯不直接单测这类"薄壳"(参见 CLAUDE.md「测试要求」与
-//! `tests/scheduler_check.rs`/`tests/claim_flow.rs` 的既有套路:command 的编排逻辑
+//! `tests/scheduler_check.rs`/`tests/installed_list.rs` 的既有套路:command 的编排逻辑
 //! 拆成 core 里的纯函数单独测,这里用注入的 `Store` 原样复演该命令的三步编排
 //! ——check → (按需)HTTP 探测 → record + save——验证它们拼起来的行为,
 //! 不依赖真实 `HOME`。

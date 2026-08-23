@@ -54,6 +54,11 @@ pub struct ShareCandidate {
     pub shared: Option<SharedStatus>,
     /// 目录名可直接用作远端名;false 时表单必须让用户另起英文名。
     pub dir_name_usable: bool,
+    /// 这个候选与「我」的关系(v6,`ownership::relation` 唯一一处判定实现)。
+    /// 候选本身定义为"不在 `state.installed` 里",所以这里几乎不会是
+    /// `Relation::Installed`(库里有、作者不是我)——但技术上不排除:候选目录名
+    /// 恰好撞上一个别人分享的同名技能时就是这一档,界面仍按它摆放即可。
+    pub relation: ownership::Relation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -78,10 +83,18 @@ pub struct SharedStatus {
 ///
 /// 扫两处:canonical 目录下的实体目录 + 各 agent 全局目录下的实体目录(链接跳过
 /// ——链接指向的内容已经由本体条目代表)。`state.installed` 里的不出现。
+///
+/// `identities`/`library` 是 `ownership::relation` 需要的另外两个输入
+/// (v6 任务 2):`identities` 是当前登录身份(`config.identities`,按 registryId
+/// 分开存),`library` 是 `commands::library_attribution` 合并出的
+/// "dir_slug → (它所在的库, 库里记的作者)" 表——调用方(`commands.rs`)从索引
+/// 缓存里建好后传进来,本函数不做任何 I/O,保持纯扫描 + 判定的分工。
 pub fn scan_candidates(
     registry: &AgentRegistry,
     env: &dyn AgentEnv,
     state: &state::State,
+    identities: &BTreeMap<String, Identity>,
+    library: &ownership::LibraryAttribution,
 ) -> Result<Vec<ShareCandidate>, AppError> {
     let canonical = registry.canonical_global_dir(env).ok_or_else(|| {
         AppError::new("FS_NO_HOME", "找不到你的用户目录,无法扫描本地技能")
@@ -110,7 +123,7 @@ pub fn scan_candidates(
                 continue;
             }
             seen.push(name.clone());
-            out.push(candidate(env, state, &name, &path, in_canonical));
+            out.push(candidate(env, state, &name, &path, in_canonical, identities, library));
         }
     };
 
@@ -133,7 +146,17 @@ fn candidate(
     dir_name: &str,
     path: &Path,
     in_canonical: bool,
+    identities: &BTreeMap<String, Identity>,
+    library: &ownership::LibraryAttribution,
 ) -> ShareCandidate {
+    let relation = match library.get(dir_name) {
+        Some((registry_id, author)) => {
+            let me = identities.get(registry_id);
+            ownership::relation(me, author.as_deref(), true, true)
+        }
+        None => ownership::relation(None, None, false, true),
+    };
+
     let (name, description, problem) =
         match std::fs::read_to_string(path.join("SKILL.md")) {
             Ok(raw) => match parse_skill_md(&raw) {
@@ -161,6 +184,7 @@ fn candidate(
         problem,
         shared,
         dir_name_usable: usable_share_name(dir_name),
+        relation,
     }
 }
 

@@ -1,18 +1,34 @@
 //! 「技能库里记的分享者是不是我」这一件事的纯逻辑地基(v6 任务 1)。
 //!
 //! v6 要用这一个判定取代此前散落各处的四本账(`state.installed` 的 origin、
-//! `claimed`/`acquired`、本地目录扫描……),本模块只产出两个零副作用的纯函数:
+//! `claimed`/`acquired`、本地目录扫描……),本模块只产出几个零副作用的纯函数:
 //! - [`is_same_person`]:名字是否与"我"的任一别名相同,从 `share.rs` 的
 //!   `upsert_attribution` 里原有的 `is_me` 闭包原样抽出——那条闭包已经用真实数据
 //!   验证过"别名要按展示名 + 登录名两种写法都认",这里不重新发明。
 //! - [`relation`]:技能与"我"的关系判定表(**唯一一处**,后续 IPC/界面一律调它,
 //!   不得各写一份——`update.rs::cardState` 当年"三处各写一份判定"就是前车之鉴)。
+//! - [`source_label`]:把四种上游 `sourceType` 形状归一化成一句展示文案
+//!   (v6 任务 2,撤掉「其他工具装的」标签后唯一留下的来历信息)。
 //!
 //! `Identity` 是"我是谁"的最小表示,落在 `config.json` 的 `identities` 字段
 //! (按 registryId 分开存,见 `state::Config`),由 `session.rs` 在登录/退出/查状态
 //! 三处维护。
+//!
+//! [`LibraryAttribution`] 是 `installed_list`/`share::scan_candidates`(v6 任务 2)
+//! 共用的"库里有没有这个技能、作者是谁"合并表:`dir_slug → (registry_id, author)`。
+//! 由 `commands.rs` 从全部已配置库的索引缓存里合并而来(缓存是派生数据,详情面板
+//! 不联网承诺不受影响),两处调用方不必各自重新解析索引。
+
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+
+/// `dir_slug → (它所在的库的 registry_id, 库里记的作者)`。库里没有这个技能 = 不在表里。
+///
+/// 只记"合并后第一次命中"的那个库——多个库都有同名 `dir_slug` 时,判给哪个库都是猜,
+/// 与 `resolve_binding_of` "唯一命中才绑"同一种保守姿态(不同的是这里没有"绑不上就不管"
+/// 的退路,只能挑一个;实际部署里技能库之间几乎不会撞目录名)。
+pub type LibraryAttribution = HashMap<String, (String, Option<String>)>;
 
 /// 登录身份的最小表示:一个技能库账号的登录名 + 展示名。
 ///
@@ -93,6 +109,43 @@ pub fn relation(
     }
 }
 
+/// 把上游 `.skill-lock.json` 的 `(sourceType, source, sourceUrl)` 归一化成一句展示文案。
+///
+/// **凡是装来的技能都有来源**(实测 lock 41 条逐条核过,一条不缺),但形状有四种
+/// (设计文档「来源展示」一节):`github`/`gitea` 的 `source` 本来就是 `owner/repo`,
+/// 原样展示;`git`(`npx skills add <url>` 裸装的)要从 URL 里解析出 `owner/repo`
+/// ——它与 `gitea` 那档常是**同一个库**,显示成两种形状用户会以为是两个来源;
+/// `well-known` 的 `source` 是域名,原样展示;其余(空、未知类型)不摆来源行,不报错。
+///
+/// 只在本地新建、从未分享过的草稿没有 lock 条目,调用方传空串三元组即得 `None`
+/// ——来源为空本身就是"尚未分享"这件事的信息,不是缺陷。
+pub fn source_label(source_type: &str, source: &str, source_url: &str) -> Option<String> {
+    match source_type {
+        "github" | "gitea" | "well-known" if !source.is_empty() => Some(source.to_string()),
+        "git" => owner_repo_from_git_url(source_url),
+        _ => None,
+    }
+}
+
+/// 从裸 git URL 里取最后两段路径、去掉 `.git` 后缀,拼成 `owner/repo`。
+///
+/// 不用 `url::Url` 严格解析:npx skills 记的 `sourceUrl` 不保证是标准 URL
+/// (可能是 `git@host:owner/repo.git` 这类 scp 写法),按路径分段处理对两种写法都适用。
+fn owner_repo_from_git_url(url: &str) -> Option<String> {
+    let trimmed = url.trim_end_matches('/');
+    let trimmed = trimmed.strip_suffix(".git").unwrap_or(trimmed);
+    let segments: Vec<&str> = trimmed
+        .split(['/', ':'])
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segments.len() < 2 {
+        return None;
+    }
+    let repo = segments[segments.len() - 1];
+    let owner = segments[segments.len() - 2];
+    Some(format!("{owner}/{repo}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +181,50 @@ mod tests {
     fn empty_display_name_does_not_match_an_empty_author() {
         let m = Identity { login: "x".into(), display_name: "".into() };
         assert_eq!(relation(Some(&m), Some(""), true, true), Relation::Installed);
+    }
+
+    #[test]
+    fn source_label_normalises_the_four_upstream_shapes() {
+        assert_eq!(
+            source_label("gitea", "skills/skills", "http://g.internal/skills/skills"),
+            Some("skills/skills".into())
+        );
+        assert_eq!(
+            source_label(
+                "github",
+                "anthropics/skills",
+                "https://github.com/anthropics/skills.git"
+            ),
+            Some("anthropics/skills".into())
+        );
+        assert_eq!(
+            source_label(
+                "git",
+                "http://g.internal:3000/skills/skills.git",
+                "http://g.internal:3000/skills/skills.git"
+            ),
+            Some("skills/skills".into())
+        );
+        assert_eq!(
+            source_label(
+                "well-known",
+                "open.feishu.cn",
+                "https://open.feishu.cn/.well-known/skills/x/SKILL.md"
+            ),
+            Some("open.feishu.cn".into())
+        );
+        assert_eq!(source_label("", "", ""), None);
+    }
+
+    /// 对外契约:前端按这三个小写字面量分区(见 `commands::InstalledSkillView`)。
+    /// 此前只有类型层面的 `#[serde(rename_all = "camelCase")]` 约束,没有测试正面
+    /// 断言过序列化结果真的是这三个词——v6 任务 1 复审时记的 deferred minor,
+    /// 任务 2 把 `Relation` 接进 IPC DTO 时一并补上(CLAUDE.md「注入验证」纪律:
+    /// 只断言"存在"分不清"拼对"与"拼错",这里正面断言值本身)。
+    #[test]
+    fn relation_serialises_to_the_three_literals_the_frontend_switches_on() {
+        assert_eq!(serde_json::to_string(&Relation::Shared).unwrap(), "\"shared\"");
+        assert_eq!(serde_json::to_string(&Relation::Installed).unwrap(), "\"installed\"");
+        assert_eq!(serde_json::to_string(&Relation::Draft).unwrap(), "\"draft\"");
     }
 }

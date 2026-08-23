@@ -34,6 +34,20 @@ use crate::core::state::{self, InstalledSkill, LinkRecord, SkillSource, Store};
 use crate::core::store::{self as store_index, IndexedSkill};
 use crate::error::AppError;
 
+/// `state.installed[].origin` 的两个历史取值。
+///
+/// v6 撤掉了「纳入管理 / 移出管理」(`claim`/`unclaim` 已删,见
+/// `docs/设计-v6-技能归属模型.md` §3「四本账去留」):技能与"我"的关系现在由
+/// `ownership::relation` 从技能库的 `authors.json` 现场判定,不再依赖这个标记。
+///
+/// **这两个常量因此只剩"读"的意义**:`ORIGIN_ACQUIRED` 仍在 [`record`] 里写入
+/// (它标记"文件是本 app 装的"这件事本身没有过时,只是不再驱动"能不能取消认领"
+/// 这个已经不存在的动作);`ORIGIN_CLAIMED` 只在存量 `state.json`(旧版认领留下的)
+/// 与 `share::adopt_into_management`(分享直推后自动记账,语义仍是"文件是用户自己
+/// 放的、本 app 只记了账")里出现,不再有对应的用户动作会产生新的 claimed 记录。
+pub const ORIGIN_CLAIMED: &str = "claimed";
+pub const ORIGIN_ACQUIRED: &str = "acquired";
+
 // ============================================================ 预检
 
 /// canonical 目录当前的状况。
@@ -205,7 +219,7 @@ pub enum AcquireOutcome {
 /// 外部契约要的是**完整 URL 与真实类型**——录制的 ground truth
 /// (`tests/fixtures/upstream-skill-lock.json`)里 `sourceUrl` 就是完整 URL。
 /// 此前这里写的是 `"owner/repo"`、`sourceType` 一律写死 `gitea`,于是
-/// `acquire::resolve_binding` 的同源判据对本 app 自己装的技能整个失效。
+/// `acquire::resolve_binding_of` 的同源判据对本 app 自己装的技能整个失效。
 #[derive(Debug, Clone, Copy)]
 pub struct SourceMeta<'a> {
     pub registry_id: &'a str,
@@ -862,251 +876,6 @@ fn link_mode(report: &crate::core::installer::LinkReport) -> Option<String> {
     }
 }
 
-// ============================================================ 认领上游安装(M3 任务 6)
-//
-// `npx skills` 装的技能只在 lock 里有记账、不在 state.json——本 app 对它们
-// 只读不管。「认领」是用户显式动作:补 state 记账,让更新/修复/移除走本 app
-// 既有流程。铁律:**lock 一个字节不动**(认领只读它),未认领的条目更是碰都不碰。
-
-/// 「我的技能」里的未认领行。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UnclaimedSkill {
-    pub dir_slug: String,
-    /// 上游记账的来源(如 `owner/repo`),仅展示。
-    pub source: String,
-    /// 纳入管理之后绑不绑得上某个技能库(M6 任务 4)。
-    ///
-    /// 界面靠它决定摆「纳入管理」还是「分享到技能库」:绑不上的纳入只多出
-    /// "修复关联"与"移除",摆出来就是引诱用户点一个没有意义的按钮。
-    /// **与 [`claim`] 是同一份判定**([`resolve_binding`]),不会出现
-    /// "清单说能绑、纳入后却标着来源已移除"。
-    pub binding: SourceBinding,
-}
-
-/// 扫出「上游装的、本体还在、我们没记账」的技能。
-/// 本体已不在的不列——摆一个认领了也用不了的行是撒谎。
-pub fn unclaimed_skills(
-    env: &dyn AgentEnv,
-    installer: &Installer,
-    st: &state::State,
-    sources: &BindingSources,
-) -> Vec<UnclaimedSkill> {
-    let Some(lock) = skill_lock::lock_path(env) else {
-        return Vec::new();
-    };
-    skill_lock::read_entries(&lock)
-        .into_iter()
-        .filter(|e| !st.installed.iter().any(|s| s.name == e.key))
-        .filter(|e| {
-            installer
-                .canonical_dir(&e.key)
-                .map(|p| p.is_dir())
-                .unwrap_or(false)
-        })
-        .map(|e| {
-            let (binding, _, _) = resolve_binding(&e, sources);
-            UnclaimedSkill {
-                dir_slug: e.key,
-                source: e.source,
-                binding,
-            }
-        })
-        .collect()
-}
-
-/// 认领结果。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaimReport {
-    pub dir_slug: String,
-    /// 收编入账的关联数。npx 建的链接不入账的话,移除时没人解,会留一地断链。
-    pub adopted_links: usize,
-    /// 是否绑定到了某个已配置的源。绑不上 = 仅本地管理(不提供更新与回推)。
-    pub bound: bool,
-}
-
-/// 认领一个上游装的技能。
-///
-/// 记账基线:`content_hash` 取**认领此刻**的目录内容(此后的改动才算"已改动");
-/// `commit_sha` 留空——基线版本未知,与远端头一比必然"有更新",第一次更新即对齐,
-/// 覆盖前照走既有预检(内容没动过才直接覆盖,动过必弹三选,绝不静默覆盖)。
-/// `state.installed` 里 `origin` 的两个取值。
-///
-/// 它决定一条记账**能不能被取消认领**:认领来的文件是别的工具装的,本 app 只记了账,
-/// 删账无损;获取来的文件是本 app 装的,只删账会留下孤儿目录与孤儿链接。
-pub const ORIGIN_CLAIMED: &str = "claimed";
-pub const ORIGIN_ACQUIRED: &str = "acquired";
-
-/// 这条记账是不是认领来的(因而可以取消认领)。
-///
-/// `origin` 缺席是旧版 state 的存量条目,退回判据 `commit_sha.is_empty()`
-/// ——已实证 `state.installed` 全仓只有两处写入,正常安装写远端 sha、只有 claim 留空。
-/// 判据保守:拿不准就当成"获取来的"不许取消,宁可少给一个按钮,不可误删记账留下孤儿。
-pub fn is_claimed(skill: &state::InstalledSkill) -> bool {
-    match skill.origin.as_deref() {
-        Some(ORIGIN_CLAIMED) => true,
-        Some(_) => false,
-        None => skill.commit_sha.is_empty(),
-    }
-}
-
-/// 取消认领:[`claim`] 的**精确逆操作**。
-///
-/// 只从 `state.installed` 删掉这条记账——**磁盘、各工具下的链接、
-/// `.skill-lock.json` 一个字节都不动**。认领本身就是纯记账(claim 全程只调一次
-/// `save_state`),所以它的撤销也必须是纯记账。
-///
-/// 这个函数存在的理由(M4 任务 6a,用户 2026-08-04 实测报的):在它之前,认领后唯一的
-/// 退出路径是「移除」,而移除会解链 → 删本体 → **从 `.skill-lock.json` 删掉条目**。
-/// 于是用户点一个零副作用的记账动作,反悔时唯一的按钮会把这个技能从 npx skills
-/// 那边一并毁掉。无害的进入,破坏性的退出。
-pub fn unclaim(store: &Store, dir_slug: &str) -> Result<(), AppError> {
-    let loaded = store.load_state()?;
-    let Some(idx) = loaded.value.installed.iter().position(|s| s.name == dir_slug) else {
-        return Err(AppError::new(
-            "FS_NOT_INSTALLED",
-            "这个技能不在管理列表中,无需取消",
-        )
-        .with_detail(format!("not in state.installed: {dir_slug}")));
-    };
-    if !is_claimed(&loaded.value.installed[idx]) {
-        return Err(AppError::new(
-            "CONFLICT_NOT_CLAIMED",
-            "这个技能是从技能库获取的,不能取消认领。不想要的话请用「移除」",
-        )
-        .with_detail(format!("origin is not claimed: {dir_slug}")));
-    }
-
-    let mut next = loaded.value.clone();
-    next.installed.remove(idx);
-    store.save_state(&next)?;
-    Ok(())
-}
-
-/// 上游来源与已配置源的对应关系。
-///
-/// **`NoSource` 与 `RepoNotListed` 是两句不同的话**:后者来源好好的,只是这个技能库
-/// 不在它的列表里,说成"来源没了"会让用户去找一个根本没丢的东西
-/// (`commands::source_state` 早就踩过同一个坑)。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
-pub enum SourceBinding {
-    /// 绑得上:认领后「更新」与「分享改动」都有去处。
-    Bound {
-        registry_id: String,
-        owner: String,
-        repo: String,
-    },
-    /// 没有能对上的来源(一个源都没配 / 不同源 / 来源类型无从判定)。
-    NoSource,
-    /// 有同源的来源,但这个技能库不在它的库列表里。
-    RepoNotListed,
-}
-
-/// 认领的三道前置闸。
-fn claimable(
-    installer: &Installer,
-    env: &dyn AgentEnv,
-    store: &Store,
-    dir_slug: &str,
-) -> Result<(skill_lock::UpstreamEntry, std::path::PathBuf), AppError> {
-    let st = store.load_state()?.value;
-    if st.installed.iter().any(|s| s.name == dir_slug) {
-        return Err(AppError::new(
-            "CONFLICT_ALREADY_MANAGED",
-            "这个技能已在管理中,无需认领",
-        ));
-    }
-    let canonical = installer.canonical_dir(dir_slug)?;
-    if !canonical.is_dir() {
-        return Err(AppError::new(
-            "FS_NOT_CLAIMABLE",
-            "本地已没有这个技能的文件,无法认领",
-        ));
-    }
-    let lock = skill_lock::lock_path(env)
-        .ok_or_else(|| AppError::new("FS_NO_HOME", "找不到用户主目录,无法保存本地数据"))?;
-    let entry = skill_lock::read_entries(&lock)
-        .into_iter()
-        .find(|e| e.key == dir_slug)
-        .ok_or_else(|| {
-            AppError::new(
-                "FS_NOT_CLAIMABLE",
-                "这个技能不是由 npx skills 安装的,可以在分享页把它收编进来",
-            )
-        })?;
-    Ok((entry, canonical))
-}
-
-/// 收编 npx 建的链接。只认「确实指向这个 canonical 的链接」;实体目录(npx 的
-/// 降级复制)与用户自己的目录无从区分,不敢认——那正是"凭猜测动用户文件"。
-fn adoptable_links(
-    installer: &Installer,
-    registry: &AgentRegistry,
-    canonical: &std::path::Path,
-    dir_slug: &str,
-) -> Result<(Vec<LinkRecord>, std::collections::BTreeSet<String>), AppError> {
-    let all_names: Vec<String> = registry.agents().iter().map(|a| a.name.clone()).collect();
-    let mut links = Vec::new();
-    let mut agent_names = std::collections::BTreeSet::new();
-    for target in installer.link_targets(&all_names)? {
-        let link = target.dir.join(dir_slug);
-        if let fsops::LinkState::Linked(kind) = fsops::link_state(&link, canonical) {
-            links.push(LinkRecord {
-                dir: target.dir.to_string_lossy().into_owned(),
-                mode: kind.as_str().to_string(),
-            });
-            agent_names.extend(target.agents.iter().cloned());
-        }
-    }
-    Ok((links, agent_names))
-}
-
-pub fn claim(
-    installer: &Installer,
-    registry: &AgentRegistry,
-    env: &dyn AgentEnv,
-    store: &Store,
-    sources: &BindingSources,
-    dir_slug: &str,
-    now: &str,
-) -> Result<ClaimReport, AppError> {
-    let (entry, canonical) = claimable(installer, env, store, dir_slug)?;
-    let mut st = store.load_state()?.value;
-
-    let (registry_id, owner, repo) = bind_source(&entry, sources);
-    let content_hash = fsops::dir_content_hash(&canonical)?;
-    let (links, agent_names) = adoptable_links(installer, registry, &canonical, dir_slug)?;
-
-    let report = ClaimReport {
-        dir_slug: dir_slug.to_string(),
-        adopted_links: links.len(),
-        bound: !registry_id.is_empty(),
-    };
-    st.installed.push(InstalledSkill {
-        name: dir_slug.to_string(),
-        source: SkillSource {
-            registry_id,
-            owner,
-            repo,
-            path: entry.skill_path.clone(),
-            git_ref: entry.git_ref.clone(),
-        },
-        commit_sha: String::new(),
-        content_hash,
-        // 认领来的:文件是别的工具装的,本 app 只是记了账,因此**可以取消认领**
-        origin: Some(ORIGIN_CLAIMED.to_string()),
-        agents: agent_names.into_iter().collect(),
-        links,
-        // 上游记的安装时间照抄(它更接近事实),没有才用现在
-        installed_at: entry.installed_at.clone().unwrap_or_else(|| now.to_string()),
-        updated_at: now.to_string(),
-    });
-    store.save_state(&st)?;
-    Ok(report)
-}
-
 /// 找"这个技能属于哪个已配置的技能库"时要看的全部坐标。
 ///
 /// **内建源必须单独传**:它锁定且不落 `config.registries`(坐标是编译期常量),
@@ -1163,16 +932,24 @@ impl BindingSources<'_> {
     }
 }
 
-/// 上游来源 ↔ 已配置源的绑定。绑不上就只留展示用的 owner/repo,
-/// registry_id 空(更新与回推没有去处)。
-fn bind_source(
-    entry: &skill_lock::UpstreamEntry,
-    sources: &BindingSources,
-) -> (String, String, String) {
-    match resolve_binding(entry, sources) {
-        (SourceBinding::Bound { registry_id, .. }, owner, repo) => (registry_id, owner, repo),
-        (_, owner, repo) => (String::new(), owner, repo),
-    }
+/// 上游来源与已配置源的对应关系。
+///
+/// **`NoSource` 与 `RepoNotListed` 是两句不同的话**:后者来源好好的,只是这个技能库
+/// 不在它的列表里,说成"来源没了"会让用户去找一个根本没丢的东西
+/// (`commands::source_state` 早就踩过同一个坑)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum SourceBinding {
+    /// 绑得上:更新与「分享改动」都有去处。
+    Bound {
+        registry_id: String,
+        owner: String,
+        repo: String,
+    },
+    /// 没有能对上的来源(一个源都没配 / 不同源 / 来源类型无从判定)。
+    NoSource,
+    /// 有同源的来源,但这个技能库不在它的库列表里。
+    RepoNotListed,
 }
 
 /// 绑定解析的唯一实现。返回 `(结论, owner, repo)`——owner/repo 无论绑不绑得上都要留,
@@ -1235,14 +1012,6 @@ pub fn resolve_binding_of(
         (Some((id, _, _, _)), None) => bound(id),
         _ => (SourceBinding::NoSource, owner, repo),
     }
-}
-
-/// 全局 lock(v3)条目的绑定解析。判定全在 [`resolve_binding_of`],这里只负责取字段。
-fn resolve_binding(
-    entry: &skill_lock::UpstreamEntry,
-    sources: &BindingSources,
-) -> (SourceBinding, String, String) {
-    resolve_binding_of(&entry.source, &entry.source_url, sources)
 }
 
 #[cfg(test)]

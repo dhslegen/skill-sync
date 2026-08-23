@@ -164,7 +164,7 @@ fn new_skill_shows_up_as_a_local_share_candidate() {
     .unwrap();
 
     let state = ctx.store.load_state().unwrap().value;
-    let candidates = share::scan_candidates(&ctx.registry, &env, &state).unwrap();
+    let candidates = share::scan_candidates(&ctx.registry, &env, &state, &Default::default(), &Default::default()).unwrap();
     let found = candidates
         .iter()
         .find(|c| c.dir_name == "weekly-report")
@@ -368,7 +368,7 @@ fn local_tier_filter_picks_the_new_skill_but_not_agent_dir_ones() {
         .unwrap();
 
     let state = ctx.store.load_state().unwrap().value;
-    let tier: Vec<String> = share::scan_candidates(&ctx.registry, &env, &state)
+    let tier: Vec<String> = share::scan_candidates(&ctx.registry, &env, &state, &Default::default(), &Default::default())
         .unwrap()
         .into_iter()
         .filter(|c| c.in_canonical && c.origin == share::CandidateOrigin::Local)

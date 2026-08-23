@@ -94,7 +94,7 @@ fn scans_canonical_dirs_that_we_did_not_install() {
     let (c, env) = ctx();
     write_skill(&canonical(&c).join("my-notes"), "我的笔记", "记点东西");
 
-    let found = share::scan_candidates(&c.registry, &env, &state_of(&c)).unwrap();
+    let found = share::scan_candidates(&c.registry, &env, &state_of(&c), &Default::default(), &Default::default()).unwrap();
 
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].dir_name, "my-notes");
@@ -129,7 +129,7 @@ fn skills_installed_by_this_app_are_excluded() {
         updated_at: NOW.into(),
     });
 
-    let found = share::scan_candidates(&c.registry, &env, &state).unwrap();
+    let found = share::scan_candidates(&c.registry, &env, &state, &Default::default(), &Default::default()).unwrap();
     assert!(found.is_empty(), "本 app 安装的不该出现在分享列表: {found:?}");
 }
 
@@ -147,7 +147,7 @@ fn npx_installed_skills_carry_their_original_source() {
     )
     .unwrap();
 
-    let found = share::scan_candidates(&c.registry, &env, &state_of(&c)).unwrap();
+    let found = share::scan_candidates(&c.registry, &env, &state_of(&c), &Default::default(), &Default::default()).unwrap();
     assert_eq!(
         found[0].origin,
         CandidateOrigin::NpxSkills { source: "acme/skills".into() }
@@ -166,7 +166,7 @@ fn real_dirs_in_agent_folders_are_candidates_but_links_are_not() {
     std::os::unix::fs::symlink(&body, c.home.join(".claude").join("skills").join("my-notes"))
         .unwrap();
 
-    let found = share::scan_candidates(&c.registry, &env, &state_of(&c)).unwrap();
+    let found = share::scan_candidates(&c.registry, &env, &state_of(&c), &Default::default(), &Default::default()).unwrap();
 
     let names: Vec<&str> = found.iter().map(|f| f.dir_name.as_str()).collect();
     assert!(names.contains(&"hand-made"));
@@ -182,7 +182,7 @@ fn dirs_without_skill_md_are_not_skills() {
     let (c, env) = ctx();
     std::fs::create_dir_all(canonical(&c).join("random-stuff")).unwrap();
 
-    let found = share::scan_candidates(&c.registry, &env, &state_of(&c)).unwrap();
+    let found = share::scan_candidates(&c.registry, &env, &state_of(&c), &Default::default(), &Default::default()).unwrap();
     assert!(found.is_empty());
 }
 
@@ -193,7 +193,7 @@ fn broken_frontmatter_and_chinese_dir_names_are_flagged_for_the_form() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("SKILL.md"), "---\nname: 周报\n---\n没有描述\n").unwrap();
 
-    let found = share::scan_candidates(&c.registry, &env, &state_of(&c)).unwrap();
+    let found = share::scan_candidates(&c.registry, &env, &state_of(&c), &Default::default(), &Default::default()).unwrap();
 
     assert_eq!(found.len(), 1);
     assert!(found[0].problem.as_deref().unwrap().contains("description"));
@@ -222,12 +222,12 @@ fn previously_shared_skills_report_whether_local_changed_since() {
         content_hash: fsops::dir_content_hash(&dir).unwrap(),
     });
 
-    let found = share::scan_candidates(&c.registry, &env, &state).unwrap();
+    let found = share::scan_candidates(&c.registry, &env, &state, &Default::default(), &Default::default()).unwrap();
     assert!(found[0].shared.as_ref().unwrap().up_to_date);
 
     // 改一笔 → 未分享的改动
     std::fs::write(dir.join("SKILL.md"), "---\nname: 我的笔记\ndescription: 改了\n---\n").unwrap();
-    let found = share::scan_candidates(&c.registry, &env, &state).unwrap();
+    let found = share::scan_candidates(&c.registry, &env, &state, &Default::default(), &Default::default()).unwrap();
     assert!(!found[0].shared.as_ref().unwrap().up_to_date);
 }
 
