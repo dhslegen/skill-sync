@@ -59,12 +59,35 @@ fn zip_with_skill(slug: &str, body: &str) -> Vec<u8> {
 /// 同上,但压缩包顶层目录是 `repo`(Gitea 的 archive 用仓库名做顶层)。
 /// 一源多仓的测试要造第二个技能库的压缩包,顶层目录必须跟着变。
 fn zip_with_skill_in(repo: &str, slug: &str, body: &str) -> Vec<u8> {
+    zip_with_optional_author(repo, slug, body, None)
+}
+
+/// 带库根 `authors.json` 的压缩包(v6 任务 3):`store::build_index` 会把它解析成
+/// 每个技能的 attribution,而 attribution 的 author 正是"这是不是我分享的"唯一判据。
+///
+/// **不改 `zip_with_skill`**:那份 fixture 被上面所有既有用例共用,给它加一个文件
+/// 会悄悄改掉每个用例看到的索引与内容指纹。
+fn zip_with_author(slug: &str, body: &str, author: &str) -> Vec<u8> {
+    zip_with_optional_author("skills", slug, body, Some(author))
+}
+
+fn zip_with_optional_author(repo: &str, slug: &str, body: &str, author: Option<&str>) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
         let plain: zip::write::SimpleFileOptions = Default::default();
         let exec = plain.unix_permissions(0o755);
         w.add_directory(format!("{repo}/"), plain).unwrap();
+        if let Some(author) = author {
+            w.start_file(format!("{repo}/authors.json"), plain).unwrap();
+            std::io::Write::write_all(
+                &mut w,
+                serde_json::json!({ "authors": { slug: { "author": author } } })
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+        }
         w.start_file(format!("{repo}/skills/{slug}/SKILL.md"), plain).unwrap();
         std::io::Write::write_all(
             &mut w,
@@ -92,6 +115,23 @@ async fn mount(server: &MockServer, sha: &str, slug: &str, body: &str) {
     Mock::given(method("GET"))
         .and(path_regex(r"^/api/v1/repos/skills/skills/archive/main\.zip$"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(zip_with_skill(slug, body)))
+        .mount(server)
+        .await;
+}
+
+/// 与 [`mount`] 同款,但技能库根带 `authors.json`,里面把这个技能记在 `author` 名下。
+async fn mount_authored(server: &MockServer, sha: &str, slug: &str, body: &str, author: &str) {
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/v1/repos/skills/skills/branches/main$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "name": "main",
+            "commit": { "id": sha, "timestamp": "2026-07-30T10:00:00+08:00" }
+        })))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/v1/repos/skills/skills/archive/main\.zip$"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(zip_with_author(slug, body, author)))
         .mount(server)
         .await;
 }
@@ -216,7 +256,7 @@ async fn a_fresh_install_immediately_reads_back_as_unmodified() {
 
     let state = c.store.load_state().unwrap().value;
     let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
-    let checked = acquire::precheck(&installer, &env, &state, "weekly-report", "aaa1111", Some(&repo_ref())).unwrap();
+    let checked = acquire::precheck(&installer, &env, &state, "weekly-report", "aaa1111", Some(&repo_ref()), Default::default()).unwrap();
 
     assert_eq!(
         checked,
@@ -241,7 +281,7 @@ async fn deleted_body_with_books_still_prechecks_as_fresh() {
     let state = c.store.load_state().unwrap().value;
     assert_eq!(state.installed.len(), 1, "记账应当还在");
 
-    let checked = acquire::precheck(&installer, &env, &state, "weekly-report", "bbb2222", Some(&repo_ref())).unwrap();
+    let checked = acquire::precheck(&installer, &env, &state, "weekly-report", "bbb2222", Some(&repo_ref()), Default::default()).unwrap();
 
     assert_eq!(checked, Precheck::Fresh);
 }
@@ -460,7 +500,7 @@ async fn keeping_local_changes_touches_nothing_in_the_skill_body() {
     assert_eq!(record.commit_sha, "aaa1111", "保留本地时不该把版本推进到远端");
     let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
     assert_eq!(
-        acquire::precheck(&installer, &env, &state, "weekly-report", "ccc3333", Some(&repo_ref())).unwrap(),
+        acquire::precheck(&installer, &env, &state, "weekly-report", "ccc3333", Some(&repo_ref()), Default::default()).unwrap(),
         Precheck::LocallyModified { installed_sha: "aaa1111".into() },
         "保留本地之后,它仍应被认作有未分享的改动"
     );
@@ -491,7 +531,7 @@ async fn overwriting_is_only_done_when_explicitly_chosen() {
     // 覆盖后 hash 必须与新内容一致,否则下一次又会被判成"用户改过"
     let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
     assert!(matches!(
-        acquire::precheck(&installer, &env, &state, "weekly-report", "ccc3333", Some(&repo_ref())).unwrap(),
+        acquire::precheck(&installer, &env, &state, "weekly-report", "ccc3333", Some(&repo_ref()), Default::default()).unwrap(),
         Precheck::Managed { up_to_date: true, .. }
     ));
 }
@@ -722,4 +762,365 @@ async fn acquiring_also_refreshes_the_store_index_cache() {
     let index = skillsync_lib::core::store::load_cache(&cache).expect("索引缓存应已写入");
     assert_eq!(index.commit_sha, "ddd4444");
     assert_eq!(index.skills.len(), 1);
+}
+
+// ============================================================ 「我分享的」(v6 任务 3)
+//
+// 这一节钉的是同一件事的六个面:**技能库里记的分享者是当前登录的这个人时,
+// 获取流程不能再把他当外人**。判据来自库根 authors.json(随索引下来,离线可算),
+// 不是本地的任何一本账——所以"换电脑 / app 数据丢了 / 绕过 app 直接推上去"
+// 这三种本地毫无记录的场景,判定照样成立。
+
+const ME_LOGIN: &str = "zhaowh";
+const ME_DISPLAY: &str = "赵文浩";
+
+/// 把「我」写进 `config.identities[REGISTRY]`(登录那一刻 session.rs 做的事)。
+fn sign_in(c: &Ctx) {
+    let mut config = c.store.load_config().unwrap().value;
+    config.identities.insert(
+        REGISTRY.to_string(),
+        skillsync_lib::core::ownership::Identity {
+            login: ME_LOGIN.into(),
+            display_name: ME_DISPLAY.into(),
+        },
+    );
+    c.store.save_config(&config).unwrap();
+}
+
+/// 我自己写的技能,直接推进了技能库(没经过本 app),这台电脑上因此:
+/// canonical 里有实体目录、`state.installed` 没有账、npx 的 lock 里也没有条目。
+/// 旧代码在这里返回 `Foreign`,弹窗告诉作者"这个位置上的技能不是本应用安装的"。
+#[tokio::test]
+async fn author_is_me_never_yields_foreign() {
+    let server = MockServer::start().await;
+    mount_authored(&server, "aaa1111", "weekly-report", "库里的正文", ME_DISPLAY).await;
+    let (c, env) = ctx();
+    sign_in(&c);
+
+    let dir = canonical(&c.home, "weekly-report");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "我自己起草的\n").unwrap();
+    let drafted = std::fs::read(dir.join("SKILL.md")).unwrap();
+
+    let outcome = run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+
+    match outcome {
+        acquire::AcquireOutcome::NeedsDecision {
+            precheck: Precheck::Mine { local_changed, remote_changed },
+        } => {
+            // 没有账 = 没有基线,两边一律按"变了"处理(少报哪一边都会丢东西)
+            assert!(local_changed, "没有基线时必须当作本地有改动");
+            assert!(remote_changed, "没有基线时必须当作库里也有新版");
+        }
+        other => panic!("作者在自己的技能上不该看到外来目录,实际: {other:?}"),
+    }
+    assert_eq!(
+        std::fs::read(dir.join("SKILL.md")).unwrap(),
+        drafted,
+        "拍板之前一个字节都不该动"
+    );
+}
+
+/// 对照组:同一份现场,只是没登录。未登录时不知道你是谁,**行为一个字不变**。
+#[tokio::test]
+async fn signed_out_keeps_foreign() {
+    let server = MockServer::start().await;
+    mount_authored(&server, "aaa1111", "weekly-report", "库里的正文", ME_DISPLAY).await;
+    let (c, env) = ctx(); // 刻意不 sign_in
+
+    let dir = canonical(&c.home, "weekly-report");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "我自己起草的\n").unwrap();
+
+    let outcome = run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+
+    match outcome {
+        acquire::AcquireOutcome::NeedsDecision {
+            precheck: Precheck::Foreign { origin },
+        } => assert_eq!(origin, ForeignOrigin::Unknown),
+        other => panic!("未登录时应当维持原样,实际: {other:?}"),
+    }
+}
+
+/// 「库里有新版、本地没改过」→ 直接取回;并且**两个阶段都要有分享基线**。
+///
+/// 第一段(Fresh)就是换电脑那一档:canonical 上什么都没有,precheck 走 `Fresh`,
+/// 根本不经过 Mine 的折叠——基线若只在 Mine 那一档建,这一段会一条 shared 都没有,
+/// 而「有改动未分享」正是靠它判定的。
+#[tokio::test]
+async fn mine_without_local_edits_pulls_and_seeds_shared_baseline() {
+    let server = MockServer::start().await;
+    mount_authored(&server, "aaa1111", "weekly-report", "第一版", ME_DISPLAY).await;
+    let (c, env) = ctx();
+    sign_in(&c);
+
+    run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+
+    let dir = canonical(&c.home, "weekly-report");
+    let state = c.store.load_state().unwrap().value;
+    assert_eq!(state.shared.len(), 1, "换电脑取回后必须有分享基线");
+    assert_eq!(state.shared[0].name, "weekly-report");
+    assert_eq!(state.shared[0].target.owner, "skills");
+    assert_eq!(state.shared[0].target.repo, "skills");
+    let first = skillsync_lib::core::fsops::dir_content_hash(&dir).unwrap();
+    assert_eq!(state.shared[0].content_hash, first);
+
+    // 第二段:库里出了新版(别人经审核改的),本地没动过 → 直接取回
+    let server2 = MockServer::start().await;
+    mount_authored(&server2, "bbb2222", "weekly-report", "第二版", ME_DISPLAY).await;
+    run(&server2, &c, &env, "weekly-report", &[], None).await.unwrap();
+
+    let second = skillsync_lib::core::fsops::dir_content_hash(&dir).unwrap();
+    assert_ne!(second, first, "第二版内容应当真的落了盘");
+    let state = c.store.load_state().unwrap().value;
+    assert_eq!(state.shared.len(), 1, "基线是对齐不是新增一条");
+    assert_eq!(state.shared[0].content_hash, second, "基线必须对齐到刚取回的这一版");
+}
+
+/// 「两边都新」:磁盘零写入,等用户拍板。
+#[tokio::test]
+async fn mine_with_local_edits_writes_nothing_without_a_decision() {
+    let server = MockServer::start().await;
+    mount_authored(&server, "aaa1111", "weekly-report", "第一版", ME_DISPLAY).await;
+    let (c, env) = ctx();
+    sign_in(&c);
+    run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+
+    let dir = canonical(&c.home, "weekly-report");
+    user_edits(&dir);
+    let before = skillsync_lib::core::fsops::dir_content_hash(&dir).unwrap();
+
+    let server2 = MockServer::start().await;
+    mount_authored(&server2, "bbb2222", "weekly-report", "同事改过的", ME_DISPLAY).await;
+    let outcome = run(&server2, &c, &env, "weekly-report", &[], None).await.unwrap();
+
+    match outcome {
+        acquire::AcquireOutcome::NeedsDecision {
+            precheck: Precheck::Mine { local_changed, remote_changed },
+        } => {
+            assert!(local_changed);
+            assert!(remote_changed);
+        }
+        other => panic!("两边都新时应当停下来问,实际: {other:?}"),
+    }
+    assert_eq!(
+        skillsync_lib::core::fsops::dir_content_hash(&dir).unwrap(),
+        before,
+        "拍板之前磁盘一个字节都没动"
+    );
+}
+
+/// 有账之后**也必须还能进 `Mine`**:第一次取回就会记一条 `state.installed`,
+/// 此后同名目录先命中 `LocallyModified`。只在"没记账"时判关系的话,作者两边都新时
+/// 弹的仍是旧三选(里面有拍板不给作者的「保留并贡献」)。
+///
+/// 同一份现场里带对照组:`me` 为 `None` 时仍然是 `LocallyModified`。
+#[tokio::test]
+async fn mine_with_ledger_still_yields_mine_not_locally_modified() {
+    let server = MockServer::start().await;
+    mount_authored(&server, "aaa1111", "weekly-report", "第一版", ME_DISPLAY).await;
+    let (c, env) = ctx();
+    sign_in(&c);
+    run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+
+    let dir = canonical(&c.home, "weekly-report");
+    user_edits(&dir);
+
+    let state = c.store.load_state().unwrap().value;
+    let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
+    let me = skillsync_lib::core::ownership::Identity {
+        login: ME_LOGIN.into(),
+        display_name: ME_DISPLAY.into(),
+    };
+
+    let checked = acquire::precheck(
+        &installer,
+        &env,
+        &state,
+        "weekly-report",
+        "bbb2222",
+        Some(&repo_ref()),
+        acquire::PrecheckContext {
+            me: Some(&me),
+            author: Some(ME_DISPLAY),
+            remote_content_hash: Some("远端换了内容"),
+        },
+    )
+    .unwrap();
+    assert_eq!(checked, Precheck::Mine { local_changed: true, remote_changed: true });
+
+    // 对照组:同一份 state、同一个目录,只是不知道我是谁
+    let checked = acquire::precheck(
+        &installer,
+        &env,
+        &state,
+        "weekly-report",
+        "bbb2222",
+        Some(&repo_ref()),
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(checked, Precheck::LocallyModified { installed_sha: "aaa1111".into() });
+}
+
+/// `remote_changed` 的判据是**逐技能内容指纹**,不是技能库的头 sha。
+///
+/// 库头一变就说"库里有新版"正是 2026-08-03 用户实测撞到的缺陷(别人分享任意一个
+/// 技能都会让全部已装技能同时亮),而这个值会驱动两件真事:冲突弹窗上那句
+/// "库里有新版",以及「以本地为准」之后分享更新要不要强制走审核。
+/// fixture 刻意让 sha 与内容指纹给出**相反**的结论,两者取同值就测不出区别。
+#[tokio::test]
+async fn a_new_library_head_with_identical_content_is_not_a_remote_change() {
+    let server = MockServer::start().await;
+    mount_authored(&server, "aaa1111", "weekly-report", "第一版", ME_DISPLAY).await;
+    let (c, env) = ctx();
+    sign_in(&c);
+    run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+
+    let state = c.store.load_state().unwrap().value;
+    let installed_hash = state.installed[0].content_hash.clone();
+    let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
+    let me = skillsync_lib::core::ownership::Identity {
+        login: ME_LOGIN.into(),
+        display_name: ME_DISPLAY.into(),
+    };
+
+    let checked = acquire::precheck(
+        &installer,
+        &env,
+        &state,
+        "weekly-report",
+        // 库头变了(别人分享了**另一个**技能),但这个技能的内容一个字没改
+        "bbb2222",
+        Some(&repo_ref()),
+        acquire::PrecheckContext {
+            me: Some(&me),
+            author: Some(ME_DISPLAY),
+            remote_content_hash: Some(&installed_hash),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        checked,
+        Precheck::Mine { local_changed: false, remote_changed: false },
+        "库头变了不等于这个技能变了"
+    );
+}
+
+/// 「以本地为准」:磁盘、记账、基线一个字节都不动,并把 `remote_changed` 交还给
+/// 调用方——它为真时后续的分享更新必须强制走审核(直推等于覆盖同事经审核改的版本)。
+#[tokio::test]
+async fn keeping_local_on_my_own_skill_writes_nothing_and_reports_remote_changed() {
+    let server = MockServer::start().await;
+    mount_authored(&server, "aaa1111", "weekly-report", "第一版", ME_DISPLAY).await;
+    let (c, env) = ctx();
+    sign_in(&c);
+    run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+
+    let dir = canonical(&c.home, "weekly-report");
+    user_edits(&dir);
+    let edited = skillsync_lib::core::fsops::dir_content_hash(&dir).unwrap();
+    let baseline_before = c.store.load_state().unwrap().value.shared[0].content_hash.clone();
+
+    let server2 = MockServer::start().await;
+    mount_authored(&server2, "bbb2222", "weekly-report", "同事改过的", ME_DISPLAY).await;
+    let outcome = run(&server2, &c, &env, "weekly-report", &[], Some(Resolution::KeepLocal))
+        .await
+        .unwrap();
+
+    match outcome {
+        acquire::AcquireOutcome::Kept { remote_changed } => assert!(remote_changed),
+        other => panic!("以本地为准时不该安装任何东西,实际: {other:?}"),
+    }
+    assert_eq!(
+        skillsync_lib::core::fsops::dir_content_hash(&dir).unwrap(),
+        edited,
+        "本体被动过了"
+    );
+    let state = c.store.load_state().unwrap().value;
+    assert_eq!(
+        state.shared[0].content_hash, baseline_before,
+        "没分享出去就不能动基线,动了「有改动未分享」这个标记会凭空消失"
+    );
+    assert_eq!(state.installed[0].commit_sha, "aaa1111", "记账也不该动");
+}
+
+/// 定时更新(与向导的一键全装)对「我分享的」一律跳过并说人话;
+/// 但它装**新的**技能时,分享基线同样要建起来——新机器上的一键全装就是换电脑。
+#[tokio::test]
+async fn batch_skips_mine() {
+    let server = MockServer::start().await;
+    mount_authored(&server, "aaa1111", "weekly-report", "第一版", ME_DISPLAY).await;
+    let (c, env) = ctx();
+    sign_in(&c);
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let source = acquire::SourceMeta {
+        registry_id: REGISTRY,
+        kind: "gitea",
+        base_url: &server.uri(),
+    };
+    let slugs = vec!["weekly-report".to_string()];
+
+    let items = acquire::acquire_batch(
+        &client,
+        &c.registry,
+        &env,
+        &c.store,
+        source,
+        &repo_ref(),
+        &slugs,
+        acquire::BatchAgents::Uniform(&[]),
+        NOW,
+        1_753_800_000,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(items[0].outcome, acquire::BatchOutcome::Installed { .. }),
+        "全新环境该照常装上,实际: {:?}",
+        items[0].outcome
+    );
+    assert_eq!(
+        c.store.load_state().unwrap().value.shared.len(),
+        1,
+        "批量装我自己的技能同样要建分享基线(一键全装 = 换电脑)"
+    );
+
+    // 库里出了新版:自动流程绝不替作者覆盖他自己的技能
+    let server2 = MockServer::start().await;
+    mount_authored(&server2, "bbb2222", "weekly-report", "第二版", ME_DISPLAY).await;
+    let client2 = GiteaClient::new(server2.uri(), None).unwrap();
+    let source2 = acquire::SourceMeta {
+        registry_id: REGISTRY,
+        kind: "gitea",
+        base_url: &server2.uri(),
+    };
+    let items = acquire::acquire_batch(
+        &client2,
+        &c.registry,
+        &env,
+        &c.store,
+        source2,
+        &repo_ref(),
+        &slugs,
+        acquire::BatchAgents::FromAccount,
+        NOW,
+        1_753_800_000,
+    )
+    .await
+    .unwrap();
+
+    match &items[0].outcome {
+        acquire::BatchOutcome::Skipped { reason } => {
+            assert!(!reason.is_empty(), "跳过必须给一句人话");
+            assert!(reason.contains("分享"), "跳过的原因要说清是因为这是我分享的:{reason}");
+        }
+        other => panic!("自动流程不该覆盖作者的技能,实际: {other:?}"),
+    }
+    let dir = canonical(&c.home, "weekly-report");
+    assert!(
+        std::fs::read_to_string(dir.join("SKILL.md")).unwrap().contains("第一版"),
+        "本地内容被自动覆盖了"
+    );
 }

@@ -29,6 +29,7 @@ use crate::core::agents::{AgentEnv, AgentRegistry};
 use crate::core::fsops::{self, OnOccupied};
 use crate::core::gitea::{RepoArchive, RepoRef, RepoSource};
 use crate::core::installer::{InstallReport, Installer, SkillPayload};
+use crate::core::ownership::{self, Identity};
 use crate::core::skill_lock::{self, LockEntry, LockOutcome};
 use crate::core::state::{self, InstalledSkill, LinkRecord, SkillSource, Store};
 use crate::core::store::{self as store_index, IndexedSkill};
@@ -75,6 +76,19 @@ pub enum Precheck {
         source_owner: String,
         source_repo: String,
     },
+    /// **技能库里记的分享者就是当前登录的这个人**(v6 任务 3)。
+    ///
+    /// 这一档取代了作者在自己技能上会看到的 `Foreign`/`LocallyModified`/
+    /// `Managed{up_to_date:false}` 三种说法——它们讲的都是"这东西是怎么来的"
+    /// (来历),而作者要的是"我这边和库里哪边新"(关系)。
+    ///
+    /// - `local_changed`:本地本体与账上基线不符(没有账 = 没有基线,保守当作改过);
+    /// - `remote_changed`:库里这一版与账上基线不符(判据是**逐技能内容指纹**,
+    ///   不是库头 sha,见 [`remote_content_changed`])。
+    Mine {
+        local_changed: bool,
+        remote_changed: bool,
+    },
     /// 有同名目录但不在本应用的记账里——别的工具装的,或用户自己建的。
     ///
     /// 这一档**没有"你的改动"可分享**,所以默认动作是取消,不是保留后分享。
@@ -101,6 +115,56 @@ pub enum Resolution {
     Overwrite,
 }
 
+/// [`precheck`] 判"这是谁的技能"所需的三样东西(v6 任务 3)。
+///
+/// 单独成结构体而不是三个位置参数:`precheck` 本来就已经六个参数,再加三个
+/// 会顶到 clippy 的 `too_many_arguments`,而用 `#[allow]` 掩过去只是把味道藏起来。
+/// `Default`(全 `None`)= **未登录、库里没记作者**,此时全部判定与 v6 之前逐字相同
+/// ——既有调用方与既有测试因此可以原样迁移,这也是"未登录行为一个字不变"的护栏。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PrecheckContext<'a> {
+    /// 目标技能库对应的登录身份(`config.identities[registryId]`),未登录 `None`。
+    pub me: Option<&'a Identity>,
+    /// 技能库根 `authors.json` 里记的分享者(索引 `attribution.author`)。
+    pub author: Option<&'a str>,
+    /// 远端这一版技能的**内容指纹**(`store::IndexedSkill::content_hash`)。
+    ///
+    /// 拿不到时(旧索引缓存没有这个字段)`remote_changed` 退回库头 sha 比对,
+    /// 见 [`remote_content_changed`]。
+    pub remote_content_hash: Option<&'a str>,
+}
+
+/// 「技能库里记的分享者是不是我」。判定实现只有 [`ownership::relation`] 一处。
+///
+/// `in_library` / `local_present` 在这里都是 `true` **由构造保证**:调用方只在技能
+/// 确实存在于索引里时才走到 precheck,而 canonical 不存在的情况在 [`precheck`] 开头
+/// 就早退成 `Fresh` 了。
+fn is_mine(ctx: &PrecheckContext<'_>) -> bool {
+    ownership::relation(ctx.me, ctx.author, true, true) == ownership::Relation::Shared
+}
+
+/// 库里这一版与账上基线比,变没变。
+///
+/// 🔴 **判据是逐技能的内容指纹,不是库头 sha**:库头一变就说"库里有新版"正是
+/// 2026-08-03 用户实测撞到的缺陷(别人分享任意一个技能都会让全部已装技能同时亮),
+/// 而这个值会驱动两件真事——冲突弹窗上那句"库里有新版",以及「以本地为准」之后
+/// 分享更新要不要强制走审核。用库头算,两件事都会长期说假话。
+///
+/// 指纹任一侧缺失(旧缓存没有 `content_hash`)时退回库头比对:这个方向上宁可**多报**
+/// ——多报的代价是分享多走一次审核,少报的代价是直推覆盖同事经审核改过的版本。
+fn remote_content_changed(
+    recorded: &InstalledSkill,
+    ctx: &PrecheckContext<'_>,
+    remote_sha: &str,
+) -> bool {
+    match ctx.remote_content_hash {
+        Some(remote) if !remote.is_empty() && !recorded.content_hash.is_empty() => {
+            recorded.content_hash != remote
+        }
+        _ => recorded.commit_sha != remote_sha,
+    }
+}
+
 /// 读磁盘与 state,判断 canonical 上的现状。不写任何东西。
 pub fn precheck(
     installer: &Installer,
@@ -110,6 +174,7 @@ pub fn precheck(
     remote_sha: &str,
     // target:本次请求的目标库。`None` = 调用方不关心来源,跳过库比对。
     target: Option<&RepoRef>,
+    ctx: PrecheckContext<'_>,
 ) -> Result<Precheck, AppError> {
     let canonical = installer.canonical_dir(dir_slug)?;
     if !canonical.exists() {
@@ -121,7 +186,22 @@ pub fn precheck(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| dir_slug.to_string());
 
+    let mine = is_mine(&ctx);
+
     let Some(recorded) = state.installed.iter().find(|s| s.name == dir_name) else {
+        // 🔴 v6 的核心修复:**作者永远进不了 `Foreign`**。用户自己写的技能、直接推进
+        // 技能库(或换电脑后重装的 app)在本地没有任何记账,旧代码据此告诉他
+        // "这个位置上的技能不是本应用安装的"——app 把自己的作者当成了外人。
+        //
+        // 没有记账 = 没有基线,两边一律按"变了"处理。保守方向只有这一个:
+        // 少报 local_changed 会静默覆盖作者自己的内容(铁律 7),
+        // 少报 remote_changed 会让接下来的分享更新直推、覆盖同事经审核改过的版本。
+        if mine {
+            return Ok(Precheck::Mine {
+                local_changed: true,
+                remote_changed: true,
+            });
+        }
         return Ok(Precheck::Foreign {
             origin: foreign_origin(env, &dir_name),
         });
@@ -129,6 +209,9 @@ pub fn precheck(
 
     // 来源库不同要**先于**内容比对:用户没改过本体时 hash 照样不等(两个库的同名
     // 技能内容本就不同),落进 Managed 就会被当成一次正常更新静默做掉。
+    //
+    // 这一档**不受 `Mine` 影响**:两个库里的同名技能是两个东西,哪怕两边的作者
+    // 都是我,"用另一个库的同名技能替换掉现有的"仍然必须由用户拍板。
     if let Some(t) = target {
         if recorded.source.owner != t.owner || recorded.source.repo != t.repo {
             return Ok(Precheck::OtherLibrary {
@@ -139,15 +222,33 @@ pub fn precheck(
         }
     }
 
+    let remote_changed = remote_content_changed(recorded, &ctx, remote_sha);
     let actual = fsops::dir_content_hash(&canonical)?;
     if actual != recorded.content_hash {
+        // 有账之后也必须还能进 `Mine`:第一次取回就会往 `state.installed` 记一条,
+        // 此后同名目录先命中 LocallyModified。只在"没记账"时判关系的话,
+        // 「我分享的」技能两边都新时弹的仍是旧三选(里面有拍板不给作者的
+        // 「保留并贡献」)——折叠因此放在 core,不交给前端按 relation 挑弹窗。
+        if mine {
+            return Ok(Precheck::Mine {
+                local_changed: true,
+                remote_changed,
+            });
+        }
         return Ok(Precheck::LocallyModified {
             installed_sha: recorded.commit_sha.clone(),
         });
     }
+    let up_to_date = recorded.commit_sha == remote_sha;
+    if mine && !up_to_date {
+        return Ok(Precheck::Mine {
+            local_changed: false,
+            remote_changed,
+        });
+    }
     Ok(Precheck::Managed {
         installed_sha: recorded.commit_sha.clone(),
-        up_to_date: recorded.commit_sha == remote_sha,
+        up_to_date,
     })
 }
 
@@ -205,6 +306,14 @@ pub type ProgressSink<'a> = &'a (dyn Fn(Stage) + Send + Sync);
 pub enum AcquireOutcome {
     /// 需要用户先决定怎么处理本地内容。**磁盘一个字节都没动。**
     NeedsDecision { precheck: Precheck },
+    /// 「我分享的」技能上用户选了**以本地为准**:磁盘、记账、关联一个字节都没动
+    /// (v6 任务 3)。下一步由调用方去走「分享更新」,不是安装。
+    ///
+    /// 带上 `remote_changed` 是为了让这一步自己把话说全——调用方不必跨两次 IPC 记住
+    /// 上一轮 `NeedsDecision` 里的那个值:**它为真时后续分享必须带 `force_review`**
+    /// (前提就是"库里已有新版",直推等于覆盖同事经审核改过的版本,与
+    /// `install.ts` 的 `keepLocalAndShare` 恒带 forceReview 是同一个理由)。
+    Kept { remote_changed: bool },
     Installed {
         report: InstallReport,
         /// 本次保留了用户的本地改动(没有覆盖本体)。
@@ -390,6 +499,24 @@ async fn finish(
     progress(Stage::Checking);
     let installer = Installer::new(registry, env);
     let loaded = store.load_state()?;
+    // 「我是谁」读 config 就够,不打网络(v6 任务 1 起登录时就落了盘)。
+    // **读不出来一律上报,绝不降级成 `me = None`**:那等于在读不到配置的环境里
+    // 悄悄把作者又变回外人——正是本任务要消灭的缺陷从侧门回来,而且没有任何测试
+    // 走得到。上面的 `load_state` 本来就会因同一类故障中断获取,这里不新增故障面。
+    let config = store.load_config()?;
+    let me = config.value.identities.get(req.source.registry_id);
+    let author = skill.attribution.as_ref().map(|a| a.author.as_str());
+    let ctx = PrecheckContext {
+        me,
+        author,
+        remote_content_hash: Some(skill.content_hash.as_str()),
+    };
+    // 与 precheck 里那次是同一个判定实现(`is_mine` → `ownership::relation`),
+    // 但问的不是同一件事:precheck 用它挑档位(只在 canonical 上已有东西时才问),
+    // 这里用它决定要不要给 `state.shared` 建内容基线——**换电脑那一档走的是
+    // `Fresh`**(canonical 上什么都没有),压根不经过 Mine 的折叠,而它恰恰是
+    // 这条基线最需要从无到有建起来的场景。
+    let mine = is_mine(&ctx);
     let checked = precheck(
         &installer,
         env,
@@ -397,16 +524,31 @@ async fn finish(
         req.dir_slug,
         remote_sha,
         Some(req.repo),
+        ctx,
     )?;
 
-    // 需要用户拍板的三种情况:改过本体、目录是别人的、或它装自另一个技能库。
-    // 此时不动磁盘。
+    // 需要用户拍板的情况:改过本体、目录是别人的、装自另一个技能库,
+    // 或者「我分享的」技能两边都新。此时不动磁盘。
     let needs_decision = matches!(
         checked,
-        Precheck::LocallyModified { .. } | Precheck::Foreign { .. } | Precheck::OtherLibrary { .. }
+        Precheck::LocallyModified { .. }
+            | Precheck::Foreign { .. }
+            | Precheck::OtherLibrary { .. }
+            | Precheck::Mine {
+                local_changed: true,
+                ..
+            }
     );
     if needs_decision && req.resolution.is_none() {
         return Ok(AcquireOutcome::NeedsDecision { precheck: checked });
+    }
+
+    // 「我分享的」+ 以本地为准:什么都不做。本体是作者手上的最新版,覆盖它就是丢改动;
+    // 也不补建关联——这条路的下一步是「分享更新」,不是安装。
+    if let Precheck::Mine { remote_changed, .. } = checked {
+        if req.resolution == Some(Resolution::KeepLocal) {
+            return Ok(AcquireOutcome::Kept { remote_changed });
+        }
     }
 
     // 外来目录里没有"你的改动"可留:接受 KeepLocal 会把别人的内容当成我们装的记进 state
@@ -451,6 +593,7 @@ async fn finish(
         remote_sha,
         now,
         keep_local,
+        mine,
         canonical_visible,
     )?;
 
@@ -522,6 +665,9 @@ pub async fn acquire_batch(
     }
 
     let installer = Installer::new(registry, env);
+    // 身份读一次就够:整批共用同一个 (源, 库),`identities` 是按 registryId 存的。
+    let config = store.load_config()?;
+    let me = config.value.identities.get(source.registry_id);
     let mut out = Vec::new();
     for dir_slug in dir_slugs {
         let item = install_one_from_archive(
@@ -535,6 +681,7 @@ pub async fn acquire_batch(
             &head.sha,
             dir_slug,
             agents,
+            me,
             now,
         );
         out.push(BatchItem {
@@ -558,6 +705,7 @@ fn install_one_from_archive(
     head_sha: &str,
     dir_slug: &str,
     agents: BatchAgents<'_>,
+    me: Option<&Identity>,
     now: &str,
 ) -> BatchOutcome {
     let Some(skill) = index.skills.iter().find(|s| s.dir_slug == dir_slug) else {
@@ -565,6 +713,14 @@ fn install_one_from_archive(
             reason: "已不在该技能库中".into(),
         };
     };
+    let ctx = PrecheckContext {
+        me,
+        author: skill.attribution.as_ref().map(|a| a.author.as_str()),
+        remote_content_hash: Some(skill.content_hash.as_str()),
+    };
+    // 与逐个安装同一份判定:向导在新机器上一键全装,对「我分享的」技能同样要建
+    // 分享基线(那正是换电脑场景)。同一件事在两个入口给两种结果是本项目栽过的跟头。
+    let mine = is_mine(&ctx);
 
     // 每轮重新读 state:上一轮的记账已经写回,拿旧快照会互相覆盖
     let run = || -> Result<BatchOutcome, AppError> {
@@ -585,7 +741,16 @@ fn install_one_from_archive(
         };
         let agent_names = agent_names.as_slice();
 
-        match precheck(installer, env, &loaded.value, dir_slug, head_sha, Some(repo))? {
+        match precheck(installer, env, &loaded.value, dir_slug, head_sha, Some(repo), ctx)? {
+            // 自动流程绝不覆盖作者本地的内容(设计文档「不做」一节:scheduler 仍只管
+            // 「我安装的」)。两边都新时该弹的拍板弹窗在批量流程里没有位置,
+            // 而"库新本地没改"这一档虽然覆盖是安全的,自动替作者更新他自己的技能
+            // 仍然越界——统一跳过,把动作留给他在「我的技能」上自己点。
+            Precheck::Mine { .. } => {
+                return Ok(BatchOutcome::Skipped {
+                    reason: "这是你分享的技能,不自动覆盖".into(),
+                })
+            }
             Precheck::LocallyModified { .. } => {
                 return Ok(BatchOutcome::Skipped {
                     reason: "已安装且有你的本地改动,未覆盖".into(),
@@ -636,6 +801,7 @@ fn install_one_from_archive(
             head_sha,
             now,
             false,
+            mine,
             canonical_visible,
         )?;
         Ok(BatchOutcome::Installed { report })
@@ -655,6 +821,8 @@ fn record(
     remote_sha: &str,
     now: &str,
     keep_local: bool,
+    // 技能库里记的分享者就是当前登录的这个人(见 `is_mine`)。
+    mine: bool,
     canonical_visible: Vec<String>,
 ) -> Result<String, AppError> {
     let mut next = previous.clone();
@@ -702,6 +870,10 @@ fn record(
         }),
     }
 
+    if mine && !keep_local {
+        seed_shared_baseline(&mut next, report, skill, &req, remote_sha);
+    }
+
     store.save_state(&next)?;
 
     // 双写外部契约。任何结果都不阻断——技能已经装好了,记账失败只该记日志。
@@ -736,6 +908,59 @@ fn record(
             "failed".into()
         }
     })
+}
+
+/// 「我分享的」技能装完之后,把 `state.shared` 的内容基线对齐到刚落盘的这一版。
+///
+/// `state.shared[].content_hash` 是「有改动未分享」唯一的判据(与当前目录实际 hash
+/// 不符即有未分享的改动)。**换电脑 / app 数据丢了之后重新取回,本地一条 shared 都
+/// 没有**——不建这条基线,作者回到自己的技能上永远看不出"改了没有"。
+///
+/// 🔴 **不能只在 [`Precheck::Mine`] 那一档做**:换电脑那一档 canonical 上什么都没有,
+/// 走的是 `Fresh`,根本不经过 Mine 的折叠。判据因此是 [`is_mine`](与档位无关),
+/// 而 `Fresh` 恰恰是这条基线最需要从无到有建起来的场景。
+///
+/// 已有条目时**只对齐内容基线,不动 `last_pushed_sha`**:那个字段记的是"上次分享
+/// 推上去的那一版",这次是取回不是分享,改了就是假话。
+fn seed_shared_baseline(
+    next: &mut state::State,
+    report: &InstallReport,
+    skill: &IndexedSkill,
+    req: &AcquireRequest<'_>,
+    remote_sha: &str,
+) {
+    // 内容基线必须与 `share.rs` 同口径:从落盘后的目录现算。
+    // 算不出来(目录刚被别的进程动了)就不记——宁可没有基线,也不记一个错的:
+    // 错的基线会让界面长期显示一个假的「有改动未分享」。
+    let Ok(content_hash) = fsops::dir_content_hash(Path::new(&report.canonical_dir)) else {
+        tracing::warn!(dir = %report.dir_name, "算不出内容指纹,本次不建分享基线");
+        return;
+    };
+    let target = SkillSource {
+        registry_id: req.source.registry_id.to_string(),
+        owner: req.repo.owner.clone(),
+        repo: req.repo.repo.clone(),
+        path: skill.path.clone(),
+        git_ref: req.repo.branch.clone(),
+    };
+    // 键与 `share::share` 写记账时用的是**同一把**(远端目录名),不新增第二种写法
+    // ——`state.shared` 的读写双键不一致是 CLAUDE.md 记着的既有隐患,别把它变成三键。
+    match next.shared.iter().position(|s| s.name == report.dir_name) {
+        Some(idx) => {
+            next.shared[idx].local_path = report.canonical_dir.clone();
+            next.shared[idx].target = target;
+            next.shared[idx].content_hash = content_hash;
+        }
+        None => next.shared.push(state::SharedSkill {
+            name: report.dir_name.clone(),
+            local_path: report.canonical_dir.clone(),
+            // 文件是用户自己的技能,不是别的工具装的
+            origin: "local".to_string(),
+            target,
+            last_pushed_sha: remote_sha.to_string(),
+            content_hash,
+        }),
+    }
 }
 
 /// 从建链报告推导 state 记账:`links` 只记成功建立的,`agents` 是技能**实际对哪些工具生效**。

@@ -1770,6 +1770,51 @@ pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, Ap
     .await
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillClaimAttributionArgs {
+    #[serde(default)]
+    pub registry_id: Option<String>,
+    /// 目标技能库的寻址键 `owner/repo`,缺省 = 该源主库。
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// 技能库中的技能目录名。
+    pub dir_slug: String,
+}
+
+/// 「作者未登记 · 这是我分享的」:把当前登录身份登记进技能库根的作者文件
+/// (v6 任务 3)。走**带凭证**的 `share_source`,与分享同一套权限矩阵。
+///
+/// 身份取自 `config.identities[registryId]`(登录那一刻就落了盘),没有就是没登录
+/// ——这件事必须实名,匿名提交无从谈起。
+#[tauri::command]
+pub async fn skill_claim_attribution(
+    args: SkillClaimAttributionArgs,
+) -> Result<share::ShareOutcome, AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    let (source, repo) = share_source(registry_id, args.repo.as_deref()).await?;
+    let store = app_store()?;
+    let me = store
+        .load_config()?
+        .value
+        .identities
+        .get(registry_id)
+        .cloned()
+        .ok_or_else(|| {
+            AppError::new("AUTH_REQUIRED", "登记作者前请先在设置中登录这个技能库")
+                .with_detail(format!("no identity for registry {registry_id}"))
+        })?;
+
+    share::claim_attribution(
+        &source.as_share_client(),
+        &repo,
+        &args.dir_slug,
+        &me,
+        &now_iso8601(),
+    )
+    .await
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SharePreviewArgs {

@@ -738,6 +738,13 @@ async fn change_files_sparing_skill(
             if stripped.len() == req.files.len() {
                 return Err(e); // 本来就没带归因,如实上报
             }
+            // 🔴 剥完什么都不剩:这笔提交本来就**只有**归因(v6 的
+            // [`claim_attribution`] 就是这一档)。此时"剥掉重试"退化成
+            // 发一笔空提交——Gitea 要么报另一个风马牛不相及的错、要么造一个空提交,
+            // 两种都比如实上报原来的错误糟。这条守卫是新调用方唯一能触发的路径。
+            if stripped.is_empty() {
+                return Err(e);
+            }
             tracing::warn!(code = %e.code, "带归因修订的提交被拒,剥掉归因重试一次");
             let retry = ChangeFilesRequest { files: stripped, ..req.clone() };
             client.change_files(owner, repo, &retry).await
@@ -885,6 +892,217 @@ async fn attribution_file_change(
                 }
             }
         }
+    }
+}
+
+// ============================================================ 「这是我分享的」写回(v6 任务 3)
+
+/// 库里这个技能**已经登记过分享者**了吗。
+///
+/// 读不出来(文件不在 / 不是 UTF-8 / 不是合法 JSON / 形状不对)一律当"没登记"
+/// ——形状问题由 [`attribution_change`] 那一步统一报错,同一条规则不查两遍
+/// (查两遍的那一遍永远不触发,是本项目记着的空转模式 #1)。
+fn already_attributed(existing: Option<&[u8]>, dir_slug: &str) -> bool {
+    let Some(bytes) = existing else { return false };
+    let Ok(text) = std::str::from_utf8(bytes) else { return false };
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(text) else { return false };
+    doc["authors"][dir_slug]["author"]
+        .as_str()
+        .is_some_and(|name| !name.trim().is_empty())
+}
+
+/// 把「登记我为分享者」这件事折成**一个** authors.json 的 FileChange。
+///
+/// 与 [`attribution_file_change`](分享顺带维护那条路)的关键区别:那条路失败一律
+/// 返回 `None`、跳过维护、绝不拦分享;**这条路本身就是用户按下的那个动作**,
+/// 失败必须如实上报,否则界面会显示"已登记"而库里什么都没发生。
+///
+/// `existing` 必须来自**实际提交的目标仓**:blob sha 不跨仓通用,拿上游的 sha 往
+/// fork 上 update 会得到 `404 object does not exist`(share_live 的 fork 用例证伪过)。
+fn attribution_change(
+    existing: Option<&(String, Vec<u8>)>,
+    dir_slug: &str,
+    display: &str,
+    aliases: &[&str],
+) -> Result<FileChange, AppError> {
+    let bad = |reason: &str| {
+        AppError::new(
+            "REPO_BAD_ATTRIBUTION",
+            "技能库里记录作者的文件格式不对,请联系它的管理员",
+        )
+        .with_detail(reason.to_string())
+    };
+    match existing {
+        None => match upsert_attribution(None, dir_slug, display, aliases) {
+            AttributionUpsert::Updated(text) => {
+                Ok(FileChange::create(AUTHORS_FILE, text.as_bytes()))
+            }
+            AttributionUpsert::Unchanged => Err(already_attributed_err(dir_slug)),
+            AttributionUpsert::Untouchable(reason) => Err(bad(reason)),
+        },
+        Some((sha, bytes)) => {
+            let Ok(text) = std::str::from_utf8(bytes) else {
+                return Err(bad("authors.json 不是 UTF-8"));
+            };
+            match upsert_attribution(Some(text), dir_slug, display, aliases) {
+                AttributionUpsert::Updated(next) => {
+                    Ok(FileChange::update(AUTHORS_FILE, next.as_bytes(), sha))
+                }
+                // 走到这里说明在"读上游 → 读 fork"之间有人抢先登记了(fork 是即时
+                // 副本,内容本该与刚读过的上游相同)。是真实可达的竞态,不是死代码。
+                AttributionUpsert::Unchanged => Err(already_attributed_err(dir_slug)),
+                AttributionUpsert::Untouchable(reason) => Err(bad(reason)),
+            }
+        }
+    }
+}
+
+fn already_attributed_err(dir_slug: &str) -> AppError {
+    AppError::new(
+        "CONFLICT_ALREADY_ATTRIBUTED",
+        "这个技能已经登记过分享者了",
+    )
+    .with_detail(format!("already attributed: {dir_slug}"))
+}
+
+/// 「作者未登记 · 这是我分享的」:往技能库根 `authors.json` 里登记当前登录身份
+/// 为这个技能的分享者(v6 任务 3)。
+///
+/// 与分享同一套权限矩阵(直推 → 开分支提交审核 → 只读用户走副本),但提交里
+/// **只有 authors.json 一个文件**,不碰任何技能内容。
+///
+/// 结果**写回技能库、不写本地**:归属的真相在库里(设计文档 §1),写本地的话
+/// 换台电脑还要再认一次。
+///
+/// `me` 由调用方从 `config.identities[registryId]` 取——登录那一刻已经落盘,
+/// 这里不再打一次 `current_user`。
+///
+/// GitHub 源不做:`authors.json` 是公司技能库的契约,M7 拍板 GitHub 臂不维护归因。
+pub async fn claim_attribution(
+    client: &ShareClient<'_>,
+    repo: &RepoRef,
+    dir_slug: &str,
+    me: &Identity,
+    now: &str,
+) -> Result<ShareOutcome, AppError> {
+    let ShareClient::Gitea(c) = client else {
+        return Err(AppError::new(
+            "REPO_NO_ATTRIBUTION",
+            "这个来源不记录作者信息,只有公司技能库支持",
+        )
+        .with_detail("attribution is a gitea-only contract (M7)"));
+    };
+
+    // 展示名口径与分享链路一致:展示名优先、空则登录名。别名(两种写法)只用于比对。
+    let display = if me.display_name.trim().is_empty() {
+        me.login.trim()
+    } else {
+        me.display_name.trim()
+    };
+    if display.is_empty() {
+        return Err(AppError::new(
+            "AUTH_REQUIRED",
+            "当前登录身份没有可用的名字,请重新登录后再试",
+        )
+        .with_detail("identity has neither display_name nor login"));
+    }
+    let aliases = me.aliases();
+
+    // 先读、先判、**再**做任何有副作用的事:已登记时连 fork 都不该建出来
+    // ——那是在用户账号下留一个注定用不上的副本。
+    let upstream = c.file_content(repo, AUTHORS_FILE).await?;
+    if already_attributed(upstream.as_ref().map(|(_, b)| b.as_slice()), dir_slug) {
+        return Err(already_attributed_err(dir_slug));
+    }
+
+    let info = c.repo_info(&repo.owner, &repo.repo).await?;
+    let message = format!("登记分享者:{dir_slug}");
+    let branch_name = review_branch(dir_slug, now);
+
+    if info.permissions.push {
+        let change = attribution_change(upstream.as_ref(), dir_slug, display, &aliases)?;
+        let direct = ChangeFilesRequest {
+            branch: repo.branch.clone(),
+            new_branch: None,
+            message: message.clone(),
+            files: vec![change.clone()],
+        };
+        match change_files_sparing_skill(c, &repo.owner, &repo.repo, &direct).await {
+            Ok(commit) => {
+                return Ok(claimed(ShareMode::Pushed, commit.sha, None, dir_slug));
+            }
+            // 403 = 默认分支受保护(只读在下面分流)。降级开分支走提交审核。
+            Err(e) if e.code == "REPO_FORBIDDEN" => {}
+            Err(e) => return Err(e),
+        }
+        let via_branch = ChangeFilesRequest {
+            branch: repo.branch.clone(),
+            new_branch: Some(branch_name.clone()),
+            message: message.clone(),
+            files: vec![change],
+        };
+        let commit = change_files_sparing_skill(c, &repo.owner, &repo.repo, &via_branch).await?;
+        let pull = c
+            .create_pull(&repo.owner, &repo.repo, &branch_name, &repo.branch, &message, "")
+            .await?;
+        return Ok(claimed(
+            ShareMode::ReviewRequested,
+            commit.sha,
+            Some(pull.html_url),
+            dir_slug,
+        ));
+    }
+
+    // 只读用户:实测连开分支都 403,唯一的路是先复制一份到自己名下
+    let fork = c.fork_repo(&repo.owner, &repo.repo).await?;
+    let fork_ref = RepoRef {
+        owner: fork.owner.clone(),
+        repo: fork.repo.clone(),
+        branch: repo.branch.clone(),
+    };
+    // 🔴 blob sha 不跨仓通用:提交发到副本上,就必须拿副本自己的 sha
+    let on_fork = c.file_content(&fork_ref, AUTHORS_FILE).await?;
+    let change = attribution_change(on_fork.as_ref(), dir_slug, display, &aliases)?;
+    let via_fork = ChangeFilesRequest {
+        branch: repo.branch.clone(),
+        new_branch: Some(branch_name.clone()),
+        message: message.clone(),
+        files: vec![change],
+    };
+    let commit = change_files_sparing_skill(c, &fork.owner, &fork.repo, &via_fork).await?;
+    let pull = c
+        .create_pull(
+            &repo.owner,
+            &repo.repo,
+            &format!("{}:{}", fork.owner, branch_name),
+            &repo.branch,
+            &message,
+            "",
+        )
+        .await?;
+    Ok(claimed(
+        ShareMode::ReviewRequested,
+        commit.sha,
+        Some(pull.html_url),
+        dir_slug,
+    ))
+}
+
+/// 登记结果复用 [`ShareOutcome::Shared`]:界面上它与分享是同一类事(可能直接生效、
+/// 也可能等审核),没必要为它另造一个只差名字的枚举。`adopted` 恒 false
+/// ——这条路一个文件都不搬。
+fn claimed(
+    mode: ShareMode,
+    commit_sha: String,
+    review_url: Option<String>,
+    dir_slug: &str,
+) -> ShareOutcome {
+    ShareOutcome::Shared {
+        mode,
+        commit_sha,
+        review_url,
+        adopted: false,
+        share_name: dir_slug.to_string(),
     }
 }
 

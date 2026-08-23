@@ -209,6 +209,7 @@ pub fn run() {
             commands::skill_create,
             commands::share_candidates,
             commands::skill_share,
+            commands::skill_claim_attribution,
             commands::skill_share_changes,
             commands::plaza_search,
             commands::plaza_ensure_repo,
