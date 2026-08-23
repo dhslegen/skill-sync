@@ -135,19 +135,8 @@ pub fn library_attribution(
 /// `state.installed` 行自己就知道装自哪个 (源,库),用它自己的坐标查更准确,
 /// 不受"另一个库也凑巧有同名 dir_slug"这种边缘情况影响。
 fn library_author_of(store: &Store, source: &state::SkillSource, dir_slug: &str) -> Option<String> {
-    if source.registry_id.is_empty() {
-        return None;
-    }
     let repo = RepoRef { owner: source.owner.clone(), repo: source.repo.clone(), branch: String::new() };
-    let path = store::cache_path(store.dir(), &source.registry_id, &repo);
-    let index = store::load_cache(&path)?;
-    index
-        .skills
-        .iter()
-        .find(|s| s.dir_slug == dir_slug)?
-        .attribution
-        .as_ref()
-        .map(|a| a.author.clone())
+    store::cached_author(store.dir(), &source.registry_id, &repo, dir_slug)
 }
 
 /// `.skill-lock.json` 的全部条目,按 `key`(= dir_slug)建表,供来源展示

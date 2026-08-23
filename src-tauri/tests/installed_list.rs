@@ -13,6 +13,11 @@
 //!   ——登录后 `relation == shared && local_present`,登出后退化成 `installed`。
 //! - C:只在索引缓存里、这台电脑没有本体、作者是「我」
 //!   ——登录后 `relation == shared && !local_present`,登出后**整行都不出现**。
+//! - D:只在索引缓存里、这台电脑没有本体、**作者是别人**——任何时候都不出现。
+//!   D 是 C 的**对照组**,不是可有可无的补充:没有它,"未登录"与"作者是别人"
+//!   在这份 fixture 里取了同值(全是作者是我的技能),第三档那道闸门
+//!   `relation != Shared` 换成 `identity.is_none()` 照样全绿——本项目记录的
+//!   空转测试模式 ③(fixture 让两个不同概念取了同值)。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -210,11 +215,13 @@ fn three_way_merge_relation_and_source_label_when_signed_in() {
     );
 
     // C:索引缓存里作者是我,这台电脑没有本体,也没有 lock 条目。
+    // D:同样只在索引缓存里,但作者是别人——第三档的对照组(见模块头)。
     write_index_cache(
         &ctx,
         vec![
             indexed_skill("shared-present", Some("赵文浩")),
             indexed_skill("library-only", Some("赵文浩")),
+            indexed_skill("library-only-by-someone-else", Some("李四")),
         ],
     );
 
@@ -247,6 +254,15 @@ fn three_way_merge_relation_and_source_label_when_signed_in() {
     assert_eq!(c.registry_id, registry::BUILTIN_REGISTRY_ID);
     assert_eq!(c.source_owner, "skills", "C 的取回坐标必须是它实际所在库的 owner");
     assert_eq!(c.source_repo, "skills", "C 的取回坐标必须是它实际所在库的 repo");
+
+    // 🔴 D 是第三档闸门的对照组:**已登录**,但库里记的作者是别人。既不在这台
+    // 电脑上、又不是我分享的技能,没有任何理由出现在「我的技能」里。
+    // 这条断言与下面 signed_out 那条合起来,才把闸门的判据钉成
+    // "作者是不是我"而不是"有没有登录"。
+    assert!(
+        rows.iter().all(|r| r.dir_slug != "library-only-by-someone-else"),
+        "D 在库里但作者是别人,本地也没有本体,不该出现在列表里"
+    );
 }
 
 /// 未登录(或身份被清空):B 退化成 installed(它仍是真实存在的本地目录,不会消失);
@@ -282,6 +298,7 @@ fn signed_out_downgrades_b_and_drops_c() {
         vec![
             indexed_skill("shared-present", Some("赵文浩")),
             indexed_skill("library-only", Some("赵文浩")),
+            indexed_skill("library-only-by-someone-else", Some("李四")),
         ],
     );
 
@@ -300,5 +317,9 @@ fn signed_out_downgrades_b_and_drops_c() {
     assert!(
         rows.iter().all(|r| r.dir_slug != "library-only"),
         "C 既不在本地、未登录又判不出是不是我分享的,不该出现在列表里"
+    );
+    assert!(
+        rows.iter().all(|r| r.dir_slug != "library-only-by-someone-else"),
+        "D 作者是别人,未登录时同样不该出现"
     );
 }

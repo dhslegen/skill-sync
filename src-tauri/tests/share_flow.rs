@@ -291,6 +291,26 @@ async fn mount_skill_exists(server: &MockServer, name: &str, exists: bool) {
     }
 }
 
+/// `share::precheck` 的薄壳:两个归属入参默认都是 None(= 未登录 / 库里没有作者信息),
+/// 与 v6 之前的行为逐字等价——旧用例因此一个断言都不用改。
+async fn precheck_of(
+    client: &GiteaClient,
+    state: &skillsync_lib::core::state::State,
+    me: Option<&Identity>,
+    library_author: Option<&str>,
+) -> SharePrecheck {
+    share::precheck(
+        &share::ShareClient::Gitea(client),
+        &repo_ref(),
+        state,
+        "my-notes",
+        me,
+        library_author,
+    )
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
 async fn precheck_fresh_when_remote_has_no_such_skill() {
     let (c, _env) = ctx();
@@ -298,7 +318,7 @@ async fn precheck_fresh_when_remote_has_no_such_skill() {
     mount_skill_exists(&server, "my-notes", false).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let got = share::precheck(&share::ShareClient::Gitea(&client), &repo_ref(), &state_of(&c), "my-notes").await.unwrap();
+    let got = precheck_of(&client, &state_of(&c), None, None).await;
     assert_eq!(got, SharePrecheck::Fresh);
 }
 
@@ -324,7 +344,7 @@ async fn precheck_mine_when_we_shared_it_before() {
     });
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let got = share::precheck(&share::ShareClient::Gitea(&client), &repo_ref(), &state, "my-notes").await.unwrap();
+    let got = precheck_of(&client, &state, None, None).await;
     assert_eq!(got, SharePrecheck::Mine);
 }
 
@@ -335,8 +355,42 @@ async fn precheck_taken_when_someone_else_owns_the_name() {
     mount_skill_exists(&server, "my-notes", true).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let got = share::precheck(&share::ShareClient::Gitea(&client), &repo_ref(), &state_of(&c), "my-notes").await.unwrap();
+    let got = precheck_of(&client, &state_of(&c), None, None).await;
     assert_eq!(got, SharePrecheck::Taken);
+}
+
+/// 🔴 场景 3(v6 终审修复的 C1):我是这个技能的**第一作者**,当初直接推进了技能库、
+/// 从没经过本应用——所以这台机器的 `state.shared` 是空的。只看本地记账会把作者本人
+/// 判成外人,弹出一整套写给外人看的三选(换个名称 / 看看对方的版本 / 用我的版本覆盖),
+/// 而这条路是这个场景**唯一的出路**(「我的技能」里 `noBaseline` 档的「分享更新」
+/// 也只通向分享页)。判据必须是技能库里记的作者,不是本机记账。
+#[tokio::test]
+async fn precheck_mine_when_the_library_credits_me_even_without_any_local_record() {
+    let (c, _env) = ctx();
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", true).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let me = Identity { login: "zhaowh".into(), display_name: "赵文浩".into() };
+
+    let state = state_of(&c);
+    assert!(state.shared.is_empty(), "场景 3 的前提就是本机一条分享记账都没有");
+
+    let got = precheck_of(&client, &state, Some(&me), Some("赵文浩")).await;
+    assert_eq!(got, SharePrecheck::Mine, "库里记的作者是我,就该按「更新我分享的技能」走");
+}
+
+/// 上一条的**对照组**:同样没有本机记账,但库里记的作者是别人——这才是真的被占用,
+/// 三选文案说的每一句都成立。没有这条,把归属判定放宽成"登录了就算我的"照样全绿。
+#[tokio::test]
+async fn precheck_still_taken_when_the_library_credits_someone_else() {
+    let (c, _env) = ctx();
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", true).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let me = Identity { login: "zhaowh".into(), display_name: "赵文浩".into() };
+
+    let got = precheck_of(&client, &state_of(&c), Some(&me), Some("李四")).await;
+    assert_eq!(got, SharePrecheck::Taken, "库里记的是别人,登录了也不该判成我的");
 }
 
 // ============================================================ 提交

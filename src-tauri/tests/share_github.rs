@@ -449,6 +449,9 @@ async fn precheck_taken_when_remote_has_file() {
         &repo_ref(),
         &c.store.load_state().unwrap().value,
         "my-notes",
+        // 未登录 + 索引缓存里没有作者信息:归属判定不参与,与 v6 之前逐字等价
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -473,6 +476,9 @@ async fn precheck_fresh_on_404() {
         &repo_ref(),
         &c.store.load_state().unwrap().value,
         "my-notes",
+        // 未登录 + 索引缓存里没有作者信息:归属判定不参与,与 v6 之前逐字等价
+        None,
+        None,
     )
     .await
     .unwrap();

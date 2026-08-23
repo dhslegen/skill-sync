@@ -297,11 +297,27 @@ pub async fn preview_permission(client: &ShareClient<'_>, repo: &RepoRef) -> Sha
 }
 
 /// 实时确认远端有没有同名技能(不信缓存:过期缓存会把 Taken 误判成 Fresh)。
+///
+/// 「是不是我的」有**两条判据,顺序不能反**(v6 终审修复):
+///
+/// 1. **库里记的分享者是不是我**(`me` + `library_author`,走
+///    [`ownership::relation`] 这唯一一处判定表)。这一条是 v6 的权威口径,
+///    也是"第一作者直接推进技能库、从没经过本应用"这个场景的**唯一出路**——
+///    那台机器上 `state.shared` 必然是空的,只看本地记账会把作者本人判成外人,
+///    弹出一整套写给外人看的三选文案(换名 / 看看对方的版本 / 覆盖)。
+/// 2. 本机 `state.shared` 有没有这条记账。**不能删**:归因文件可能因提交冲突
+///    被剥掉重试(见 `change_files_sparing_skill`)、索引缓存可能从没取过或已过期,
+///    这两种情况下 `library_author` 都是 `None`,本机记账是仅剩的证据。
+///
+/// `library_author` 由调用方从**目标库自己**的索引缓存里取
+/// ([`crate::core::store::cached_author`])——判定全程离线,不为它新增网络请求。
 pub async fn precheck(
     client: &ShareClient<'_>,
     repo: &RepoRef,
     state: &state::State,
     share_name: &str,
+    me: Option<&Identity>,
+    library_author: Option<&str>,
 ) -> Result<SharePrecheck, AppError> {
     let path = format!("skills/{share_name}/SKILL.md");
     let exists = match client {
@@ -310,6 +326,11 @@ pub async fn precheck(
     };
     if !exists {
         return Ok(SharePrecheck::Fresh);
+    }
+    // 走到这里说明库里确实有这个技能,`in_library` 因此恒为 true;`local_present`
+    // 在 `in_library` 为真时不参与判定(见 relation 的判定表),传什么都一样。
+    if ownership::relation(me, library_author, true, true) == ownership::Relation::Shared {
+        return Ok(SharePrecheck::Mine);
     }
     let mine = state.shared.iter().any(|s| {
         s.name == share_name && s.target.owner == repo.owner && s.target.repo == repo.repo
@@ -388,7 +409,21 @@ pub async fn share(
     }
 
     let loaded = store.load_state()?;
-    let checked = precheck(client, req.repo, &loaded.value, req.share_name).await?;
+    // 归属判定的两个入参都离线取:身份来自登录那一刻落盘的 `config.identities`,
+    // 作者来自**目标库自己**的索引缓存(与「我的技能」第一档同一把尺子)。
+    let config = store.load_config()?.value;
+    let me = config.identities.get(req.registry_id);
+    let library_author =
+        crate::core::store::cached_author(store.dir(), req.registry_id, req.repo, req.share_name);
+    let checked = precheck(
+        client,
+        req.repo,
+        &loaded.value,
+        req.share_name,
+        me,
+        library_author.as_deref(),
+    )
+    .await?;
     if checked == SharePrecheck::Taken && !req.overwrite {
         return Ok(ShareOutcome::NeedsDecision { precheck: checked });
     }
@@ -489,11 +524,20 @@ pub async fn share(
     })
 }
 
-/// 分享的闭环(M6 任务 5):**直推进库**之后把这个技能纳入管理。
+/// 分享的闭环(M6 任务 5):**直推进库**之后给这个技能补上 `state.installed` 记账。
 ///
-/// 不这么做的话它永远停在「其他工具装的 / 本地创建」那一档,界面一直劝你
-/// "分享到技能库"——而你已经分享过了。纳入之后它就是一个正常的库技能:
-/// 有更新检查、改动走「分享改动」(那条路带远端变更检测,比再分享一次安全)。
+/// ⚠️ **函数名里的「纳入管理」是 M6 的旧术语,v6 已撤销那套语义;这个函数本身
+/// 没有过时,只是它防的事情换了**(v6 终审订正,原文档写的"不这么做它永远停在
+/// 「其他工具装的 / 本地创建」那一档"已经不成立——归属现在由技能库的
+/// `authors.json` 判定,与本函数无关)。它现在真正防的是**没有记账基线**:
+/// 记账里的 `content_hash` 是「本地/远端谁更新」这套状态机的基线,没有它,
+/// 刚直推进库的技能会落进 `noBaseline` 档——「分享更新」只能绕回分享页重推一遍
+/// (`share_installed` 一进门就要求记账存在,必撞 `FS_NOT_INSTALLED`),
+/// 「修复关联」「移除」也一并没有。**按"归属已经不靠它了"的理由删掉这个函数,
+/// 后果是所有直推分享的技能永久停在 `noBaseline`。**
+///
+/// 补上记账之后它就是一个正常的库技能:有更新检查、改动走「分享改动」
+/// (那条路带远端变更检测,比再分享一次安全)。
 ///
 /// 四道闸,少一道就会撒谎:
 /// 1. **只认直推**(`Pushed`)。走了提交审核的改动还在评审分支上,库里根本没有这个

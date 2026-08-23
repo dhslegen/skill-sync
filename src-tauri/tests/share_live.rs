@@ -114,7 +114,9 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
     // ① Fresh:远端没有 → 直推(admin 可写且 main 未保护)
     let state = store.load_state().unwrap().value;
     assert_eq!(
-        share::precheck(&share::ShareClient::Gitea(&admin), &repo, &state, &name).await.unwrap(),
+        share::precheck(&share::ShareClient::Gitea(&admin), &repo, &state, &name, None, None)
+            .await
+            .unwrap(),
         SharePrecheck::Fresh
     );
     let outcome = share::share(
@@ -146,7 +148,9 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
         .unwrap();
     let state = store.load_state().unwrap().value;
     assert_eq!(
-        share::precheck(&share::ShareClient::Gitea(&admin), &repo, &state, &name).await.unwrap(),
+        share::precheck(&share::ShareClient::Gitea(&admin), &repo, &state, &name, None, None)
+            .await
+            .unwrap(),
         SharePrecheck::Mine
     );
     let outcome = share::share(
@@ -176,7 +180,9 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
     store.save_state(&wiped).unwrap();
     let state = store.load_state().unwrap().value;
     assert_eq!(
-        share::precheck(&share::ShareClient::Gitea(&admin), &repo, &state, &name).await.unwrap(),
+        share::precheck(&share::ShareClient::Gitea(&admin), &repo, &state, &name, None, None)
+            .await
+            .unwrap(),
         SharePrecheck::Taken
     );
     let outcome = share::share(

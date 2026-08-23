@@ -244,6 +244,30 @@ pub fn cache_path(dir: &Path, registry_id: &str, repo: &RepoRef) -> PathBuf {
     ))
 }
 
+/// 索引缓存里某个技能的 `authors.json` 作者(取不到一律 `None`)。
+///
+/// **归属判定的作者信息只从这里取,不再各处手写一遍读缓存的过程**
+/// ——`my_skills::build`(「我的技能」分区)与 `share::share`(分享同名预检)
+/// 都要问"这个库里这个技能记的作者是谁",两份实现迟早漂移,那正是本项目记录的
+/// 空转测试模式 #1。判定本身在 `ownership::relation`,这里只负责取数。
+///
+/// `None` 覆盖三种情况,对 [`crate::core::ownership::relation`] 来说完全等价:
+/// 从没取过索引 / 取过但库里没写作者 / 缓存版本不认识。`repo` 的 `branch`
+/// 不参与寻址([`cache_path`] 只用 owner/repo),调用方可以留空。
+pub fn cached_author(dir: &Path, registry_id: &str, repo: &RepoRef, dir_slug: &str) -> Option<String> {
+    if registry_id.is_empty() {
+        return None;
+    }
+    let index = load_cache(&cache_path(dir, registry_id, repo))?;
+    index
+        .skills
+        .iter()
+        .find(|s| s.dir_slug == dir_slug)?
+        .attribution
+        .as_ref()
+        .map(|a| a.author.clone())
+}
+
 /// 清掉某个源**全部**仓的索引缓存(移除整源时用):精确名 `index-<id>.json`
 /// (M3 的旧命名,升级残留)+ 前缀 `index-<id>-`(按仓分文件的新命名)。
 /// 前缀带尾横杠,`custom-1` 不会误伤 `custom-10` 的文件。
