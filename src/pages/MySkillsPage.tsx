@@ -45,6 +45,13 @@ export function MySkillsPage() {
   const index = useStoreIndex((s) => s.index);
   const installPhase = useInstall((s) => s.phase);
   const activeSlug = useInstall((s) => s.dirSlug);
+  // 「以本地为准,分享更新」(冲突弹窗里那一条)走的是 useInstall 的
+  // keepLocalAndShareMine,结果只写进 useInstall.shareResult——而它此前唯一的
+  // 渲染点在 InstallPanel 的装完那一屏,从这一页点进去时那个面板根本不在场:
+  // 弹窗一消失就什么都没有,**分享失败也静默**。这里接到本页既有的提示位上。
+  // 假设:shareResult 一直留到下一次 begin()/cancel(),所以从商店页做完同样的
+  // 动作再切过来也会看到这句——话是真的,只是位置多了一处,好过静默失败。
+  const installShareResult = useInstall((s) => s.shareResult);
   const setPage = useUi((s) => s.setPage);
 
   useEffect(() => {
@@ -137,6 +144,20 @@ export function MySkillsPage() {
             : t("mine.shareChangesReview")}
         </p>
       )}
+      {installShareResult &&
+        ("error" in installShareResult ? (
+          <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+            {t("mine.shareChangesFailed")}
+            {t("punct.labelSeparator")}
+            {installShareResult.error.message}
+          </p>
+        ) : (
+          <p className="pb-2 text-[12px] text-text-2">
+            {installShareResult.mode === "pushed"
+              ? t("mine.shareChangesDone")
+              : t("mine.shareChangesReview")}
+          </p>
+        ))}
       {/* 两分区,固定顺序:我分享的 → 我安装的(v6 任务 4)。归类判据全部来自
           core 的 `relation` 字段:`shared`/`draft` 归「我分享的」,`installed`
           归「我安装的」。空分区不显示。 */}
@@ -428,6 +449,18 @@ function Row({
   onRemove: () => void;
 }) {
   const issues = skill.links.filter((l) => l.health !== "healthy");
+  // 与 SharedRow 同一个概念:这一行有没有 `state.installed` 记账。判据用
+  // `contentHash`(记账基线)——`installed_list` 的另外两档把它留空,只有真正
+  // 有记账的第一档填得出真值。`skill_remove` 一进门就要求记账存在,没有记账
+  // 却摆出「移除」,点下去先弹一句"将从所有 AI 工具解除关联,并删除本地技能文件",
+  // 然后报 FS_NOT_INSTALLED——不摆比解释好。
+  const hasRecord = skill.contentHash !== "";
+  // 内部字段的空值不许漏到界面上:没有记账的行 sourceOwner/sourceRepo 都是空串,
+  // 直接拼出来是「来自 /」;updatedAt 为空时 relativeTimeFromIso 返回空串,
+  // 渲染出来是「获取于 」。值为空就整段不摆。
+  const library =
+    skill.sourceOwner && skill.sourceRepo ? `${skill.sourceOwner}/${skill.sourceRepo}` : "";
+  const acquiredAt = relativeTimeFromIso(skill.updatedAt);
 
   return (
     <div className="flex items-center gap-3 border-t border-border px-3.5 py-2.5 first:border-t-0">
@@ -476,8 +509,12 @@ function Row({
           )}
         </div>
         <div className="mt-0.5 flex items-center gap-2 text-[11.5px] text-text-3">
-          <span>{t("mine.source", { library: `${skill.sourceOwner}/${skill.sourceRepo}` })}</span>
-          <span>·</span>
+          {library && (
+            <>
+              <span>{t("mine.source", { library })}</span>
+              <span>·</span>
+            </>
+          )}
           <span>
             {skill.agents.length > 0
               ? t("mine.enabledFor", {
@@ -487,8 +524,12 @@ function Row({
                 })
               : t("mine.enabledNone")}
           </span>
-          <span>·</span>
-          <span>{t("mine.acquiredAt", { when: relativeTimeFromIso(skill.updatedAt) })}</span>
+          {acquiredAt && (
+            <>
+              <span>·</span>
+              <span>{t("mine.acquiredAt", { when: acquiredAt })}</span>
+            </>
+          )}
         </div>
       </div>
       </button>
@@ -526,13 +567,15 @@ function Row({
             {updating ? t("mine.updating") : t("mine.update")}
           </button>
         )}
-        <button
-          type="button"
-          onClick={onRemove}
-          className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
-        >
-          {t("mine.remove")}
-        </button>
+        {hasRecord && (
+          <button
+            type="button"
+            onClick={onRemove}
+            className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+          >
+            {t("mine.remove")}
+          </button>
+        )}
       </div>
     </div>
   );

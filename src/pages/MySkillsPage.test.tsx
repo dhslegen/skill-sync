@@ -120,7 +120,7 @@ function reset() {
     shareError: null,
     shareConflict: null,
   });
-  useInstall.setState({ phase: "idle", dirSlug: null, precheck: null });
+  useInstall.setState({ phase: "idle", dirSlug: null, precheck: null, shareResult: null });
   useStoreIndex.setState({ index: null });
   useUi.setState({ page: "mine" });
   useShare.setState({
@@ -393,6 +393,83 @@ describe("我的技能页", () => {
     expect(invoke).toHaveBeenCalledWith("skill_local_detail", {
       args: { dirSlug: "weekly-report" },
     });
+  });
+
+  // 没有 `state.installed` 记账的一行:别的工具装的技能,canonical 里有本体,
+  // 但本 app 一个字都没记。判据是 `contentHash` 为空(记账基线)。
+  const noRecord = () =>
+    view({
+      relation: "installed",
+      commitSha: "",
+      contentHash: "",
+      agents: [],
+      links: [],
+      sourceOwner: "",
+      sourceRepo: "",
+      registryId: "",
+      updatedAt: "",
+      sourceLabel: "skills/skills",
+    });
+
+  it("没有记账的行不摆「移除」——点下去先吓人一句、然后必然报错", async () => {
+    // skill_remove 一进门就要求记账存在(FS_NOT_INSTALLED)。而它的确认文案是
+    // 「将从所有 AI 工具解除关联,并删除本地技能文件」——摆一个必然报错的
+    // 破坏性按钮,比不摆糟得多。
+    seedIpc([noRecord()]);
+    render(<MySkillsPage />);
+
+    await screen.findByText(/周报生成|weekly-report/);
+    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+  });
+
+  it("有记账的行照常摆「移除」(上一条的对照组)", async () => {
+    seedIpc([view()]);
+    render(<MySkillsPage />);
+
+    expect(await screen.findByRole("button", { name: "移除" })).toBeInTheDocument();
+  });
+
+  it("内部字段的空值不许漏到界面上:没有「来自 /」,也没有「获取于 」", async () => {
+    // owner/repo 皆空会拼出「来自 /」;updatedAt 为空时 relativeTimeFromIso
+    // 返回空串,拼出「获取于 」。两句都是把内部字段的空值直接摆给用户看。
+    seedIpc([noRecord()]);
+    render(<MySkillsPage />);
+
+    await screen.findByText(/周报生成|weekly-report/);
+    expect(screen.queryByText(/来自\s*\/$/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^获取于\s*$/)).not.toBeInTheDocument();
+    // 对照组:值在就照常摆(否则"一律不摆"也能让上面两条全绿)
+    expect(screen.getByText("未关联任何 AI 工具")).toBeInTheDocument();
+  });
+
+  it("有值时「来自」「获取于」照常展示(上一条的对照组)", async () => {
+    seedIpc([view()]);
+    render(<MySkillsPage />);
+
+    expect(await screen.findByText("来自 skills/skills")).toBeInTheDocument();
+    expect(screen.getByText(/^获取于 .+/)).toBeInTheDocument();
+  });
+
+  it("「以本地为准,分享更新」的结果要在这一页看得见 —— 失败尤其不能静默", async () => {
+    // 那条路走 useInstall 的 keepLocalAndShareMine,结果只写进 useInstall.shareResult,
+    // 而它此前唯一的渲染点在 InstallPanel 的装完那一屏——从这一页点进去时那个面板
+    // 根本不在场:冲突弹窗一消失就什么都没有。
+    seedIpc([view()]);
+    useInstall.setState({
+      shareResult: { error: { code: "NET_TIMEOUT", message: "连接公司技能库超时" } },
+    });
+    render(<MySkillsPage />);
+
+    expect(await screen.findByText(/分享改动没能完成/)).toBeInTheDocument();
+    expect(screen.getByText(/连接公司技能库超时/)).toBeInTheDocument();
+  });
+
+  it("「以本地为准,分享更新」成功时同样有回执", async () => {
+    seedIpc([view()]);
+    useInstall.setState({ shareResult: { mode: "pushed" } });
+    render(<MySkillsPage />);
+
+    expect(await screen.findByText("改动已分享到公司技能库。")).toBeInTheDocument();
   });
 
   it("右侧动作按钮不会顺带打开详情", async () => {

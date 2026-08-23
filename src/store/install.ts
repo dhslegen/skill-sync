@@ -174,13 +174,20 @@ export const useInstall = create<InstallState>((set, get) => ({
       set({
         installed: new Map(
           list
-            // 草稿(relation === "draft")不是从任何技能库获取的。混进这张 map,
-            // 商店里的同名技能就会显示「已启用」——那是假话,用户装的是自己那个,
-            // 不是库里这个。真去点获取时 core 的预检会认出 canonical 里有目录但
-            // 没记账(外来目录档)并要求拍板,那才是对的路径。
-            // `!s.localPresent`(v6:库里记的分享者是我、但这台电脑没本体)同理要
-            // 排除——这台电脑上什么都没有,"已启用"更是无从谈起。
-            .filter((s) => s.relation !== "draft" && s.localPresent)
+            // 🔴 **只有真正有 `state.installed` 记账的行才进这张 map**。
+            // `contentHash` 非空就是"有记账基线"这件事的现成判据:`installed_list`
+            // 的另外两档(canonical 有本体但没记账 / 只在库里本地没本体)都把
+            // commitSha 与 contentHash 一起留空,只有第一档填得出真值。
+            //
+            // 混进没有记账的行,商店里的同名技能会显示禁用的「已启用」或「已同步」
+            // ——那是假话(用户用别的工具装的是他自己那个,不是库里这个),而且
+            // 因为按钮是禁用的,他**永远没法从商店获取库里那一版**。真去点获取时
+            // core 的预检会认出 canonical 里有目录但没记账并要求拍板,那才是对的路径。
+            //
+            // ⚠️ 这一条**单独成立,不要再叠 `relation !== "draft"` 或 `localPresent`**:
+            // 那两条判的是同一批行(草稿与"只在库里"的行 contentHash 必空),叠上去
+            // 就是本项目记的空转模式 ①——多余那道闸会把注入信号整个吞掉。
+            .filter((s) => s.contentHash !== "")
             .map((s) => [
             s.dirSlug,
             {

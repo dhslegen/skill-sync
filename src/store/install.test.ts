@@ -674,11 +674,30 @@ describe("已装记账的来源坐标(M4 一源多仓)", () => {
     expect(record?.sourceRepo).toBe("design-skills");
   });
 
-  it("refreshInstalled 必须排除草稿(relation === draft)", async () => {
+  // 🔴 这三条测的是同一条规则的三种形状:**只有真正有 `state.installed` 记账的行
+  // 才进 installed map**。判据是 `contentHash` 非空(记账基线),`installed_list`
+  // 的另外两档都把它留空。对照组(有记账的行照常进)每条都带着——少了它,
+  // 把过滤器写成"一个都不收"照样全绿。
+
+  it("refreshInstalled 必须排除没有记账的本地目录(别的工具装的)", async () => {
+    // 用户用 npx skills 装过 weekly-report,公司库里也有同名技能(作者是同事)。
+    // 这一行 relation 是 installed、本体也在,但**没有 state.installed 记账**。
+    // 混进 map 的后果:contentHash 为空 → cardState 返回 "installed" →
+    // 商店卡片显示**禁用的**「已启用」,用户永远无法从商店获取库里那一版。
     invoke.mockResolvedValueOnce([
-      { ...row("from-library"), registryId: "company", sourceOwner: "skills", sourceRepo: "skills" },
-      { ...row("my-draft"), relation: "draft" },
+      recordedRow("from-library"),
+      { ...row("npx-installed"), relation: "installed", localPresent: true },
     ]);
+
+    await useInstall.getState().refreshInstalled();
+
+    const map = useInstall.getState().installed;
+    expect(map.has("from-library")).toBe(true);
+    expect(map.has("npx-installed")).toBe(false);
+  });
+
+  it("refreshInstalled 必须排除草稿(relation === draft)", async () => {
+    invoke.mockResolvedValueOnce([recordedRow("from-library"), { ...row("my-draft"), relation: "draft" }]);
 
     await useInstall.getState().refreshInstalled();
 
@@ -689,7 +708,7 @@ describe("已装记账的来源坐标(M4 一源多仓)", () => {
 
   it("refreshInstalled 必须排除「库里有、这台电脑没有本体」的行(localPresent === false)", async () => {
     invoke.mockResolvedValueOnce([
-      { ...row("from-library"), registryId: "company", sourceOwner: "skills", sourceRepo: "skills" },
+      recordedRow("from-library"),
       { ...row("not-here"), relation: "shared", localPresent: false },
     ]);
 
@@ -822,6 +841,19 @@ describe("beginFromPlaza(技能广场安装编排,M9 任务 5)", () => {
     expect(useInstall.getState().phase).toBe("choosing");
   });
 });
+
+/// 真正有 `state.installed` 记账的一行:`contentHash` 有值(记账基线),来源坐标齐全。
+/// 上面三条排除测试的对照组都用它。
+function recordedRow(dirSlug: string) {
+  return {
+    ...row(dirSlug),
+    commitSha: "aaa1111",
+    contentHash: "sha256:recorded",
+    registryId: "company",
+    sourceOwner: "skills",
+    sourceRepo: "skills",
+  };
+}
 
 function row(dirSlug: string) {
   return {
