@@ -407,7 +407,7 @@ describe("我的技能页", () => {
   });
 });
 
-describe("「我分享的」区块 · 六状态机(v6 任务 4)", () => {
+describe("「我分享的」区块 · 七状态机(v6 任务 4)", () => {
   beforeEach(reset);
 
   it("notHere:库里有、这台电脑没有本体 —— 摆「取回」,真实点击后 invoke 带 skill_install", async () => {
@@ -508,7 +508,7 @@ describe("「我分享的」区块 · 六状态机(v6 任务 4)", () => {
 
   it("localAhead + 来源已移除:不摆「分享更新」——回推没有去处,摆出来就是引诱用户撞错误", async () => {
     // 与既有 Row 的「分享改动」同款闸门(localModified && !sourceRemoved &&
-    // !libraryRemoved)。这是六状态里唯一摆得出这个按钮、又可能撞上来源问题的一档
+    // !libraryRemoved)。这是七状态里唯一摆得出这个按钮、又可能撞上来源问题的一档
     // ——remoteAhead/both 已经被 hasUpdate 的早退挡住,notHere 的这两个标志
     // 在 core 侧恒为 false。
     seedIndex();
