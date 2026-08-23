@@ -347,7 +347,16 @@ function SharedRow({
             {pulling ? t("mine.pulling") : t("mine.pull")}
           </button>
         )}
-        {state === "localAhead" && (
+        {/* 与既有 Row 的「分享改动」同款闸门(`localModified && !sourceRemoved &&
+            !libraryRemoved`):来源没了,回推没有去处,摆出来就是引诱用户撞
+            必然报错的按钮。这是 `localAhead` 六状态里唯一摆得出这个按钮、
+            同时又可能撞上来源问题的一档——`remoteAhead`/`both` 已经被
+            `hasUpdate` 的早退挡住(sourceRemoved/libraryRemoved 时它恒返回
+            false,进不了这两档),`notHere` 的这两个标志在 core 侧恒为
+            false(见 `commands::InstalledSkillView.local_present` 注释)。
+            状态文字「有改动未分享」仍然是实话,保留;上面的徽标已经把
+            "为什么没有按钮"说清楚了。 */}
+        {state === "localAhead" && !skill.sourceRemoved && !skill.libraryRemoved && (
           <button
             type="button"
             disabled={sharing}

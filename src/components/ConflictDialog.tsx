@@ -50,6 +50,18 @@ export function ConflictDialog() {
   // 库里记的分享者就是我(v6 任务 3):它**同样**不能套"不是本应用安装的"那句假话
   // ——完整的三选一变体(保留我的/取回库里的/看看对方改了什么)是任务 5 的范围,
   // 这里只给一个中性的最小兜底,不落进 foreign 分支显示错误文案。
+  //
+  // 任务 5 接手"以本地为准"这个动作时,分流规则(v6 任务分解裁定 #4,
+  // task-3-report 顾虑 1 记的真实缺口)必须按这三条走,不能直调 share_installed:
+  // - 有 `state.installed` 记账(这一档的 `Precheck.Mine` 是从 Managed/LocallyModified
+  //   折叠来的)→ 走 `share_installed`(`skillShareChanges`);
+  // - 无记账(`Foreign` 折叠来的,典型场景:自己写的技能直接推进了库、或换电脑后
+  //   canonical 里什么都没有)→ `share_installed` 一进门就要求记账存在,直调会撞
+  //   `FS_NOT_INSTALLED`——这一档改走分享页(`skill_share`,它接受任意本地候选,
+  //   同名三分支会处理"远端已存在");
+  // - `remoteChanged` 为真时,后续分享必须带 `forceReview: true`(与
+  //   `install.ts` 的 `keepLocalAndShare` 恒带 forceReview 同一个理由:前提就是
+  //   "库里已有新版",直推等于覆盖同事经审核改过的版本)。
   const mine = precheck.status === "mine" ? precheck : null;
 
   return (

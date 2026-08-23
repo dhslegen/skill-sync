@@ -144,6 +144,20 @@ describe("冲突对话框", () => {
     expect(screen.getByRole("button", { name: "取消" })).toHaveFocus();
   });
 
+  it("这是我分享的技能:不落进「不是本应用安装的」那句假话,只剩取消(完整三选一是任务 5 的范围)", () => {
+    // v6 任务 3 新档:技能库里记的分享者就是我。它**同样**不能套外来目录那句
+    // "不是本应用安装的"(那是假话)——也不能套"改过本体"的三选(没有该弹的东西,
+    // 完整变体留给任务 5)。这里只兜住"不显示错误文案"这一件事。
+    conflict({ status: "mine", localChanged: true, remoteChanged: true });
+    render(<ConflictDialog />);
+
+    expect(screen.getByText("这是你分享的技能")).toBeInTheDocument();
+    expect(screen.queryByText(/不是本应用安装的|不是这个应用安装的/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /保留我的改动/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /替换/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "取消" })).toHaveFocus();
+  });
+
   it("Esc 取消,不留在半路", async () => {
     const cancel = vi.fn();
     conflict({ status: "locallyModified", installedSha: "aaa1111" });
