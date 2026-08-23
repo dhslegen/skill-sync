@@ -44,6 +44,19 @@ describe("i18n", () => {
     }
   });
 
+  it("文案不得出现已撤销的功能术语(v6:「纳入管理/移出管理」整条链路已删除)", () => {
+    // 不与上面的 git 术语共用同一份数组:这三个词不是 git 术语,与
+    // docs/terminology.md 无关,是 v6 撤掉「认领」语义之后新增的项目内部禁词。
+    // 别把 "npx" 也塞进来——RELEASE_NOTES.md 里「与 npx skills 完全互通」是
+    // 合法的功能承诺,禁它是误伤(v6 任务 6 拍板)。
+    const banned = ["纳入管理", "移出管理", "其他工具装的"];
+    for (const [key, text] of texts) {
+      for (const word of banned) {
+        expect(text.includes(word), `${key}: ${text}`).toBe(false);
+      }
+    }
+  });
+
   it("文案不得含 emoji(UI 规范 §2:全站禁 emoji)", () => {
     const emoji = /\p{Extended_Pictographic}/u;
     for (const [key, text] of texts) {

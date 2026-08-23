@@ -2,7 +2,8 @@
 //!
 //! 设计方案 2.5②:不判断"原创"——canonical 目录里 npx skills 装的、手写的、别的工具放的
 //! 混在一起,原创性无法可靠判定。改用**排除法**:凡不在本 app `state.installed` 里的,
-//! 都可以分享;来源只作标签展示(npx skills 装的提示"来自第三方仓库")。
+//! 都可以分享;来源只作标签展示(v6 任务 6 起改走 `ownership::source_label`
+//! 归一化,不再提示"是哪个工具装的")。
 //!
 //! # 假设(文档未覆盖,按开发纪律显式标注)
 //!
@@ -66,7 +67,8 @@ pub struct ShareCandidate {
 pub enum CandidateOrigin {
     /// 两处记账都查不到,视为本地创建。
     Local,
-    /// npx skills 装的,`source` 是它记的原始来源。
+    /// 能在 npx skills 的 lock 里查到,`source` 是归一化后的展示文案
+    /// (`ownership::source_label`)。
     NpxSkills { source: String },
 }
 
@@ -188,22 +190,22 @@ fn candidate(
     }
 }
 
-/// 查 npx skills 的 lock:能查到就是它装的,展示原始来源。
+/// 查 npx skills 的 lock:能查到就是它装的,展示归一化后的来源。
+///
+/// v6 任务 6:改走 `ownership::source_label`(与 `acquire.rs::foreign_origin`
+/// 同一份归一化),不再各自手搓 `doc["skills"][dir]["source"]` 的裸字符串——
+/// 界面因此不再显示"来自 acme/skills.git"这类未归一化的原始写法。
 fn npx_origin(env: &dyn AgentEnv, dir_name: &str) -> CandidateOrigin {
     let Some(path) = skill_lock::lock_path(env) else {
         return CandidateOrigin::Local;
     };
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let entries = skill_lock::read_entries(&path);
+    let Some(entry) = entries.iter().find(|e| e.key == dir_name) else {
         return CandidateOrigin::Local;
     };
-    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return CandidateOrigin::Local;
-    };
-    match doc["skills"][dir_name]["source"].as_str() {
-        Some(source) if !source.is_empty() => CandidateOrigin::NpxSkills {
-            source: source.to_string(),
-        },
-        _ => CandidateOrigin::Local,
+    match ownership::source_label(&entry.source_type, &entry.source, &entry.source_url) {
+        Some(source) => CandidateOrigin::NpxSkills { source },
+        None => CandidateOrigin::Local,
     }
 }
 
@@ -504,8 +506,11 @@ pub async fn share(
 /// 4. **已有记账不覆盖**。回推改动走的是 `share_installed`,不经过这里;
 ///    真走到这里说明是另一条路,覆盖账本会把 commit_sha 等既有事实抹掉。
 ///
-/// `origin` 记 `claimed`:文件是用户自己的,本 app 只是记了账,所以必须留着
-/// 「移出管理」这条无损退路——否则退路只剩会删文件的「移除」。
+/// `origin` 记 `claimed`:文件是用户自己的,本 app 只是记了账。
+/// ⚠️ 这句注释曾经写着"必须留着「移出管理」这条无损退路"——「移出管理」
+/// (`skill_unclaim`)已随 v6 撤销,`origin` 字段现在只读、不再驱动任何用户动作
+/// (见 `state::InstalledSkill::origin` 的文档),这里继续写它只是为了让
+/// `commit_sha.is_empty()` 之外还有一份显式来历,不是给退路用。
 fn adopt_into_management(
     next: &mut state::State,
     req: &ShareRequest,

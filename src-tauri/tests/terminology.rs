@@ -251,6 +251,24 @@ fn error_messages_use_no_git_terminology_in_chinese() {
 }
 
 #[test]
+fn error_messages_use_no_retired_feature_terms() {
+    // 与上面的 git 术语禁词表分开维护:这三个词不是 git 术语(与 docs/terminology.md
+    // 无关),是 v6 撤掉「纳入管理/移出管理」整条链路之后新增的项目内部禁词。
+    // 刻意不加 "npx"——release_notes 那两条守卫用的是另一份(只含 git 术语)的
+    // 禁词表,"与 npx skills 完全互通"是合法的功能承诺,不该被误伤(v6 任务 6 拍板)。
+    let banned = ["纳入管理", "移出管理", "其他工具装的"];
+    for m in all_messages() {
+        for word in banned {
+            assert!(
+                !m.message.contains(word),
+                "用户可见的错误信息里出现已撤销的功能术语「{word}」\n  {}",
+                place(&m)
+            );
+        }
+    }
+}
+
+#[test]
 fn error_messages_contain_no_emoji() {
     // 近似 \p{Extended_Pictographic} 的主要码位区间(std 没有 Unicode 属性查询,不为此引依赖)
     let is_emoji = |c: char| {

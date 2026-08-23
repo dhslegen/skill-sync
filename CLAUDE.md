@@ -342,7 +342,27 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
   它就是这个项目的开发者文档。**别按全局规则把它加进 exclude 或重写历史**。
   仍然适用的部分:`docs/*`(除放行的两个)、`_*.md`、AI 流程产物一律不进版本控制。
 
-## 当前进度(2026-08-22,现役 **v0.5.0**)
+## 当前进度(2026-08-24,现役 **v0.5.0**;**v6「技能归属模型」六个任务已完成、尚未发版**)
+
+**v6 = 「这是不是我分享的技能」取代四本来历账**(2026-08-24,设计在本地
+`docs/设计-v6-技能归属模型.md`)。起因是 `acquire::precheck` 原先五个分支一眼都没看过
+`state.shared`:作者取回自己分享的技能会落进 `Foreign` 档,被告知"这个目录不是本应用
+安装的"——**app 把自己的作者当成了外人**。用一个判定(`ownership::relation`:技能库
+`authors.json` 记的分享者是不是当前登录的这个人)取代此前散落各处的四本账
+(`state.installed` 的 `origin`、`claimed`/`acquired`、`unclaimed`/`claimBindable`/
+`localOnly` 三个 DTO 字段、本地目录扫描)。**「纳入管理 / 移出管理」整条链路(连同
+`skill_claim`/`skill_unclaim` 两条 IPC)已删除**——用户嫌它"太拗口、太别扭,不符合
+傻瓜式、0 技术术语的初衷"。「我的技能」从三分区改成两分区:**「我分享的」**
+(`relation == Shared`)/ **「我安装的」**(其余)。
+任务 1 `ownership::relation` 纯函数 + 登录身份落 `config.identities` → 任务 2
+`installed_list` 按关系两分区 + 删 claim/unclaim 全链 → 任务 3 `precheck` 的 `Mine`
+档(作者永不进 `Foreign`)+ 取回/分享更新 + `skill_claim_attribution`(「这是我分享的」
+写回库)→ 任务 4 前端两分区界面 + 删纳入/移出管理全部 UI + 第七档 `noBaseline`
+(不再对无记账的分享技能说"已同步"这种假话)→ 任务 5 商店卡片「我分享的」档 +
+冲突弹窗的 mine 变体 → 任务 6(本任务)来源标签统一(撤掉「其他工具装的」,
+统一走 `ownership::source_label`)+ 术语门加禁词 + 文档承诺同步。
+详见「现役机制约束」的「技能归属模型(v6)」一节。**尚未发版**,
+`RELEASE_NOTES.md` 的 0.6.0 段落已写好。
 
 **v5 = 技能装到指定项目**(2026-08-20 brainstorming 拍板,任务分解与设计在本地
 `docs/设计-v5-项目级安装.md` / `docs/v5-任务分解.md`,上游取证在 `docs/v5-上游取证/`)。
@@ -468,7 +488,10 @@ pill 出现 → 点了才装 → 应用不再自己退出。**别把"发出去�
 方案两次被用户推翻后落在 authors.json 静态文件上,"详情面板不联网"的例一次都没破
 (见「关键事实」的作者条目)。
 
-M5 任务 2 要点:「我的技能」三分区,归类徽标全撤;
+⚠️ **「三分区」这条记载已作废(v6 撤销)**——「我的技能」自 v6 任务 2 起改成
+「我分享的 / 我安装的」两分区,判据是 `ownership::relation`,不再按来历分类。
+见「现役机制约束」的「技能归属模型(v6)」一节。以下 M5 任务 2 要点仅作历史记录:
+「我的技能」三分区,归类徽标全撤;
 `installed_list` 只列 canonical 真实存在的目录(记账保留,重获取时 precheck 走 Fresh 对齐),
 `body_present` 字段已删——别再往 DTO 里加"存在性"字段,存在性由 core 过滤保证。
 M5 任务 3 要点:技能库根 `tags.json`(`{"tags":{"<dirSlug>":["标签",…]}}`,管理员契约在
@@ -484,13 +507,14 @@ tags 当时侥幸没出问题,是因为支持它的版本先到了用户机器�
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust **720** + 前端 **581** 测试通过(2026-08-22 M11 追加任务收尾时串行实测,
-  五道闸全绿,clippy **--all-targets** / eslint / tsc 干净,`pnpm dev` 启动冒烟通过)。
+- 本机:Rust **736** + 前端 **634** 测试通过(2026-08-24 v6 任务 6 收尾时串行实测,
+  五道闸全绿,clippy **--all-targets** / eslint / tsc 干净)。
   ⚠️ **这个 Rust 数字是「docker 起着」的口径**:`gitea_live` 那两条真跑了
   (docker 停着时它们报 502 假红,见「测试要求」);而受 `SKILLSYNC_PLAZA_LIVE`
   门控的三条 `plaza_*_live` **是默认跳过的早退分支,照样计进这个数**——
   **它们算"通过"什么都没证明**,发版前要手动跑,见「发版」一节。
-  M9 收尾时是 Rust 542 + 前端 483,v0.3.13 发版时是 Rust 483 + 前端 411——
+  M9 收尾时是 Rust 542 + 前端 483,v0.3.13 发版时是 Rust 483 + 前端 411,
+  M11 追加任务收尾时是 Rust 720 + 前端 581——
   **这行数字每次任务收尾自己重跑,不要照抄上一版**。
   `pnpm dev` 启动冒烟通过(M10 任务 5 实测:默认档 INFO 3 行、DEBUG 0 行,
   `RUST_LOG=skillsync=debug` 档 debug 行确实打印——两档控制变量对照)
@@ -580,6 +604,17 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
 (守卫是"必须在清单里",**不复用 `skill_reveal`**——那条只放行含 SKILL.md 的目录)。
 **没有**新增事件(项目级不联动 scheduler,也没有需要进度上报的长任务)。
 新增错误码 `FS_BAD_PROJECT_PATH`;`config.projects` 是新增可选字段,不升 schemaVersion。
+
+v6 的契约变更(技能归属模型):**删除** `skill_claim`/`skill_unclaim` 两条 IPC
+(连同「纳入管理/移出管理」全部界面一并撤销);**新增** `skill_claim_attribution`
+(`{registryId?, repo?, dirSlug}` → `share::ShareOutcome`,「这是我分享的」写回
+库根 `authors.json`,与分享同一套权限矩阵,要求已登录)。`InstalledSkillView`
+**删除** `unclaimed`/`claimBindable`/`localOnly`/`claimed` 四个字段,**新增**
+`relation`(`ownership::Relation`:`shared`/`installed`/`draft`)、`localPresent`
+(这台电脑上有没有本体,只有 `relation:"shared"` 才可能是 `false`)、
+`sourceLabel`(归一化后的来源展示,`ownership::source_label`)。**没有**新增
+事件与错误码。`config` 新增顶层字段 `identities`
+(`BTreeMap<registryId, Identity>`,登录时写入),不升 schemaVersion。
 
 ### 现役机制约束(动相关代码前必读)
 
@@ -762,10 +797,113 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
     `useProjects((s) => s.recent())` 每次返回新数组,按 `Object.is` 比引用永远判"变了"
     → 无限重渲染,当场打红 58 条测试。要派生就在组件里 `useMemo`。
 
-- **术语:「认领」已于 M6 任务 4 改名为「纳入管理」**(反向 = 「移出管理」),
-  分区标题「npx skills 安装」→「其他工具装的」、「商店安装」→「由技能库管理」。
+- ⚠️ **「认领 / 纳入管理 / 移出管理」这整条链路(下面这段)已于 v6 撤销,仅作历史记录**
+  ——见后面的「技能归属模型(v6)」一节。**术语:「认领」已于 M6 任务 4 改名为
+  「纳入管理」**(反向 = 「移出管理」),分区标题「npx skills 安装」→
+  「其他工具装的」、「商店安装」→「由技能库管理」。
   理由:"认领"的语义前提是"这东西暂时没主",而技能就在用户自己电脑上——词与事实相反。
-  **代码里的标识符仍叫 claim/unclaim/claimed**(ID 用英文,只有用户可见文案改了)。
+  ~~代码里的标识符仍叫 claim/unclaim/claimed~~——v6 起这些标识符本身也已删除
+  (只留 `skill_claim_attribution` 一族,语义完全不同,见下)。
+
+- **技能归属模型(v6)**:「这是不是我分享的技能」取代此前散落各处的四本来历账
+  (`state.installed.origin` 的 `claimed`/`acquired`、`InstalledSkillView` 的
+  `unclaimed`/`claimBindable`/`localOnly`/`claimed` 四个字段、本地目录扫描)。
+  核心修复动机:`acquire::precheck` 原先五个分支一眼都没看过 `state.shared`,
+  作者取回自己分享的技能会落进 `Foreign` 档、被告知"这个目录不是本应用安装的"
+  ——app 把自己的作者当成了外人。
+  - 🔴 **归属真相在技能库(`authors.json`),本地账本只是缓存**:换电脑、
+    应用数据丢失、绕过 app 直接用 git 推送,`authors.json` 都能重建出正确的
+    "这是不是我分享的"——`state.installed`/`state.shared` 从来不是权威来源,
+    只是加速判定与"取回/更新去哪要坐标"用的派生数据。
+  - `ownership::relation(me, author, in_library, local_present) -> Relation`
+    (`Shared`/`Installed`/`Draft`)是**唯一一处判定实现**,Rust 侧四处调用:
+    `acquire::is_mine`(precheck 用)、`my_skills::build` 内的两处(`state.installed`
+    记账那一档 + "只在库里、本地没本体"那一档)、`share::candidate`
+    (`scan_candidates` 用)。前端**没有**跨语言复用同一份代码,但有一份口径对齐的
+    独立镜像:`lib/update.ts::isMine`(展示名/登录名任一相同即算)驱动
+    `cardState`,`lib/ownership.ts::sharedState` 驱动「我的技能」页的七状态。
+    改判定表**必须四处 Rust 调用 + 两处前端镜像一起改**,漏一处就是新一轮
+    "卡片说有更新、按钮却是禁用的"那种缺陷(`CLAUDE.md` 记的既有教训)。
+  - 🔴 **`acquire::precheck` 里 `Mine` 判在 `Foreign` 之前、在 `Managed` 之后**:
+    没有 `state.installed` 记账时(第一次遇到这个目录),先判 `is_mine`——是我
+    就直接给 `Mine{local_changed:true, remote_changed:true}`,不是我才落进
+    `Foreign`(所以 `Mine` 判**先于** `Foreign` 分支)。有记账时先算
+    `remote_content_changed`/`actual != recorded.content_hash`/`up_to_date`
+    这几件"正常事实",**只有判定结果不是"完全同步"时**才检查 `is_mine` 把
+    `LocallyModified`/`Managed{up_to_date:false}` 折叠成 `Mine`(所以 `Mine`
+    判**在 `Managed` 判定逻辑跑完之后**;完全同步时无论是不是我都直接是
+    `Managed{up_to_date:true}`,没有必要折叠)。
+    `OtherLibrary`(同名但装自另一个技能库)**不受 `mine` 影响**,判在两者中间——
+    两个库的同名技能是两个东西,哪怕作者都是我,替换掉现有版本仍要用户拍板。
+  - 🔴 **`relation == Shared` 时,`LocallyModified` 与 `Managed{up_to_date:false}`
+    一律折成 `Mine`,不能只在"没有记账"那一档折**:第一次取回会往
+    `state.installed` 记一条,此后同名目录就有账了,若只在无记账时判 `Mine`,
+    作者第二次遇到冲突会看到旧的三选一弹窗(其中「保留并贡献」这一档是刻意
+    不给作者用的,见 `ConflictDialog` 的 `mine`/`otherLibrary`/`modified` 三态
+    互斥)。折叠因此写在 core 的 `precheck` 里,不交给前端按 `relation` 现挑弹窗。
+  - 🔴 **`acquire_batch`(定时更新 / 向导批量安装)对 `Precheck::Mine` 一律跳过**,
+    不看 `local_changed`/`remote_changed` 的具体值——自动流程绝不覆盖作者本地
+    的内容,即便"库新本地没改"这一档覆盖本身是安全的,替作者自动更新他自己的
+    技能仍然越界,动作必须留给他在「我的技能」上自己点。
+  - 🔴 **`remoteChanged` 为真时,「以本地为准」的后续分享必须带
+    `forceReview: true`**(`store/install.ts` 的 `keepLocalAndShareMine` 与
+    `keepLocalAndShare` 同一个理由):前提就是"库里已有新版",直推等于覆盖
+    同事经审核改过的版本。`remoteChanged` 为假(单纯"本地改了、远端没变")时
+    不强制,走正常的权限矩阵分流。
+  - 🔴 **前端「我的技能」页的七状态机(`lib/ownership.ts::sharedState`)里,
+    `noBaseline`(判据 `!contentHash`)必须压过 `both`/`localAhead`/`remoteAhead`**,
+    不能排在它们之后:那三档全部依赖"安装那一刻的内容基线"里的
+    `localModified`/`remoteChanged`,而 `noBaseline` 这一档**根本没有基线**
+    ——`relation === "shared"` 且本地有本体,但没有 `state.installed` 记账
+    (典型场景:确实是作者,但直接经 git 推进库,没经过本 app 装过)。core 侧
+    对这种行恒填 `localModified:false` 且 `contentHash:""`,没有基线却断言
+    "已同步"或"有改动未分享"都是在编。
+  - 🔴 **点「这是我分享的」(`skill_claim_attribution`)成功后,`DetailPanel` 的
+    `ClaimAttribution` 组件刻意不调 `openDetail`/`load(true)` 重载
+    `useStoreIndex`**——即便看起来"重刷一下让作者信息自然出现"更省事。
+    这个组件的门槛判定与外层渲染分支读的是同一份 `useStoreIndex` 状态
+    (`registryId`/`detail`),重载会让 `index`/`detail` 变化,门槛判定翻转,
+    把这个组件连同刚设的 "done"/"review" 状态一起卸载,用户连「已登记为
+    分享者」这句确认都看不见(2026-08-24 本地复现两次)。**别把这个当成
+    "忘了刷新"去顺手补 `store.reload()`**——代价是商店卡片的作者字段要等
+    下次自然刷新(重新进商店页/手动重试)才跟上,这是刻意接受的取舍。
+  - **`store/install.ts` 与 `store/share.ts` 是循环导入**(`share.ts` 反过来
+    `import { useInstall } from "@/store/install"`,`keepLocalAndShareMine`
+    需要在没有 `state.installed` 记账时跳转分享页)。安全的前提是**两个 store
+    只在函数体内惰性引用,绝不在模块顶层解构**——顶层 `const { load } = useShare`
+    这类写法会在其中一侧模块求值时读到还没初始化完的绑定。不要重构去消掉这个环
+    (牵动一片),但往这两个文件加新引用前先确认新代码遵守这条。
+  - `state.shared` 记账在 `remove::remove` 时会**按 `Path` 比、不按字符串比**
+    一并清掉(`Path::new(&s.local_path) != canonical`)——这是既有教训(见「测试
+    要求」Windows 路径分段 join 那条)在 v6 新代码里的复用,不是新发明。
+    `create.rs` 里原本还有第三条"`state.shared` 里有记账就拒绝同名"的撞名判据,
+    v6 任务 3 修复轮 1 已删除:本体不在时那份记账多半是孤儿(移除没清干净、
+    或旧版逻辑留下的),拿一本可能过期的账去回答"占没占用"这件事,对了是多余、
+    错了是死路——判据统一成"磁盘上真的有没有东西"(`dir_occupied`)。
+  - `Identity{login, display_name}` 落 `config.json` 的 `identities` 字段
+    (按 `registryId` 分开存 `BTreeMap`),由 `session.rs` 在登录/退出/查状态
+    三处维护。**落盘而不是只留在内存或每次现查的原因**:`relation()` 是纯函数,
+    被 `precheck`/`my_skills::build`/`scan_candidates` 这类同步的核心编排调用
+    ——这些路径不该也不能为了"我是谁"临时发一次网络请求(且不同 registry
+    可能是不同账号,必须按 `registryId` 分开记)。
+  - `ownership::source_label(source_type, source, source_url) -> Option<String>`
+    把上游 `.skill-lock.json` 的四种上游形状归一化成一句展示文案:
+    `github`/`gitea` 原样展示 `source`(本来就是 `owner/repo`);`git`
+    (`npx skills add <url>` 裸装的)从 `source_url` 解析出 `owner/repo`;
+    `well-known` 原样展示 `source`(域名);其余(空/未知类型)返回 `None`,
+    调用方据此不摆来源行。`share::npx_origin`(分享候选的来源标签)与
+    `acquire::foreign_origin`(外来目录冲突弹窗的来源说明)v6 任务 6 起
+    **统一改走这个函数**,不再各自手搓 `doc["skills"][dir]["source"]` 的裸字符串
+    ——界面从此不会显示"来自 acme/skills.git"这类未归一化的原始写法。
+  - **「哪个工具装的」这个标签(旧「其他工具装的」)整条撤掉,判据是"用户看到它
+    会不会做出不同的决定"**:来源库(`source_label`)影响"更新/回推该打到哪个
+    坐标",这是真实的、会改变用户行为的信息,值得摆;而"是本 app 装的还是
+    npx 装的"这件事**不影响任何界面上的动作**,纯属噪音,不摆。
+  - 术语门加了三个禁词(`src/i18n/index.test.ts` + `src-tauri/tests/terminology.rs`
+    各自新增一条独立测试,**不与既有的 git 术语禁词表合并**):`纳入管理`、
+    `移出管理`、`其他工具装的`。**刻意不禁 `npx`**——`RELEASE_NOTES.md` 里
+    「与 npx skills 完全互通」是合法的功能承诺,禁它是误伤;`release_notes_*`
+    那两条守卫用的仍是只含 git 术语的旧禁词表,不受这次改动影响。
 
 - **App 自更新是"静默备好 + 提示重启"**(M6 任务 1–2,对齐 Cursor/Claude 桌面端):
   检出新版 → 后台准备好(不重启)→ emit `app-update://ready` → 左下角 pill。
@@ -820,8 +958,9 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
   **唯一命中才绑**(多个源有同名库时绑谁都是猜)。
   - **内建源必须显式传进去**(`BindingSources`):它锁定且不落 `config.registries`,
     只传 config 的话公司库技能绝无可能绑上——M3 起"认领对主线场景从来没生效过"就是这个根因;
-  - `installed_list` 给未纳入管理的行带 `claimBindable`(同一份判定),界面据此摆
-    「纳入管理」或「分享到技能库」。**绑不上就不摆那个按钮——不摆比解释好**。
+  - ⚠️ ~~`installed_list` 给未纳入管理的行带 `claimBindable`,界面据此摆「纳入管理」
+    或「分享到技能库」~~——`claimBindable` 字段已随 v6 删除,「不摆比解释好」这条
+    原则本身仍然成立,现在体现在 `relation`/`sourceLabel` 是否有值上。
 
 - **写 `.skill-lock.json` 的 sourceUrl 必须是完整 URL、sourceType 必须是真实类型**
   (M6 任务 6 修):此前写的是 `"owner/repo"`、类型一律写死 `gitea`,与自己录的
@@ -829,10 +968,13 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
   对本 app 自己装的技能整个失效。载体是 `acquire::SourceMeta`(registry_id + kind +
   base_url),`acquire` / `acquire_batch` / `scheduler::run_check` 都收它。
 
-- **分享直推进库后自动纳入管理**(M6 任务 5,`share::adopt_into_management`),四道闸:
-  只认直推(走评审的还没进库)/ 只认 canonical / **本地目录名必须等于远端目录名**
-  (中文名技能另起 ASCII 远端名,两者不同时记账键对不上)/ 已有记账不覆盖。
-  `origin` 记 `claimed`——文件是用户自己的,必须留着「移出管理」这条无损退路。
+- **分享直推进库后自动记进 `state.installed`**(M6 任务 5,`share::adopt_into_management`,
+  这个函数本身**没有**随 v6 撤销,仍在正常运行),四道闸:只认直推(走评审的还没
+  进库)/ 只认 canonical / **本地目录名必须等于远端目录名**(中文名技能另起 ASCII
+  远端名,两者不同时记账键对不上)/ 已有记账不覆盖。`origin` 记 `claimed`——
+  ⚠️ **这个字段现在只读**,不再驱动"纳入管理/移出管理"这类用户动作(那条链路已随
+  v6 撤销),只是留一份"这条记账不是走正常获取来的"的显式来历,`ownership::relation`
+  才是判定技能与"我"关系的权威。
 
 - **回推前必须过远端变更检测**(M5 任务 1,`share::share_installed`):
   乐观锁(CONFLICT_STALE)只拦"拉 sha 与提交之间"的瞬间竞态——提交用的是**当前**
@@ -1220,8 +1362,10 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
 - **scheduler 逐源且常驻**(M3 任务 2):`run_all_sources_check` 一个源失败不拦其他源,
   全失败则本轮**不上报**(报 NothingInstalled 等于撒谎);合并在 `scheduler::merge_reports`。
 - **删自定义源**:已装技能保留(界面标"来源已移除",更新/回推按钮消失),该源凭证与
-  索引缓存一并清掉;`registry_id` 解析失败即 `sourceRemoved`,认领绑不上源的技能同理。
-- **认领(M3 任务 6)读 lock 不写**:content_hash 以认领此刻为基线、commit_sha 留空
+  索引缓存一并清掉;`registry_id` 解析失败即 `sourceRemoved`。
+- ⚠️ **认领(M3 任务 6)读 lock 不写**——`skill_claim`/`skill_unclaim` 已随 v6 撤销,
+  以下是历史记录,当前技能与"我"的关系判定见「技能归属模型(v6)」一节:
+  content_hash 以认领此刻为基线、commit_sha 留空
   (第一次更新即对齐,覆盖前照走预检);npx 建的**链接收编入账**(只认确实指向 canonical
   的链接,实体目录与用户目录无从区分不敢认),否则移除时留一地断链;来源绑定按
   sourceUrl **同源比对**(只看 kind 会把别家 GHE 错绑上,有测试钉住)。
@@ -1441,6 +1585,11 @@ v5 新增的 IPC(项目级安装,七条):`project_pick`(弹目录选择框 + 路
 
 **这一版之后,存量用户(0.4.0)第一次打开就会看到 0.5.0 的卡片**——更新日志
 这个功能的第一批受益者就是升上来的人,不用等下一版。
+
+~~**技能归属模型(v6)**~~ —— **已完成**(v6 任务 1–6,2026-08-24),见「现役机制
+约束」的「技能归属模型(v6)」一节。「纳入管理/移出管理」整条链路已删除,
+「我的技能」从三分区改成「我分享的/我安装的」两分区。⚠️ **尚未发版**,
+`RELEASE_NOTES.md` 的 0.6.0 段落已写好。
 
 ~~调查 `npx skills find` 有没有开放 API~~ ——**已完成并发布**,即 M9 技能广场 +
 M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重新调查一遍。**

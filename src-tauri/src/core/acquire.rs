@@ -99,7 +99,8 @@ pub enum Precheck {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum ForeignOrigin {
-    /// npx skills 装的,`source` 是它记的原始来源(如 `owner/repo`)。
+    /// 能在 npx skills 的 lock 里查到,`source` 是归一化后的展示文案
+    /// (`ownership::source_label`,如 `owner/repo`)。
     NpxSkills { source: String },
     /// 两处记账都查不到,视为用户本地创建。
     Unknown,
@@ -257,21 +258,20 @@ pub fn precheck(
 }
 
 /// 查 npx skills 的 lock 判断外来目录的出处。查不到就是"未知来源"。
+///
+/// v6 任务 6:来源展示统一走 `ownership::source_label`(与 `share.rs::npx_origin`
+/// 同一份归一化,不再各自手搓 `doc["skills"][dir]["source"]` 的裸字符串)。
 fn foreign_origin(env: &dyn AgentEnv, dir_name: &str) -> ForeignOrigin {
     let Some(path) = skill_lock::lock_path(env) else {
         return ForeignOrigin::Unknown;
     };
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let entries = skill_lock::read_entries(&path);
+    let Some(entry) = entries.iter().find(|e| e.key == dir_name) else {
         return ForeignOrigin::Unknown;
     };
-    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return ForeignOrigin::Unknown;
-    };
-    match doc["skills"][dir_name]["source"].as_str() {
-        Some(source) if !source.is_empty() => ForeignOrigin::NpxSkills {
-            source: source.to_string(),
-        },
-        _ => ForeignOrigin::Unknown,
+    match ownership::source_label(&entry.source_type, &entry.source, &entry.source_url) {
+        Some(source) => ForeignOrigin::NpxSkills { source },
+        None => ForeignOrigin::Unknown,
     }
 }
 
