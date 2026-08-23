@@ -682,7 +682,7 @@ pub fn registry_remove(args: RegistryRemoveArgs) -> Result<Vec<registry::Registr
     let mut config = store.load_config()?.value;
     registry::remove(&mut config.registries, &args.registry_id)?;
     store.save_config(&config)?;
-    if let Err(err) = session::logout(&KeyringStore, &args.registry_id) {
+    if let Err(err) = session::logout(&KeyringStore, &store, &args.registry_id) {
         tracing::warn!(registry_id = %args.registry_id, code = %err.code, "移除源时清理凭证失败");
     }
     // 缓存按 (源,仓) 分文件(M4 任务 1):按前缀清掉该源全部仓的缓存,含旧命名。
@@ -881,6 +881,7 @@ pub async fn auth_login_oauth(args: RegistryArg) -> Result<SessionUser, AppError
         &resolved.auth_config(builtin::OAUTH_CLIENT_ID)?,
         &KeyringStore,
         &SystemBrowser,
+        &app_store()?,
         args.id(),
     )
     .await
@@ -904,6 +905,7 @@ pub async fn auth_login_token(args: LoginTokenArgs) -> Result<SessionUser, AppEr
                 &http_client_for(registry_id)?,
                 &auth_config(registry_id)?,
                 &KeyringStore,
+                &app_store()?,
                 registry_id,
                 &args.token,
             )
@@ -914,6 +916,7 @@ pub async fn auth_login_token(args: LoginTokenArgs) -> Result<SessionUser, AppEr
                 &http_client_for(registry_id)?,
                 &resolved.base_url,
                 &KeyringStore,
+                &app_store()?,
                 registry_id,
                 &args.token,
             )
@@ -931,6 +934,7 @@ pub async fn auth_status(args: RegistryArg) -> Result<SessionStatus, AppError> {
                 &http_client_for(args.id())?,
                 &auth_config(args.id())?,
                 &KeyringStore,
+                &app_store()?,
                 args.id(),
             )
             .await
@@ -940,6 +944,7 @@ pub async fn auth_status(args: RegistryArg) -> Result<SessionStatus, AppError> {
                 &http_client_for(args.id())?,
                 &resolved.base_url,
                 &KeyringStore,
+                &app_store()?,
                 args.id(),
             )
             .await
@@ -1024,6 +1029,7 @@ pub async fn auth_device_wait(args: DeviceWaitArgs) -> Result<SessionUser, AppEr
         &resolved.base_url,
         builtin::github_client_id()?,
         &KeyringStore,
+        &app_store()?,
         registry_id,
         &codes,
     )
@@ -1032,7 +1038,7 @@ pub async fn auth_device_wait(args: DeviceWaitArgs) -> Result<SessionUser, AppEr
 
 #[tauri::command]
 pub fn auth_logout(args: RegistryArg) -> Result<(), AppError> {
-    session::logout(&KeyringStore, args.id())
+    session::logout(&KeyringStore, &app_store()?, args.id())
 }
 
 // ============================================================ 商店

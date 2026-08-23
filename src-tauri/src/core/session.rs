@@ -7,6 +7,8 @@ use crate::core::auth::{
     self, Credentials, CredentialStore, LoopbackServer, OAuthConfig, PkcePair,
 };
 use crate::core::gitea::{GiteaClient, GiteaUser};
+use crate::core::ownership::Identity;
+use crate::core::state;
 use crate::error::AppError;
 
 /// 打开系统浏览器的方式。生产走 tauri-plugin-opener,测试里换成记录调用的假实现。
@@ -52,6 +54,7 @@ pub async fn login_oauth(
     cfg: &OAuthConfig,
     store: &dyn CredentialStore,
     opener: &dyn BrowserOpener,
+    state_store: &state::Store,
     account: &str,
 ) -> Result<SessionUser, AppError> {
     let server = LoopbackServer::bind()?;
@@ -78,7 +81,7 @@ pub async fn login_oauth(
         .await
         .inspect_err(|e| tracing::warn!(code = %e.code, "换取令牌失败"))?;
     tracing::info!("令牌已取得,正在读取账号信息");
-    let user = finish_login(http, cfg, store, account, creds).await?;
+    let user = finish_login(http, cfg, store, state_store, account, creds).await?;
     tracing::info!("登录完成");
     Ok(user)
 }
@@ -88,6 +91,7 @@ pub async fn login_with_token(
     http: &reqwest::Client,
     cfg: &OAuthConfig,
     store: &dyn CredentialStore,
+    state_store: &state::Store,
     account: &str,
     token: &str,
 ) -> Result<SessionUser, AppError> {
@@ -100,14 +104,19 @@ pub async fn login_with_token(
         refresh_token: String::new(),
         expires_at: 0,
     };
-    finish_login(http, cfg, store, account, creds).await
+    finish_login(http, cfg, store, state_store, account, creds).await
 }
 
 /// 校验凭证可用后再落盘。校验不过就不写——避免存进一份用不了的凭证。
+///
+/// **登录三条路(OAuth / PAT / device flow)共同的"拿到 user 之后"**(v6 任务 1):
+/// 这是 Gitea 侧唯一的落点,写 `identities[account]` 只此一处,GitHub 侧的对应
+/// 落点是 [`github_finish_login`]。
 async fn finish_login(
     http: &reqwest::Client,
     cfg: &OAuthConfig,
     store: &dyn CredentialStore,
+    state_store: &state::Store,
     account: &str,
     creds: Credentials,
 ) -> Result<SessionUser, AppError> {
@@ -125,7 +134,9 @@ async fn finish_login(
         }
     })?;
     store.save(account, &creds)?;
-    Ok(user.into())
+    let session_user: SessionUser = user.into();
+    state_store.save_identity(account, &session_identity(&session_user))?;
+    Ok(session_user)
 }
 
 /// 查询登录态。必要时静默续期;续期失败视为未登录,由界面引导重新登录。
@@ -133,6 +144,7 @@ pub async fn status(
     http: &reqwest::Client,
     cfg: &OAuthConfig,
     store: &dyn CredentialStore,
+    state_store: &state::Store,
     account: &str,
 ) -> Result<SessionStatus, AppError> {
     let token = match auth::ensure_access_token(http, cfg, store, account).await {
@@ -147,21 +159,34 @@ pub async fn status(
 
     let client = GiteaClient::with_http(cfg.base_url.clone(), Some(token), http.clone());
     match client.current_user().await {
-        Ok(user) => Ok(SessionStatus {
-            logged_in: true,
-            user: Some(user.into()),
-        }),
+        Ok(user) => {
+            let session_user: SessionUser = user.into();
+            // 查状态查到了确实登录着,顺带刷新一遍身份(展示名可能在别处改过)。
+            state_store.save_identity(account, &session_identity(&session_user))?;
+            Ok(SessionStatus { logged_in: true, user: Some(session_user) })
+        }
         // 令牌被服务端吊销(改密码、管理员撤销)时本地并不知情,按未登录处理并清掉
         Err(e) if e.code == "AUTH_INVALID" => {
             store.delete(account)?;
+            state_store.remove_identity(account)?;
             Ok(SessionStatus { logged_in: false, user: None })
         }
         Err(e) => Err(e),
     }
 }
 
-pub fn logout(store: &dyn CredentialStore, account: &str) -> Result<(), AppError> {
-    store.delete(account)
+pub fn logout(
+    store: &dyn CredentialStore,
+    state_store: &state::Store,
+    account: &str,
+) -> Result<(), AppError> {
+    store.delete(account)?;
+    state_store.remove_identity(account)
+}
+
+/// `SessionUser` → `Identity` 的投影:落盘只需要比对用的两个字段,不需要 avatar_url。
+fn session_identity(user: &SessionUser) -> Identity {
+    Identity { login: user.login.clone(), display_name: user.display_name.clone() }
 }
 
 // ============================================================ GitHub 源(M3 任务 5)
@@ -195,6 +220,7 @@ pub async fn github_login_device(
     base_url: &str,
     client_id: &str,
     store: &dyn CredentialStore,
+    state_store: &state::Store,
     account: &str,
     codes: &github::DeviceCodes,
 ) -> Result<SessionUser, AppError> {
@@ -213,7 +239,8 @@ pub async fn github_login_device(
             github::DevicePoll::Pending => {}
             github::DevicePoll::SlowDown => interval += 5,
             github::DevicePoll::Token(token) => {
-                return github_finish_login(http, base_url, store, account, token).await
+                return github_finish_login(http, base_url, store, state_store, account, token)
+                    .await
             }
         }
     }
@@ -224,6 +251,7 @@ pub async fn github_login_token(
     http: &reqwest::Client,
     base_url: &str,
     store: &dyn CredentialStore,
+    state_store: &state::Store,
     account: &str,
     token: &str,
 ) -> Result<SessionUser, AppError> {
@@ -231,14 +259,18 @@ pub async fn github_login_token(
     if token.is_empty() {
         return Err(AppError::new("AUTH_EMPTY_TOKEN", "请填写登录凭证"));
     }
-    github_finish_login(http, base_url, store, account, token.to_string()).await
+    github_finish_login(http, base_url, store, state_store, account, token.to_string()).await
 }
 
 /// 校验凭证可用后再落盘;校验不过就不写(与 Gitea 的 finish_login 同规则)。
+///
+/// device flow 与 PAT 两条路共同的"拿到 user 之后",Gitea 侧的对应落点是
+/// [`finish_login`]。
 async fn github_finish_login(
     http: &reqwest::Client,
     base_url: &str,
     store: &dyn CredentialStore,
+    state_store: &state::Store,
     account: &str,
     token: String,
 ) -> Result<SessionUser, AppError> {
@@ -259,7 +291,9 @@ async fn github_finish_login(
             expires_at: 0,
         },
     )?;
-    Ok(user.into())
+    let session_user: SessionUser = user.into();
+    state_store.save_identity(account, &session_identity(&session_user))?;
+    Ok(session_user)
 }
 
 /// GitHub 源的登录态。令牌被吊销时清掉凭证按未登录报,与 Gitea 的 [`status`] 同语义。
@@ -267,6 +301,7 @@ pub async fn github_status(
     http: &reqwest::Client,
     base_url: &str,
     store: &dyn CredentialStore,
+    state_store: &state::Store,
     account: &str,
 ) -> Result<SessionStatus, AppError> {
     let Some(creds) = store.load(account)? else {
@@ -277,12 +312,15 @@ pub async fn github_status(
     };
     let client = GithubClient::new(base_url, Some(creds.access_token), http.clone());
     match client.current_user().await {
-        Ok(user) => Ok(SessionStatus {
-            logged_in: true,
-            user: Some(user.into()),
-        }),
+        Ok(user) => {
+            let session_user: SessionUser = user.into();
+            // 查状态查到了确实登录着,顺带刷新一遍身份(与 Gitea 侧 status 同规则)。
+            state_store.save_identity(account, &session_identity(&session_user))?;
+            Ok(SessionStatus { logged_in: true, user: Some(session_user) })
+        }
         Err(e) if e.code == "AUTH_INVALID" => {
             store.delete(account)?;
+            state_store.remove_identity(account)?;
             Ok(SessionStatus {
                 logged_in: false,
                 user: None,
@@ -290,6 +328,15 @@ pub async fn github_status(
         }
         Err(e) => Err(e),
     }
+}
+
+/// 测试用临时 `state::Store`(与 `core::state::tests::store()` 同一种造法):
+/// 登录/退出/查状态三处写身份都要落这份文件,断言从这里读回。
+#[cfg(test)]
+fn test_state_store() -> (tempfile::TempDir, state::Store) {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = state::Store::new(tmp.path().join(".skillsync"));
+    (tmp, s)
 }
 
 #[cfg(test)]
@@ -336,11 +383,13 @@ mod tests {
         let server = MockServer::start().await;
         mock_user(&server, "zhaowenhao", "赵文浩").await;
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
 
         let user = login_with_token(
             &reqwest::Client::new(),
             &cfg(&server),
             &store,
+            &state_store,
             "company",
             "  the-token  ",
         )
@@ -351,6 +400,10 @@ mod tests {
         assert_eq!(user.display_name, "赵文浩");
         // 令牌两端的空白应被去掉再存
         assert_eq!(store.load("company").unwrap().unwrap().access_token, "the-token");
+        // 登录成功后身份要落进 config.json,按 registryId 分开存(v6 任务 1)
+        let identities = state_store.load_config().unwrap().value.identities;
+        assert_eq!(identities["company"].login, "zhaowenhao");
+        assert_eq!(identities["company"].display_name, "赵文浩");
     }
 
     #[tokio::test]
@@ -358,10 +411,14 @@ mod tests {
         let server = MockServer::start().await;
         mock_user(&server, "zhaowenhao", "   ").await;
         let store = MemoryStore::default();
-        let user = login_with_token(&reqwest::Client::new(), &cfg(&server), &store, "c", "t")
-            .await
-            .unwrap();
+        let (_tmp, state_store) = test_state_store();
+        let user =
+            login_with_token(&reqwest::Client::new(), &cfg(&server), &store, &state_store, "c", "t")
+                .await
+                .unwrap();
         assert_eq!(user.display_name, "zhaowenhao");
+        // 空的 full_name 退回登录名,身份落盘的展示名也该是同一个退回值,不是空串
+        assert_eq!(state_store.load_config().unwrap().value.identities["c"].display_name, "zhaowenhao");
     }
 
     #[tokio::test]
@@ -375,24 +432,29 @@ mod tests {
             .mount(&server)
             .await;
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
 
-        let err = login_with_token(&reqwest::Client::new(), &cfg(&server), &store, "c", "bad")
-            .await
-            .unwrap_err();
+        let err =
+            login_with_token(&reqwest::Client::new(), &cfg(&server), &store, &state_store, "c", "bad")
+                .await
+                .unwrap_err();
         assert_eq!(err.code, "AUTH_INVALID_TOKEN");
         assert!(err.message.contains("重新填写"), "{}", err.message);
         // 校验没过就不该留下任何凭证
         assert!(store.load("c").unwrap().is_none());
+        // 也不该留下任何身份记录
+        assert!(state_store.load_config().unwrap().value.identities.is_empty());
     }
 
     #[tokio::test]
     async fn empty_token_is_rejected_before_any_request() {
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
         let cfg = OAuthConfig {
             base_url: "http://unused".into(),
             client_id: "x".into(),
         };
-        let err = login_with_token(&reqwest::Client::new(), &cfg, &store, "c", "   ")
+        let err = login_with_token(&reqwest::Client::new(), &cfg, &store, &state_store, "c", "   ")
             .await
             .unwrap_err();
         assert_eq!(err.code, "AUTH_EMPTY_TOKEN");
@@ -402,7 +464,8 @@ mod tests {
     async fn status_is_logged_out_without_credentials() {
         let server = MockServer::start().await;
         let store = MemoryStore::default();
-        let st = status(&reqwest::Client::new(), &cfg(&server), &store, "c")
+        let (_tmp, state_store) = test_state_store();
+        let st = status(&reqwest::Client::new(), &cfg(&server), &store, &state_store, "c")
             .await
             .unwrap();
         assert!(!st.logged_in && st.user.is_none());
@@ -414,6 +477,7 @@ mod tests {
         let server = MockServer::start().await;
         mock_user(&server, "zhaowenhao", "赵文浩").await;
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
         store
             .save(
                 "company",
@@ -425,11 +489,16 @@ mod tests {
             )
             .unwrap();
 
-        let st = status(&reqwest::Client::new(), &cfg(&server), &store, "company")
+        let st = status(&reqwest::Client::new(), &cfg(&server), &store, &state_store, "company")
             .await
             .unwrap();
         assert!(st.logged_in);
         assert_eq!(st.user.unwrap().login, "zhaowenhao");
+        // 查状态查到确实登录着,要顺带把身份刷新进 config.json
+        assert_eq!(
+            state_store.load_config().unwrap().value.identities["company"].login,
+            "zhaowenhao"
+        );
     }
 
     #[tokio::test]
@@ -448,6 +517,7 @@ mod tests {
         mock_user(&server, "zhaowenhao", "赵文浩").await;
 
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
         store
             .save(
                 "company",
@@ -459,7 +529,7 @@ mod tests {
             )
             .unwrap();
 
-        let st = status(&reqwest::Client::new(), &cfg(&server), &store, "company")
+        let st = status(&reqwest::Client::new(), &cfg(&server), &store, &state_store, "company")
             .await
             .unwrap();
         assert!(st.logged_in, "续期应对用户无感");
@@ -479,6 +549,7 @@ mod tests {
             .await;
 
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
         store
             .save(
                 "company",
@@ -491,7 +562,7 @@ mod tests {
             .unwrap();
 
         // 续期失败要表现为"没登录"并引导重登,而不是弹一个裸错误
-        let st = status(&reqwest::Client::new(), &cfg(&server), &store, "company")
+        let st = status(&reqwest::Client::new(), &cfg(&server), &store, &state_store, "company")
             .await
             .unwrap();
         assert!(!st.logged_in);
@@ -511,6 +582,11 @@ mod tests {
             .await;
 
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
+        // 撞吊销之前,身份记录已经在(比如上次成功登录留下的),吊销要把它一并清掉
+        state_store
+            .save_identity("company", &Identity { login: "zhaowenhao".into(), display_name: "赵文浩".into() })
+            .unwrap();
         store
             .save(
                 "company",
@@ -522,16 +598,21 @@ mod tests {
             )
             .unwrap();
 
-        let st = status(&reqwest::Client::new(), &cfg(&server), &store, "company")
+        let st = status(&reqwest::Client::new(), &cfg(&server), &store, &state_store, "company")
             .await
             .unwrap();
         assert!(!st.logged_in);
         assert!(store.load("company").unwrap().is_none());
+        assert!(
+            !state_store.load_config().unwrap().value.identities.contains_key("company"),
+            "令牌被吊销要连身份一并清掉,不留一份指向失效登录的旧数据"
+        );
     }
 
     #[tokio::test]
     async fn logout_clears_credentials() {
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
         store
             .save(
                 "company",
@@ -542,8 +623,17 @@ mod tests {
                 },
             )
             .unwrap();
-        logout(&store, "company").unwrap();
+        state_store
+            .save_identity("company", &Identity { login: "zhaowenhao".into(), display_name: "赵文浩".into() })
+            .unwrap();
+
+        logout(&store, &state_store, "company").unwrap();
+
         assert!(store.load("company").unwrap().is_none());
+        assert!(
+            !state_store.load_config().unwrap().value.identities.contains_key("company"),
+            "退出登录后身份记录不该还留着"
+        );
     }
 
     #[tokio::test]
@@ -562,11 +652,12 @@ mod tests {
 
         let opener = RecordingOpener::default();
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
         let cfg = cfg(&server);
         let http = reqwest::Client::new();
 
         // login_oauth 会阻塞等回调,这里并发地扮演"用户在浏览器里完成授权"
-        let flow = login_oauth(&http, &cfg, &store, &opener, "company");
+        let flow = login_oauth(&http, &cfg, &store, &opener, &state_store, "company");
         let driver = async {
             // 等 opener 记录下授权 URL
             let url = loop {
@@ -601,6 +692,11 @@ mod tests {
         let saved = store.load("company").unwrap().unwrap();
         assert_eq!(saved.access_token, "at");
         assert_eq!(saved.refresh_token, "rt");
+        // OAuth 登录同样要落身份(三条登录路共用 finish_login 这一处)
+        assert_eq!(
+            state_store.load_config().unwrap().value.identities["company"].login,
+            "zhaowenhao"
+        );
     }
 }
 
@@ -661,6 +757,7 @@ mod github_tests {
             .await;
 
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
         // expires_in 不能用真实的 900:paused 虚拟时钟遇到真实网络 IO 时,
         // 运行时会把时间自动快进到下一个定时器(reqwest 连接池的 90s 空闲定时器),
         // 几轮快进就能跳穿 900 秒,在慢 runner 上偶发误报过期(776f8bf 的 Windows CI)。
@@ -670,6 +767,7 @@ mod github_tests {
             &server.uri(),
             "client-gh",
             &store,
+            &state_store,
             "custom-2",
             &codes(1, 100_000_000),
         )
@@ -682,6 +780,12 @@ mod github_tests {
         // GitHub OAuth App 令牌默认长期有效:不设过期、无续期令牌
         assert_eq!(saved.expires_at, 0);
         assert!(saved.refresh_token.is_empty());
+        // device flow 登录同样要落身份(与 Gitea 三条路共用 finish_login 同规则,
+        // GitHub 侧共用的落点是 github_finish_login)
+        assert_eq!(
+            state_store.load_config().unwrap().value.identities["custom-2"].login,
+            "wang"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -695,11 +799,13 @@ mod github_tests {
             .mount(&server)
             .await;
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
         let err = github_login_device(
             &reqwest::Client::new(),
             &server.uri(),
             "client-gh",
             &store,
+            &state_store,
             "custom-2",
             &codes(1, 900),
         )
@@ -714,6 +820,7 @@ mod github_tests {
             "http://127.0.0.1:1", // 真发请求就会连接失败,报错码会不一样——这正是判别器
             "client-gh",
             &store,
+            &state_store,
             "custom-2",
             &codes(1, 0),
         )
@@ -734,10 +841,12 @@ mod github_tests {
             .await;
 
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
         let err = github_login_token(
             &reqwest::Client::new(),
             &server.uri(),
             &store,
+            &state_store,
             "custom-2",
             "ghp_bad",
         )
@@ -745,11 +854,19 @@ mod github_tests {
         .unwrap_err();
         assert_eq!(err.code, "AUTH_INVALID_TOKEN");
         assert!(store.load("custom-2").unwrap().is_none(), "校验不过的凭证绝不落盘");
+        assert!(state_store.load_config().unwrap().value.identities.is_empty(), "也不该留下任何身份记录");
 
         // 空凭证在本地就拦下,不发请求
-        let err = github_login_token(&reqwest::Client::new(), &server.uri(), &store, "custom-2", "  ")
-            .await
-            .unwrap_err();
+        let err = github_login_token(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &store,
+            &state_store,
+            "custom-2",
+            "  ",
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.code, "AUTH_EMPTY_TOKEN");
     }
 
@@ -765,6 +882,11 @@ mod github_tests {
             .await;
 
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
+        // 撞吊销之前身份记录已经在,吊销要把它一并清掉(与 Gitea 侧同规则)
+        state_store
+            .save_identity("custom-2", &Identity { login: "wang".into(), display_name: "王工".into() })
+            .unwrap();
         store
             .save(
                 "custom-2",
@@ -776,7 +898,7 @@ mod github_tests {
             )
             .unwrap();
 
-        let status = github_status(&reqwest::Client::new(), &server.uri(), &store, "custom-2")
+        let status = github_status(&reqwest::Client::new(), &server.uri(), &store, &state_store, "custom-2")
             .await
             .unwrap();
         assert!(!status.logged_in);
@@ -784,9 +906,13 @@ mod github_tests {
             store.load("custom-2").unwrap().is_none(),
             "被吊销的凭证应当场清掉,而不是每次查询都再撞一次 401"
         );
+        assert!(
+            !state_store.load_config().unwrap().value.identities.contains_key("custom-2"),
+            "令牌被吊销要连身份一并清掉"
+        );
 
         // 没有凭证:未登录,不发请求(没有 mock 命中断言,靠 wiremock 校验器兜底)
-        let status = github_status(&reqwest::Client::new(), &server.uri(), &store, "custom-9")
+        let status = github_status(&reqwest::Client::new(), &server.uri(), &store, &state_store, "custom-9")
             .await
             .unwrap();
         assert!(!status.logged_in);
@@ -843,10 +969,12 @@ mod github_tests {
             .await;
 
         let store = MemoryStore::default();
+        let (_tmp, state_store) = test_state_store();
         let user = github_login_token(
             &reqwest::Client::new(),
             &server.uri(),
             &store,
+            &state_store,
             registry::PLAZA_REGISTRY_ID,
             "ghp_plaza_token",
         )
@@ -859,5 +987,10 @@ mod github_tests {
             .unwrap()
             .expect("凭证应按 plaza 这个 registryId 落进凭证库——分享改动(share_source 的 GitHub 臂)读凭证同样按 registryId 查,这里存的这把钥匙就是它要读的那把,链路闭环");
         assert_eq!(saved.access_token, "ghp_plaza_token");
+        // 身份同样按 plaza 这个 registryId 落——v6 判定「是不是我分享的」按源分开比对
+        assert_eq!(
+            state_store.load_config().unwrap().value.identities[registry::PLAZA_REGISTRY_ID].login,
+            "wang"
+        );
     }
 }

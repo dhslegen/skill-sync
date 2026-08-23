@@ -24,6 +24,7 @@ use crate::core::agents::{AgentEnv, AgentRegistry};
 use crate::core::fsops::{self, OnOccupied};
 use crate::core::gitea::{ChangeFilesRequest, FileChange, GiteaClient, RepoRef, RepoSource};
 use crate::core::github::GithubClient;
+use crate::core::ownership::{self, Identity};
 use crate::core::skill_lock;
 use crate::core::skills::{parse_skill_md, sanitize_name};
 use crate::core::state::{self, SharedSkill, SkillSource, Store};
@@ -767,7 +768,6 @@ fn upsert_attribution(
     let Some(map) = authors.as_object_mut() else {
         return AttributionUpsert::Untouchable("authors 字段不是对象");
     };
-    let is_me = |name: Option<&str>| name.is_some_and(|n| aliases.contains(&n));
     match map.get_mut(dir_slug) {
         None => {
             map.insert(dir_slug.to_string(), json!({ "author": display }));
@@ -778,7 +778,9 @@ fn upsert_attribution(
             };
             match obj.get("author").and_then(|v| v.as_str()) {
                 None => return AttributionUpsert::Untouchable("该技能的归因条目缺 author"),
-                Some(author) if is_me(Some(author)) => return AttributionUpsert::Unchanged,
+                Some(author) if ownership::is_same_person(Some(author), aliases) => {
+                    return AttributionUpsert::Unchanged
+                }
                 Some(_) => {
                     let contributors = obj
                         .entry("contributors")
@@ -786,7 +788,7 @@ fn upsert_attribution(
                     let Some(arr) = contributors.as_array_mut() else {
                         return AttributionUpsert::Untouchable("contributors 不是数组");
                     };
-                    if arr.iter().any(|v| is_me(v.as_str())) {
+                    if arr.iter().any(|v| ownership::is_same_person(v.as_str(), aliases)) {
                         return AttributionUpsert::Unchanged;
                     }
                     arr.push(Value::String(display.to_string()));
@@ -829,10 +831,8 @@ async fn attribution_file_change(
         tracing::warn!("分享者身份没有可用的名字,本次跳过归因维护");
         return None;
     }
-    let mut aliases: Vec<&str> = vec![display.as_str()];
-    if !login.is_empty() && login != display {
-        aliases.push(login.as_str());
-    }
+    let identity = Identity { login: login.clone(), display_name: display.clone() };
+    let aliases: Vec<&str> = identity.aliases();
     let existing = match client.file_content(repo, AUTHORS_FILE).await {
         Ok(v) => v,
         Err(e) => {

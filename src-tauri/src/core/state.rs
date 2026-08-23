@@ -95,6 +95,12 @@ pub struct Config {
     /// 注册表会随版本新增 agent,新 agent 默认应当可用,白名单会把它们全关掉。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_agents: Vec<String>,
+    /// 登录身份,按 registryId 分开存(v6 任务 1,`core::ownership::relation` 的输入)。
+    /// 由 `session.rs` 在登录成功/查状态刷新时写入,退出登录时删除对应键——
+    /// 落盘而不是进程内状态,因为"技能是不是我分享的"这个判定要跨重启成立。
+    /// 加可选字段不升 `SCHEMA_VERSION`(先例见 `plaza_repos`/`projects`)。
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub identities: std::collections::BTreeMap<String, crate::core::ownership::Identity>,
 }
 
 /// 界面偏好(M2 任务 1 起落盘,此前在前端 localStorage)。
@@ -196,6 +202,7 @@ impl Default for Config {
             ui: None,
             last_seen_version: None,
             disabled_agents: Vec::new(),
+            identities: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -361,6 +368,27 @@ impl Store {
 
     pub fn save_state(&self, value: &State) -> Result<(), AppError> {
         save(&self.dir.join(STATE_FILE), value)
+    }
+
+    /// 登录成功(或查状态时刷新)后记一条身份(v6 任务 1,load-modify-save)。
+    pub fn save_identity(
+        &self,
+        registry_id: &str,
+        identity: &crate::core::ownership::Identity,
+    ) -> Result<(), AppError> {
+        let mut config = self.load_config()?.value;
+        config.identities.insert(registry_id.to_string(), identity.clone());
+        self.save_config(&config)
+    }
+
+    /// 退出登录(或续期/校验判定为未登录)时删掉对应身份记录。
+    /// 键本来就不在时不写盘——避免每次退出都无谓地 touch 文件。
+    pub fn remove_identity(&self, registry_id: &str) -> Result<(), AppError> {
+        let mut config = self.load_config()?.value;
+        if config.identities.remove(registry_id).is_some() {
+            self.save_config(&config)?;
+        }
+        Ok(())
     }
 }
 
@@ -998,5 +1026,71 @@ mod tests {
         // 落盘的键里确实带 plazaRepos,不是只在内存里存在
         let raw = std::fs::read_to_string(s.dir().join("config.json")).unwrap();
         assert!(raw.contains("plazaRepos"), "{raw}");
+    }
+
+    // ============================================================ identities(v6 任务 1)
+
+    /// 旧 config 没有 `identities`,必须读得出且落成空 map——与 `plazaRepos`/
+    /// `disabledAgents` 同一套护栏,加可选字段不该让老用户的文件读不出来。
+    #[test]
+    fn an_old_config_without_identities_reads_as_empty() {
+        let (_tmp, s) = store();
+        std::fs::create_dir_all(s.dir()).unwrap();
+        std::fs::write(
+            s.dir().join("config.json"),
+            r#"{"schemaVersion":2,"registries":[],"autoUpdate":{"skills":{"enabled":true,"intervalMinutes":5},"app":true}}"#,
+        )
+        .unwrap();
+
+        let loaded = s.load_config().unwrap();
+
+        assert!(matches!(loaded.access, Access::ReadWrite), "加可选字段不该降只读");
+        assert!(loaded.value.identities.is_empty());
+    }
+
+    // 空 map 不落盘出一个空对象(`skip_serializing_if` 生效)已由既有的
+    // `a_default_config_serializes_without_a_ui_key` 覆盖——它断言的是**完整键集合**,
+    // 新字段序列化出来这条测试就会先红,不必再抄一份同样的断言(CLAUDE.md 空转模式 1)。
+
+    /// `save_identity`/`remove_identity` 往返一致,且不动 config 其余部分。
+    #[test]
+    fn identities_round_trip_and_preserve_the_rest_of_the_config() {
+        let (_tmp, s) = store();
+        s.save_ui_prefs(&sample_prefs()).unwrap();
+
+        s.save_identity(
+            "company",
+            &crate::core::ownership::Identity {
+                login: "dhslegen".into(),
+                display_name: "赵文浩".into(),
+            },
+        )
+        .unwrap();
+        let back = s.load_config().unwrap().value;
+        assert_eq!(back.identities.len(), 1);
+        assert_eq!(back.identities["company"].login, "dhslegen");
+        assert_eq!(back.identities["company"].display_name, "赵文浩");
+        assert_eq!(back.ui, Some(sample_prefs()), "写身份不该动界面偏好");
+
+        let raw = std::fs::read_to_string(s.dir().join("config.json")).unwrap();
+        assert!(raw.contains("identities"), "{raw}");
+        assert!(raw.contains("displayName"), "{raw}");
+
+        s.remove_identity("company").unwrap();
+        let after_remove = s.load_config().unwrap().value;
+        assert!(!after_remove.identities.contains_key("company"));
+        assert_eq!(after_remove.ui, Some(sample_prefs()), "退出登录不该动界面偏好");
+    }
+
+    /// 删一个不存在的键是没有效果的成功,不该报错也不该 touch 文件。
+    #[test]
+    fn removing_an_absent_identity_is_a_harmless_no_op() {
+        let (_tmp, s) = store();
+        s.save_ui_prefs(&sample_prefs()).unwrap();
+        let before = std::fs::read_to_string(s.dir().join("config.json")).unwrap();
+
+        s.remove_identity("nobody-here").unwrap();
+
+        assert_eq!(std::fs::read_to_string(s.dir().join("config.json")).unwrap(), before);
     }
 }
