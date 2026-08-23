@@ -41,11 +41,14 @@ use crate::error::AppError;
 /// `docs/设计-v6-技能归属模型.md` §3「四本账去留」):技能与"我"的关系现在由
 /// `ownership::relation` 从技能库的 `authors.json` 现场判定,不再依赖这个标记。
 ///
-/// **这两个常量因此只剩"读"的意义**:`ORIGIN_ACQUIRED` 仍在 [`record`] 里写入
-/// (它标记"文件是本 app 装的"这件事本身没有过时,只是不再驱动"能不能取消认领"
-/// 这个已经不存在的动作);`ORIGIN_CLAIMED` 只在存量 `state.json`(旧版认领留下的)
-/// 与 `share::adopt_into_management`(分享直推后自动记账,语义仍是"文件是用户自己
-/// 放的、本 app 只记了账")里出现,不再有对应的用户动作会产生新的 claimed 记录。
+/// **两个值都还在写,只是没有任何判定再读它们**(v6 终审订正:原文写成
+/// "只剩读的意义",与紧随其后的两句自相矛盾——方向恰好反了):
+/// `ORIGIN_ACQUIRED` 由 [`record`] 写入(文件是本 app 装的),`ORIGIN_CLAIMED`
+/// 由 `share::adopt_into_management` 写入(文件是用户自己放的、本 app 只记了账),
+/// 存量 `state.json` 里还留着旧版认领写下的同名值。它们如今是**纯留痕**:
+/// 界面分区、能不能移除、能不能分享,一概不看这个字段。
+/// ⚠️ **别据此把它们删掉**——写进 `state.json` 的字段一旦停写,存量文件与新文件
+/// 的形状就分了叉,而它们的成本只是一个字符串。
 pub const ORIGIN_CLAIMED: &str = "claimed";
 pub const ORIGIN_ACQUIRED: &str = "acquired";
 

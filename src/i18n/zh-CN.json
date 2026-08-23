@@ -210,7 +210,7 @@
   "mine.update": "更新",
   "mine.updating": "正在更新…",
   "mine.badgeModified": "已改动",
-  "mine.badgeModifiedHint": "本地内容与获取时不同。分享功能开放后可以把改动分享到公司技能库。",
+  "mine.badgeModifiedHint": "本地内容与获取时不同。可以用「分享改动」把改动推回公司技能库。",
   "mine.sectionShared": "我分享的",
   "mine.sectionInstalled": "我安装的",
   "mine.stateSynced": "已同步",

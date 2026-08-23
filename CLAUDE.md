@@ -1513,26 +1513,39 @@ v6 的契约变更(技能归属模型):**删除** `skill_claim`/`skill_unclaim` 
   安装量仍没有(C5 预留,埋点服务落点未定)。
 - **UI-Demo 的分类 chip 换成了"全部/未安装/已安装"**:SKILL.md 里没有分类字段,
   硬造分类等于在界面上撒谎。要分类得技能库侧先约定 frontmatter 字段。
-- **「我的技能」有三档,`installed_list` 返回的不等于 `state.installed`**(M4 任务 6a)。
-  这一页的语义是"这台电脑上我拥有的技能",不是"本 app 记了账的东西":
-  1. 从技能库获取的(`state.installed`);
-  2. 别的工具装的、未认领的(判据是 `.skill-lock.json` 里有条目);
-  3. **本地技能**——canonical 下有 SKILL.md 的实体目录,前两档都不属于。
-     发现逻辑复用 `share::scan_candidates`(取 `in_canonical && origin == Local`),
-     **不另写扫描**;agent 目录里的不算(那些归分享页收编)。
-  第三档没有来源、没有关联记账,所以**更新 / 修复关联 / 分享改动 / 移除一概不摆**,
-  `hasUpdate` 也**显式判掉**(不靠"空 registryId 恰好对不上 index"碰运气)。
-  **`install.ts` 的 `refreshInstalled` 必须排除第 2、3 档**:混进那张 map,商店里的
-  同名技能会显示「已启用」——用户装的是自己那个,不是库里这个。
-- **认领是纯记账,取消认领也必须是纯记账**(M4 任务 6a):`claim` 全程只调一次
-  `save_state`,磁盘/npx 建的链接/lock 一个字节不动。在 `unclaim` 存在之前,认领后
-  唯一的退路是「移除」,而移除会解链 → 删本体 → **从 lock 删条目**——用户点一个
-  零副作用的动作,反悔时唯一的按钮会把技能从 npx skills 那边一并毁掉。
-  判据是 `InstalledSkill.origin`(`claimed`/`acquired`,serde default 不升 schemaVersion),
-  存量条目 fallback 到 `commit_sha.is_empty()`(已实证 `state.installed` 全仓只有两处
-  写入,只有 claim 留空 sha)。**保守方向:拿不准就当"获取来的"不许取消**。
-  比测试更硬的保障是签名——`unclaim(store, dir_slug)` 没有 `Installer` 也没有
-  `AgentEnv`,结构上拿不到 canonical 路径与 lock 落点,动不了磁盘。
+- **`installed_list` 返回的不等于 `state.installed`**(M4 任务 6a 立,v6 重写口径)。
+  这一页的语义是"这台电脑上我拥有的技能",不是"本 app 记了账的东西"。
+  ⚠️ **界面上的分区已换成「我分享的」/「我安装的」两区(判据是 `relation`,见上面
+  的归属模型);下面这三档说的是 `my_skills::build` 的数据来源,不是界面分区**
+  ——原文写的"三档 = 库里获取 / 别的工具装的未认领 / 本地技能"里,"未认领"这个
+  判据已随「纳入管理」一起撤销:
+  1. `state.installed` 里有记账、canonical 目录还在的;
+  2. canonical 下有 SKILL.md 的实体目录、但**没有 `state.installed` 记账**
+     (别的工具装的与本地新建的 v6 起不再区分)。发现逻辑复用
+     `share::scan_candidates`(取 `in_canonical`),**不另写扫描**;agent 目录里的
+     不算(那些归分享页收编);
+  3. 只在技能库索引里、这台电脑没有本体的——**只有 `relation == Shared` 才摆**
+     (换电脑 / 数据丢 / 绕过 app 直推)。
+  第 2、3 档没有记账基线,所以**修复关联 / 移除一概不摆**(`skill_repair` /
+  `skill_remove` 都要求记账存在,摆出来就是必然报错的按钮),`hasUpdate` 也
+  **显式判掉**(不靠"空 registryId 恰好对不上 index"碰运气)。
+  🔴 **`install.ts` 的 `refreshInstalled` 必须只收第 1 档**(这条规则本身没变,
+  v6 终审修复时被破坏过一次又补回来了):混进另外两档,商店里的同名技能会显示
+  **禁用的**「已启用」——用户装的是自己那个,不是库里这个,而且因为按钮是禁用的,
+  他永远没法从商店获取库里那一版。判据是 `contentHash !== ""`(记账基线,
+  另外两档都留空),**单条成立,不要再叠 `relation`/`localPresent`**
+  ——那两条判的是同一批行,叠上去就是空转模式 ①,多余的闸会吞掉注入信号。
+- ⚠️ **「认领 / 取消认领」整条链路已随 v6 撤销**(`skill_claim`/`skill_unclaim`
+  两条 IPC、`core::acquire::claim`/`unclaim`、`InstalledSkill.origin` 的
+  `claimed` 语义与界面上的「纳入管理 / 移出管理」全部删除)——归属改由技能库的
+  `authors.json` 判定,见上面的归属模型。这里只留一条**仍然有效**的教训:
+  **一个零副作用的动作,反悔时不能只剩一条会毁数据的退路**。当年 `unclaim`
+  存在之前,认领后唯一的退路是「移除」,而移除会解链 → 删本体 → 从 lock 删条目,
+  连 npx skills 那边一并毁掉。
+  ⚠️ 存量 `state.json` 里仍可能留着 `origin: "claimed"` 的条目和空 `commit_sha`
+  ——**别拿 `commit_sha.is_empty()` 当"有没有记账"的判据**(当年只有 claim 留空 sha,
+  那些行的 `content_hash` 是有值的、remove/repair 对它们照常有效)。要判"有没有
+  `state.installed` 记账"用 `content_hash`,前端同理用 `contentHash !== ""`。
 - **本地技能变更的三级刷新**(M4 任务 6c):
   1. 窗口重获焦点(`hooks/useLocalRefresh.ts`,只刷当前页,用 ref 存页面避免重复注册);
   2. 切页(页面组件挂载时 load,有测试钉住,不再是"靠组件重挂"的巧合);
@@ -1629,8 +1642,10 @@ M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重�
 
 **功能缺口**
 - **存量 lock 条目仍是旧形状**(M6 任务 6 顺带发现,不打算修):`sourceUrl` 的写入已
-  改成完整 URL,但 v0.3.0 之前装的技能,lock 里留的还是 `"owner/repo"`。它们的
-  「纳入管理」只能退回按 owner/repo 唯一匹配那条弱判据(同源判据用不上)。
+  改成完整 URL,但 v0.3.0 之前装的技能,lock 里留的还是 `"owner/repo"`。
+  ⚠️ 当年记的后果("「纳入管理」只能退回按 owner/repo 唯一匹配那条弱判据")
+  **已随 v6 撤销的纳入管理一起作废**;`resolve_binding` 仍在用同一份判据
+  (更新去处、`source_state`),旧形状条目在那里同样只能走弱判据。
   重新获取一次就会被覆写成新形状,不值得为它写迁移。
 - **`.DS_Store` 会参与 `dir_content_hash`**(M4 任务 6c 顺带发现,未修):
   `fsops` 的排除名单只有 `metadata.json` / `.git` / `__pycache__` / `__pypackages__`。
@@ -1647,9 +1662,11 @@ M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重�
   不是向导造出来的。补它需要一处能记链接的账:`link_agents` 硬要 `state.installed`
   有条目,而把无来源的技能塞进 `installed` 会让 `acquire::precheck` 撒谎
   (空 owner 必然不等于商店的 owner → 同名技能的卡片说「装自另一个技能库」)。
-  真要做,得加一档 `Precheck` + 一个 `localOnly` 标记 + 放宽 `share::scan_candidates`
-  的排除条件 + 审一遍 scheduler / share_installed / installed_repo_key / remove / repair,
+  真要做,得加一档 `Precheck` + 放宽 `share::scan_candidates` 的排除条件 +
+  审一遍 scheduler / share_installed / installed_repo_key / remove / repair,
   是 M4 任务 1 那个量级,不该塞进脚手架任务里。
+  (原文这里还写着"加一个 `localOnly` 标记"——那个 DTO 字段已随 v6 删除,
+  同一件事现在由 `relation == draft` 表达。)
 - **Windows 外观打磨决定不做**(M2 任务 6 的判断):UI 规范 §75 要 tauri-plugin-decorum,
   但没有 Windows 真机,装上等于把能用的系统窗口装饰换成无法目视验证的自绘控件——画不出
   窗口控制的话用户连关窗都做不到,而关窗现在还接着"缩到托盘"。等有真机再做,连同 vibrancy。
