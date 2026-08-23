@@ -49,3 +49,48 @@ describe("InstallButton 状态机", () => {
     }
   });
 });
+
+describe("mine* 四档(v6 任务 5:技能库里记的分享者是我)", () => {
+  // 四档各一条:文案对、可点性(disabled/terminal)对。`mineSynced` 是这四档里
+  // 唯一的终态(与 `installed` 同款,不接受点击);其余三档都要能点。
+
+  it("mineSynced:文案「已同步」,终态不接受点击", async () => {
+    const onClick = vi.fn();
+    render(<InstallButton state="mineSynced" onClick={onClick} />);
+    const button = screen.getByRole("button");
+    expect(button).toHaveTextContent("已同步");
+    expect(button).toBeDisabled();
+    await userEvent.click(button);
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("minePull:文案「取回」,可点", async () => {
+    const onClick = vi.fn();
+    render(<InstallButton state="minePull" onClick={onClick} />);
+    const button = screen.getByRole("button");
+    expect(button).toHaveTextContent("取回");
+    expect(button).not.toBeDisabled();
+    await userEvent.click(button);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("mineShareUpdate:文案「分享更新」,可点", async () => {
+    const onClick = vi.fn();
+    render(<InstallButton state="mineShareUpdate" onClick={onClick} />);
+    const button = screen.getByRole("button");
+    expect(button).toHaveTextContent("分享更新");
+    expect(button).not.toBeDisabled();
+    await userEvent.click(button);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("mineBoth:与 minePull 共用「取回」文案(两边都变了,同样先走「以本地为准」的冲突弹窗),可点", async () => {
+    const onClick = vi.fn();
+    render(<InstallButton state="mineBoth" onClick={onClick} />);
+    const button = screen.getByRole("button");
+    expect(button).toHaveTextContent("取回");
+    expect(button).not.toBeDisabled();
+    await userEvent.click(button);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+});

@@ -31,6 +31,12 @@ import {
   type ShareMode,
 } from "@/lib/ipc";
 import { useRegistries } from "@/store/registries";
+// 🔴 与 `share.ts` 的循环导入(它反过来 `import { useInstall } from "@/store/install"`,
+// 见 `keepLocalAndShareMine` 需要在没有 `state.installed` 记账时跳转分享页):
+// 现在运行时没事、测试也全绿,前提是**这两个 store 只在函数体内使用,绝不在
+// 模块顶层解构**(`import { useShare } from ...` 之后直接 `const { load } = useShare`
+// 那种写法会在其中一侧的模块求值时读到还没初始化完的绑定)。不要重构去消掉这个环
+// (牵动一片),但往这两个文件里加新引用前,先确认新代码也遵守"只在函数体内用"这条。
 import { useShare } from "@/store/share";
 import { useUi } from "@/store/ui";
 

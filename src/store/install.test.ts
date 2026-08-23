@@ -269,6 +269,45 @@ describe("获取流程状态机", () => {
       expect(useInstall.getState().shareResult).toEqual({ mode: "pushed" });
     });
 
+    it("提交与检测之间被抢先(kind:remoteChanged)→ 自动带 forceReview 重试一次,不会无限循环", async () => {
+      // 真实竞态:点「以本地为准」时判定还是"没变"(remoteChanged:false,所以第一次
+      // 不带 forceReview),但提交前的这一小段时间里被别人抢先分享了一次。
+      // 用户已经表达过"以本地为准"的意图,不必再问一遍,直接带 forceReview 重试。
+      let shareCallCount = 0;
+      invoke.mockImplementation(async (cmd) => {
+        if (cmd === "agents_detected") return AGENTS;
+        if (cmd === "installed_list") return [];
+        if (cmd === "skill_share_changes") {
+          shareCallCount += 1;
+          return shareCallCount === 1
+            ? { kind: "remoteChanged", historyUrl: null }
+            : { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null };
+        }
+        if (cmd === "skill_install")
+          return { outcome: "kept", remoteChanged: false } satisfies AcquireOutcome;
+        throw new Error(`unexpected ${cmd}`);
+      });
+
+      await useInstall.getState().begin("weekly-report");
+      await useInstall.getState().keepLocalAndShareMine();
+
+      const shareCalls = invoke.mock.calls.filter(([cmd]) => cmd === "skill_share_changes");
+      // 只重试一次:一共两次调用,不是无限循环
+      expect(shareCalls).toHaveLength(2);
+      // 第一次是 kept.remoteChanged 决定的(这里为 false),不带 forceReview
+      expect(shareCalls[0][1].args).toEqual({
+        dirSlug: "weekly-report",
+        registryId: undefined,
+      });
+      // 第二次(重试)必须带 forceReview:true——正面断言完整参数对象
+      expect(shareCalls[1][1].args).toEqual({
+        dirSlug: "weekly-report",
+        registryId: undefined,
+        forceReview: true,
+      });
+      expect(useInstall.getState().shareResult).toEqual({ mode: "pushed" });
+    });
+
     it("core 什么都没写:report 留空,localKept 不因此变 true", async () => {
       invoke.mockImplementation(async (cmd) => {
         if (cmd === "agents_detected") return AGENTS;

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { InstallPanel } from "@/components/InstallPanel";
 import { useInstall } from "@/store/install";
 import { useProjects } from "@/store/project";
+import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
 
 const invoke = vi.fn();
@@ -436,5 +437,97 @@ describe("本次安装结果是临时态", () => {
     render(<InstallPanel dirSlug="weekly-report" />);
 
     expect(useInstall.getState().phase).toBe("running");
+  });
+});
+
+describe("mine* 徽标抑制(v6 任务 5)", () => {
+  // mine* 四档已经用按钮文案把"哪边有改动"说清楚了(取回/分享更新),
+  // 不需要再叠一个「你修改过这个技能」徽标说同一件事——`IdleFooter` 的判据是
+  // `record?.localModified && !state.startsWith("mine")`。
+
+  const baseIndex = {
+    registryId: "company",
+    owner: "skills",
+    repo: "skills",
+    branch: "main",
+    commitSha: "x",
+    committedAt: "2026-01-01T00:00:00Z",
+    fetchedAt: 0,
+    skipped: [],
+    fromCache: false,
+    offline: false,
+    curated: [],
+  };
+
+  it("mine* 档(本地改过)不显示「你修改过这个技能」徽标 —— 按钮文案已经说清楚了", () => {
+    useSession.setState({
+      status: "signedIn",
+      user: { login: "wenhao", displayName: "赵文昊", avatarUrl: "" },
+    });
+    useStoreIndex.setState({
+      index: {
+        ...baseIndex,
+        skills: [
+          {
+            name: "周报生成",
+            dirSlug: "weekly-report",
+            description: "",
+            path: "weekly-report",
+            hasScripts: false,
+            fileCount: 1,
+            contentHash: "sha:same",
+            tags: [],
+            author: "赵文昊",
+          },
+        ],
+      } as never,
+      activeRegistry: "company",
+      activeRepo: "skills/skills",
+    });
+    useInstall.setState({
+      installed: new Map([
+        ["weekly-report", { dirSlug: "weekly-report", contentHash: "sha:same", localModified: true } as never],
+      ]),
+    });
+
+    render(<InstallPanel dirSlug="weekly-report" />);
+
+    // 先确认状态真的落进了 mine* 档(分享更新),不是巧合般"没显示出来"
+    expect(screen.getByRole("button", { name: /分享更新/ })).toBeTruthy();
+    expect(screen.queryByText("你修改过这个技能")).toBeNull();
+  });
+
+  it("对照组:非 mine 档(作者不是我)本地改过时,徽标照常出现", () => {
+    useSession.setState({ status: "signedOut", user: null });
+    useStoreIndex.setState({
+      index: {
+        ...baseIndex,
+        skills: [
+          {
+            name: "周报生成",
+            dirSlug: "weekly-report",
+            description: "",
+            path: "weekly-report",
+            hasScripts: false,
+            fileCount: 1,
+            contentHash: "sha:same",
+            tags: [],
+            author: null,
+          },
+        ],
+      } as never,
+      activeRegistry: "company",
+      activeRepo: "skills/skills",
+    });
+    useInstall.setState({
+      installed: new Map([
+        ["weekly-report", { dirSlug: "weekly-report", contentHash: "sha:same", localModified: true } as never],
+      ]),
+    });
+
+    render(<InstallPanel dirSlug="weekly-report" />);
+
+    expect(screen.getByRole("button", { name: /已启用/ })).toBeTruthy();
+    expect(screen.getByText("你修改过这个技能")).toBeTruthy();
   });
 });

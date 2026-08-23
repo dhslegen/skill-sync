@@ -679,6 +679,46 @@ describe("DetailPanel(技能广场详情态)", () => {
     expect(screen.getByRole("button", { name: "在浏览器中查看" })).toBeInTheDocument();
   });
 
+  it("广场详情态不出「这是我分享的」入口,哪怕已登录且 registryId 恰好等于内建源", () => {
+    // `canClaimAttribution = !plaza && registryId === BUILTIN_REGISTRY_ID && signedIn`
+    // ——这条用例专门孤立 `!plaza` 这一道闸:把另外两个条件都摆成"本该放行"
+    // (已登录 + registryId 故意设成 BUILTIN_REGISTRY_ID),只有 `!plaza` 还拦着。
+    // 广场技能是 GitHub 源,`claim_attribution` 只有 Gitea 型的内建库支持,
+    // 摆出来就是一个必然报错的按钮。
+    useSession.setState({
+      status: "signedIn",
+      user: { login: "zhang-san", displayName: "张三", avatarUrl: "" },
+    });
+    useStoreIndex.setState({
+      index: {
+        registryId: "company",
+        owner: "skills",
+        repo: "skills",
+        branch: "main",
+        commitSha: "x",
+        committedAt: "2026-01-01T00:00:00Z",
+        fetchedAt: 0,
+        skills: [],
+        skipped: [],
+        fromCache: false,
+        offline: false,
+        curated: [],
+      } as never,
+    });
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailSlug: "vercel-labs/skills/react-best-practices",
+      detailSkills: [plazaSkill({ attribution: null })],
+      detailStatus: "ready",
+    });
+    render(<DetailPanel />);
+
+    expect(screen.getByRole("heading", { name: "React 最佳实践" })).toBeInTheDocument();
+    expect(screen.queryByText("作者未登记")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "这是我分享的" })).not.toBeInTheDocument();
+  });
+
   it("点「在浏览器中查看」拼 skills.sh 的 slug 传给 open_library_url", async () => {
     usePlaza.setState({
       detailOwnerRepo: "vercel-labs/skills",

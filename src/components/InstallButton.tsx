@@ -51,7 +51,10 @@ export function InstallButton({
             ? t("mine.stateSynced")
             : // `mineBoth` 用「取回」而不是「分享更新」:与「我的技能」页
               // `both`/`remoteAhead`/`notHere` 三档共用一颗按钮同一个理由
-              // (`store/my-skills.ts` 的 `pull` doc)——点下去都是走 `beginUpdate`,
+              // (`store/my-skills.ts` 的 `pull` doc)——点下去交给调用方的
+              // `onClick`(这颗按钮在 `InstallPanel` 里走的是 `begin`/
+              // `beginFromPlaza`,不是 `beginUpdate`;`beginUpdate` 是「我的
+              // 技能」页那颗按钮走的路,这里只是借它的理由,不是同一个函数),
               // core 的 precheck 自然会把"本地也改过"折进 `ConflictDialog`,
               // 不需要按钮文案越俎代庖先说一遍。
               state === "minePull" || state === "mineBoth"
