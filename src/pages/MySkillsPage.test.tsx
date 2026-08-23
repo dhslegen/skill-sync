@@ -668,6 +668,43 @@ describe("「我分享的」区块 · 七状态机(v6 任务 4)", () => {
     });
   });
 
+  // 🔴 存量「认领」条目的形状:旧版认领写记账时 commitSha 留空、contentHash 有值。
+  // 记账真实存在,`skill_repair`/`skill_remove` 对它们完全有效——判据若按 commitSha,
+  // 这类行的「修复关联」「移除」会永久不摆,升级上来的用户想删都删不掉。
+  // (用户明确反对过的正是这个形状:把合法操作撤掉、做成死路。)
+  it("存量认领条目(commitSha 空、contentHash 有值)照常摆「移除」与「修复」", async () => {
+    seedIndex();
+    seedIpc([
+      view({
+        relation: "shared",
+        commitSha: "",
+        contentHash: "sha256:mine",
+        links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "broken" }],
+      }),
+    ]);
+    render(<MySkillsPage />);
+
+    expect(await screen.findByRole("button", { name: "移除" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "修复" })).toBeInTheDocument();
+  });
+
+  it("真的没有记账时(contentHash 也空)才撤掉这两个动作 —— 上一条的对照组", async () => {
+    seedIndex();
+    seedIpc([
+      view({
+        relation: "shared",
+        commitSha: "",
+        contentHash: "",
+        links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "broken" }],
+      }),
+    ]);
+    render(<MySkillsPage />);
+
+    await screen.findByText(/周报生成|weekly-report/);
+    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "修复" })).not.toBeInTheDocument();
+  });
+
   it("有来源标签时展示「来源 owner/repo」", async () => {
     seedIpc([view({ relation: "shared", sourceLabel: "vercel-labs/skills" })]);
     render(<MySkillsPage />);

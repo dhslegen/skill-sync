@@ -507,7 +507,7 @@ tags 当时侥幸没出问题,是因为支持它的版本先到了用户机器�
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust **738** + 前端 **641** 测试通过(2026-08-24 v6 整分支终审修复收尾时串行实测,
+- 本机:Rust **739** + 前端 **643** 测试通过(2026-08-24 v6 整分支终审修复第二轮收尾时串行实测,
   五道闸全绿,clippy **--all-targets** / eslint / tsc 干净)。
   ⚠️ **这个 Rust 数字是「docker 起着」的口径**:`gitea_live` 那两条真跑了
   (docker 停着时它们报 502 假红,见「测试要求」);而受 `SKILLSYNC_PLAZA_LIVE`

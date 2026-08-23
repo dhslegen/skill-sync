@@ -241,8 +241,12 @@ const HEALTH_LABEL: Record<Exclude<LinkHealth, "healthy">, MessageKey> = {
  * 替代了此前给作者自己技能显示的「已改动」徽标——`draft`/`both`/`localAhead`
  * 的状态文案已经把"哪边有改动"说清楚了,不需要再叠一个徽标说同一件事。
  *
- * `hasRecord`(`commitSha !== ""`)是判断"这一行有没有 `state.installed` 真实
- * 记账"的唯一信号——只有这样的行才谈得上「修复」「移除」(`skill_repair`/
+ * `hasRecord`(`contentHash !== ""`)是判断"这一行有没有 `state.installed` 真实
+ * 记账"的唯一信号(🔴 **判据是 `contentHash` 不是 `commitSha`**:存量 `state.json`
+ * 里旧版「认领」写下的条目 `commit_sha` 为空、`content_hash` 却有值,按 commitSha
+ * 判会把它们误判成"没有记账"——而它们的记账真实存在,「修复关联」「移除」对它们
+ * 完全有效。把有效的动作撤掉就是做成死路,与 v6 终审修复里 `install.ts` 那条
+ * 用的是同一把尺子)——只有这样的行才谈得上「修复」「移除」(`skill_repair`/
  * `skill_remove` 都要求记账存在,没有就报 `FS_NOT_INSTALLED`)。**`noBaseline`
  * 恰恰就是 `hasRecord` 为假的那一档**(没有记账就没有 `contentHash` 基线),
  * 所以它与 `draft` 一样只能走「修复」「移除」以外的路——主动作是「分享更新」,
@@ -277,7 +281,7 @@ function SharedRow({
   onRemove: () => void;
 }) {
   const state = sharedState(skill, remoteChanged);
-  const hasRecord = skill.commitSha !== "";
+  const hasRecord = skill.contentHash !== "";
   const issues = skill.links.filter((l) => l.health !== "healthy");
 
   return (
@@ -449,8 +453,8 @@ function Row({
   onRemove: () => void;
 }) {
   const issues = skill.links.filter((l) => l.health !== "healthy");
-  // 与 SharedRow 同一个概念:这一行有没有 `state.installed` 记账。判据用
-  // `contentHash`(记账基线)——`installed_list` 的另外两档把它留空,只有真正
+  // 与 SharedRow 同一个概念、**同一把尺子**:这一行有没有 `state.installed` 记账。
+  // 判据用 `contentHash`(记账基线)——`installed_list` 的另外两档把它留空,只有真正
   // 有记账的第一档填得出真值。`skill_remove` 一进门就要求记账存在,没有记账
   // 却摆出「移除」,点下去先弹一句"将从所有 AI 工具解除关联,并删除本地技能文件",
   // 然后报 FS_NOT_INSTALLED——不摆比解释好。

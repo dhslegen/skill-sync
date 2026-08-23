@@ -417,6 +417,43 @@ async fn mount_commit_ok(server: &MockServer) {
         .await;
 }
 
+/// 往 `("company", skills/skills)` 的索引缓存里写一条带作者的技能。
+/// 落点必须与 `share::share()` 自己算出来的完全一致(`store::cache_path` 同一个函数)
+/// ——否则这条用例测的就不是胶水层,而是"缓存读不到时退回 state.shared"那条路。
+fn write_index_cache_with_author(c: &Ctx, dir_slug: &str, author: &str) {
+    use skillsync_lib::core::store as index_store;
+    let repo = repo_ref();
+    let path = index_store::cache_path(c.store.dir(), "company", &repo);
+    let index = index_store::StoreIndex {
+        schema_version: index_store::INDEX_SCHEMA_VERSION,
+        registry_id: "company".into(),
+        owner: repo.owner.clone(),
+        repo: repo.repo.clone(),
+        branch: repo.branch.clone(),
+        commit_sha: "head1".into(),
+        committed_at: NOW.into(),
+        fetched_at: 0,
+        skills: vec![index_store::IndexedSkill {
+            name: dir_slug.into(),
+            dir_slug: dir_slug.into(),
+            description: String::new(),
+            path: format!("skills/{dir_slug}"),
+            skill_md: String::new(),
+            files: Vec::new(),
+            has_scripts: false,
+            content_hash: String::new(),
+            tags: Vec::new(),
+            attribution: Some(index_store::SkillAttribution {
+                author: author.into(),
+                contributors: Vec::new(),
+            }),
+        }],
+        skipped: Vec::new(),
+        curated: Vec::new(),
+    };
+    index_store::save_cache(&path, &index).unwrap();
+}
+
 fn share_req<'a>(repo: &'a RepoRef, source: &'a Path, name: &'a str) -> share::ShareRequest<'a> {
     share::ShareRequest {
         registry_id: "company",
@@ -930,6 +967,80 @@ async fn taken_without_confirmation_sends_nothing() {
     let reqs = server.received_requests().await.unwrap();
     assert!(reqs.iter().all(|r| r.method.as_str() != "POST"), "未确认就发了提交");
     assert!(state_of(&c).shared.is_empty(), "没分享成还记了账");
+}
+
+/// 🔴 **场景 3 的真实执行路径**(v6 终审第二轮补):裸 `precheck()` 那两条用例是
+/// 手工传参的,而用户真正走的是 `share::share()` —— 由它自己从 `config.identities`
+/// 取身份、从**目标库**的索引缓存取作者,再传给 `precheck`。这段胶水此前
+/// **没有任何测试正面走过**:参数取错字段(registryId 取成别的、dir_slug 取成
+/// share 之外的字段)现有测试矩阵一条都抓不到,而它服务的正是用户点名的第三个场景。
+///
+/// 形状与 `taken_without_confirmation_sends_nothing` 完全相同(远端已有同名技能、
+/// 本机 `state.shared` 空、`overwrite = false`),**唯一的差别是这台机器上有身份、
+/// 库里记的作者是我** —— 那一条判 `Taken` 停在 `NeedsDecision`,这一条必须判 `Mine`
+/// 并直接提交。两条互为对照组。
+#[tokio::test]
+async fn share_reads_identity_and_library_author_itself_so_the_author_is_never_a_stranger() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "我的笔记", "d");
+
+    // 这台机器上的身份(登录那一刻落的盘)+ 目标库索引缓存里记的作者 = 同一个人。
+    // 两者都由 share() 自己去取,测试只负责把它们放到真实位置上。
+    let mut config = skillsync_lib::core::state::Config::default();
+    config.identities.insert(
+        "company".into(),
+        Identity { login: "zhaowh".into(), display_name: "赵文浩".into() },
+    );
+    c.store.save_config(&config).unwrap();
+    write_index_cache_with_author(&c, "my-notes", "赵文浩");
+
+    assert!(state_of(&c).shared.is_empty(), "场景 3 的前提:本机一条分享记账都没有");
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", true).await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/repos/skills/skills/branches/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "commit": { "id": "head1", "timestamp": "2026-07-31T08:00:00Z" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/api/v1/repos/skills/skills/git/trees/.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "tree": [{ "path": "skills/my-notes/SKILL.md", "sha": "oldsha", "type": "blob" }],
+            "truncated": false
+        })))
+        .mount(&server)
+        .await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    // overwrite 保持 false:判成 Taken 就会停在 NeedsDecision、一个 POST 都不发
+    let outcome = share::share(
+        &share::ShareClient::Gitea(&client),
+        &c.registry,
+        &env,
+        &c.store,
+        share_req(&repo, &dir, "my-notes"),
+        NOW,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(outcome, ShareOutcome::Shared { .. }),
+        "库里记的作者是我,share() 就该按「更新我分享的技能」直接提交,而不是弹三选:{outcome:?}",
+    );
+    // 再钉一层:提交信息必须是「更新技能」——`Fresh` 走的是「新增技能」,
+    // 只断言 Shared 分不出这两档(远端明明已有同名技能)。
+    let reqs = server.received_requests().await.unwrap();
+    let posted: Vec<_> = reqs.iter().filter(|r| r.method.as_str() == "POST").collect();
+    let body: serde_json::Value = serde_json::from_slice(&posted[0].body).unwrap();
+    assert_eq!(body["message"], "更新技能:我的笔记");
 }
 
 #[tokio::test]
