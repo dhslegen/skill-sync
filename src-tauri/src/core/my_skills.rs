@@ -93,13 +93,17 @@ fn all_repo_refs(builtin: &registry::BuiltinSource, config: &state::Config) -> V
     out
 }
 
-/// 合并全部已配置库的索引缓存,建一份 `dir_slug → (registry_id, 作者)` 的表。
+/// 合并全部已配置库的索引缓存,建一份 `dir_slug → LibraryEntry` 的表。
 ///
-/// `installed_list` 与 `share::scan_candidates` 共用同一份"库里有没有这个技能、
-/// 作者是谁"的真相,不各自重新解析索引——两份实现迟早漂移,正是本项目记录的
-/// 空转测试模式 #1。只记"第一次命中"的库(见 [`ownership::LibraryAttribution`]
+/// `my_skills::build` 与 `share::scan_candidates` 共用同一份"库里有没有这个技能、
+/// 是哪个库、作者是谁"的真相,不各自重新解析索引——两份实现迟早漂移,正是本项目
+/// 记录的空转测试模式 #1。只记"第一次命中"的库(见 [`ownership::LibraryAttribution`]
 /// 文档),索引缓存没有(未取过、已过期不要紧)则该 dir_slug 视作"不在库里",
 /// 由调用方按 [`ownership::relation`] 的规则退化处理。
+///
+/// `owner`/`repo` 必须跟着 `registry_id` 一起存(修复轮 1):第三档(只在库里、
+/// 本地没有本体)靠这份表填 `InstalledRow::source_owner/source_repo`,那是「取回」
+/// 这个动作能不能发出正确请求的前提,不是展示边角料。
 pub fn library_attribution(
     store: &Store,
     builtin: &registry::BuiltinSource,
@@ -112,8 +116,11 @@ pub fn library_attribution(
             continue;
         };
         for skill in &index.skills {
-            map.entry(skill.dir_slug.clone()).or_insert_with(|| {
-                (registry_id.clone(), skill.attribution.as_ref().map(|a| a.author.clone()))
+            map.entry(skill.dir_slug.clone()).or_insert_with(|| ownership::LibraryEntry {
+                registry_id: registry_id.clone(),
+                owner: repo.owner.clone(),
+                repo: repo.repo.clone(),
+                author: skill.attribution.as_ref().map(|a| a.author.clone()),
             });
         }
     }
@@ -291,12 +298,19 @@ pub fn build(
     // (换电脑 / app 数据丢 / 绕过 app 直推 git,见设计文档「不依赖本地账本」)。
     // 未登录或作者不是我时 relation 会退化成 installed,此时**不摆**——
     // 一个既不在本地、又不是我分享的技能出现在「我的技能」里没有道理。
-    for (dir_slug, (registry_id, author)) in &library {
+    //
+    // 🔴 `source_owner`/`source_repo` 必须填库坐标的真实值,不能留空(修复轮 1)。
+    // 这一档存在的唯一理由就是"换电脑/数据丢"场景,主动作是「取回」——取回要调
+    // `skill_acquire`,缺坐标不会报错,是**装进来一个同名但完全不同的技能**
+    // (`CLAUDE.md`「一源多仓」的既有教训)。`source_label` 仍然固定 `None`:
+    // 那是"这台电脑上从哪装来的"个人历史,这一档从没装过,填了是假话——
+    // 坐标(给取回用)与展示标签(给人看的历史)是两件事,不能因为都叫"来源"就合并。
+    for (dir_slug, entry) in &library {
         if rows.iter().any(|v| &v.dir_slug == dir_slug) {
             continue; // 已经在上面两档里出现过(本地有记账或有本体)
         }
-        let identity = config.identities.get(registry_id);
-        let relation = ownership::relation(identity, author.as_deref(), true, false);
+        let identity = config.identities.get(&entry.registry_id);
+        let relation = ownership::relation(identity, entry.author.as_deref(), true, false);
         if relation != ownership::Relation::Shared {
             continue;
         }
@@ -308,9 +322,9 @@ pub fn build(
             installed_at: String::new(),
             updated_at: String::new(),
             local_modified: false,
-            source_owner: String::new(),
-            source_repo: String::new(),
-            registry_id: registry_id.clone(),
+            source_owner: entry.owner.clone(),
+            source_repo: entry.repo.clone(),
+            registry_id: entry.registry_id.clone(),
             source_removed: false,
             library_removed: false,
             relation,

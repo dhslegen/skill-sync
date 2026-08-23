@@ -14,21 +14,38 @@
 //! (按 registryId 分开存,见 `state::Config`),由 `session.rs` 在登录/退出/查状态
 //! 三处维护。
 //!
-//! [`LibraryAttribution`] 是 `installed_list`/`share::scan_candidates`(v6 任务 2)
-//! 共用的"库里有没有这个技能、作者是谁"合并表:`dir_slug → (registry_id, author)`。
-//! 由 `commands.rs` 从全部已配置库的索引缓存里合并而来(缓存是派生数据,详情面板
-//! 不联网承诺不受影响),两处调用方不必各自重新解析索引。
+//! [`LibraryAttribution`] 是 `my_skills::build`/`share::scan_candidates`(v6 任务 2)
+//! 共用的"库里有没有这个技能、是哪个库、作者是谁"合并表:`dir_slug → LibraryEntry`。
+//! 由调用方从全部已配置库的索引缓存里合并而来(缓存是派生数据,详情面板
+//! 不联网承诺不受影响),各处不必各自重新解析索引。
+//!
+//! **`owner`/`repo` 不是展示用的边角料,是「取回」这个动作能不能发生的前提**
+//! (v6 任务 2 修复轮 1):"只在库里、本地没有本体"这一档唯一的存在理由就是
+//! "换电脑 / app 数据丢 / 绕过 app 直推 git"——那一行的动作是「取回」,取回要调
+//! `skill_acquire`,而获取**必须带库坐标**(`CLAUDE.md`「一源多仓」:更新与回推
+//! 缺省会打到主仓,后果不是报错,是装进来一个同名但完全不同的技能)。只存
+//! `registry_id` 不够,`owner`/`repo` 必须跟着存下来。
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// `dir_slug → (它所在的库的 registry_id, 库里记的作者)`。库里没有这个技能 = 不在表里。
+/// 一个 `dir_slug` 在某个已配置库里的落点:它属于哪个库(`registry_id` +
+/// `owner`/`repo`),以及库里记的作者。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryEntry {
+    pub registry_id: String,
+    pub owner: String,
+    pub repo: String,
+    pub author: Option<String>,
+}
+
+/// `dir_slug → LibraryEntry`。库里没有这个技能 = 不在表里。
 ///
 /// 只记"合并后第一次命中"的那个库——多个库都有同名 `dir_slug` 时,判给哪个库都是猜,
 /// 与 `resolve_binding_of` "唯一命中才绑"同一种保守姿态(不同的是这里没有"绑不上就不管"
 /// 的退路,只能挑一个;实际部署里技能库之间几乎不会撞目录名)。
-pub type LibraryAttribution = HashMap<String, (String, Option<String>)>;
+pub type LibraryAttribution = HashMap<String, LibraryEntry>;
 
 /// 登录身份的最小表示:一个技能库账号的登录名 + 展示名。
 ///

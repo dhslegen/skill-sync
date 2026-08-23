@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use skillsync_lib::core::agents::{AgentEnv, AgentRegistry};
 use skillsync_lib::core::fsops;
 use skillsync_lib::core::gitea::{GiteaClient, RepoRef};
+use skillsync_lib::core::ownership::{Identity, LibraryEntry, Relation};
 use skillsync_lib::core::share::{self, CandidateOrigin, ShareMode, ShareOutcome, SharePrecheck};
 use skillsync_lib::core::state::{InstalledSkill, LinkRecord, SharedSkill, SkillSource, Store};
 use wiremock::matchers::{body_partial_json, body_string_contains, method, path, path_regex};
@@ -131,6 +132,49 @@ fn skills_installed_by_this_app_are_excluded() {
 
     let found = share::scan_candidates(&c.registry, &env, &state, &Default::default(), &Default::default()).unwrap();
     assert!(found.is_empty(), "本 app 安装的不该出现在分享列表: {found:?}");
+}
+
+/// `ShareCandidate.relation` 直接断言(修复轮 1,`commands::share_candidates` 这条
+/// IPC 的返回值此前没有任何测试走过——只被 `my_skills.rs` 间接覆盖过 relation 判定,
+/// 但那条路走的是另一个函数(`InstalledRow`),`ShareCandidate` 自己的 relation
+/// 字段从未被正面断言过)。库里记的作者是我 → Shared;换一个不是我的人 → Installed。
+#[test]
+fn candidate_relation_reflects_library_attribution() {
+    let (c, env) = ctx();
+    write_skill(&canonical(&c).join("mine"), "我的技能", "d");
+    write_skill(&canonical(&c).join("someone-elses"), "别人的技能", "d");
+
+    let me = Identity { login: "zhaowh".into(), display_name: "赵文浩".into() };
+    let mut identities = std::collections::BTreeMap::new();
+    identities.insert("company".to_string(), me);
+
+    let mut library = skillsync_lib::core::ownership::LibraryAttribution::new();
+    library.insert(
+        "mine".to_string(),
+        LibraryEntry {
+            registry_id: "company".into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            author: Some("赵文浩".into()),
+        },
+    );
+    library.insert(
+        "someone-elses".to_string(),
+        LibraryEntry {
+            registry_id: "company".into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            author: Some("李四".into()),
+        },
+    );
+
+    let found = share::scan_candidates(&c.registry, &env, &state_of(&c), &identities, &library).unwrap();
+
+    let mine = found.iter().find(|f| f.dir_name == "mine").unwrap();
+    assert_eq!(mine.relation, Relation::Shared, "库里记的作者是我,应判成 Shared");
+
+    let theirs = found.iter().find(|f| f.dir_name == "someone-elses").unwrap();
+    assert_eq!(theirs.relation, Relation::Installed, "库里记的作者不是我,不该判成 Shared");
 }
 
 #[test]

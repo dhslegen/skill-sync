@@ -241,6 +241,12 @@ fn three_way_merge_relation_and_source_label_when_signed_in() {
     assert_eq!(c.relation, Relation::Shared);
     assert!(!c.local_present, "C 这台电脑上没有本体");
     assert_eq!(c.source_label, None, "C 没有 lock 条目,不摆来源");
+    // 🔴 承重断言(修复轮 1):C 档唯一的存在理由是"换电脑/数据丢"场景,
+    // 主动作是「取回」,取回要带库坐标——正面断言等于索引缓存里的那对
+    // owner/repo,不能只断言"非空",分不出填对了还是填错了库。
+    assert_eq!(c.registry_id, registry::BUILTIN_REGISTRY_ID);
+    assert_eq!(c.source_owner, "skills", "C 的取回坐标必须是它实际所在库的 owner");
+    assert_eq!(c.source_repo, "skills", "C 的取回坐标必须是它实际所在库的 repo");
 }
 
 /// 未登录(或身份被清空):B 退化成 installed(它仍是真实存在的本地目录,不会消失);

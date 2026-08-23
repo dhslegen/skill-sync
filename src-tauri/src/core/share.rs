@@ -150,9 +150,9 @@ fn candidate(
     library: &ownership::LibraryAttribution,
 ) -> ShareCandidate {
     let relation = match library.get(dir_name) {
-        Some((registry_id, author)) => {
-            let me = identities.get(registry_id);
-            ownership::relation(me, author.as_deref(), true, true)
+        Some(entry) => {
+            let me = identities.get(&entry.registry_id);
+            ownership::relation(me, entry.author.as_deref(), true, true)
         }
         None => ownership::relation(None, None, false, true),
     };
