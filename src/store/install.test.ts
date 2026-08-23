@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { failedLinks, linkedAgents, useInstall } from "./install";
 import { useRegistries } from "./registries";
+import { useShare } from "./share";
+import { useUi } from "./ui";
 import type { AcquireOutcome, InstallReport } from "@/lib/ipc";
 
 const invoke = vi.fn();
@@ -36,6 +38,7 @@ function reset() {
     stage: null,
     report: null,
     localKept: false,
+    mineKept: null,
     shareResult: null,
     precheck: null,
     error: null,
@@ -44,6 +47,8 @@ function reset() {
     retryConfirmDir: null,
     retryError: null,
   });
+  useShare.setState({ candidates: null, phase: "idle", target: null });
+  useUi.setState({ page: "store" });
 }
 
 /** 一次"claude-code 建成了、trae 那条被占位顶掉"的安装结果。 */
@@ -214,6 +219,124 @@ describe("获取流程状态机", () => {
     expect(s.shareResult && "error" in s.shareResult && s.shareResult.error.message).toContain(
       "登录",
     );
+  });
+
+  describe("keepLocalAndShareMine(v6 任务 5:「我分享的」冲突弹窗的「以本地为准」)", () => {
+    it("remoteChanged 为真时,分享调用带 forceReview:true(正面断言完整键集合)", async () => {
+      invoke.mockImplementation(async (cmd) => {
+        if (cmd === "agents_detected") return AGENTS;
+        if (cmd === "installed_list") return [];
+        if (cmd === "skill_share_changes")
+          return { kind: "submitted", mode: "reviewRequested", commitSha: "new", reviewUrl: null };
+        if (cmd === "skill_install")
+          return { outcome: "kept", remoteChanged: true } satisfies AcquireOutcome;
+        throw new Error(`unexpected ${cmd}`);
+      });
+
+      await useInstall.getState().begin("weekly-report");
+      await useInstall.getState().keepLocalAndShareMine();
+
+      const shared = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
+      expect(shared?.[1].args).toEqual({
+        dirSlug: "weekly-report",
+        registryId: undefined,
+        forceReview: true,
+      });
+      expect(useInstall.getState().shareResult).toEqual({ mode: "reviewRequested" });
+      expect(useInstall.getState().phase).toBe("done");
+      expect(useInstall.getState().mineKept).toEqual({ remoteChanged: true });
+    });
+
+    it("remoteChanged 为假时,分享调用不带 forceReview(对照组,同样断言完整键集合)", async () => {
+      invoke.mockImplementation(async (cmd) => {
+        if (cmd === "agents_detected") return AGENTS;
+        if (cmd === "installed_list") return [];
+        if (cmd === "skill_share_changes")
+          return { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null };
+        if (cmd === "skill_install")
+          return { outcome: "kept", remoteChanged: false } satisfies AcquireOutcome;
+        throw new Error(`unexpected ${cmd}`);
+      });
+
+      await useInstall.getState().begin("weekly-report");
+      await useInstall.getState().keepLocalAndShareMine();
+
+      const shared = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
+      expect(shared?.[1].args).toEqual({
+        dirSlug: "weekly-report",
+        registryId: undefined,
+      });
+      expect(useInstall.getState().shareResult).toEqual({ mode: "pushed" });
+    });
+
+    it("core 什么都没写:report 留空,localKept 不因此变 true", async () => {
+      invoke.mockImplementation(async (cmd) => {
+        if (cmd === "agents_detected") return AGENTS;
+        if (cmd === "installed_list") return [];
+        if (cmd === "skill_share_changes")
+          return { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null };
+        if (cmd === "skill_install")
+          return { outcome: "kept", remoteChanged: false } satisfies AcquireOutcome;
+        throw new Error(`unexpected ${cmd}`);
+      });
+
+      await useInstall.getState().begin("weekly-report");
+      await useInstall.getState().keepLocalAndShareMine();
+
+      expect(useInstall.getState().report).toBeNull();
+      expect(useInstall.getState().localKept).toBe(false);
+    });
+
+    it("没有 state.installed 记账(FS_NOT_INSTALLED)→ 改走分享页并预选候选", async () => {
+      const candidate = {
+        dirName: "weekly-report",
+        path: "/home/u/.agents/skills/weekly-report",
+        inCanonical: true,
+        origin: { kind: "local" as const },
+        name: "周报生成",
+        description: null,
+        problem: null,
+        shared: null,
+        dirNameUsable: true,
+      };
+      invoke.mockImplementation(async (cmd) => {
+        if (cmd === "agents_detected") return AGENTS;
+        if (cmd === "installed_list") return [];
+        if (cmd === "share_candidates") return [candidate];
+        if (cmd === "skill_share_changes")
+          throw { code: "FS_NOT_INSTALLED", message: "这个技能还没有安装记账" };
+        if (cmd === "skill_install")
+          return { outcome: "kept", remoteChanged: true } satisfies AcquireOutcome;
+        throw new Error(`unexpected ${cmd}`);
+      });
+
+      await useInstall.getState().begin("weekly-report");
+      await useInstall.getState().keepLocalAndShareMine();
+
+      expect(useUi.getState().page).toBe("share");
+      expect(useShare.getState().target?.dirName).toBe("weekly-report");
+      // 分享页那条路走完:不该在 install 这边留下一个"分享失败"的假象
+      expect(useInstall.getState().shareResult).toBeNull();
+    });
+
+    it("又冲突或出错(没走到 kept)时不该继续分享", async () => {
+      invoke.mockImplementation(async (cmd) => {
+        if (cmd === "agents_detected") return AGENTS;
+        if (cmd === "skill_share_changes") return { kind: "submitted", mode: "pushed", commitSha: "n", reviewUrl: null };
+        if (cmd === "skill_install")
+          return {
+            outcome: "needsDecision",
+            precheck: { status: "mine", localChanged: true, remoteChanged: true },
+          } satisfies AcquireOutcome;
+        throw new Error(`unexpected ${cmd}`);
+      });
+
+      await useInstall.getState().begin("weekly-report");
+      await useInstall.getState().keepLocalAndShareMine();
+
+      expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_share_changes")).toBe(false);
+      expect(useInstall.getState().phase).toBe("conflict");
+    });
   });
 
   it("装完刷新已安装列表,卡片状态才跟得上", async () => {

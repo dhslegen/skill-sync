@@ -19,6 +19,7 @@ export function SkillCard({
   repo,
   updatedAt,
   state,
+  mine = false,
   onOpen,
 }: {
   skill: StoreSkillCard;
@@ -26,6 +27,8 @@ export function SkillCard({
   /** 相对时间文案。C6:取技能库整体的更新时间,不逐技能归因(见 core/store.rs 的假设) */
   updatedAt: string;
   state: InstallState;
+  /** 技能库里记的分享者是不是我(v6)。判定唯一实现在 `lib/update.ts` 的 `isMine`。 */
+  mine?: boolean;
   onOpen: () => void;
 }) {
   return (
@@ -54,6 +57,11 @@ export function SkillCard({
                 className="text-[#9a6a00] dark:text-[#d9a94a]"
               >
                 <Icon icon={TriangleAlert} size={12} />
+              </span>
+            )}
+            {mine && (
+              <span className="flex-none rounded-[4px] border border-accent/40 bg-accent-soft px-1.5 py-px text-[10.5px] font-medium text-accent">
+                {t("store.mineBadge")}
               </span>
             )}
           </div>

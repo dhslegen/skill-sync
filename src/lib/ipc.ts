@@ -373,6 +373,16 @@ export interface InstallReport {
 
 export type AcquireOutcome =
   | { outcome: "needsDecision"; precheck: Precheck }
+  /**
+   * 「我分享的」+ 以本地为准(v6):`Precheck.Mine` 档选了 `keepLocal` 时,
+   * core **什么都不做**——磁盘、记账、关联一个字节都没动,本体就是作者手上的
+   * 最新版,覆盖它就是丢改动。下一步是「分享更新」,不是安装。
+   *
+   * `remoteChanged` 直接带上,免得调用方跨两次 IPC 记住上一轮 `needsDecision`
+   * 里的那个值——它为真时后续分享必须带 `forceReview`(前提就是"库里已有新版",
+   * 直推等于覆盖同事经审核改过的版本)。
+   */
+  | { outcome: "kept"; remoteChanged: boolean }
   | { outcome: "installed"; report: InstallReport; localKept: boolean; lock: string };
 
 export type LinkHealth = "healthy" | "broken" | "redirected" | "occupied" | "missing";
@@ -608,6 +618,17 @@ export const skillShareChanges = (args: {
   /** 冲突确认后的第二跳:跳过远端变更检测,强制走提交审核。 */
   forceReview?: boolean;
 }) => call<ShareInstalledOutcome>("skill_share_changes", { args });
+
+/**
+ * 内建源的固定 registryId(与 `core::registry::BUILTIN_REGISTRY_ID` 逐字对应)。
+ *
+ * 「这是我分享的」按钮(v6 任务 5)要用它做门槛:`useSession` 只反映**内建源**的
+ * 登录态(`auth_status` 不带 registryId,`commands.rs` 缺省解析成它),
+ * `authors.json`/`claim_attribution` 也只有 Gitea 型的库支持(核心 `share.rs`
+ * 对非 Gitea 报 `REPO_NO_ATTRIBUTION`)。摆在别的库详情上会摆出一个门槛判定
+ * 与实际登录态对不上、点了很可能报错的按钮。
+ */
+export const BUILTIN_REGISTRY_ID = "company";
 
 /**
  * 「作者未登记 · 这是我分享的」:把当前登录身份登记进技能库根的作者文件(v6 任务 3)。

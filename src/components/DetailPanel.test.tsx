@@ -7,6 +7,7 @@ import type { LocalSkillDetail, SkillDetail } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { usePlaza } from "@/store/plaza";
+import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
 
 // agent 探测走 IPC:mock 掉才能让"点安装 → 展开勾选"这条路走通。
@@ -22,6 +23,11 @@ const invokeMock = vi.fn(async (cmd: string, args?: unknown): Promise<unknown> =
     };
   }
   if (cmd === "installed_list") return [];
+  // `InstalledScopes`(详情面板的「已装到」)在挂载时无条件拉一次项目清单
+  // (零新 IPC,复用既有的 project_list)——不给默认值的话,任何渲染 DetailPanel
+  // 的用例都会多打出一个不相关的 invoke 调用,把用 mockImplementationOnce
+  // 按"下一次调用"排队的用例带偏(v6 任务 5 真实撞过这个坑)。
+  if (cmd === "project_list") return [];
   return null;
 });
 vi.mock("@tauri-apps/api/core", () => ({
@@ -412,6 +418,175 @@ describe("作者/贡献者展示(M7 任务 2)", () => {
     expect(contributorsText(["李四", "王五", "赵六", "孙七", "周八"])).toBe(
       "李四、王五、赵六 等 5 人",
     );
+  });
+});
+
+describe("「这是我分享的」入口(v6 任务 5:作者未登记时的写回)", () => {
+  beforeEach(() => {
+    useStoreIndex.setState({
+      detailSlug: null,
+      detail: null,
+      detailError: null,
+      activeRepo: null,
+      activeRegistry: "company",
+    });
+    useSession.setState({ status: "signedOut", user: null });
+    // 别的用例(比如"底部安装按钮点开 agent 勾选")点过获取按钮后不会自己收尾,
+    // 全局单例的 useInstall 会带着 phase:"choosing" 一路漏到后面的测试文件——
+    // 这里的按钮独立于 InstallPanel,但不清空的话 InstallPanel 会一直显示
+    // agent 勾选面板而不是「获取」按钮,干扰 DOM 快照与排查。
+    useInstall.setState({ phase: "idle", dirSlug: null, installed: new Map() });
+    invokeMock.mockClear();
+  });
+
+  const signIn = () =>
+    useSession.setState({
+      status: "signedIn",
+      user: { login: "zhang-san", displayName: "张三", avatarUrl: "" },
+    });
+
+  it("attribution == null 且已登录 → 出现「作者未登记 · 这是我分享的」", () => {
+    signIn();
+    open();
+    render(<DetailPanel />);
+    expect(screen.getByText("作者未登记")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "这是我分享的" })).toBeInTheDocument();
+  });
+
+  it("未登录不出这个入口", () => {
+    open();
+    render(<DetailPanel />);
+    expect(screen.queryByText("作者未登记")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "这是我分享的" })).not.toBeInTheDocument();
+  });
+
+  it("已有作者时不出这个入口,哪怕已登录", () => {
+    signIn();
+    open({ attribution: { author: "李四", contributors: [] } });
+    render(<DetailPanel />);
+    expect(screen.queryByRole("button", { name: "这是我分享的" })).not.toBeInTheDocument();
+    expect(screen.getByText("作者")).toBeInTheDocument();
+  });
+
+  it("非内建源不出这个入口(哪怕已登录):claim_attribution 只有 Gitea 型的内建库支持", () => {
+    signIn();
+    const d = detail();
+    useStoreIndex.setState({
+      detailSlug: d.dirSlug,
+      detail: d,
+      detailError: null,
+      index: {
+        registryId: "custom-1",
+        owner: "acme",
+        repo: "skills",
+        branch: "main",
+        commitSha: d.commitSha,
+        committedAt: d.committedAt,
+        fetchedAt: Math.floor(Date.now() / 1000),
+        skills: [],
+        skipped: [],
+        fromCache: false,
+        offline: false,
+        curated: [],
+      },
+    });
+    render(<DetailPanel />);
+    expect(screen.queryByRole("button", { name: "这是我分享的" })).not.toBeInTheDocument();
+  });
+
+  it("点击调用 skill_claim_attribution 并带上 dirSlug", async () => {
+    // 🔴 必须按命令名分发(`mockImplementation`),不能用 `mockImplementationOnce`
+    // 排队"下一次调用"——`InstalledScopes` 挂载时会先打一个不相关的
+    // `project_list`(v6 任务 5 真机撞过:排队的响应被那次调用吃掉,真正的
+    // `skill_claim_attribution` 落进默认实现拿到 null,claim() 里读
+    // `outcome.outcome` 直接抛 TypeError)。
+    signIn();
+    open();
+    invokeMock.mockImplementation(async (cmd) =>
+      cmd === "skill_claim_attribution"
+        ? {
+            outcome: "shared",
+            mode: "reviewRequested",
+            commitSha: "new",
+            reviewUrl: "http://gitea.local/skills/skills/pulls/9",
+            adopted: false,
+            shareName: "weekly-report",
+          }
+        : null,
+    );
+    render(<DetailPanel />);
+    await userEvent.click(screen.getByRole("button", { name: "这是我分享的" }));
+    await screen.findByText("已提交审核,通过后生效");
+    expect(invokeMock).toHaveBeenCalledWith("skill_claim_attribution", {
+      args: { dirSlug: "weekly-report", repo: undefined },
+    });
+  });
+
+  it("直推成功后显示「已登记为分享者」,不顺手重载索引或详情", async () => {
+    // 🔴 claim() 成功后**不**调 `useStoreIndex` 的 `openDetail`/`load` 中任何
+    // 一个——两者都会换掉 `index`/`detail`,而这个组件的门槛与外层 `PanelBody`
+    // 的渲染分支读的是同一份状态,一换就可能把这个组件连同刚设的 "done" 状态
+    // 一起卸载(2026-08-24 本地复现两次,详见 `ClaimAttribution` 模块头)。
+    // 这条用例故意不 mock `store_index`/`store_skill_detail`:如果实现回归到
+    // 调用它们,对应的 invoke 断言会失败,能当场抓到回归。
+    signIn();
+    open();
+    invokeMock.mockImplementation(async (cmd) =>
+      cmd === "skill_claim_attribution"
+        ? {
+            outcome: "shared",
+            mode: "pushed",
+            commitSha: "new",
+            reviewUrl: null,
+            adopted: false,
+            shareName: "weekly-report",
+          }
+        : null,
+    );
+    render(<DetailPanel />);
+    await userEvent.click(screen.getByRole("button", { name: "这是我分享的" }));
+    await screen.findByText("已登记为分享者");
+    expect(invokeMock).not.toHaveBeenCalledWith("store_index", expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith("store_skill_detail", expect.anything());
+  });
+
+  it("走审核后显示「已提交审核,通过后生效」,不会重新摆出按钮", async () => {
+    // 走审核的那一支还没合并进默认分支,即便重载 attribution 也仍是 null——
+    // 如果按钮态只看 attribution,会重新摆出来引诱用户再交一次审核。
+    signIn();
+    open();
+    invokeMock.mockImplementation(async (cmd) =>
+      cmd === "skill_claim_attribution"
+        ? {
+            outcome: "shared",
+            mode: "reviewRequested",
+            commitSha: "new",
+            reviewUrl: "http://gitea.local/skills/skills/pulls/9",
+            adopted: false,
+            shareName: "weekly-report",
+          }
+        : null,
+    );
+    render(<DetailPanel />);
+    await userEvent.click(screen.getByRole("button", { name: "这是我分享的" }));
+    await screen.findByText("已提交审核,通过后生效");
+    expect(screen.queryByRole("button", { name: "这是我分享的" })).not.toBeInTheDocument();
+  });
+
+  it("失败时显示错误信息,按钮恢复可点(比如已被别人抢先登记)", async () => {
+    signIn();
+    open();
+    invokeMock.mockImplementation(async (cmd) => {
+      if (cmd === "skill_claim_attribution") {
+        throw { code: "CONFLICT_ALREADY_ATTRIBUTED", message: "这个技能已经登记过分享者了" };
+      }
+      if (cmd === "project_list") return [];
+      return null;
+    });
+    render(<DetailPanel />);
+    await userEvent.click(screen.getByRole("button", { name: "这是我分享的" }));
+    await screen.findByText("这个技能已经登记过分享者了");
+    expect(screen.getByRole("button", { name: "这是我分享的" })).toBeInTheDocument();
   });
 });
 

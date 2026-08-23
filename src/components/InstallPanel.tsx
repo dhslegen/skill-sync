@@ -10,6 +10,7 @@ import { cn } from "@/lib/cn";
 import { PLAZA_REGISTRY_ID, type InstallStage } from "@/lib/ipc";
 import { cardState, remoteHashOf, type LibraryRef } from "@/lib/update";
 import { useProjects } from "@/store/project";
+import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
 
 /** `owner/repo` → 广场坐标下的 `LibraryRef`。广场技能永远走固定的 `plaza` 源。 */
@@ -129,6 +130,7 @@ function IdleFooter({
 }) {
   const installed = useInstall((s) => s.installed);
   const index = useStoreIndex((s) => s.index);
+  const me = useSession((s) => s.user);
   const record = installed.get(dirSlug);
   // 与商店卡片同一条判定。曾经这里只算 install/installed 两档,于是卡片显示
   // "更新"、点进来按钮却是禁用的「已启用」——用户点了毫无反应(2026-08-03 实测缺陷)。
@@ -137,12 +139,16 @@ function IdleFooter({
   // 传空串,`cardState` 对指纹缺失按"已启用"处理,宁可漏报"有更新"也不能编造一个。
   // 真正精确的"有更新"判定,要等这个仓被挂上、用户切到它按普通库浏览时才出现
   // (那条路走的是 store_index,自然有指纹可比,§2.4 说的正是这件事)。
+  // 广场也不传作者:GitHub 源刻意不维护 authors.json(M7 拍板),`mine` 折叠
+  // 因此对广场恒为 false,与「详情面板不联网」承诺无关——这里只是没有数据可判。
   const state = plaza
     ? cardState(record, "", ownerRepoToLibrary(plaza.ownerRepo))
     : cardState(
         record,
         remoteHashOf(index, dirSlug),
         index ? { registryId: index.registryId, owner: index.owner, repo: index.repo } : undefined,
+        index?.skills.find((s) => s.dirSlug === dirSlug)?.author,
+        me,
       );
   const requestInstall = useProjects((s) => s.requestInstall);
   const installing = useProjects((s) => s.installing);
@@ -168,10 +174,10 @@ function IdleFooter({
         />
         <InstallScopeMenu
           dirSlug={dirSlug}
-          // 主按钮是终态(「已启用」不可点)时,把作用域入口显性化成文字按钮
-          // ——那一档整块看起来就是"做完了",小三角不足以让人想到还能装到项目
-          // (2026-08-22 用户反馈)。可点动作那几档保持图标,免得抢注意力。
-          label={state === "installed" ? t("install.scopeProject") : undefined}
+          // 主按钮是终态(「已启用」/「已同步」不可点)时,把作用域入口显性化成
+          // 文字按钮——那一档整块看起来就是"做完了",小三角不足以让人想到还能
+          // 装到项目(2026-08-22 用户反馈)。可点动作那几档保持图标,免得抢注意力。
+          label={state === "installed" || state === "mineSynced" ? t("install.scopeProject") : undefined}
           disabled={!!installing}
           onGlobal={onBegin}
           onPickProject={() => {
@@ -196,7 +202,9 @@ function IdleFooter({
             })
           }
         />
-        {record?.localModified && (
+        {/* mine* 四档已经用按钮文案把"哪边有改动"说清楚了(取回/分享更新),
+            不需要再叠一个徽标说同一件事(v6 任务 4 的「我的技能」页同一条裁定)。 */}
+        {record?.localModified && !state.startsWith("mine") && (
           <span className="text-[11.5px] text-text-3">{t("conflict.modifiedTitle")}</span>
         )}
       </div>
@@ -418,7 +426,8 @@ function DoneFooter({
   activeRegistryId?: string | null;
   activeRepoKey?: string | null;
 }) {
-  const { report, localKept, shareResult, agents: detected, begin, beginFromPlaza } = useInstall();
+  const { report, localKept, mineKept, shareResult, agents: detected, begin, beginFromPlaza } =
+    useInstall();
   const requestInstall = useProjects((s) => s.requestInstall);
   const failed = failedLinks(report);
   const agents = linkedAgents(report, detected);
@@ -428,9 +437,15 @@ function DoneFooter({
       <div className="flex items-center gap-2">
         <div className="flex flex-1 items-center gap-2 text-[12.5px] font-medium text-ok">
           <Icon icon={Check} size={14} />
-          {agents.length > 0
-            ? t("install.done", { agents: agents.join(t("punct.listSeparator")) })
-            : t("install.doneCanonicalOnly")}
+          {/* 🔴 `mineKept` 时 core 什么都没写——「已启用到…」「已安装到通用目录」
+              这两句对这一档都是假话,必须换成"保留了本地内容"这句真话
+              (`AcquireOutcome::Kept`:磁盘/记账/关联零变化)。下面的分享结果
+              区块会接着说清"分享出去了没有"。 */}
+          {mineKept
+            ? t("install.mineKept")
+            : agents.length > 0
+              ? t("install.done", { agents: agents.join(t("punct.listSeparator")) })
+              : t("install.doneCanonicalOnly")}
         </div>
         {/* 装完那一屏也要留出口(2026-08-22 用户反馈:"这时候也没有更多操作空间")。
             与「已启用」终态同一形态:结果是状态,「装到项目…」是动作,并排摆。 */}

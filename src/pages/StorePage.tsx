@@ -10,10 +10,11 @@ import { cn } from "@/lib/cn";
 import { relativeTimeFromIso, relativeTimeFromUnix } from "@/lib/format";
 import { PLAZA_REGISTRY_ID, type PlazaSkillCard } from "@/lib/ipc";
 import { filterSkills, type StoreFilter } from "@/lib/search";
-import { cardState } from "@/lib/update";
+import { cardState, isMine } from "@/lib/update";
 import { useInstall } from "@/store/install";
 import { usePlaza } from "@/store/plaza";
 import { useRegistries } from "@/store/registries";
+import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
 
 const FILTERS: { id: StoreFilter; label: MessageKey }[] = [
@@ -54,6 +55,9 @@ function StoreBody() {
   const records = useInstall((s) => s.installed);
   // 已安装集合来自 installed_list(core 的 state.json),不再是恒空的占位
   const installed = useMemo(() => new Set(records.keys()), [records]);
+  // 「我分享的」四档(v6)要知道"这是不是我"——未登录时 `me` 是 null,
+  // `cardState` 对此按既有口径处理(行为与 mine 加入前逐字相同)。
+  const me = useSession((s) => s.user);
   const registries = useRegistries((s) => s.list);
   const loadRegistries = useRegistries((s) => s.load);
 
@@ -211,11 +215,18 @@ function StoreBody() {
               skill={skill}
               repo={index.repo}
               updatedAt={updatedAt}
-              state={cardState(records.get(skill.dirSlug), skill.contentHash, {
-                registryId: index.registryId,
-                owner: index.owner,
-                repo: index.repo,
-              })}
+              mine={isMine(skill.author, me)}
+              state={cardState(
+                records.get(skill.dirSlug),
+                skill.contentHash,
+                {
+                  registryId: index.registryId,
+                  owner: index.owner,
+                  repo: index.repo,
+                },
+                skill.author,
+                me,
+              )}
               onOpen={() => void openDetail(skill.dirSlug)}
             />
           ))}

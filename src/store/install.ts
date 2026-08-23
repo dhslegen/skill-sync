@@ -31,6 +31,8 @@ import {
   type ShareMode,
 } from "@/lib/ipc";
 import { useRegistries } from "@/store/registries";
+import { useShare } from "@/store/share";
+import { useUi } from "@/store/ui";
 
 
 /**
@@ -61,6 +63,13 @@ interface InstallState {
   report: InstallReport | null;
   /** 本次保留了用户的本地改动。 */
   localKept: boolean;
+  /**
+   * 「我分享的」+ 以本地为准(v6)走完 `AcquireOutcome::Kept` 的结果:core 什么都
+   * 没写(不是一次真的安装),`remoteChanged` 原样带出——`keepLocalAndShareMine`
+   * 靠它决定分享要不要带 `forceReview`。`null` = 这次「done」不是走的这条路,
+   * `DoneFooter` 据此不显示「已启用/已安装」这类对这一档是假话的完成文案。
+   */
+  mineKept: { remoteChanged: boolean } | null;
   /** 「保留并分享」的分享结果。null = 没走这条路。 */
   shareResult: { mode: ShareMode } | { error: AppError } | null;
   precheck: Precheck | null;
@@ -96,6 +105,11 @@ interface InstallState {
   run: (resolution?: Resolution) => Promise<void>;
   /** 冲突弹窗的默认选项(用户拍板):保留本地改动,随后把改动分享回公司技能库。 */
   keepLocalAndShare: () => Promise<void>;
+  /**
+   * 「我分享的」冲突弹窗(v6 任务 5)的默认选项:「以本地为准,分享更新」。
+   * 与 `keepLocalAndShare` 同名的兄弟,分流不同——见函数体注释。
+   */
+  keepLocalAndShareMine: () => Promise<void>;
   cancel: () => void;
 
   /** 正在重试的目录(结果面板逐条重试)。 */
@@ -118,6 +132,20 @@ function toAppError(raw: unknown): AppError {
 /** 每次安装一个独立频道,避免上一次的残余进度串到这一次。 */
 let taskSeq = 0;
 
+/**
+ * 「我分享的」+ 以本地为准,但没有 `state.installed` 记账那一档(v6 任务 3
+ * 顾虑 1):`share_installed` 走不通,改走分享页并预选这个候选——与
+ * `MySkillsPage.goShare` 同一个套路(那边跳分享页给 `draft`/`noBaseline` 用,
+ * 这里给冲突弹窗用,没有理由另写一份)。分享页自己的 `load()` 只刷新
+ * candidates、不碰 phase/target,所以在跳转前把 `begin()` 定下来即可。
+ */
+async function goToSharePage(dirSlug: string) {
+  await useShare.getState().load();
+  const candidate = useShare.getState().candidates?.find((c) => c.dirName === dirSlug);
+  if (candidate) useShare.getState().begin(candidate);
+  useUi.getState().setPage("share");
+}
+
 export const useInstall = create<InstallState>((set, get) => ({
   phase: "idle",
   dirSlug: null,
@@ -128,6 +156,7 @@ export const useInstall = create<InstallState>((set, get) => ({
   stage: null,
   report: null,
   localKept: false,
+  mineKept: null,
   shareResult: null,
   precheck: null,
   error: null,
@@ -177,6 +206,7 @@ export const useInstall = create<InstallState>((set, get) => ({
       error: null,
       precheck: null,
       localKept: false,
+      mineKept: null,
       shareResult: null,
     });
     try {
@@ -212,6 +242,7 @@ export const useInstall = create<InstallState>((set, get) => ({
       error: null,
       precheck: null,
       localKept: false,
+      mineKept: null,
       shareResult: null,
     });
     try {
@@ -243,6 +274,7 @@ export const useInstall = create<InstallState>((set, get) => ({
       error: null,
       precheck: null,
       localKept: false,
+      mineKept: null,
       shareResult: null,
     });
     await get().run();
@@ -281,6 +313,14 @@ export const useInstall = create<InstallState>((set, get) => ({
       if (result.outcome === "needsDecision") {
         // core 没动磁盘,等用户拍板
         set({ phase: "conflict", precheck: result.precheck });
+        return;
+      }
+      if (result.outcome === "kept") {
+        // 「我分享的」+ 以本地为准:core 什么都没做(磁盘/记账/关联零变化)。
+        // 落 "done" 是为了让 `keepLocalAndShareMine` 能沿用既有的 phase 惯例继续
+        // 往下走分享,但 `report` 留空——`DoneFooter` 必须靠 `mineKept` 认出这一档,
+        // 不能显示"已启用/已安装"这类对它是假话的完成文案。
+        set({ phase: "done", mineKept: { remoteChanged: result.remoteChanged }, precheck: null });
         return;
       }
       set({
@@ -324,6 +364,55 @@ export const useInstall = create<InstallState>((set, get) => ({
     }
   },
 
+  keepLocalAndShareMine: async () => {
+    await get().run("keepLocal");
+    // core 走的是 `AcquireOutcome::Kept`(见 run() 里的处理)才该继续往下分享——
+    // 又冲突或出错时 `mineKept` 仍是 null,分享的前提(本地已经站稳)不成立。
+    const kept = get().mineKept;
+    if (!kept) return;
+    const dirSlug = get().dirSlug;
+    if (!dirSlug) return;
+    try {
+      // remoteChanged 直接读 `Kept` 携带的那份(比冲突弹窗打开那一刻更新一次
+      // precheck 的结果),为真时必须带 forceReview——前提是"库里已有新版",
+      // 直推等于覆盖同事经审核改过的版本(与 `keepLocalAndShare` 恒带 forceReview
+      // 同一个理由;这里区分开是因为"我分享的"有 remoteChanged 为假的正常一档,
+      // 那一档不该被强推进评审)。
+      let outcome = await skillShareChanges({
+        dirSlug,
+        registryId: get().registryId ?? undefined,
+        ...(kept.remoteChanged ? { forceReview: true } : {}),
+      });
+      if (outcome.kind === "remoteChanged") {
+        // 点「以本地为准」时判定还是"没变",提交前的这一小段时间里被抢先了一次
+        // ——用户已经表达过"以本地为准"的意图,不必再问一遍,直接带 forceReview
+        // 重试一次即可(假设:与 M5 "远端变了先弹确认"的既有先例不同,这里区别
+        // 对待是因为用户刚点的按钮语义已经是"以本地为准",这一步只是把 core 的
+        // 判定补齐到与用户意图一致)。
+        outcome = await skillShareChanges({
+          dirSlug,
+          registryId: get().registryId ?? undefined,
+          forceReview: true,
+        });
+      }
+      if (outcome.kind === "submitted") {
+        set({ shareResult: { mode: outcome.mode } });
+      }
+      await get().refreshInstalled();
+    } catch (raw) {
+      const err = toAppError(raw);
+      if (err.code === "FS_NOT_INSTALLED") {
+        // 没有 `state.installed` 记账:`share_installed` 一进门就要求记账存在,
+        // 走不通(v6 任务 3 顾虑 1 记的真问题,典型场景:自己写的技能直接推进了库、
+        // 或换电脑后重装 app)。改走分享页——它接受任意本地目录,同名三分支会
+        // 处理"远端已存在"。
+        await goToSharePage(dirSlug);
+        return;
+      }
+      set({ shareResult: { error: err } });
+    }
+  },
+
   cancel: () =>
     set({
       phase: "idle",
@@ -335,6 +424,7 @@ export const useInstall = create<InstallState>((set, get) => ({
       precheck: null,
       error: null,
       localKept: false,
+      mineKept: null,
       shareResult: null,
       retryingDir: null,
       retryConfirmDir: null,

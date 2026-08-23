@@ -9,9 +9,18 @@ import { SkillIcon } from "@/components/SkillIcon";
 import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { formatBytes, relativeTimeFromIso, shortSha } from "@/lib/format";
-import { isAppError, openLibraryUrl, type LocalSkillDetail, type SkillDetail } from "@/lib/ipc";
+import {
+  BUILTIN_REGISTRY_ID,
+  isAppError,
+  openLibraryUrl,
+  skillClaimAttribution,
+  type AppError,
+  type LocalSkillDetail,
+  type SkillDetail,
+} from "@/lib/ipc";
 import { useLocalDetail } from "@/store/local-detail";
 import { locatePlazaSkill, usePlaza } from "@/store/plaza";
+import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
 
 /** 详情是右侧滑出面板,不整页跳转(UI 规范 §5:借 Raycast 的"详情不跳页")。
@@ -344,6 +353,14 @@ function PanelBody({
   const closeDetail = plaza ? closePlaza : closeDetailStore;
   const [tab, setTab] = useState<"readme" | "files">("readme");
 
+  // 「这是我分享的」(v6 任务 5)的门槛:`useSession` 只反映**内建源**的登录态
+  // (`auth_status` 不带 registryId),`claim_attribution` 也只有 Gitea 型的库支持
+  // ——广场(GitHub)与任何非内建源都不满足,摆出来就是一个必然报错的按钮。
+  const registryId = useStoreIndex((s) => s.index?.registryId);
+  const activeRepo = useStoreIndex((s) => s.activeRepo);
+  const signedIn = useSession((s) => s.status === "signedIn");
+  const canClaimAttribution = !plaza && registryId === BUILTIN_REGISTRY_ID && signedIn;
+
   return (
     <>
       <div className="px-5 pt-[18px]">
@@ -368,10 +385,15 @@ function PanelBody({
         {plaza && <PlazaBrowserLink slug={plaza.slug} />}
 
         <div className="mt-3.5 flex flex-wrap gap-4 border-y border-border py-2.5">
-          {/* 作者/贡献者来自技能库的 authors.json(服务端维护);没有就整栏不摆。
+          {/* 作者/贡献者来自技能库的 authors.json(服务端维护);没有就整栏不摆,
+              换成「作者未登记 · 这是我分享的」这个入口(登录了、且是内建源才摆)。
               作者排第一,对齐 UI-Demo 的 p-meta 顺序 */}
-          {detail.attribution && (
+          {detail.attribution ? (
             <Meta label={t("detail.metaAuthor")} value={detail.attribution.author} />
+          ) : (
+            canClaimAttribution && (
+              <ClaimAttribution dirSlug={detail.dirSlug} repo={activeRepo ?? undefined} />
+            )
           )}
           <Meta label={t("detail.metaUpdated")} value={relativeTimeFromIso(detail.committedAt)} />
           <Meta label={t("detail.metaVersion")} value={shortSha(detail.commitSha)} mono />
@@ -418,6 +440,96 @@ function PanelBody({
 
       <InstallPanel dirSlug={detail.dirSlug} plaza={plaza ? { ownerRepo: plaza.ownerRepo } : undefined} />
     </>
+  );
+}
+
+/**
+ * 「作者未登记 · 这是我分享的」(v6 任务 3 的 `skill_claim_attribution`)。
+ *
+ * `done`/`review` 两档都**只落本地 `status`,不触碰 `useStoreIndex` 的任何字段**
+ * ——既不调 `openDetail(dirSlug)` 也不调 `load(true)`,即便看起来"重刷一下索引/
+ * 详情,让作者信息自然出现"更省事:
+ * - `review`(走审核)那一支根本还没合并进默认分支,重载出来的 `attribution`
+ *   仍是 `null`,门槛条件不变,按钮会重新摆出来引诱用户再交一次审核(核心的
+ *   `CONFLICT_ALREADY_ATTRIBUTED` 只挡"已经登记过"的库,挡不住"我自己交了
+ *   两次审核"这件事);
+ * - `done`(直推)按理攒得到新数据,但**这个组件的门槛 `canClaimAttribution`
+ *   与外层 `PanelBody` 的渲染分支,读的是同一份 `useStoreIndex` 状态**
+ *   (`registryId`/`detail`)。`openDetail` 第一步就同步把 `detail` 置空当
+ *   加载态;`load(true)` 在请求落地前会先换新 `index` 对象、请求本身失败或
+ *   竞态时甚至可能把 `index` 变成 `null`——两条路殊途同归:只要 `index`/
+ *   `detail` 一变,门槛判定就可能翻转,把这个组件连同刚设的 "done" 状态一起
+ *   卸载,用户看到的是面板闪一下"正在读取…",连「已登记为分享者」这句确认都
+ *   看不见(2026-08-24 本地复现两次,分别踩中这两条路,都不是测试假象)。
+ *
+ * 所以两档都不摸 `useStoreIndex`,状态只活在这个组件实例里(换一个技能查看会
+ * 重新挂载、重新判一次门槛);商店卡片上的作者字段留到下一次自然刷新
+ * (重新进商店页/手动重试)才会跟上——这是刻意接受的代价,好过一个必然
+ * 自我卸载的组件。
+ */
+function ClaimAttribution({ dirSlug, repo }: { dirSlug: string; repo?: string }) {
+  const [status, setStatus] = useState<"idle" | "pending" | "done" | "review" | "error">("idle");
+  const [error, setError] = useState<AppError | null>(null);
+
+  const claim = async () => {
+    setStatus("pending");
+    setError(null);
+    try {
+      const outcome = await skillClaimAttribution({ dirSlug, repo });
+      if (outcome.outcome === "shared") {
+        setStatus(outcome.mode === "pushed" ? "done" : "review");
+      }
+      // 🔴 到此为止,**不**顺手刷 `useStoreIndex`(既不是 `openDetail(dirSlug)`
+      // 也不是 `load(true)`):这个组件的 `canClaimAttribution` 门槛与外层
+      // `PanelBody` 的渲染分支都读同一份 `useStoreIndex` 状态
+      // (`registryId`/`detail`)。`openDetail` 第一步就同步把 `detail` 置空
+      // 当加载态;`load(true)` 在请求落地前会先把 `index` 换成新对象、请求本身
+      // 失败或竞态时甚至可能把 `index` 变成 `null`——两条路殊途同归:只要
+      // `index`/`detail` 一变,`canClaimAttribution` 或 `open && detail` 的判定
+      // 就可能翻转,把这个组件连同刚设的 "done"/"review" 状态一起卸载
+      // (2026-08-24 本地复现两次,分别踩中这两条路,都不是测试假象)。
+      // 商店卡片上的作者字段留到下一次自然刷新(重新进商店页/手动重试)才会跟上,
+      // 这是刻意接受的代价——好过一个必然自我卸载的组件。
+    } catch (raw) {
+      setStatus("error");
+      setError(isAppError(raw) ? raw : null);
+    }
+  };
+
+  if (status === "done" || status === "review") {
+    return (
+      <div className="text-[11px] leading-[1.4] text-text-3">
+        {t("detail.metaAuthor")}
+        <b className="block text-[12.5px] font-[550] text-text">
+          {status === "done" ? t("detail.claimAttributionDone") : t("detail.claimAttributionReview")}
+        </b>
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-[11px] leading-[1.4] text-text-3">
+      {t("detail.metaAuthor")}
+      <div className="mt-px flex items-center gap-1.5">
+        <span className="text-[12.5px] font-[550] text-text">{t("detail.unattributed")}</span>
+        <span aria-hidden className="text-text-3">
+          ·
+        </span>
+        <button
+          type="button"
+          disabled={status === "pending"}
+          onClick={() => void claim()}
+          className="text-[12.5px] font-[550] text-accent hover:underline disabled:opacity-50"
+        >
+          {status === "pending" ? t("detail.claimAttributionPending") : t("detail.claimAttribution")}
+        </button>
+      </div>
+      {status === "error" && error && (
+        <p className="mt-1 max-w-[220px] text-[11px] leading-[1.4] text-[#c0392b] dark:text-[#e0705f]">
+          {error.message}
+        </p>
+      )}
+    </div>
   );
 }
 

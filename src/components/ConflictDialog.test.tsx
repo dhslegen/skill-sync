@@ -144,18 +144,76 @@ describe("冲突对话框", () => {
     expect(screen.getByRole("button", { name: "取消" })).toHaveFocus();
   });
 
-  it("这是我分享的技能:不落进「不是本应用安装的」那句假话,只剩取消(完整三选一是任务 5 的范围)", () => {
-    // v6 任务 3 新档:技能库里记的分享者就是我。它**同样**不能套外来目录那句
-    // "不是本应用安装的"(那是假话)——也不能套"改过本体"的三选(没有该弹的东西,
-    // 完整变体留给任务 5)。这里只兜住"不显示错误文案"这一件事。
-    conflict({ status: "mine", localChanged: true, remoteChanged: true });
-    render(<ConflictDialog />);
+  describe("这是我分享的技能(v6 任务 5 的完整变体)", () => {
+    it("远端变过:只有两个按钮,没有「保留并贡献」;默认焦点在「以本地为准」上", () => {
+      conflict({ status: "mine", localChanged: true, remoteChanged: true });
+      render(<ConflictDialog />);
 
-    expect(screen.getByText("这是你分享的技能")).toBeInTheDocument();
-    expect(screen.queryByText(/不是本应用安装的|不是这个应用安装的/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /保留我的改动/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /替换/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "取消" })).toHaveFocus();
+      expect(screen.getByText(/库里有新版/)).toBeInTheDocument();
+      expect(screen.queryByText(/不是本应用安装的|不是这个应用安装的/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /保留并贡献/ })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /以本地为准,分享更新/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /以库为准,丢弃本地改动/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /以本地为准,分享更新/ })).toHaveFocus();
+    });
+
+    it("远端没变过:标题/正文不说「库里有新版」这句假话", () => {
+      // core 只在 local_changed 为真时才会走到这个弹窗,remoteChanged 才是
+      // 到这里唯一还不确定的事——为假时不能沿用"库里有新版"这句话。
+      conflict({ status: "mine", localChanged: true, remoteChanged: false });
+      render(<ConflictDialog />);
+
+      expect(screen.queryByText(/库里有新版/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/同事通过审核改的/)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /以本地为准,分享更新/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /以库为准,丢弃本地改动/ })).toBeInTheDocument();
+    });
+
+    it("点「以本地为准」→ 走 keepLocalAndShareMine,不是 keepLocalAndShare", async () => {
+      const keepLocalAndShareMine = vi.fn();
+      const keepLocalAndShare = vi.fn();
+      conflict({ status: "mine", localChanged: true, remoteChanged: true });
+      useInstall.setState({ keepLocalAndShareMine, keepLocalAndShare });
+      render(<ConflictDialog />);
+
+      await userEvent.click(screen.getByRole("button", { name: /以本地为准,分享更新/ }));
+      expect(keepLocalAndShareMine).toHaveBeenCalled();
+      expect(keepLocalAndShare).not.toHaveBeenCalled();
+    });
+
+    it("点「以库为准」先出二次确认、不立即调 run;确认后才调 run(\"overwrite\")", async () => {
+      const run = vi.fn();
+      conflict({ status: "mine", localChanged: true, remoteChanged: true });
+      useInstall.setState({ run });
+      render(<ConflictDialog />);
+
+      const overwriteButton = screen.getByRole("button", { name: /以库为准,丢弃本地改动/ });
+      await userEvent.click(overwriteButton);
+      expect(run).not.toHaveBeenCalled();
+      expect(screen.getByText("本地改动将无法找回,确定?")).toBeInTheDocument();
+
+      await userEvent.click(overwriteButton);
+      expect(run).toHaveBeenCalledWith("overwrite");
+    });
+
+    it("换一个技能会收回二次确认的武装状态", async () => {
+      const run = vi.fn();
+      conflict({ status: "mine", localChanged: true, remoteChanged: true });
+      useInstall.setState({ run });
+      const { rerender } = render(<ConflictDialog />);
+
+      await userEvent.click(screen.getByRole("button", { name: /以库为准,丢弃本地改动/ }));
+      expect(screen.getByText("本地改动将无法找回,确定?")).toBeInTheDocument();
+
+      // 换一个技能(dirSlug 变了),同样是 mine 冲突
+      useInstall.setState({ dirSlug: "another-skill" });
+      rerender(<ConflictDialog />);
+
+      expect(screen.queryByText("本地改动将无法找回,确定?")).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: /以库为准,丢弃本地改动/ }));
+      // 这一下是新技能的第一次点击,只该武装,不该直接调 run
+      expect(run).not.toHaveBeenCalled();
+    });
   });
 
   it("Esc 取消,不留在半路", async () => {
