@@ -371,12 +371,22 @@ impl Store {
     }
 
     /// 登录成功(或查状态时刷新)后记一条身份(v6 任务 1,load-modify-save)。
+    ///
+    /// **等值跳过守卫**(2026-08-23 补,与 [`Self::remove_identity`] 的"键不在就不写"
+    /// 对称):`auth_status`/`github_status` 是查状态的读路径,应用启动时每个源都会调
+    /// 一次,身份却极少变化——不加这道守卫,一条读路径会退化成一条无条件写路径,
+    /// 每次都 load-modify-save 一整份 config.json。这不只是浪费:`config.json`
+    /// 还有别的写入方(界面偏好、来源增删),每一次无谓的 load-modify-save 都是
+    /// 一个新的互相覆盖窗口——加到一条本该只读的路径上是净增风险,不是零成本的幂等写。
     pub fn save_identity(
         &self,
         registry_id: &str,
         identity: &crate::core::ownership::Identity,
     ) -> Result<(), AppError> {
         let mut config = self.load_config()?.value;
+        if config.identities.get(registry_id) == Some(identity) {
+            return Ok(());
+        }
         config.identities.insert(registry_id.to_string(), identity.clone());
         self.save_config(&config)
     }
@@ -524,6 +534,7 @@ fn save<T: Serialize>(path: &Path, value: &T) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ownership::Identity;
 
     fn store() -> (tempfile::TempDir, Store) {
         let tmp = tempfile::tempdir().unwrap();
@@ -1092,5 +1103,54 @@ mod tests {
         s.remove_identity("nobody-here").unwrap();
 
         assert_eq!(std::fs::read_to_string(s.dir().join("config.json")).unwrap(), before);
+    }
+
+    /// `save_identity` 的等值跳过守卫(2026-08-23 补):同一个身份连续存两次,
+    /// 第二次不该重写文件——`auth_status`/`github_status` 是查状态的读路径,
+    /// 身份极少变化,不加这道守卫它就退化成一条无条件写路径。
+    ///
+    /// 判定手法:第一次存完后,手工在 config.json 里塞一个 `Config` 结构体不认识的
+    /// 顶层字段当"标记"。**如果第二次调用真的走了 load-modify-save**,序列化时
+    /// 这个未知字段会被 serde 直接抹掉(往返 mtime 在快速连续调用下可能落在同一秒,
+    /// 不够可靠;这个标记字段是否还在则是非黑即白的判据)。
+    #[test]
+    fn saving_the_same_identity_twice_does_not_rewrite_the_file() {
+        let (_tmp, s) = store();
+        let identity = Identity { login: "dhslegen".into(), display_name: "赵文浩".into() };
+        s.save_identity("company", &identity).unwrap();
+
+        let path = s.dir().join("config.json");
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        doc.as_object_mut().unwrap().insert("哨兵标记".into(), serde_json::json!("不该被抹掉"));
+        std::fs::write(&path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+
+        // 存的是完全相同的身份:应当直接跳过写盘
+        s.save_identity("company", &identity).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("哨兵标记"), "身份没变时不该重写文件,标记字段应该还在:{after}");
+    }
+
+    /// 对照组:身份**确实变了**时必须照常写盘,证明上面那条守卫不是把
+    /// `save_identity` 整个改成空函数就能蒙混过去的空转测试。
+    #[test]
+    fn saving_a_different_identity_overwrites_the_previous_one() {
+        let (_tmp, s) = store();
+        s.save_identity(
+            "company",
+            &Identity { login: "dhslegen".into(), display_name: "赵文浩".into() },
+        )
+        .unwrap();
+
+        s.save_identity(
+            "company",
+            &Identity { login: "someone-else".into(), display_name: "李四".into() },
+        )
+        .unwrap();
+
+        let back = s.load_config().unwrap().value;
+        assert_eq!(back.identities["company"].login, "someone-else");
+        assert_eq!(back.identities["company"].display_name, "李四");
     }
 }
