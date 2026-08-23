@@ -217,8 +217,8 @@ describe("分享流程状态机", () => {
 
   it("分享成功后「我的技能」也要刷新——直推进库的技能会当场变成受管技能(M6 任务 5)", async () => {
     // core 在直推成功后把它记进 state.installed(分享的闭环)。不刷这一份的话,
-    // 它在「我的技能」里仍挂在"其他工具装的"那一档,界面继续劝你去分享——
-    // 而侧边栏角标也是从这份清单算的。
+    // 它在「我的技能」里仍显示成没有记账的样子(v6:relation 判到 shared/draft
+    // 却摆不出「分享更新」那条真正对应的动作)——而侧边栏角标也是从这份清单算的。
     const mySkillsLoad = vi.fn(async () => {});
     useMySkills.setState({ load: mySkillsLoad });
     invoke.mockImplementation(async (cmd: string) => {

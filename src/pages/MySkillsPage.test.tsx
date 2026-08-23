@@ -556,6 +556,41 @@ describe("「我分享的」区块 · 六状态机(v6 任务 4)", () => {
     expect(screen.getByRole("button", { name: "移除" })).toBeInTheDocument();
   });
 
+  it("noBaseline:有本体、relation === shared,但没有 state.installed 记账 —— 不说「已同步」的假话,摆「分享更新」走分享页", async () => {
+    // 典型场景(用户明确点名):确实是第一作者,但直接经 git 推进库,没经过 app 装过。
+    // core 侧这一档 localModified 恒 false、contentHash 恒空,没有基线却说
+    // "已同步"或"有改动未分享"都是在编——这里断言的正是"不说假话 + 有出路"。
+    seedIpc(
+      [
+        view({
+          relation: "shared",
+          localModified: false,
+          agents: [],
+          links: [],
+          commitSha: "",
+          contentHash: "",
+          sourceLabel: null,
+        }),
+      ],
+      { share_candidates: [shareCandidate({ dirName: "weekly-report" })], share_preview: "unknown" },
+    );
+    render(<MySkillsPage />);
+
+    await screen.findByText("没有获取记录,无法判断是否一致");
+    expect(screen.queryByText("已同步")).not.toBeInTheDocument();
+    expect(screen.queryByText("有改动未分享")).not.toBeInTheDocument();
+    // 没有记账,谈不上「移除」「修复」
+    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "取回" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "分享更新" }));
+
+    expect(useUi.getState().page).toBe("share");
+    await vi.waitFor(() => {
+      expect(useShare.getState().target?.dirName).toBe("weekly-report");
+    });
+  });
+
   it("有来源标签时展示「来源 owner/repo」", async () => {
     seedIpc([view({ relation: "shared", sourceLabel: "vercel-labs/skills" })]);
     render(<MySkillsPage />);

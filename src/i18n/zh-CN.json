@@ -207,6 +207,7 @@
   "mine.stateBoth": "库里有新版,本地也有改动",
   "mine.stateDraft": "尚未分享",
   "mine.stateNotHere": "不在这台电脑",
+  "mine.stateNoBaseline": "没有获取记录,无法判断是否一致",
   "mine.pull": "取回",
   "mine.pulling": "正在取回…",
   "mine.shareUpdate": "分享更新",

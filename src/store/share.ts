@@ -176,8 +176,10 @@ export const useShare = create<ShareState>((set, get) => ({
       await get().load();
       void useStoreIndex.getState().load(true);
       void useInstall.getState().refreshInstalled();
-      // 「我的技能」也要刷:直推进库的技能会当场被 core 纳入管理(M6 任务 5 的闭环),
-      // 不刷的话它仍挂在"其他工具装的"那一档、继续劝你去分享,侧边栏角标也算不对
+      // 「我的技能」也要刷:直推进库的技能会当场被 core 记账纳入
+      // (`share::adopt_into_management`,M6 任务 5 的闭环),不刷的话它在这一页
+      // 仍然显示成没有记账的样子(v6:relation 判到 shared/draft 却摆不出
+      // 「分享更新」那条真正对应的动作),侧边栏角标也算不对
       void useMySkills.getState().load();
     } catch (raw) {
       const error = toAppError(raw);

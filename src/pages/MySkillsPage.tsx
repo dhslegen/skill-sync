@@ -61,9 +61,11 @@ export function MySkillsPage() {
     return (slug: string) => map.get(slug) ?? slug;
   }, [index]);
 
-  // 草稿(relation === "draft")跳分享页并预选那个候选——分享页自己的 load()
-  // 只刷新 candidates,不碰 phase/target,所以在导航前把 begin() 定下来即可。
-  const goShareDraft = async (dirSlug: string) => {
+  // 跳分享页并预选那个候选——分享页自己的 load() 只刷新 candidates,不碰
+  // phase/target,所以在导航前把 begin() 定下来即可。两档共用:`draft`(还没
+  // 分享过)与 `noBaseline`(库里记我是作者,但没有安装记账、没法走
+  // `share_installed` 那条更新路径,只能走分享页的同名三分支重新推一次)。
+  const goShare = async (dirSlug: string) => {
     await useShare.getState().load();
     const candidate = useShare.getState().candidates?.find((c) => c.dirName === dirSlug);
     if (candidate) useShare.getState().begin(candidate);
@@ -155,7 +157,7 @@ export function MySkillsPage() {
                   repairing={repairBusy === skill.dirSlug}
                   onPull={() => void pull(skill.dirSlug)}
                   onShareUpdate={() => void shareUpdate(skill.dirSlug)}
-                  onShareDraft={() => void goShareDraft(skill.dirSlug)}
+                  onGoShare={() => void goShare(skill.dirSlug)}
                   onRepair={() => void repair(skill.dirSlug)}
                   onRemove={() => askRemove(skill.dirSlug)}
                 />
@@ -203,6 +205,7 @@ const SHARED_STATE_LABEL: Record<SharedState, MessageKey> = {
   both: "mine.stateBoth",
   draft: "mine.stateDraft",
   notHere: "mine.stateNotHere",
+  noBaseline: "mine.stateNoBaseline",
 };
 
 const HEALTH_LABEL: Record<Exclude<LinkHealth, "healthy">, MessageKey> = {
@@ -213,13 +216,17 @@ const HEALTH_LABEL: Record<Exclude<LinkHealth, "healthy">, MessageKey> = {
 };
 
 /**
- * 「我分享的」区块的一行:六状态机(`sharedState`)驱动主动作,状态本身
+ * 「我分享的」区块的一行:七状态机(`sharedState`)驱动主动作,状态本身
  * 替代了此前给作者自己技能显示的「已改动」徽标——`draft`/`both`/`localAhead`
  * 的状态文案已经把"哪边有改动"说清楚了,不需要再叠一个徽标说同一件事。
  *
  * `hasRecord`(`commitSha !== ""`)是判断"这一行有没有 `state.installed` 真实
  * 记账"的唯一信号——只有这样的行才谈得上「修复」「移除」(`skill_repair`/
- * `skill_remove` 都要求记账存在,没有就报 `FS_NOT_INSTALLED`)。
+ * `skill_remove` 都要求记账存在,没有就报 `FS_NOT_INSTALLED`)。**`noBaseline`
+ * 恰恰就是 `hasRecord` 为假的那一档**(没有记账就没有 `contentHash` 基线),
+ * 所以它与 `draft` 一样只能走「修复」「移除」以外的路——主动作是「分享更新」,
+ * 但走的是分享页(`onGoShare`),不是 `share_installed`(`onShareUpdate`):
+ * 后者一进门就要求记账存在,必撞 `FS_NOT_INSTALLED`。
  */
 function SharedRow({
   skill,
@@ -231,7 +238,7 @@ function SharedRow({
   repairing,
   onPull,
   onShareUpdate,
-  onShareDraft,
+  onGoShare,
   onRepair,
   onRemove,
 }: {
@@ -244,7 +251,7 @@ function SharedRow({
   repairing: boolean;
   onPull: () => void;
   onShareUpdate: () => void;
-  onShareDraft: () => void;
+  onGoShare: () => void;
   onRepair: () => void;
   onRemove: () => void;
 }) {
@@ -331,10 +338,24 @@ function SharedRow({
         {state === "draft" && (
           <button
             type="button"
-            onClick={onShareDraft}
+            onClick={onGoShare}
             className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90"
           >
             {t("mine.share")}
+          </button>
+        )}
+        {/* noBaseline:没有 state.installed 记账,`share_installed` 一进门就要求
+            记账存在,直调必撞 FS_NOT_INSTALLED——只能走分享页那条路(与 draft
+            共用 `onGoShare`),同名三分支会处理"远端已存在"。按钮文案用
+            「分享更新」(与 localAhead 那颗字面相同)是刻意的:两者都是"把本地
+            内容重新推一次",只是走的编排不同,用户不需要分辨。 */}
+        {state === "noBaseline" && (
+          <button
+            type="button"
+            onClick={onGoShare}
+            className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90"
+          >
+            {t("mine.shareUpdate")}
           </button>
         )}
         {(state === "notHere" || state === "remoteAhead" || state === "both") && (
@@ -349,11 +370,12 @@ function SharedRow({
         )}
         {/* 与既有 Row 的「分享改动」同款闸门(`localModified && !sourceRemoved &&
             !libraryRemoved`):来源没了,回推没有去处,摆出来就是引诱用户撞
-            必然报错的按钮。这是 `localAhead` 六状态里唯一摆得出这个按钮、
+            必然报错的按钮。这是 `localAhead` 七状态里唯一摆得出这个按钮、
             同时又可能撞上来源问题的一档——`remoteAhead`/`both` 已经被
             `hasUpdate` 的早退挡住(sourceRemoved/libraryRemoved 时它恒返回
             false,进不了这两档),`notHere` 的这两个标志在 core 侧恒为
-            false(见 `commands::InstalledSkillView.local_present` 注释)。
+            false(见 `commands::InstalledSkillView.local_present` 注释),
+            `noBaseline` 走的是分享页而不是这条闸门守着的 `share_installed`。
             状态文字「有改动未分享」仍然是实话,保留;上面的徽标已经把
             "为什么没有按钮"说清楚了。 */}
         {state === "localAhead" && !skill.sourceRemoved && !skill.libraryRemoved && (
