@@ -139,11 +139,13 @@ export const useInstall = create<InstallState>((set, get) => ({
       set({
         installed: new Map(
           list
-            // 「我的技能」还会返回未认领与**本地新建**两档,它们不是从任何技能库
-            // 获取的。混进这张 map,商店里的同名技能就会显示「已启用」——那是假话,
-            // 用户装的是自己那个,不是库里这个。真去点获取时 core 的预检会认出
-            // canonical 里有目录但没记账(外来目录档)并要求拍板,那才是对的路径。
-            .filter((s) => !s.unclaimed && !s.localOnly)
+            // 草稿(relation === "draft")不是从任何技能库获取的。混进这张 map,
+            // 商店里的同名技能就会显示「已启用」——那是假话,用户装的是自己那个,
+            // 不是库里这个。真去点获取时 core 的预检会认出 canonical 里有目录但
+            // 没记账(外来目录档)并要求拍板,那才是对的路径。
+            // `!s.localPresent`(v6:库里记的分享者是我、但这台电脑没本体)同理要
+            // 排除——这台电脑上什么都没有,"已启用"更是无从谈起。
+            .filter((s) => s.relation !== "draft" && s.localPresent)
             .map((s) => [
             s.dirSlug,
             {

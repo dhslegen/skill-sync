@@ -13,17 +13,15 @@ import {
   agentsDetected,
   installedList,
   isAppError,
-  skillClaim,
   skillRemove,
   skillRepair,
   skillShareChanges,
-  skillUnclaim,
   type AppError,
   type InstalledSkillView,
   type ShareMode,
 } from "@/lib/ipc";
 import { remoteHashOf } from "@/lib/update";
-import { useInstall } from "@/store/install";
+import { defaultSelectedAgents, useInstall } from "@/store/install";
 
 export type RemovePhase = "idle" | "confirming" | "confirmingForce" | "busy";
 
@@ -44,7 +42,9 @@ interface MySkillsState {
   repairBusy: string | null;
   repairError: AppError | null;
 
-  /** 「分享改动」:正在推的技能 / 刚推完的结果 / 错误。 */
+  /** 「分享改动」/「分享更新」:正在推的技能 / 刚推完的结果 / 错误。
+   *  两个动作共用这一组状态——它们都是同一个底层动作(把本地改动推回来源),
+   *  只是「我分享的」区块换了个更贴切的说法。 */
   shareBusy: string | null;
   shareDone: { dirSlug: string; mode: ShareMode } | null;
   shareError: AppError | null;
@@ -54,10 +54,6 @@ interface MySkillsState {
    * 没有「强行覆盖」——覆盖别人的改动不该是一个按钮。
    */
   shareConflict: { dirSlug: string; historyUrl: string | null } | null;
-
-  /** 「认领」(M3 任务 6):正在认领的技能 / 错误。 */
-  claimBusy: string | null;
-  claimError: AppError | null;
 
   load: () => Promise<void>;
   askRemove: (dirSlug: string) => void;
@@ -73,26 +69,32 @@ interface MySkillsState {
   cancelRepair: () => void;
   confirmRepair: () => Promise<void>;
 
-  /** 把改过的已装技能推回来源仓库(冲突弹窗承诺的"分享改动"通道)。 */
+  /** 把改过的已装技能推回来源仓库(冲突弹窗承诺的"分享改动"通道,「我安装的」区块用)。 */
   shareChanges: (dirSlug: string) => Promise<void>;
+
+  /**
+   * 「我分享的」区块 · localAhead 状态的主动作:把本地改动分享更新回库里
+   * (v6 任务 4)。底层与 `shareChanges` 同一条编排——本地有账的技能,把改动
+   * 推回来源就是推回来源,分区只是换了个更贴切的说法,不该另写一份逻辑。
+   */
+  shareUpdate: (dirSlug: string) => Promise<void>;
+
+  /**
+   * 「我分享的」区块 · notHere/remoteAhead/both 状态的主动作:取回这一版
+   * (v6 任务 4)。底层复用获取流程的 `beginUpdate`——`both` 时 core 的 precheck
+   * 会返回 `needsDecision`(`Mine` 档),自然落进全局挂载的 `ConflictDialog`,
+   * 不需要这里另开一条弹窗通道。
+   *
+   * `notHere`(这台电脑从没装过)时账上没有"上次启用了哪些工具"可沿用,
+   * 退化为按默认规则(已探测到、未在设置里禁用的)勾选,而不是取回后
+   * 一个 agent 都不关联——那等同于把"取回"做成一个半成品动作。
+   */
+  pull: (dirSlug: string) => Promise<void>;
 
   /** 冲突档的确认:改动走提交审核(带 forceReview 的第二跳,绝不直推)。 */
   confirmShareReview: () => Promise<void>;
   /** 冲突档的取消:什么都不发,改动留在本地。 */
   cancelShareConflict: () => void;
-
-  /**
-   * 纳入管理(M3 任务 6 的"认领",M6 任务 4 改名):把其他工具装的技能交给本 app 管。
-   * **界面只在 `claimBindable` 为真时摆这个动作**——绑不上技能库的话纳入只多出
-   * "修复关联"与"移除",那不值得让用户点(判定在 core,见 acquire::resolve_binding)。
-   */
-  claim: (dirSlug: string) => Promise<void>;
-
-  /**
-   * 移出管理:纳入管理的精确逆操作,只删记账,磁盘一个字节不动。
-   * 不需要二次确认——它无损,而弹窗会让人以为要删东西。
-   */
-  unclaim: (dirSlug: string) => Promise<void>;
 }
 
 function toAppError(raw: unknown): AppError {
@@ -116,8 +118,6 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   shareDone: null,
   shareError: null,
   shareConflict: null,
-  claimBusy: null,
-  claimError: null,
 
   load: async () => {
     set({ loading: true, loadError: null });
@@ -181,36 +181,31 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     await runRepair(target, true, set, get);
   },
 
-  claim: async (dirSlug) => {
-    set({ claimBusy: dirSlug, claimError: null });
-    try {
-      await skillClaim({ dirSlug });
-      await get().load();
-      // 纳入管理后它成了正式的已装技能,商店卡片状态也要跟上
-      await useInstall.getState().refreshInstalled();
-    } catch (raw) {
-      set({ claimError: toAppError(raw) });
-    } finally {
-      set({ claimBusy: null });
-    }
-  },
-
-  unclaim: async (dirSlug) => {
-    set({ claimBusy: dirSlug, claimError: null });
-    try {
-      await skillUnclaim({ dirSlug });
-      await get().load();
-      // 它不再由本 app 管理了,商店卡片的「已启用」也要跟着撤下
-      await useInstall.getState().refreshInstalled();
-    } catch (raw) {
-      set({ claimError: toAppError(raw) });
-    } finally {
-      set({ claimBusy: null });
-    }
-  },
-
   shareChanges: async (dirSlug) => {
     await runShareChanges(dirSlug, false, set, get);
+  },
+
+  shareUpdate: async (dirSlug) => {
+    await runShareChanges(dirSlug, false, set, get);
+  },
+
+  pull: async (dirSlug) => {
+    const skill = get().list?.find((s) => s.dirSlug === dirSlug);
+    if (!skill) return;
+    const repo = skill.sourceRepo ? `${skill.sourceOwner}/${skill.sourceRepo}` : undefined;
+    let agentIds = skill.agents;
+    if (agentIds.length === 0) {
+      // 这台电脑从没装过(notHere):账上没有"上次启用了哪些工具"可沿用,
+      // 退化为按默认规则(已探测到、未在设置里禁用的)勾选——不这样做的话
+      // 取回会静默装出一个不关联任何 AI 工具的技能,等于半成品。
+      try {
+        const detected = await agentsDetected();
+        agentIds = defaultSelectedAgents(detected.agents);
+      } catch {
+        // 拿不到检测结果就先把本体取回来,关联可以之后再补
+      }
+    }
+    await useInstall.getState().beginUpdate(dirSlug, agentIds, skill.registryId || undefined, repo);
   },
 
   confirmShareReview: async () => {
@@ -285,6 +280,12 @@ async function runRepair(
  * (M4 任务 1)同一个源下有多份索引,商店切到设计部技能库时它的内容说明不了
  * 主库装的技能;两库有同名技能时按源比会直接比出错误结论。
  * 来源已移除的技能没有更新去处,永不亮"有新版本"。
+ *
+ * **v6 任务 4**:早退分支从 `skill.localOnly || skill.unclaimed`(两个字段已删)
+ * 改成 `skill.relation === "draft"`——草稿没有来源,同样没有更新去处。
+ * `relation === "shared"` 且远端指纹不等时**不再被特殊排除**:它照常计入
+ * "有更新",页内(`sharedState` 的 `remoteAhead`/`both`)与侧边栏角标
+ * (`updateCount` 逐条走这个函数)因此是同一份判定——`CLAUDE.md` 记的既有铁规。
  */
 export function hasUpdate(
   skill: InstalledSkillView,
@@ -300,10 +301,9 @@ export function hasUpdate(
 ): boolean {
   // 来源没了、或这个技能库不在列表里,更新都没有去处:摆出「更新」就是引诱用户
   // 去点一个必然报 REPO_UNKNOWN_REPO 的按钮(M4 任务 2)。
-  // 本地新建的与未认领的压根没有来源,同理(M4 任务 6a)——**显式判掉,
-  // 不靠"空串恰好对不上 index"碰运气**。
+  // 草稿压根没有来源,同理(v6 任务 4)——**显式判掉,不靠"空串恰好对不上 index"碰运气**。
   if (!index || skill.sourceRemoved || skill.libraryRemoved) return false;
-  if (skill.localOnly || skill.unclaimed) return false;
+  if (skill.relation === "draft") return false;
   if (
     skill.registryId !== index.registryId ||
     skill.sourceOwner !== index.owner ||
@@ -321,7 +321,7 @@ export function hasUpdate(
  * 侧边栏角标的计数(M6 任务 3)。
  *
  * **必须逐条走 `hasUpdate`**,不另写一套判定——角标与页内徽标是同一件事的两个说法,
- * 口径一漂就会出现"角标说 3、点进去只有 1"。本地新建/未认领/来源已移除三档由
+ * 口径一漂就会出现"角标说 3、点进去只有 1"。草稿/来源已移除两档由
  * `hasUpdate` 统一判掉:它们没有更新去处,计进角标就是虚报。
  */
 export function updateCount(
@@ -330,4 +330,34 @@ export function updateCount(
 ): number {
   if (!list) return 0;
   return list.filter((skill) => hasUpdate(skill, index)).length;
+}
+
+export interface MySkillsSection {
+  key: "shared" | "installed";
+  title: string;
+  items: InstalledSkillView[];
+}
+
+/**
+ * 「我的技能」页的两分区(v6 任务 4,取代此前的三分区)。
+ *
+ * `relation === "draft"` 归并进「我分享的」——它是"还没分享出去的草稿",
+ * 与"库里记的分享者是我"共享同一个心智:这两档都是"这是我的技能",
+ * 只是有没有已经进库的区别,分区标题即区分,不需要再拆一档。
+ * 空分区被滤掉,调用方不用再判。
+ */
+export function sections(list: InstalledSkillView[]): MySkillsSection[] {
+  const all: MySkillsSection[] = [
+    {
+      key: "shared",
+      title: t("mine.sectionShared"),
+      items: list.filter((s) => s.relation === "shared" || s.relation === "draft"),
+    },
+    {
+      key: "installed",
+      title: t("mine.sectionInstalled"),
+      items: list.filter((s) => s.relation === "installed"),
+    },
+  ];
+  return all.filter((sec) => sec.items.length > 0);
 }

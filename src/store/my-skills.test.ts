@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { hasUpdate, updateCount, useMySkills } from "./my-skills";
+import { hasUpdate, sections, updateCount, useMySkills } from "./my-skills";
 import { useInstall } from "@/store/install";
 import type { InstalledSkillView } from "@/lib/ipc";
 
@@ -21,10 +21,9 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   registryId: "company",
   sourceRemoved: false,
   libraryRemoved: false,
-  unclaimed: false,
-  claimBindable: false,
-  localOnly: false,
-  claimed: false,
+  relation: "installed",
+  localPresent: true,
+  sourceLabel: "skills/skills",
   links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
   ...over,
 });
@@ -344,7 +343,7 @@ describe("更新判定与更新动作", () => {
     expect(hasUpdate(view({ sourceRemoved: true }), idx("sha256:newer"))).toBe(false);
   });
 
-  it("角标计数与逐条判定同口径,不亮更新的三档不计入", () => {
+  it("角标计数与逐条判定同口径,不亮更新的两档不计入", () => {
     const index = {
       registryId: "company",
       owner: "skills",
@@ -352,17 +351,15 @@ describe("更新判定与更新动作", () => {
       skills: [
         { dirSlug: "weekly-report", contentHash: "sha256:newer" },
         { dirSlug: "code-review", contentHash: "sha256:newer" },
-        { dirSlug: "local-thing", contentHash: "sha256:newer" },
-        { dirSlug: "from-npx", contentHash: "sha256:newer" },
+        { dirSlug: "my-draft", contentHash: "sha256:newer" },
         { dirSlug: "orphan", contentHash: "sha256:newer" },
       ],
     };
     const list = [
       view({ dirSlug: "weekly-report" }),
       view({ dirSlug: "code-review" }),
-      // 下面三档都没有更新去处,摆进角标就是虚报
-      view({ dirSlug: "local-thing", localOnly: true }),
-      view({ dirSlug: "from-npx", unclaimed: true }),
+      // 下面两档都没有更新去处,摆进角标就是虚报
+      view({ dirSlug: "my-draft", relation: "draft" }),
       view({ dirSlug: "orphan", sourceRemoved: true }),
       // 已经是最新的那个不计
       view({ dirSlug: "up-to-date", contentHash: "sha256:newer" }),
@@ -372,6 +369,16 @@ describe("更新判定与更新动作", () => {
     // 索引还没加载出来:不猜,报 0
     expect(updateCount(list, null)).toBe(0);
     expect(updateCount(null, index)).toBe(0);
+  });
+
+  it("relation === shared 且远端指纹不等时照常计入角标(v6:角标与页内 sharedState 同一份判定)", () => {
+    const index = {
+      registryId: "company",
+      owner: "skills",
+      repo: "skills",
+      skills: [{ dirSlug: "weekly-report", contentHash: "sha256:newer" }],
+    };
+    expect(updateCount([view({ relation: "shared" })], index)).toBe(1);
   });
 
   it("角标必须比到技能库,不能按源比(同源两库有同名技能)", () => {
@@ -496,36 +503,111 @@ describe("更新判定与更新动作", () => {
     expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_install")).toHaveLength(1);
   });
 
-  it("移出管理只发一条命令,不碰移除那条破坏性通道", async () => {
-    invoke.mockImplementation(async (cmd) => (cmd === "installed_list" ? [] : AGENTS));
-
-    await useMySkills.getState().unclaim("weekly-report");
-
-    expect(invoke).toHaveBeenCalledWith("skill_unclaim", {
-      args: { dirSlug: "weekly-report" },
+  it("取回(pull):有本体的行沿用账上已启用的工具,不再问一遍", async () => {
+    useMySkills.setState({
+      list: [view({ relation: "shared", agents: ["claude-code"], registryId: "company", sourceOwner: "skills", sourceRepo: "skills" })],
     });
-    // 移除会解链、删本体、清 lock 条目——移出管理绝不能顺手走那条路
-    expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_remove")).toBe(false);
-    // 列表与商店卡片状态都要跟上
-    expect(invoke.mock.calls.filter(([cmd]) => cmd === "installed_list").length).toBeGreaterThan(0);
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_install")
+        return {
+          outcome: "installed",
+          report: { dirName: "weekly-report", canonicalDir: "/c", links: [] },
+          localKept: false,
+          lock: "written",
+        };
+      return AGENTS;
+    });
+
+    await useMySkills.getState().pull("weekly-report");
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_install");
+    expect(call?.[1].args.agentIds).toEqual(["claude-code"]);
+    expect(call?.[1].args.registryId).toBe("company");
+    expect(call?.[1].args.repo).toBe("skills/skills");
+    // 沿用账上的工具,不该再问一遍
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "agents_detected")).toBe(false);
   });
 
-  it("移出管理失败要把原因摆出来,不静默", async () => {
+  it("取回(pull):这台电脑从没装过(notHere,agents 为空)时按默认规则勾选", async () => {
+    useMySkills.setState({
+      list: [
+        view({
+          relation: "shared",
+          localPresent: false,
+          agents: [],
+          registryId: "company",
+          sourceOwner: "skills",
+          sourceRepo: "skills",
+        }),
+      ],
+    });
     invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_unclaim") {
-        throw { code: "CONFLICT_NOT_CLAIMED", message: "这个技能是从技能库获取的,不能取消认领" };
-      }
-      return cmd === "installed_list" ? [] : AGENTS;
+      if (cmd === "agents_detected")
+        return {
+          agents: [
+            { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
+            { name: "trae", displayName: "Trae", installed: true, globalSkillsDir: "~/.trae/skills", isUniversal: false, needsLink: true, disabled: true },
+          ],
+          canonicalDir: "~/.agents/skills",
+        };
+      if (cmd === "skill_install")
+        return {
+          outcome: "installed",
+          report: { dirName: "weekly-report", canonicalDir: "/c", links: [] },
+          localKept: false,
+          lock: "written",
+        };
+      return AGENTS;
     });
 
-    await useMySkills.getState().unclaim("weekly-report");
+    await useMySkills.getState().pull("weekly-report");
 
-    expect(useMySkills.getState().claimError?.code).toBe("CONFLICT_NOT_CLAIMED");
-    expect(useMySkills.getState().claimBusy).toBeNull();
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_install");
+    // 已探测到、未在设置里禁用的才进默认勾选:trae 被禁用不该出现
+    expect(call?.[1].args.agentIds).toEqual(["claude-code"]);
+  });
+
+  it("分享更新(shareUpdate):走的是 skill_share_changes,与「我安装的」区块的分享改动同一条编排", async () => {
+    useMySkills.setState({ list: [view({ relation: "shared", localModified: true })] });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_share_changes")
+        return { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null };
+      if (cmd === "installed_list") return [view({ relation: "shared", localModified: true })];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().shareUpdate("weekly-report");
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
+    expect(call?.[1].args.dirSlug).toBe("weekly-report");
+    expect(useMySkills.getState().shareDone).toEqual({ dirSlug: "weekly-report", mode: "pushed" });
   });
 });
 
-describe("hasUpdate 对没有来源的两档", () => {
+describe("sections(两分区)", () => {
+  it("shared 与 draft 落同一区,installed 落另一区", () => {
+    const list = [
+      view({ dirSlug: "a", relation: "shared" }),
+      view({ dirSlug: "b", relation: "draft" }),
+      view({ dirSlug: "c", relation: "installed" }),
+    ];
+
+    const secs = sections(list);
+
+    expect(secs).toHaveLength(2);
+    expect(secs[0].key).toBe("shared");
+    expect(secs[0].items.map((s) => s.dirSlug)).toEqual(["a", "b"]);
+    expect(secs[1].key).toBe("installed");
+    expect(secs[1].items.map((s) => s.dirSlug)).toEqual(["c"]);
+  });
+
+  it("空分区不出现在结果里", () => {
+    const secs = sections([view({ relation: "installed" })]);
+    expect(secs.map((s) => s.key)).toEqual(["installed"]);
+  });
+});
+
+describe("hasUpdate 对草稿(relation === draft)", () => {
   const index = {
     registryId: "company",
     owner: "skills",
@@ -533,14 +615,12 @@ describe("hasUpdate 对没有来源的两档", () => {
     skills: [{ dirSlug: "weekly-report", contentHash: "sha256:remote" }],
   };
 
-  it("本地新建的永远没有更新——它不来自任何技能库", () => {
+  it("草稿永远没有更新——它不来自任何技能库", () => {
     // 显式判掉,不靠"空 registryId 恰好对不上 index"碰运气
-    expect(hasUpdate(view({ localOnly: true, registryId: "", contentHash: "" }), index)).toBe(false);
+    expect(
+      hasUpdate(view({ relation: "draft", registryId: "", contentHash: "" }), index),
+    ).toBe(false);
     // 就算某天空字段被填上,也不该亮更新
-    expect(hasUpdate(view({ localOnly: true }), index)).toBe(false);
-  });
-
-  it("未认领的同理", () => {
-    expect(hasUpdate(view({ unclaimed: true }), index)).toBe(false);
+    expect(hasUpdate(view({ relation: "draft" }), index)).toBe(false);
   });
 });

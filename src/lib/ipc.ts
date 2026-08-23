@@ -334,7 +334,18 @@ export type Precheck =
   | { status: "locallyModified"; installedSha: string }
   | { status: "foreign"; origin: ForeignOrigin }
   /** 同名技能已装自另一个技能库(M4 一源多仓):不是更新,是替换。 */
-  | { status: "otherLibrary"; installedSha: string; sourceOwner: string; sourceRepo: string };
+  | { status: "otherLibrary"; installedSha: string; sourceOwner: string; sourceRepo: string }
+  /**
+   * 技能库里记的分享者就是当前登录的这个人(v6 任务 3)。
+   *
+   * 取代了作者在自己技能上会看到的 `foreign`/`locallyModified`/`managed{upToDate:false}`
+   * 三种说法——它们讲的是"这东西是怎么来的",而作者要的是"我这边和库里哪边新"。
+   * `localChanged`:本地本体与账上基线不符;`remoteChanged`:库里这一版与账上基线不符。
+   *
+   * **完整的三选一变体是任务 5 的范围**——本任务只保证类型存在、且不会落进
+   * `foreign` 分支显示那句「不是本应用安装的」假话(见 `ConflictDialog`)。
+   */
+  | { status: "mine"; localChanged: boolean; remoteChanged: boolean };
 
 export type ForeignOrigin = { kind: "npxSkills"; source: string } | { kind: "unknown" };
 
@@ -392,45 +403,33 @@ export interface InstalledSkillView {
   /** 源还在,但这个技能库不在源的库列表里(M4)。去向与 sourceRemoved 相同,
    *  但**说法不同**——源好好的,说成「来源已移除」是假话。 */
   libraryRemoved: boolean;
-  /** 其他工具装的、尚未纳入管理(M6 任务 4 起用这个说法,原称"认领")。 */
-  unclaimed: boolean;
   /**
-   * 仅对 `unclaimed` 有意义:纳入管理后绑不绑得上某个技能库。
+   * 技能与「我」的关系(v6,`ownership::relation` 是**唯一一处**判定实现):
+   * `shared` = 技能库里记的分享者是我;`installed` = 其余(含未登录、库里没写
+   * 作者、别人分享的);`draft` = 只在本地、库里没有这个技能。
    *
-   * false 时**不摆「纳入管理」**——绑不上的话纳入只多出"修复关联"与"移除",
-   * 让用户点一个没有意义的按钮。改摆「分享到技能库」,那才是真正的出路。
+   * **取代了此前的 `unclaimed`/`claimBindable`/`claimed`/`localOnly` 四个字段**
+   * ——「纳入管理 / 移出管理」连同 `skillClaim`/`skillUnclaim` 一并撤销。
+   * 前端按这一个字段分两区(「我分享的」/「我安装的」),`draft` 归并进「我分享的」。
    */
-  claimBindable: boolean;
+  relation: "shared" | "installed" | "draft";
   /**
-   * 本地技能:自己新建的、或手放进 canonical 的。没有来源、没有关联记账。
+   * 这台电脑上有没有这个技能的本体文件。
    *
-   * 能做的事诚实地少:看详情 / 在访达中打开 / 去分享。
-   * **更新、修复关联、分享改动、移除都要抑制**——它没有来源,也没建过关联。
+   * 对 `relation === "installed"` 与本地扫到的 `shared` 恒为 `true`;
+   * **只对 `shared` 才可能是 `false`**——库里记的分享者是我、但这台电脑上没有文件
+   * (换电脑 / 目录被删 / 绕过 app 直推)。界面据此显示「不在这台电脑」,
+   * 主动作从「已同步/分享更新」换成「取回」。
    */
-  localOnly: boolean;
-  /** 这条记账是纳入管理来的,因而可以「移出管理」(只删记账,磁盘一个字节不动)。 */
-  claimed: boolean;
+  localPresent: boolean;
+  /**
+   * 归一化后的来源展示:`owner/repo` 或域名。`null` = 不摆来源行(本地新建、
+   * 从未分享过的草稿本就没有来源)。判据见 core `ownership::source_label`。
+   */
+  sourceLabel: string | null;
   /** 技能本体是否还在。false = 残缺,界面要正面说出来。 */
   links: LinkHealthReport[];
 }
-
-/**
- * 移出管理:纳入管理的**精确逆操作**,只删记账,磁盘/链接/lock 一个字节都不动。
- *
- * 与「移除」的区别就是这条命令存在的理由——移除会解链、删本体、清 lock 条目。
- */
-export const skillUnclaim = (args: { dirSlug: string }) =>
-  call<void>("skill_unclaim", { args });
-
-export interface ClaimReport {
-  dirSlug: string;
-  adoptedLinks: number;
-  bound: boolean;
-}
-
-/** 认领上游(npx skills)装的技能:纳入本 app 管理,lock 一个字节不动。 */
-export const skillClaim = (args: { dirSlug: string }) =>
-  call<ClaimReport>("skill_claim", { args });
 
 export type UnlinkResult =
   | { status: "unlinked" }
@@ -609,6 +608,18 @@ export const skillShareChanges = (args: {
   /** 冲突确认后的第二跳:跳过远端变更检测,强制走提交审核。 */
   forceReview?: boolean;
 }) => call<ShareInstalledOutcome>("skill_share_changes", { args });
+
+/**
+ * 「作者未登记 · 这是我分享的」:把当前登录身份登记进技能库根的作者文件(v6 任务 3)。
+ *
+ * 走带凭证的写链路,身份取自登录态,没登录会报 `AUTH_REQUIRED`。
+ */
+export const skillClaimAttribution = (args: {
+  dirSlug: string;
+  registryId?: string;
+  /** 目标技能库的寻址键 `owner/repo`,缺省 = 该源主库。 */
+  repo?: string;
+}) => call<ShareOutcome>("skill_claim_attribution", { args });
 
 // ============================================================ 技能广场(M9 任务 1)
 // 与 src-tauri/src/core/plaza.rs 的 PlazaSkillCard 一一对应(camelCase)。

@@ -47,6 +47,10 @@ export function ConflictDialog() {
   // 装自另一个技能库:它**是**本应用装的,所以既不能套"改过本体"的三选
   // (没有改动可保留),也不能套外来目录那句"不是本应用安装的"(那是假话)。
   const otherLibrary = precheck.status === "otherLibrary" ? precheck : null;
+  // 库里记的分享者就是我(v6 任务 3):它**同样**不能套"不是本应用安装的"那句假话
+  // ——完整的三选一变体(保留我的/取回库里的/看看对方改了什么)是任务 5 的范围,
+  // 这里只给一个中性的最小兜底,不落进 foreign 分支显示错误文案。
+  const mine = precheck.status === "mine" ? precheck : null;
 
   return (
     <div className="fixed inset-0 z-70 grid place-items-center bg-[rgba(15,14,12,.35)] backdrop-blur-[2px]">
@@ -61,7 +65,9 @@ export function ConflictDialog() {
             ? t("conflict.modifiedTitle")
             : otherLibrary
               ? t("conflict.otherLibraryTitle")
-              : t("conflict.foreignTitle")}
+              : mine
+                ? t("conflict.mineTitle")
+                : t("conflict.foreignTitle")}
         </h2>
         <p className="mt-1.5 text-[12.5px] leading-[1.6] text-text-2">
           {modified
@@ -71,9 +77,11 @@ export function ConflictDialog() {
                   name,
                   library: `${otherLibrary.sourceOwner}/${otherLibrary.sourceRepo}`,
                 })
-              : precheck.status === "foreign" && precheck.origin.kind === "npxSkills"
-                ? t("conflict.foreignBodyNpx", { name, source: precheck.origin.source })
-                : t("conflict.foreignBodyUnknown", { name })}
+              : mine
+                ? t("conflict.mineBody", { name })
+                : precheck.status === "foreign" && precheck.origin.kind === "npxSkills"
+                  ? t("conflict.foreignBodyNpx", { name, source: precheck.origin.source })
+                  : t("conflict.foreignBodyUnknown", { name })}
         </p>
 
         <div className="mt-4 flex flex-col gap-2">
@@ -107,6 +115,10 @@ export function ConflictDialog() {
               danger
               onClick={() => void run("overwrite")}
             />
+          ) : mine ? (
+            // 完整的三选一变体(保留我的/取回库里的/看看对方改了什么)是任务 5 的范围。
+            // 这里只兜住"不显示错误文案",不摆任何选项——下方仅剩「取消」。
+            null
           ) : (
             // 外来目录没有"你的改动"可保留,所以只有替换与取消两条路,
             // 且默认落在取消——绝不静默替换用户从别处装的东西。

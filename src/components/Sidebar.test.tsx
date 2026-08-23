@@ -24,10 +24,9 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   registryId: "company",
   sourceRemoved: false,
   libraryRemoved: false,
-  unclaimed: false,
-  claimBindable: false,
-  localOnly: false,
-  claimed: false,
+  relation: "installed",
+  localPresent: true,
+  sourceLabel: "skills/skills",
   links: [],
   ...over,
 });

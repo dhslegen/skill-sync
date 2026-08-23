@@ -3,10 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MySkillsPage } from "./MySkillsPage";
-import type { InstalledSkillView } from "@/lib/ipc";
+import type { InstalledSkillView, ShareCandidate } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { useMySkills } from "@/store/my-skills";
+import { useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
 
@@ -27,26 +28,27 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   registryId: "company",
   sourceRemoved: false,
   libraryRemoved: false,
-  unclaimed: false,
-  claimBindable: false,
-  localOnly: false,
-  claimed: false,
+  relation: "installed",
+  localPresent: true,
+  sourceLabel: "skills/skills",
   links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
   ...over,
 });
 
+const AGENT_LIST = {
+  agents: [
+    { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
+    { name: "cursor", displayName: "Cursor", installed: true, globalSkillsDir: "~/.agents/skills", isUniversal: true, needsLink: false, disabled: false },
+  ],
+  canonicalDir: "~/.agents/skills",
+};
+
 /** 页面挂载即 load(),测试数据从 mock 的 IPC 里来——绕过它去 setState 会被 load 的结果冲掉。 */
-function seedIpc(list: InstalledSkillView[]) {
+function seedIpc(list: InstalledSkillView[], extra: Record<string, unknown> = {}) {
   invoke.mockImplementation(async (cmd: string) => {
     if (cmd === "installed_list") return list;
-    if (cmd === "agents_detected")
-      return {
-        agents: [
-          { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
-          { name: "cursor", displayName: "Cursor", installed: true, globalSkillsDir: "~/.agents/skills", isUniversal: true, needsLink: false, disabled: false },
-        ],
-        canonicalDir: "~/.agents/skills",
-      };
+    if (cmd === "agents_detected") return AGENT_LIST;
+    if (cmd in extra) return extra[cmd];
     return null;
   });
 }
@@ -84,6 +86,21 @@ function seedIndex(remoteHash = "sha256:mine") {
   });
 }
 
+function shareCandidate(over: Partial<ShareCandidate> = {}): ShareCandidate {
+  return {
+    dirName: "my-draft",
+    path: "/canonical/my-draft",
+    inCanonical: true,
+    origin: { kind: "local" },
+    name: "我的草稿",
+    description: null,
+    problem: null,
+    shared: null,
+    dirNameUsable: true,
+    ...over,
+  };
+}
+
 function reset() {
   invoke.mockReset();
   seedIpc([]);
@@ -101,10 +118,24 @@ function reset() {
     shareBusy: null,
     shareDone: null,
     shareError: null,
+    shareConflict: null,
   });
-  useInstall.setState({ phase: "idle", dirSlug: null });
+  useInstall.setState({ phase: "idle", dirSlug: null, precheck: null });
   useStoreIndex.setState({ index: null });
   useUi.setState({ page: "mine" });
+  useShare.setState({
+    candidates: null,
+    scanError: null,
+    scanning: false,
+    phase: "idle",
+    target: null,
+    form: { shareName: "", displayName: "", description: "" },
+    targetRepo: null,
+    preview: "unknown",
+    staleNotice: false,
+    shareError: null,
+    done: null,
+  });
 }
 
 describe("我的技能页", () => {
@@ -156,62 +187,6 @@ describe("我的技能页", () => {
     expect(screen.queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
   });
 
-  it("其他工具装的、绑得上技能库:摆「纳入管理」,点了就纳入(M6 任务 4)", async () => {
-    const calls: string[] = [];
-    invoke.mockImplementation(async (cmd: string) => {
-      calls.push(cmd);
-      if (cmd === "installed_list")
-        return [
-          view({
-            dirSlug: "upstream-skill",
-            unclaimed: true,
-            claimBindable: true,
-            sourceOwner: "vercel-labs",
-            sourceRepo: "skills",
-            agents: [],
-            links: [],
-          }),
-        ];
-      if (cmd === "skill_claim") return { dirSlug: "upstream-skill", adoptedLinks: 1, bound: true };
-      if (cmd === "agents_detected") return { agents: [], canonicalDir: "~/.agents/skills" };
-      return [];
-    });
-    seedIndex();
-    render(<MySkillsPage />);
-
-    await screen.findByText("其他工具装的");
-    // 尚未纳入管理:更新/移除/分享改动都不该出现
-    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
-    const claimButton = screen.getByRole("button", { name: "纳入管理" });
-    await userEvent.click(claimButton);
-    await vi.waitFor(() => {
-      expect(calls).toContain("skill_claim");
-    });
-
-  });
-
-  it("其他工具装的、绑不上技能库:不摆「纳入管理」,给「分享到技能库」(M6 任务 4)", async () => {
-    // 绑不上时纳入管理只多出"修复关联"与"移除",换不来更新也换不来分享改动
-    // ——摆出来就是引诱用户点一个没有意义的按钮。真正的出路是先推进公司库。
-    seedIpc([
-      view({
-        dirSlug: "from-github",
-        unclaimed: true,
-        claimBindable: false,
-        sourceOwner: "vercel-labs",
-        sourceRepo: "skills",
-        agents: [],
-        links: [],
-      }),
-    ]);
-    render(<MySkillsPage />);
-
-    await screen.findByText("其他工具装的");
-    expect(screen.queryByRole("button", { name: "纳入管理" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "分享到技能库" }));
-    expect(useUi.getState().page).toBe("share");
-  });
-
   it("来源已移除:亮出徽标,且更新与分享改动都不再提供", async () => {
     // 索引有新版本、本体也有改动——正常情况下两个按钮都该在,
     // 但来源没了,更新与回推都没有去处,摆出来就是引诱用户撞错误
@@ -243,17 +218,13 @@ describe("我的技能页", () => {
 
   it("库里有新版本时出现更新按钮;点击沿用记账的工具直接更新", async () => {
     seedIndex("sha256:newer");
-    seedIpc([view({ agents: ["claude-code", "cursor"] })]);
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "installed_list") return [view({ agents: ["claude-code", "cursor"] })];
-      if (cmd === "skill_install")
-        return {
-          outcome: "installed",
-          report: { dirName: "weekly-report", canonicalDir: "/c", links: [] },
-          localKept: false,
-          lock: "written",
-        };
-      return { agents: [], canonicalDir: "" };
+    seedIpc([view({ agents: ["claude-code", "cursor"] })], {
+      skill_install: {
+        outcome: "installed",
+        report: { dirName: "weekly-report", canonicalDir: "/c", links: [] },
+        localKept: false,
+        lock: "written",
+      },
     });
     render(<MySkillsPage />);
 
@@ -263,22 +234,19 @@ describe("我的技能页", () => {
     expect([...call![1].args.agentIds].sort()).toEqual(["claude-code", "cursor"]);
   });
 
-  it("三档按分区展示:由技能库管理 → 本地创建 → 其他工具装的,固定顺序", async () => {
-    // M5 任务 2(用户拍板):彻底放弃徽标归类,改为分区;归类判据在 core
-    // (localOnly 来自文件系统扫描、unclaimed 来自 lock 文件,均为文件系统真相)
+  it("两分区固定顺序:我分享的 → 我安装的 → 装在项目里的", async () => {
     seedIpc([
-      view(),
-      view({ dirSlug: "my-draft", localOnly: true, agents: [], links: [] }),
-      view({ dirSlug: "upstream-skill", unclaimed: true, agents: [], links: [] }),
+      view({ dirSlug: "installed-one" }),
+      view({ dirSlug: "shared-one", relation: "shared" }),
+      view({ dirSlug: "draft-one", relation: "draft", agents: [], links: [], commitSha: "", contentHash: "" }),
     ]);
     render(<MySkillsPage />);
 
-    await screen.findByText("weekly-report");
+    await screen.findByText("installed-one");
     const headings = screen.getAllByRole("heading").map((h) => h.textContent);
-    // 第四区「装在项目里的」(v5)恒在最后:它按项目分组、数据源也不同
-    // (项目级真相在各项目的记账文件里),空的时候摆引导语而不是隐藏
-    // ——否则用户不知道有这条路。
-    expect(headings).toEqual(["由技能库管理", "本地创建", "其他工具装的", "装在项目里的"]);
+    // 「装在项目里的」(v5)恒在最后:它按项目分组、数据源也不同,
+    // 空的时候摆引导语而不是隐藏——否则用户不知道有这条路。
+    expect(headings).toEqual(["我分享的", "我安装的", "装在项目里的"]);
   });
 
   it("空分区不显示标题", async () => {
@@ -287,27 +255,22 @@ describe("我的技能页", () => {
 
     await screen.findByText("weekly-report");
     const headings = screen.getAllByRole("heading").map((h) => h.textContent);
-    expect(headings).toEqual(["由技能库管理", "装在项目里的"]);
+    expect(headings).toEqual(["我安装的", "装在项目里的"]);
   });
 
-  it("归类徽标(含 npx 警示色)彻底撤掉,分区标题即区分", async () => {
+  it("「纳入管理」「移出管理」「其他工具装的」三个字符串不再出现在 DOM(v6 撤销)", async () => {
     seedIpc([
-      view({ dirSlug: "my-draft", localOnly: true, agents: [], links: [] }),
-      view({ dirSlug: "upstream-skill", unclaimed: true, agents: [], links: [] }),
+      view({ dirSlug: "installed-one" }),
+      view({ dirSlug: "shared-one", relation: "shared" }),
+      view({ dirSlug: "draft-one", relation: "draft", agents: [], links: [], commitSha: "", contentHash: "" }),
+      view({ dirSlug: "not-here", relation: "shared", localPresent: false, agents: [], links: [], commitSha: "", contentHash: "", sourceLabel: null }),
     ]);
     render(<MySkillsPage />);
 
-    await screen.findByText("my-draft");
-    // 旧徽标靠 title 提示语辨认:它们不该再出现在任何行内
-    expect(
-      screen.queryByTitle("这个技能是在本机创建的,还没有分享到技能库。"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTitle("这个技能由命令行工具装入,纳入管理后就能在这里更新、修复与移除。"),
-    ).not.toBeInTheDocument();
-    // 「本地创建」只出现一次(分区标题),不再有同文本的行内徽标
-    expect(screen.getAllByText("本地创建")).toHaveLength(1);
-    expect(screen.getAllByText("其他工具装的")).toHaveLength(1);
+    await screen.findByText("installed-one");
+    expect(screen.queryByText("纳入管理")).not.toBeInTheDocument();
+    expect(screen.queryByText("移出管理")).not.toBeInTheDocument();
+    expect(screen.queryByText("其他工具装的")).not.toBeInTheDocument();
   });
 
   it("改过的技能带「已改动」徽标", async () => {
@@ -356,12 +319,8 @@ describe("我的技能页", () => {
   });
 
   it("改过的技能给「分享改动」按钮;点击把改动推回来源", async () => {
-    seedIpc([view({ localModified: true })]);
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "installed_list") return [view({ localModified: true })];
-      if (cmd === "skill_share_changes")
-        return { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null };
-      return { agents: [], canonicalDir: "" };
+    seedIpc([view({ localModified: true })], {
+      skill_share_changes: { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null },
     });
     render(<MySkillsPage />);
 
@@ -373,12 +332,8 @@ describe("我的技能页", () => {
   });
 
   it("分享改动撞上他人的新版:进冲突档等拍板,不当错误展示", async () => {
-    seedIpc([view({ localModified: true })]);
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "installed_list") return [view({ localModified: true })];
-      if (cmd === "skill_share_changes")
-        return { kind: "remoteChanged", historyUrl: "http://g/skills/skills/commits/x" };
-      return { agents: [], canonicalDir: "" };
+    seedIpc([view({ localModified: true })], {
+      skill_share_changes: { kind: "remoteChanged", historyUrl: "http://g/skills/skills/commits/x" },
     });
     render(<MySkillsPage />);
 
@@ -400,12 +355,13 @@ describe("我的技能页", () => {
   });
 
   it("改动走了评审:提示审核中,「已改动」徽标不消失", async () => {
-    seedIpc([view({ localModified: true })]);
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "installed_list") return [view({ localModified: true })];
-      if (cmd === "skill_share_changes")
-        return { kind: "submitted", mode: "reviewRequested", commitSha: "new", reviewUrl: "http://x/pulls/3" };
-      return { agents: [], canonicalDir: "" };
+    seedIpc([view({ localModified: true })], {
+      skill_share_changes: {
+        kind: "submitted",
+        mode: "reviewRequested",
+        commitSha: "new",
+        reviewUrl: "http://x/pulls/3",
+      },
     });
     render(<MySkillsPage />);
 
@@ -449,10 +405,163 @@ describe("我的技能页", () => {
     expect(invoke).not.toHaveBeenCalledWith("skill_local_detail", expect.anything());
     expect(useLocalDetail.getState().target).toBeNull();
   });
+});
 
-  it("尚未纳入管理的行同样能点开详情", async () => {
+describe("「我分享的」区块 · 六状态机(v6 任务 4)", () => {
+  beforeEach(reset);
+
+  it("notHere:库里有、这台电脑没有本体 —— 摆「取回」,真实点击后 invoke 带 skill_install", async () => {
+    seedIpc(
+      [
+        view({
+          relation: "shared",
+          localPresent: false,
+          agents: [],
+          links: [],
+          commitSha: "",
+          contentHash: "",
+          sourceLabel: null,
+        }),
+      ],
+      {
+        skill_install: {
+          outcome: "installed",
+          report: { dirName: "weekly-report", canonicalDir: "/c", links: [] },
+          localKept: false,
+          lock: "written",
+        },
+      },
+    );
+    render(<MySkillsPage />);
+
+    await screen.findByText("我分享的");
+    expect(screen.getByText("不在这台电脑")).toBeInTheDocument();
+    // 这台电脑从没装过:没有实体记账,「移除」「修复」都不该出现
+    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "取回" }));
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_install");
+    expect(call?.[1].args.dirSlug).toBe("weekly-report");
+    // notHere 时账上没有工具可沿用,退化为默认规则(已探测到、未禁用)
+    expect([...call![1].args.agentIds].sort()).toEqual(["claude-code", "cursor"]);
+  });
+
+  it("draft:尚未分享 —— 摆「分享」,点击跳分享页并预选那个候选", async () => {
+    seedIpc(
+      [
+        view({
+          dirSlug: "my-draft",
+          relation: "draft",
+          agents: [],
+          links: [],
+          commitSha: "",
+          contentHash: "",
+          sourceOwner: "",
+          sourceRepo: "",
+          registryId: "",
+          sourceLabel: null,
+        }),
+      ],
+      { share_candidates: [shareCandidate()], share_preview: "unknown" },
+    );
+    render(<MySkillsPage />);
+
+    await screen.findByText("尚未分享");
+    expect(screen.queryByRole("button", { name: "取回" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "分享" }));
+
+    expect(useUi.getState().page).toBe("share");
+    await vi.waitFor(() => {
+      expect(useShare.getState().target?.dirName).toBe("my-draft");
+    });
+    expect(useShare.getState().phase).toBe("form");
+  });
+
+  it("remoteAhead:库里有新版、本地没改 —— 摆「取回」", async () => {
+    seedIndex("sha256:newer");
+    seedIpc([view({ relation: "shared" })]);
+    render(<MySkillsPage />);
+
+    await screen.findByText("库里有新版");
+    expect(screen.getByRole("button", { name: "取回" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "分享更新" })).not.toBeInTheDocument();
+  });
+
+  it("localAhead:本地改过、库里没变 —— 摆「分享更新」,点击调用 skill_share_changes", async () => {
+    seedIndex(); // 与 view() 的 contentHash 一致 = 库里没变
+    seedIpc([view({ relation: "shared", localModified: true })], {
+      skill_share_changes: { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null },
+    });
+    render(<MySkillsPage />);
+
+    await screen.findByText("有改动未分享");
+    expect(screen.queryByRole("button", { name: "取回" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "分享更新" }));
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
+    expect(call?.[1].args.dirSlug).toBe("weekly-report");
+  });
+
+  it("both:库里有新版 + 本地也有改动 —— 摆「取回」,core 返回 needsDecision 时进冲突态", async () => {
+    seedIndex("sha256:newer");
+    seedIpc([view({ relation: "shared", localModified: true })], {
+      skill_install: {
+        outcome: "needsDecision",
+        precheck: { status: "mine", localChanged: true, remoteChanged: true },
+      },
+    });
+    render(<MySkillsPage />);
+
+    await screen.findByText("库里有新版,本地也有改动");
+    await userEvent.click(screen.getByRole("button", { name: "取回" }));
+
+    await vi.waitFor(() => {
+      expect(useInstall.getState().phase).toBe("conflict");
+    });
+    expect(useInstall.getState().precheck).toEqual({
+      status: "mine",
+      localChanged: true,
+      remoteChanged: true,
+    });
+  });
+
+  it("synced:没有改动、库里也没有新版 —— 不摆任何主动作按钮", async () => {
+    seedIndex(); // 与 view() 的 contentHash 一致
+    seedIpc([view({ relation: "shared" })]);
+    render(<MySkillsPage />);
+
+    await screen.findByText("已同步");
+    expect(screen.queryByRole("button", { name: "取回" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "分享更新" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "分享" })).not.toBeInTheDocument();
+    // 有真实记账(commitSha 非空)的行仍然可以移除
+    expect(screen.getByRole("button", { name: "移除" })).toBeInTheDocument();
+  });
+
+  it("有来源标签时展示「来源 owner/repo」", async () => {
+    seedIpc([view({ relation: "shared", sourceLabel: "vercel-labs/skills" })]);
+    render(<MySkillsPage />);
+
+    expect(await screen.findByText("来源 vercel-labs/skills")).toBeInTheDocument();
+  });
+
+  it("尚未分享/不在这台电脑的行同样能点开详情", async () => {
     useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
-    seedIpc([view({ unclaimed: true, sourceOwner: "vercel-labs", sourceRepo: "skills" })]);
+    seedIpc([
+      view({
+        relation: "shared",
+        localPresent: false,
+        agents: [],
+        links: [],
+        commitSha: "",
+        contentHash: "",
+        sourceLabel: null,
+      }),
+    ]);
     render(<MySkillsPage />);
 
     await userEvent.click(await screen.findByRole("button", { name: /weekly-report|周报生成/ }));
@@ -460,43 +569,5 @@ describe("我的技能页", () => {
     expect(invoke).toHaveBeenCalledWith("skill_local_detail", {
       args: { dirSlug: "weekly-report" },
     });
-  });
-
-  it("本地新建的技能出现在列表里,且不摆任何它做不到的动作", async () => {
-    // 页面叫「我的技能」,用户的直觉是"我拥有的技能"。新建的技能不进
-    // state.installed(会让 precheck 撒谎),但那不等于它不该出现在这一页。
-    seedIpc([view({ dirSlug: "my-draft", localOnly: true, registryId: "", contentHash: "" })]);
-    render(<MySkillsPage />);
-
-    expect(await screen.findByText("本地创建")).toBeInTheDocument();
-    // 它没有来源、没建过关联:这些按钮摆出来就是引诱用户点必然失败的东西
-    expect(screen.queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "修复关联" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "分享改动" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
-    // 能做的是去分享——那正是这类技能的下一步
-    expect(screen.getByRole("button", { name: "分享到技能库" })).toBeInTheDocument();
-  });
-
-  it("纳入管理来的才给「移出管理」,获取来的不给", async () => {
-    seedIpc([view({ claimed: true })]);
-    const { unmount } = render(<MySkillsPage />);
-    expect(await screen.findByRole("button", { name: "移出管理" })).toBeInTheDocument();
-    unmount();
-
-    seedIpc([view({ claimed: false })]);
-    render(<MySkillsPage />);
-    expect(await screen.findByRole("button", { name: "移除" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "移出管理" })).not.toBeInTheDocument();
-  });
-
-  it("点「移出管理」走的是 skill_unclaim,不是破坏性的 skill_remove", async () => {
-    seedIpc([view({ claimed: true })]);
-    render(<MySkillsPage />);
-
-    await userEvent.click(await screen.findByRole("button", { name: "移出管理" }));
-
-    expect(invoke).toHaveBeenCalledWith("skill_unclaim", { args: { dirSlug: "weekly-report" } });
-    expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_remove")).toBe(false);
   });
 });

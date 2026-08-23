@@ -220,7 +220,18 @@ describe("获取流程状态机", () => {
     invoke.mockImplementation(async (cmd) => {
       if (cmd === "agents_detected") return AGENTS;
       if (cmd === "installed_list")
-        return [{ dirSlug: "weekly-report", commitSha: "aaa1111", agents: [], installedAt: "", updatedAt: "", localModified: false }];
+        return [
+          {
+            dirSlug: "weekly-report",
+            commitSha: "aaa1111",
+            agents: [],
+            installedAt: "",
+            updatedAt: "",
+            localModified: false,
+            relation: "installed",
+            localPresent: true,
+          },
+        ];
       return { outcome: "installed", report: report(), localKept: false, lock: "written" };
     });
 
@@ -485,7 +496,10 @@ describe("已装记账的来源坐标(M4 一源多仓)", () => {
         sourceRepo: "design-skills",
         registryId: "company",
         sourceRemoved: false,
-        unclaimed: false,
+        libraryRemoved: false,
+        relation: "installed",
+        localPresent: true,
+        sourceLabel: "design/design-skills",
               links: [],
       },
     ]);
@@ -498,21 +512,31 @@ describe("已装记账的来源坐标(M4 一源多仓)", () => {
     expect(record?.sourceRepo).toBe("design-skills");
   });
 
-  it("refreshInstalled 必须排除未认领与本地新建两档", async () => {
-    // 它们不是从任何技能库获取的。混进这张 map,商店里的同名技能就会显示「已启用」
-    // ——那是假话,用户装的是自己那个,不是库里这个。
+  it("refreshInstalled 必须排除草稿(relation === draft)", async () => {
     invoke.mockResolvedValueOnce([
       { ...row("from-library"), registryId: "company", sourceOwner: "skills", sourceRepo: "skills" },
-      { ...row("npx-installed"), unclaimed: true },
-      { ...row("my-draft"), localOnly: true },
+      { ...row("my-draft"), relation: "draft" },
     ]);
 
     await useInstall.getState().refreshInstalled();
 
     const map = useInstall.getState().installed;
     expect(map.has("from-library")).toBe(true);
-    expect(map.has("npx-installed")).toBe(false);
     expect(map.has("my-draft")).toBe(false);
+  });
+
+  it("refreshInstalled 必须排除「库里有、这台电脑没有本体」的行(localPresent === false)", async () => {
+    invoke.mockResolvedValueOnce([
+      { ...row("from-library"), registryId: "company", sourceOwner: "skills", sourceRepo: "skills" },
+      { ...row("not-here"), relation: "shared", localPresent: false },
+    ]);
+
+    await useInstall.getState().refreshInstalled();
+
+    const map = useInstall.getState().installed;
+    expect(map.has("from-library")).toBe(true);
+    // 这台电脑上什么都没有,"已启用"更是无从谈起
+    expect(map.has("not-here")).toBe(false);
   });
 });
 
@@ -651,9 +675,9 @@ function row(dirSlug: string) {
         registryId: "",
         sourceRemoved: false,
         libraryRemoved: false,
-        unclaimed: false,
-        localOnly: false,
-        claimed: false,
+        relation: "installed" as const,
+        localPresent: true,
+        sourceLabel: null,
               links: [],
   };
 }

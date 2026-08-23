@@ -5,9 +5,11 @@ import { SkillIcon } from "@/components/SkillIcon";
 import { t, type MessageKey } from "@/i18n";
 import { relativeTimeFromIso } from "@/lib/format";
 import type { InstalledSkillView, LinkHealth } from "@/lib/ipc";
+import { sharedState, type SharedState } from "@/lib/ownership";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
-import { hasUpdate, useMySkills } from "@/store/my-skills";
+import { hasUpdate, sections, useMySkills } from "@/store/my-skills";
+import { useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
 
@@ -16,6 +18,11 @@ import { useUi } from "@/store/ui";
  *
  * 假设(文档未覆盖):Demo 汇总条里的「全部更新」按钮不做——批量安装属任务 12,
  * 摆一个点了没反应的按钮和空状态撒谎是同一类问题。汇总条只报数量。
+ *
+ * v6 任务 4:此前的「由技能库管理 / 本地创建 / 其他工具装的」三分区(靠
+ * `unclaimed`/`claimBindable`/`localOnly`/`claimed` 四个字段与「纳入管理 /
+ * 移出管理」两个动作维持)整个撤销,换成「我分享的 / 我安装的」两分区
+ * ——归属不再靠本地记账猜测,库里的 `authors.json` 才是权威(`relation` 字段)。
  */
 export function MySkillsPage() {
   const {
@@ -29,13 +36,11 @@ export function MySkillsPage() {
     repairBusy,
     repairError,
     shareChanges,
+    shareUpdate,
     shareBusy,
     shareDone,
     shareError,
-    claim,
-    unclaim,
-    claimBusy,
-    claimError,
+    pull,
   } = useMySkills();
   const index = useStoreIndex((s) => s.index);
   const installPhase = useInstall((s) => s.phase);
@@ -55,6 +60,15 @@ export function MySkillsPage() {
     const map = new Map(index?.skills.map((s) => [s.dirSlug, s.name]) ?? []);
     return (slug: string) => map.get(slug) ?? slug;
   }, [index]);
+
+  // 草稿(relation === "draft")跳分享页并预选那个候选——分享页自己的 load()
+  // 只刷新 candidates,不碰 phase/target,所以在导航前把 begin() 定下来即可。
+  const goShareDraft = async (dirSlug: string) => {
+    await useShare.getState().load();
+    const candidate = useShare.getState().candidates?.find((c) => c.dirName === dirSlug);
+    if (candidate) useShare.getState().begin(candidate);
+    setPage("share");
+  };
 
   if (!list && loading) {
     return <p className="py-6 text-[12.5px] text-text-3">{t("mine.loading")}</p>;
@@ -114,13 +128,6 @@ export function MySkillsPage() {
           {shareError.message}
         </p>
       )}
-      {claimError && (
-        <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
-          {t("mine.claimFailed")}
-          {t("punct.labelSeparator")}
-          {claimError.message}
-        </p>
-      )}
       {shareDone && (
         <p className="pb-2 text-[12px] text-text-2">
           {shareDone.mode === "pushed"
@@ -128,33 +135,29 @@ export function MySkillsPage() {
             : t("mine.shareChangesReview")}
         </p>
       )}
-      {/* 三分区,固定顺序:由技能库管理 → 本地创建 → 其他工具装的(M5 任务 2 用户拍板)。
-          归类判据全部来自 core:第 1 档是 state 记账且目录真实存在,第 2 档是文件系统
-          扫描(localOnly),第 3 档是 .skill-lock.json(unclaimed)。空分区不显示。
-
-          第 1 档的标题不叫「商店安装」(M6 任务 6):经「纳入管理」收进来的、
-          以及分享进库后自动纳入的技能都在这一档,它们不是从商店装的
-          ——按来路命名就会有几行名不副实,按"谁在管它"命名才对得上全部三条来路。 */}
-      {sectionsOf(list).map((sec) => (
+      {/* 两分区,固定顺序:我分享的 → 我安装的(v6 任务 4)。归类判据全部来自
+          core 的 `relation` 字段:`shared`/`draft` 归「我分享的」,`installed`
+          归「我安装的」。空分区不显示。 */}
+      {sections(list).map((sec) => (
         <section key={sec.key} className="mt-3 first-of-type:mt-0">
           <h3 className="pb-1.5 text-[11.5px] font-medium text-text-3">{sec.title}</h3>
           <div className="overflow-hidden rounded-card border border-border bg-surface-1">
             {sec.items.map((skill) =>
-              skill.localOnly ? (
-                <LocalOnlyRow
+              sec.key === "shared" ? (
+                <SharedRow
                   key={skill.dirSlug}
                   skill={skill}
                   name={nameOf(skill.dirSlug)}
-                  onGoShare={() => setPage("share")}
-                />
-              ) : skill.unclaimed ? (
-                <UnclaimedRow
-                  key={skill.dirSlug}
-                  skill={skill}
-                  name={nameOf(skill.dirSlug)}
-                  claiming={claimBusy === skill.dirSlug}
-                  onClaim={() => void claim(skill.dirSlug)}
-                  onGoShare={() => setPage("share")}
+                  agentNames={agentNames}
+                  remoteChanged={hasUpdate(skill, index)}
+                  pulling={activeSlug === skill.dirSlug && installPhase === "running"}
+                  sharing={shareBusy === skill.dirSlug}
+                  repairing={repairBusy === skill.dirSlug}
+                  onPull={() => void pull(skill.dirSlug)}
+                  onShareUpdate={() => void shareUpdate(skill.dirSlug)}
+                  onShareDraft={() => void goShareDraft(skill.dirSlug)}
+                  onRepair={() => void repair(skill.dirSlug)}
+                  onRemove={() => askRemove(skill.dirSlug)}
                 />
               ) : (
                 <Row
@@ -180,56 +183,75 @@ export function MySkillsPage() {
                   onRepair={() => void repair(skill.dirSlug)}
                   onShareChanges={() => void shareChanges(skill.dirSlug)}
                   onRemove={() => askRemove(skill.dirSlug)}
-                  unclaiming={claimBusy === skill.dirSlug}
-                  onUnclaim={() => void unclaim(skill.dirSlug)}
                 />
               ),
             )}
           </div>
         </section>
       ))}
-      {/* 第四区:装在项目里的。按项目分组,与上面三区的扁平列表结构不同,
+      {/* 第三区:装在项目里的。按项目分组,与上面两区的扁平列表结构不同,
           所以是独立组件(数据源也不同:项目级真相在各项目的记账文件里)。 */}
       <ProjectSections />
     </div>
   );
 }
 
-/** 三分区的归类与顺序。空分区被滤掉,调用方不用再判。 */
-function sectionsOf(list: InstalledSkillView[]) {
-  return [
-    {
-      key: "store",
-      title: t("mine.sectionStore"),
-      items: list.filter((s) => !s.localOnly && !s.unclaimed),
-    },
-    { key: "local", title: t("mine.sectionLocal"), items: list.filter((s) => s.localOnly) },
-    { key: "npx", title: t("mine.sectionNpx"), items: list.filter((s) => s.unclaimed) },
-  ].filter((sec) => sec.items.length > 0);
-}
+const SHARED_STATE_LABEL: Record<SharedState, MessageKey> = {
+  synced: "mine.stateSynced",
+  localAhead: "mine.stateLocalAhead",
+  remoteAhead: "mine.stateRemoteAhead",
+  both: "mine.stateBoth",
+  draft: "mine.stateDraft",
+  notHere: "mine.stateNotHere",
+};
+
+const HEALTH_LABEL: Record<Exclude<LinkHealth, "healthy">, MessageKey> = {
+  broken: "health.broken",
+  redirected: "health.redirected",
+  occupied: "health.occupied",
+  missing: "health.missing",
+};
 
 /**
- * 其他工具装的、尚未纳入管理的行。
+ * 「我分享的」区块的一行:六状态机(`sharedState`)驱动主动作,状态本身
+ * 替代了此前给作者自己技能显示的「已改动」徽标——`draft`/`both`/`localAhead`
+ * 的状态文案已经把"哪边有改动"说清楚了,不需要再叠一个徽标说同一件事。
  *
- * **摆哪个按钮由 `claimBindable` 决定**(M6 任务 4,判定在 core):
- * - 绑得上某个技能库 → 「纳入管理」:此后更新/修复关联/分享改动/移除都通;
- * - 绑不上 → **不摆「纳入管理」**,改摆「分享到技能库」。绑不上的纳入只多出
- *   "修复关联"与"移除"两个动作,让用户点一个换不来任何东西的按钮就是在耍他;
- *   真正的出路是把技能推进公司库,之后走正常的"获取 → 更新"闭环。
+ * `hasRecord`(`commitSha !== ""`)是判断"这一行有没有 `state.installed` 真实
+ * 记账"的唯一信号——只有这样的行才谈得上「修复」「移除」(`skill_repair`/
+ * `skill_remove` 都要求记账存在,没有就报 `FS_NOT_INSTALLED`)。
  */
-function UnclaimedRow({
+function SharedRow({
   skill,
   name,
-  claiming,
-  onClaim,
-  onGoShare,
+  agentNames,
+  remoteChanged,
+  pulling,
+  sharing,
+  repairing,
+  onPull,
+  onShareUpdate,
+  onShareDraft,
+  onRepair,
+  onRemove,
 }: {
   skill: InstalledSkillView;
   name: string;
-  claiming: boolean;
-  onClaim: () => void;
-  onGoShare: () => void;
+  agentNames: Map<string, string>;
+  remoteChanged: boolean;
+  pulling: boolean;
+  sharing: boolean;
+  repairing: boolean;
+  onPull: () => void;
+  onShareUpdate: () => void;
+  onShareDraft: () => void;
+  onRepair: () => void;
+  onRemove: () => void;
 }) {
+  const state = sharedState(skill, remoteChanged);
+  const hasRecord = skill.commitSha !== "";
+  const issues = skill.links.filter((l) => l.health !== "healthy");
+
   return (
     <div className="flex items-center gap-3 border-t border-border px-3.5 py-2.5 first:border-t-0">
       {/* 名称区整块可点开详情;右侧动作按钮在这块外面,不会误触 */}
@@ -240,94 +262,114 @@ function UnclaimedRow({
       >
         <SkillIcon name={name} className="size-[26px] rounded-[6px] text-[12px]" />
         <div className="min-w-0 flex-1">
-          {/* 归类徽标已撤(M5 任务 2):分区标题即区分,行内不再重复喊一遍 */}
           <div className="flex items-center gap-2">
             <span className="truncate text-[13px] font-[550] group-hover:text-accent">{name}</span>
+            {skill.sourceRemoved && (
+              <Badge title={t("mine.badgeSourceRemovedHint")}>
+                {t("mine.badgeSourceRemoved")}
+              </Badge>
+            )}
+            {skill.libraryRemoved && (
+              <Badge title={t("mine.badgeLibraryRemovedHint")}>
+                {t("mine.badgeLibraryRemoved")}
+              </Badge>
+            )}
+            {issues.length > 0 && (
+              <Badge
+                title={issues
+                  .map(
+                    (l) =>
+                      `${l.dir}${t("punct.labelSeparator")}${t(
+                        HEALTH_LABEL[l.health as Exclude<LinkHealth, "healthy">],
+                      )}`,
+                  )
+                  .join("\n")}
+              >
+                {t("mine.badgeLinkIssue", { count: issues.length })}
+              </Badge>
+            )}
           </div>
-          <div className="mt-0.5 truncate text-[11.5px] text-text-3">
-            {t("mine.source", {
-              library: skill.sourceRepo
-                ? `${skill.sourceOwner}/${skill.sourceRepo}`
-                : skill.sourceOwner,
-            })}
+          <div className="mt-0.5 flex items-center gap-2 text-[11.5px] text-text-3">
+            <span>{t(SHARED_STATE_LABEL[state])}</span>
+            {skill.sourceLabel && (
+              <>
+                <span>·</span>
+                <span>{t("mine.sourceLabel", { label: skill.sourceLabel })}</span>
+              </>
+            )}
+            {hasRecord && (
+              <>
+                <span>·</span>
+                <span>
+                  {skill.agents.length > 0
+                    ? t("mine.enabledFor", {
+                        agents: skill.agents
+                          .map((a) => agentNames.get(a) ?? a)
+                          .join(t("punct.listSeparator")),
+                      })
+                    : t("mine.enabledNone")}
+                </span>
+                <span>·</span>
+                <span>{t("mine.acquiredAt", { when: relativeTimeFromIso(skill.updatedAt) })}</span>
+              </>
+            )}
           </div>
         </div>
       </button>
-      <div className="flex flex-none items-center">
-        {skill.claimBindable ? (
+
+      <div className="flex flex-none items-center gap-1.5">
+        {issues.length > 0 && hasRecord && (
           <button
             type="button"
-            disabled={claiming}
-            onClick={onClaim}
+            disabled={repairing}
+            onClick={onRepair}
+            className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50"
+          >
+            {repairing ? t("mine.repairing") : t("mine.repair")}
+          </button>
+        )}
+        {state === "draft" && (
+          <button
+            type="button"
+            onClick={onShareDraft}
+            className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90"
+          >
+            {t("mine.share")}
+          </button>
+        )}
+        {(state === "notHere" || state === "remoteAhead" || state === "both") && (
+          <button
+            type="button"
+            disabled={pulling}
+            onClick={onPull}
             className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
-            {claiming ? t("mine.claiming") : t("mine.claim")}
+            {pulling ? t("mine.pulling") : t("mine.pull")}
           </button>
-        ) : (
+        )}
+        {state === "localAhead" && (
           <button
             type="button"
-            onClick={onGoShare}
+            disabled={sharing}
+            onClick={onShareUpdate}
+            className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+          >
+            {sharing ? t("mine.sharingChanges") : t("mine.shareUpdate")}
+          </button>
+        )}
+        {hasRecord && (
+          <button
+            type="button"
+            onClick={onRemove}
             className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
           >
-            {t("mine.goShare")}
+            {t("mine.remove")}
           </button>
         )}
       </div>
     </div>
   );
 }
-
-/**
- * 第三档:本地技能(自己新建的 / 手放进 canonical 的)。
- *
- * 它没有来源、没有关联记账,所以**更新、修复关联、分享改动、移除一概不摆**
- * ——摆出来就是引诱用户点一个必然失败的按钮。能做的只有看详情与去分享,
- * 而"去分享"正是这类技能的下一步。
- */
-function LocalOnlyRow({
-  skill,
-  name,
-  onGoShare,
-}: {
-  skill: InstalledSkillView;
-  name: string;
-  onGoShare: () => void;
-}) {
-  return (
-    <div className="flex items-center gap-3 border-t border-border px-3.5 py-2.5 first:border-t-0">
-      <button
-        type="button"
-        onClick={() => void useLocalDetail.getState().open({ dirSlug: skill.dirSlug })}
-        className="group flex min-w-0 flex-1 items-center gap-3 text-left"
-      >
-        <SkillIcon name={name} className="size-[26px] rounded-[6px] text-[12px]" />
-        <div className="min-w-0 flex-1">
-          {/* 归类徽标已撤(M5 任务 2):分区标题即区分 */}
-          <div className="flex items-center gap-2">
-            <span className="truncate text-[13px] font-[550] group-hover:text-accent">{name}</span>
-          </div>
-          <div className="mt-0.5 truncate text-[11.5px] text-text-3">{t("mine.localHint")}</div>
-        </div>
-      </button>
-      <div className="flex flex-none items-center">
-        <button
-          type="button"
-          onClick={onGoShare}
-          className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
-        >
-          {t("mine.goShare")}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-const HEALTH_LABEL: Record<Exclude<LinkHealth, "healthy">, MessageKey> = {
-  broken: "health.broken",
-  redirected: "health.redirected",
-  occupied: "health.occupied",
-  missing: "health.missing",
-};
 
 function Row({
   skill,
@@ -341,8 +383,6 @@ function Row({
   onRepair,
   onShareChanges,
   onRemove,
-  unclaiming,
-  onUnclaim,
 }: {
   skill: InstalledSkillView;
   name: string;
@@ -355,8 +395,6 @@ function Row({
   onRepair: () => void;
   onShareChanges: () => void;
   onRemove: () => void;
-  unclaiming: boolean;
-  onUnclaim: () => void;
 }) {
   const issues = skill.links.filter((l) => l.health !== "healthy");
 
@@ -457,20 +495,6 @@ function Row({
             {updating ? t("mine.updating") : t("mine.update")}
           </button>
         )}
-        {/* 纳入管理来的才给「移出管理」:它只删记账、磁盘一个字节不动,是纳入的逆操作。
-            在它之前,纳入后唯一的退路是「移除」,而移除会连 npx skills 那边的
-            安装一起毁掉——无害的进入,破坏性的退出。 */}
-        {skill.claimed && (
-          <button
-            type="button"
-            disabled={unclaiming}
-            onClick={onUnclaim}
-            title={t("mine.unclaimHint")}
-            className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50"
-          >
-            {unclaiming ? t("mine.unclaiming") : t("mine.unclaim")}
-          </button>
-        )}
         <button
           type="button"
           onClick={onRemove}
@@ -483,7 +507,7 @@ function Row({
   );
 }
 
-/** 状态徽标(已改动/来源已移除/关联异常)。归类徽标已撤,只剩警示这一种语气。 */
+/** 状态徽标(来源已移除/关联异常等)。归类徽标已撤,只剩警示这一种语气。 */
 function Badge({ title, children }: { title?: string; children: React.ReactNode }) {
   return (
     <span
