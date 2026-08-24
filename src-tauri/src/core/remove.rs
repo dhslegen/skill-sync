@@ -1,12 +1,16 @@
-//! 移除编排:预检(改过要确认)→ 解链 → 删本体 → 记账清除 → lock 双写移除。
+//! 移除编排:解链 → 本体进废纸篓 → 记账清除 → lock 双写移除。
 //!
-//! 与 [`crate::core::acquire`] 同构:破坏性动作前先预检,需要用户拍板时
-//! 返回 [`RemoveOutcome::NeedsDecision`] 且**不动磁盘**,拿到确认(`force`)才执行。
-//! 铁律 7「绝不静默删除用户文件」在移除路径上的落地就是这一道。
+//! # v6 二期:不再有"改过要二次确认"这一道
+//!
+//! 铁律 7「绝不静默删除用户文件」此前在这条路上靠**问一遍**落实(改过本体就返回
+//! `NeedsDecision`,拿到 `force` 才执行)。v6 二期把它换成了**可逆**:本体经
+//! [`crate::core::fsops::trash_tree`] 进系统废纸篓,用户随时能捞回来。确认框本身
+//! 不是可逆性——用户手滑点了"确定"东西照样没了;而进了废纸篓,连"程序判断错了"
+//! 这一档都兜得住。所以这一层的问句撤掉,由界面上那一次"要移除吗"负责告知。
 //!
 //! # 假设(文档未覆盖,按开发纪律显式标注)
 //!
-//! - **本体已经不在磁盘上的记录可以直接清账**:canonical 目录没了,"你改过的内容"
+//! - **本体已经不在磁盘上的记录可以直接清账**:目录没了,"你改过的内容"
 //!   也无从谈起,拦着不让删只会留下一条永远清不掉的死账。
 //! - **state 里认不出的链接 mode 一律跳过解链**:那说明 `state.json` 被手改过或来自
 //!   更新的版本。跳过是保守选择——猜一个 mode 去删,猜错就是拿删除逻辑动错误的目录形态。
@@ -22,11 +26,13 @@ use crate::error::AppError;
 use std::path::{Path, PathBuf};
 
 /// 一次移除请求的结论。
+///
+/// 只剩一档(v6 二期任务 4 删掉了 `NeedsDecision`),但**保持枚举形状不变**:
+/// 前端按 `outcome` 分支,枚举退化成结构体会让那一侧跟着改一遍,而将来若再有
+/// 第二档(比如"本体在别的电脑上")还得改回来。
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase", tag = "outcome")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "outcome")]
 pub enum RemoveOutcome {
-    /// 用户改过技能本体,移除会连改动一起删掉——停下让界面去问,磁盘未动。
-    NeedsDecision,
     /// 已移除。`lock` 与 acquire 的口径一致:`written` / `skipped` / `failed`。
     Removed {
         report: UninstallReport,
@@ -34,16 +40,19 @@ pub enum RemoveOutcome {
     },
 }
 
-/// 移除一个已安装的技能。
+/// 移除一个已安装的技能:解除全部关联,本体进废纸篓,清账。
 ///
-/// `force` 是前端确认弹窗的结果:`false` 时遇到本地改动会停下来问;
-/// `true` 表示用户已确认"连改动一起删"。
+/// **只服务"从技能库获取的技能"**(判据 [`crate::core::state::InstalledSkill::has_source`])。
+/// 🔴 纯本地技能(用户自己在工具目录里开发的,任务 3 起勾选工具会顺手给它建一条
+/// 全空来源的 `adopted` 账)**必须在这里拒绝**:否则用户在 Claude Code 里正开发的
+/// 技能,只因为点过一次勾就获得了一个「移除」按钮,点下去本体就进了废纸篓——
+/// 那不是本应用该替他做的决定。界面上也不该摆这个按钮(任务 5),core 这一层
+/// 是不靠界面形状的第二道。
 pub fn remove(
     installer: &Installer<'_>,
     env: &dyn AgentEnv,
     store: &Store,
     dir_slug: &str,
-    force: bool,
 ) -> Result<RemoveOutcome, AppError> {
     // 删本体期间的文件事件不上报——那是本应用自己干的,界面已经会刷新
     let _quiet = crate::core::watcher::app_write();
@@ -56,17 +65,15 @@ pub fn remove(
         .with_detail(format!("not in state.installed: {dir_slug}")));
     };
     let record = &loaded.value.installed[idx];
+    if !record.has_source() {
+        return Err(AppError::new(
+            "FS_NOT_ACQUIRED",
+            "这个技能不是从技能库获取的,要删除请直接在文件夹里删",
+        )
+        .with_detail(format!("no source recorded for {dir_slug}")));
+    }
 
     let home = crate::core::converge::home_of(installer, &loaded.value, dir_slug)?;
-
-    // 预检:本体还在且内容与记账不符 = 用户改过。本体已不在则无改动可言,直接清账。
-    let canonical = home.canonical.clone();
-    if !force && canonical.is_dir() {
-        let actual = fsops::dir_content_hash(&canonical)?;
-        if actual != record.content_hash {
-            return Ok(RemoveOutcome::NeedsDecision);
-        }
-    }
 
     let (recorded, unparseable) = state_links_to_recorded(&record.links);
     let mut report = installer.uninstall(&home, &recorded, true)?;
@@ -93,7 +100,9 @@ pub fn remove(
     // - 字符串比在 Windows 上会失配:`home.join(".agents/skills")` 产出
     //   `.agents/skills\x`,分段 join 产出 `.agents\skills\x`,同一个目录字符串却不等
     //   (2026-08-04 CI 真红过一次,当时栽在 create.rs 上)。
-    next.shared.retain(|s| Path::new(&s.local_path) != canonical);
+    // v6 二期:按**本体**比,不按 canonical 比——本体可能住在某个工具目录里,
+    // 而 `seed_shared_baseline`/`share` 记的 `local_path` 就是本体所在。
+    next.shared.retain(|s| Path::new(&s.local_path) != home.body);
     store.save_state(&next)?;
 
     // 外部契约同步。任何结果都不阻断——技能已经移除了,记账失败只该记日志。

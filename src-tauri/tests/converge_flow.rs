@@ -1104,6 +1104,51 @@ fn keep_version_keeps_going_when_one_losing_position_cannot_be_converged() {
     std::fs::set_permissions(&bad_parent, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// R11 收集③:候选循环里 **`link_dir` 失败**那一支(v6 二期任务 4 补,裁定 R13)。
+///
+/// 上一条钉的是"腾位置失败(`trash_tree`)→ 收集并 `continue`",本条钉的是它的
+/// 兄弟分支:**位置已经腾空了、链接却没建成**。这一支此前一条测试都没有
+/// (任务 3 复审注入之后 31 条全绿 = 真没抓到)。它必须被如实回报:位置已经空了,
+/// 装作没事的话用户看到的是"已完成",而那个工具目录里从此什么都没有。
+///
+/// 构造很便宜:给 installer 一条**空降级链**,`link_dir` 走完 `for kind in chain`
+/// 一个候选都没有,必然报错——而它前面的 `trash_tree` 照常成功。
+#[test]
+fn keep_version_reports_a_losing_position_that_was_emptied_but_not_linked() {
+    let (c, env) = ctx();
+    let inst = Installer::new(&c.registry, &env)
+        .with_trasher(&c.sandbox)
+        .with_chain(vec![]);
+    let keep = skill_dir(&env.home, ".claude/skills/s", "v1");
+    let loser = skill_dir(&env.home, ".trae/skills/s", "v2");
+
+    let r = converge::keep_version(&inst, &c.registry, &env, &c.store, "s", &keep, NOW).unwrap();
+
+    assert_eq!(c.sandbox.trashed(), vec![loser.clone()], "位置确实腾空了");
+    assert!(!loser.exists(), "腾空之后那个位置该是空的");
+    assert!(
+        r.links
+            .iter()
+            .any(|(p, res)| Path::new(p) == loser.as_path() && res.is_err()),
+        "腾空了却没建成链接,必须如实回报: {:?}",
+        r.links
+    );
+    let st = c.store.load_state().unwrap().value;
+    let rec = st
+        .installed
+        .iter()
+        .find(|s| s.name == "s")
+        .expect("账必须已经落地,不能因为一个位置建链失败就整次夭折");
+    assert_eq!(rec.body.as_deref(), Some(keep.to_str().unwrap()));
+    assert!(
+        !rec.links
+            .iter()
+            .any(|l| Path::new(&l.dir) == env.home.join(".trae/skills")),
+        "没建成的链接绝不能进账——记了 remove 会拿它去动那个位置: {:?}",
+        rec.links
+    );
+}
+
 /// R11 收集②:`ensure_canonical_link` 失败也不能 `?` 中断——它排在候选循环
 /// **之后**,中断会把整轮已经落盘的收敛全部丢掉记账。
 #[test]

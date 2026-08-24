@@ -231,8 +231,7 @@ impl<'a> Installer<'a> {
         self
     }
 
-    /// 当前生效的废纸篓实现。供需要绕开 `install`/`link_only` 默认行为的兼容通道
-    /// (`acquire::repair_links`/`link_agents`,任务 4 起删除)复用同一个实例,
+    /// 当前生效的废纸篓实现。供 `converge` 那组原语复用同一个实例,
     /// 不必另外把 trasher 到处再传一遍。
     pub fn trasher(&self) -> &dyn Trasher {
         self.trasher
@@ -453,24 +452,12 @@ impl<'a> Installer<'a> {
     ///
     /// 用于两种场景:①用户改过技能本体、选择保留改动,但仍要把它关联到新的 agent;
     /// ②修复断链。走 [`Self::install`] 会先替换掉本体(旧内容进废纸篓),那正是要避开的事。
-    pub fn link_only(&self, home: &SkillHome, agent_names: &[String]) -> Result<InstallReport, AppError> {
-        self.link_only_at(home, agent_names, OnOccupied::Fail)
-    }
-
-    /// [`Self::link_only`] 的兼容通道:**仅供** `acquire::repair_links`/`acquire::link_agents`
-    /// 使用(两者会在任务 4 随「纳入管理」旧链路一起删除,届时本方法一并删除)。
     ///
-    /// 新设计里占位目录该不该替换,由 converge 先比对内容再决定(同→进废纸篓换链接,
-    /// 异→停下问用户),不再由调用方传一个裸的布尔开关——[`Self::link_only`] 因此
-    /// 固定传 `OnOccupied::Fail`。但那两个存量函数（`replace_occupied` 参数)在
-    /// converge 落地之前还没有"先比内容"的能力,直接砍掉替换语义会让既有的
-    /// "确认后替换占位目录"行为消失,所以留这条内部专用的口子过渡。
-    pub(crate) fn link_only_at(
-        &self,
-        home: &SkillHome,
-        agent_names: &[String],
-        on_occupied: OnOccupied,
-    ) -> Result<InstallReport, AppError> {
+    /// 占位目录一律 [`OnOccupied::Fail`](v6 二期任务 4 起没有第二档了):该不该
+    /// 替换由 [`crate::core::converge::converge`] 先比对内容再决定(同→进废纸篓
+    /// 换链接,异→停下问用户),不再由调用方传一个裸的布尔开关。
+    pub fn link_only(&self, home: &SkillHome, agent_names: &[String]) -> Result<InstallReport, AppError> {
+        let on_occupied = OnOccupied::Fail;
         if !home.body.is_dir() {
             return Err(AppError::new(
                 "FS_MISSING_SKILL",

@@ -16,7 +16,7 @@ use crate::core::create;
 use crate::core::watcher;
 use crate::core::gitea::{GiteaClient, RepoRef};
 use crate::core::github;
-use crate::core::installer::{self, InstallReport, Installer};
+use crate::core::installer::{self, Installer};
 use crate::core::local_detail;
 use crate::core::my_skills;
 use crate::core::ownership;
@@ -1904,64 +1904,19 @@ pub async fn skill_share_changes(
     .await
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillRepairArgs {
-    pub dir_slug: String,
-    /// 前端确认弹窗的结果:占位的实体目录会被替换,原内容无法找回。
-    #[serde(default)]
-    pub replace_occupied: bool,
-}
-
-#[tauri::command]
-pub async fn skill_repair(args: SkillRepairArgs) -> Result<InstallReport, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let store = app_store()?;
-        let registry = AgentRegistry::builtin();
-        let installer = Installer::new(&registry, &SystemEnv);
-        acquire::repair_links(&installer, &store, &args.dir_slug, args.replace_occupied)
-    })
-    .await
-    .map_err(|e| AppError::new("FS_TASK", "修复操作未能完成,请重试").with_detail(e.to_string()))?
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillLinkAgentsArgs {
-    pub dir_slug: String,
-    /// 要补关联的工具(通常是安装结果面板里失败的那一条)。
-    pub agent_ids: Vec<String>,
-    /// 前端确认弹窗的结果:占位的实体目录会被替换,原内容无法找回。
-    #[serde(default)]
-    pub replace_occupied: bool,
-}
-
-/// 安装结果面板里逐条重试:把技能补关联到当时没建成的那个工具上。
-#[tauri::command]
-pub async fn skill_link_agents(args: SkillLinkAgentsArgs) -> Result<InstallReport, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let store = app_store()?;
-        let registry = AgentRegistry::builtin();
-        let installer = Installer::new(&registry, &SystemEnv);
-        acquire::link_agents(
-            &installer,
-            &store,
-            &args.dir_slug,
-            &args.agent_ids,
-            args.replace_occupied,
-        )
-    })
-    .await
-    .map_err(|e| AppError::new("FS_TASK", "重试未能完成,请重试").with_detail(e.to_string()))?
-}
+// v6 二期任务 4:`skill_repair` / `skill_link_agents` 两条 IPC 已删除。
+//
+// 「修复关联」与「逐条补关联」都是旧模型的产物——它们各自带一个
+// `replaceOccupied` 布尔开关,让前端替用户回答"要不要替换那个占位目录",
+// 而磁盘上根本分不清那个目录是我们降级复制的副本还是用户自己放的东西。
+// 新模型里这两件事合并成同一个动作:勾选工具(`converge::set_agents`),
+// 它对每个目标跑一次幂等的 `converge`,先比内容再决定——同内容进废纸篓换链接
+// (无损、可逆,不问),内容不同一个字节都不动并如实回报。
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillRemoveArgs {
     pub dir_slug: String,
-    /// 前端确认弹窗的结果:用户已确认"连本地改动一起删"。
-    #[serde(default)]
-    pub force: bool,
 }
 
 #[tauri::command]
@@ -1970,7 +1925,7 @@ pub async fn skill_remove(args: SkillRemoveArgs) -> Result<remove::RemoveOutcome
         let store = app_store()?;
         let registry = AgentRegistry::builtin();
         let installer = Installer::new(&registry, &SystemEnv);
-        remove::remove(&installer, &SystemEnv, &store, &args.dir_slug, args.force)
+        remove::remove(&installer, &SystemEnv, &store, &args.dir_slug)
     })
     .await
     .map_err(|e| AppError::new("FS_TASK", "移除操作未能完成,请重试").with_detail(e.to_string()))?
@@ -4212,9 +4167,10 @@ mod tests {
             payload,
             &remote_sha,
             NOW,
-            // 全新临时 HOME,body 从不预先存在,trash_tree 不会真的触发——用真实
-            // SYSTEM_TRASH 与用沙盒等价,这里图省事直接用真的。
-            &crate::core::fsops::SYSTEM_TRASH,
+            // 沙盒废纸篓:全新临时 HOME,body 从不预先存在,今天 trash_tree 碰不到
+            // ——但默认的 `SYSTEM_TRASH` 一旦被碰到就会把测试产物丢进这台机器真实的
+            // 废纸篓,注入是零成本的保险(v6 二期任务 4)。
+            &crate::core::fsops::SandboxTrash::new(tmp.path().join("blob-trash")),
             &|_: acquire::Stage| {},
         )
         .await
@@ -4245,7 +4201,7 @@ mod tests {
             req_for(&repo, slug),
             NOW,
             0,
-            &crate::core::fsops::SYSTEM_TRASH,
+            &crate::core::fsops::SandboxTrash::new(tmp.path().join("zip-trash")),
             &|_: acquire::Stage| {},
         )
         .await

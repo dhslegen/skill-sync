@@ -148,11 +148,15 @@ pub fn locate(
     let all = scan_all(registry, env)?;
     let candidates = all.get(&home.dir_name).cloned().unwrap_or_default();
 
-    let recorded = state
-        .installed
-        .iter()
-        .find(|s| s.name == dir_slug)
-        .and_then(|s| s.body.as_deref());
+    // 🔴 判据是「这个技能有没有账」,**不是「账上的 `body` 字段有没有值」**
+    // (v6 二期任务 4 修):`body` 只在本体不住在 canonical 时才记(见
+    // `state::InstalledSkill::body` 与 `acquire::record`),而本体住在 canonical
+    // 是至今为止的绝大多数——按 `body.is_some()` 判的话,这些技能全部落进"无账"
+    // 那条路,工具目录里出现**任何**一份内容不同的同名副本就会让 `locate` 报
+    // `Differs`,于是 `precheck` 退化成 `NeedsVersionChoice`、自动更新静默停摆,
+    // `set_agents` 也会拿一个假的"版本分歧"把用户的勾选顶回去。
+    // 本变体的文档从任务 3 起写的就是"**有账时恒为这一档**",实现当时对不上。
+    let recorded = state.installed.iter().find(|s| s.name == dir_slug);
 
     if recorded.is_some() {
         let mut others = Vec::new();

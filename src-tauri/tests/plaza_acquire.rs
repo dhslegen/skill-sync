@@ -87,6 +87,7 @@ async fn acquiring_through_the_plaza_registry_records_plaza_id_and_a_full_github
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().to_path_buf();
     let env = TmpEnv { home: home.clone() };
+    let trash = skillsync_lib::core::fsops::SandboxTrash::new(home.join(".test-trash"));
     let store = Store::new(home.join(".skillsync"));
     let agent_registry = AgentRegistry::builtin();
 
@@ -134,7 +135,10 @@ async fn acquiring_through_the_plaza_registry_records_plaza_id_and_a_full_github
         },
         NOW,
         1_755_000_000,
-        &skillsync_lib::core::fsops::SYSTEM_TRASH,
+        // 沙盒废纸篓:这条路径今天碰不到 trasher(全新临时 HOME,本体从不预先
+        // 存在),但默认的 `SYSTEM_TRASH` 一旦被碰到就会把测试产物丢进这台机器
+        // 真实的废纸篓——注入是零成本的保险(v6 二期任务 4)。
+        &trash,
         &|_: Stage| {},
     )
     .await
@@ -254,6 +258,7 @@ async fn a_skill_whose_skills_sh_id_differs_from_its_repo_directory_still_instal
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().to_path_buf();
     let env = TmpEnv { home: home.clone() };
+    let trash = skillsync_lib::core::fsops::SandboxTrash::new(home.join(".test-trash"));
     let store = Store::new(home.join(".skillsync"));
     let agent_registry = AgentRegistry::builtin();
     let http = reqwest::Client::builder().user_agent("SkillSync/test").build().unwrap();
@@ -309,7 +314,10 @@ async fn a_skill_whose_skills_sh_id_differs_from_its_repo_directory_still_instal
         },
         NOW,
         1_755_000_000,
-        &skillsync_lib::core::fsops::SYSTEM_TRASH,
+        // 沙盒废纸篓:这条路径今天碰不到 trasher(全新临时 HOME,本体从不预先
+        // 存在),但默认的 `SYSTEM_TRASH` 一旦被碰到就会把测试产物丢进这台机器
+        // 真实的废纸篓——注入是零成本的保险(v6 二期任务 4)。
+        &trash,
         &|_: Stage| {},
     )
     .await

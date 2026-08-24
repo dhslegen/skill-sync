@@ -129,9 +129,9 @@ fn install_one(c: &Ctx, env: &TmpEnv, slug: &str) {
     .unwrap();
 }
 
-fn do_remove(c: &Ctx, env: &TmpEnv, slug: &str, force: bool) -> Result<RemoveOutcome, skillsync_lib::error::AppError> {
+fn do_remove(c: &Ctx, env: &TmpEnv, slug: &str) -> Result<RemoveOutcome, skillsync_lib::error::AppError> {
     let installer = Installer::new(&c.registry, env).with_trasher(&c.trash);
-    remove::remove(&installer, env, &c.store, slug, force)
+    remove::remove(&installer, env, &c.store, slug)
 }
 
 fn canonical(c: &Ctx, slug: &str) -> PathBuf {
@@ -142,28 +142,6 @@ fn link(c: &Ctx, slug: &str) -> PathBuf {
     c.home.join(".claude").join("skills").join(slug)
 }
 
-/// 删掉一条关联,模拟"链接丢了"。
-///
-/// 必须两种都试:POSIX 上关联是 symlink,只有 `remove_file` 删得动;Windows 上是
-/// **junction**(目录重解析点),`remove_file` 会直接 `Access is denied`
-/// ——`repair_rebuilds_a_lost_link…` 就是因为只写了 `remove_file(..).unwrap()`,
-/// 在 Windows CI 上从 M1 任务 10 起连红了五个提交(macOS 一直绿,所以一直没人看见)。
-///
-/// 用 `remove_dir` 而不是 `remove_dir_all`:对 junction 前者只摘掉重解析点,
-/// 后者有把**技能本体**连锅端掉的风险——那正是这个测试接下来要断言还在的东西。
-///
-/// 结尾断言"真的没了":只写 `let _ = remove_file` 会让"其实没删掉"变成静默通过,
-/// 于是 repair 什么都不用做也能绿——测试就空转了。
-fn drop_link(path: &Path) {
-    let _ = std::fs::remove_file(path);
-    let _ = std::fs::remove_dir(path);
-    assert!(
-        std::fs::symlink_metadata(path).is_err(),
-        "没能删掉关联,后面的断言就不算数了: {}",
-        path.display()
-    );
-}
-
 // ============================================================ 正常移除
 
 #[test]
@@ -172,11 +150,9 @@ fn removing_cleans_body_links_state_and_lock() {
     install_one(&c, &env, "weekly-report");
     assert!(link(&c, "weekly-report").exists(), "前置:链接已建立");
 
-    let outcome = do_remove(&c, &env, "weekly-report", false).unwrap();
+    let outcome = do_remove(&c, &env, "weekly-report").unwrap();
 
-    let RemoveOutcome::Removed { report, lock } = outcome else {
-        panic!("没改过的技能移除不该再问");
-    };
+    let RemoveOutcome::Removed { report, lock } = outcome;
     assert!(report.canonical_removed);
     assert_eq!(lock, "written");
     // 磁盘:本体与链接都没了
@@ -202,7 +178,7 @@ fn removing_one_skill_leaves_the_other_untouched() {
     install_one(&c, &env, "weekly-report");
     install_one(&c, &env, "meeting-notes");
 
-    do_remove(&c, &env, "weekly-report", false).unwrap();
+    do_remove(&c, &env, "weekly-report").unwrap();
 
     assert!(canonical(&c, "meeting-notes").join("SKILL.md").is_file());
     assert!(link(&c, "meeting-notes").exists());
@@ -213,34 +189,56 @@ fn removing_one_skill_leaves_the_other_untouched() {
 
 // ============================================================ 改过的技能
 
+/// v6 二期:改过本体**不再二次确认**——本体进的是废纸篓,用户随时能捞回来。
+/// 断言口径因此从"停下来问"换成"东西确实在废纸篓里可找回"。
 #[test]
-fn a_modified_skill_is_not_removed_without_confirmation() {
+fn a_modified_skill_is_removed_in_one_step_and_stays_recoverable() {
     let (c, env) = ctx();
     install_one(&c, &env, "weekly-report");
     let dir = canonical(&c, "weekly-report");
     std::fs::write(dir.join("SKILL.md"), "我的改动\n").unwrap();
-    let mine = std::fs::read(dir.join("SKILL.md")).unwrap();
 
-    let outcome = do_remove(&c, &env, "weekly-report", false).unwrap();
+    let outcome = do_remove(&c, &env, "weekly-report").unwrap();
 
-    assert!(matches!(outcome, RemoveOutcome::NeedsDecision));
-    // 真正要断的是磁盘与账都原封不动
-    assert_eq!(std::fs::read(dir.join("SKILL.md")).unwrap(), mine, "用户的改动被动过了");
-    assert!(link(&c, "weekly-report").exists(), "链接被提前摘了");
-    assert_eq!(c.store.load_state().unwrap().value.installed.len(), 1, "账被提前清了");
+    assert!(matches!(outcome, RemoveOutcome::Removed { .. }), "改过的技能也一步移除");
+    assert!(!dir.exists(), "本体还在原地");
+    assert_eq!(c.trash.trashed(), vec![dir.clone()], "本体必须经废纸篓,不能直接删");
+    assert!(
+        c.store.load_state().unwrap().value.installed.is_empty(),
+        "账没清干净"
+    );
+    // 关键:用户的改动仍能从废纸篓里捞回来
+    let recovered = c.trash.into.join("weekly-report").join("SKILL.md");
+    assert_eq!(
+        std::fs::read_to_string(&recovered).unwrap(),
+        "我的改动\n",
+        "改动没能在废纸篓里找回: {}",
+        recovered.display()
+    );
 }
 
+/// 纯本地技能(勾选工具时顺手建的 `adopted` 账,来源坐标全空)**不给移除**:
+/// 那是用户自己在工具目录里开发的东西,本应用没有资格把它丢进废纸篓。
 #[test]
-fn a_modified_skill_is_removed_when_the_user_confirms() {
+fn a_skill_with_no_library_source_refuses_to_be_removed() {
     let (c, env) = ctx();
     install_one(&c, &env, "weekly-report");
-    std::fs::write(canonical(&c, "weekly-report").join("SKILL.md"), "我的改动\n").unwrap();
+    let mut state = c.store.load_state().unwrap().value;
+    state.installed[0].source = SkillSource {
+        registry_id: String::new(),
+        owner: String::new(),
+        repo: String::new(),
+        path: String::new(),
+        git_ref: String::new(),
+    };
+    c.store.save_state(&state).unwrap();
 
-    let outcome = do_remove(&c, &env, "weekly-report", true).unwrap();
+    let err = do_remove(&c, &env, "weekly-report").unwrap_err();
 
-    assert!(matches!(outcome, RemoveOutcome::Removed { .. }));
-    assert!(!canonical(&c, "weekly-report").exists());
-    assert!(c.store.load_state().unwrap().value.installed.is_empty());
+    assert_eq!(err.code, "FS_NOT_ACQUIRED");
+    assert!(canonical(&c, "weekly-report").join("SKILL.md").is_file(), "本体被动了");
+    assert!(c.trash.trashed().is_empty(), "一个字节都不该进废纸篓");
+    assert_eq!(c.store.load_state().unwrap().value.installed.len(), 1, "账被清了");
 }
 
 #[test]
@@ -250,10 +248,112 @@ fn a_record_whose_body_is_already_gone_can_be_cleared_without_asking() {
     install_one(&c, &env, "weekly-report");
     std::fs::remove_dir_all(canonical(&c, "weekly-report")).unwrap();
 
-    let outcome = do_remove(&c, &env, "weekly-report", false).unwrap();
+    let outcome = do_remove(&c, &env, "weekly-report").unwrap();
 
     assert!(matches!(outcome, RemoveOutcome::Removed { .. }));
     assert!(c.store.load_state().unwrap().value.installed.is_empty());
+}
+
+// ============================================================ 本体住在工具目录里(v6 二期任务 4)
+
+/// 本体住在 `~/.claude/skills/` 时,移除要:摘掉每个工具的关联 + 摘掉 canonical
+/// 那条链接 + 把**本体**送进废纸篓(不是 canonical 那条链接所指的位置)。
+#[test]
+fn remove_trashes_the_body_unlinks_every_tool_and_the_canonical_link() {
+    let (c, env) = ctx();
+    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
+    let body = c.home.join(".claude").join("skills").join("weekly-report");
+    let home = installer.home("weekly-report", Some(&body)).unwrap();
+    let report = installer
+        .install(&home, &payload("weekly-report"), &["claude-code".to_string(), "trae".to_string()])
+        .unwrap();
+
+    let mut state = c.store.load_state().map(|l| l.value).unwrap_or_default();
+    state.installed.push(InstalledSkill {
+        name: "weekly-report".into(),
+        source: SkillSource {
+            registry_id: "company".into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            path: "skills/weekly-report".into(),
+            git_ref: "aaa1111".into(),
+        },
+        commit_sha: "aaa1111".into(),
+        content_hash: fsops::dir_content_hash(&body).unwrap(),
+        origin: None,
+        body: Some(body.to_string_lossy().into_owned()),
+        agents: vec!["claude-code".into(), "trae".into()],
+        // 🔴 **刻意把 canonical 那条链接从账上剔掉**:`uninstall` 有两条路会摘它
+        // ——按账走的那条,和"本体不在 canonical 时无条件摘一次"那条。账上留着
+        // 的话两条都会命中,注入验证时把后者改坏测试照样绿(同一条规则查了两遍,
+        // 空转模式 ①)。剔掉之后,canonical 那条链接只可能由后者摘掉。
+        // 这也是真实会发生的形状:npx skills 或用户自己在 canonical 建的那条链接
+        // 从来不在我们的账上。
+        links: report
+            .links
+            .iter()
+            .filter(|l| Path::new(&l.dir) != c.home.join(".agents").join("skills"))
+            .filter_map(|l| match &l.result {
+                skillsync_lib::core::installer::LinkResult::Linked { mode }
+                | skillsync_lib::core::installer::LinkResult::Unchanged { mode } => {
+                    Some(LinkRecord { dir: l.dir.clone(), mode: mode.clone() })
+                }
+                _ => None,
+            })
+            .collect(),
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    });
+    c.store.save_state(&state).unwrap();
+
+    // 分享基线记的是**本体**所在(`seed_shared_baseline` 的口径)。移除要按同一把
+    // 尺子把它清掉——按 canonical 比的话这条孤儿永远清不掉。
+    let mut state = c.store.load_state().unwrap().value;
+    state.shared.push(SharedSkill {
+        name: "weekly-report".into(),
+        local_path: body.to_string_lossy().into_owned(),
+        origin: "local".into(),
+        target: SkillSource {
+            registry_id: "company".into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            path: "skills/weekly-report".into(),
+            git_ref: "main".into(),
+        },
+        last_pushed_sha: "aaa1111".into(),
+        content_hash: fsops::dir_content_hash(&body).unwrap(),
+    });
+    c.store.save_state(&state).unwrap();
+
+    // 前置:canonical 那条链接确实建起来了,而且确实不在账上
+    assert!(
+        std::fs::symlink_metadata(c.home.join(".agents").join("skills").join("weekly-report")).is_ok(),
+        "前置不成立:canonical 链接没建起来"
+    );
+
+    // 改过也不再二次确认——本体进的是废纸篓,捞得回来
+    std::fs::write(body.join("notes.md"), "edited").unwrap();
+
+    let RemoveOutcome::Removed { report, .. } = do_remove(&c, &env, "weekly-report").unwrap();
+
+    assert!(report.canonical_removed, "本体没被送走");
+    assert_eq!(c.trash.trashed(), vec![body.clone()], "进废纸篓的必须是**本体**");
+    assert!(
+        std::fs::symlink_metadata(c.home.join(".agents").join("skills").join("weekly-report")).is_err(),
+        "canonical 那条链接没摘掉"
+    );
+    assert!(
+        std::fs::symlink_metadata(c.home.join(".trae").join("skills").join("weekly-report")).is_err(),
+        "trae 那条链接没摘掉"
+    );
+    assert!(
+        c.trash.into.join("weekly-report").join("notes.md").is_file(),
+        "改动应当能从废纸篓里找回"
+    );
+    assert!(
+        c.store.load_state().unwrap().value.shared.is_empty(),
+        "指向本体的分享基线没被清掉,会留下一条谁也清不掉的孤儿"
+    );
 }
 
 // ============================================================ 边界
@@ -261,7 +361,7 @@ fn a_record_whose_body_is_already_gone_can_be_cleared_without_asking() {
 #[test]
 fn removing_an_unknown_skill_is_a_readable_error() {
     let (c, env) = ctx();
-    let err = do_remove(&c, &env, "never-installed", false).unwrap_err();
+    let err = do_remove(&c, &env, "never-installed").unwrap_err();
     assert_eq!(err.code, "FS_NOT_INSTALLED");
     assert!(!err.message.is_empty());
 }
@@ -275,11 +375,9 @@ fn an_unrecognized_lock_version_skips_the_lock_but_still_removes() {
     let alien = serde_json::json!({ "version": 4, "skills": { "weekly-report": {} } }).to_string();
     std::fs::write(&lock_path, &alien).unwrap();
 
-    let outcome = do_remove(&c, &env, "weekly-report", false).unwrap();
+    let outcome = do_remove(&c, &env, "weekly-report").unwrap();
 
-    let RemoveOutcome::Removed { lock, .. } = outcome else {
-        panic!("移除不该被 lock 拦住")
-    };
+    let RemoveOutcome::Removed { lock, .. } = outcome;
     assert_eq!(lock, "skipped");
     assert_eq!(std::fs::read_to_string(&lock_path).unwrap(), alien, "不认识的版本被改写了");
     assert!(!canonical(&c, "weekly-report").exists());
@@ -294,9 +392,9 @@ fn an_unrecognized_link_mode_is_skipped_not_guessed() {
     state.installed[0].links[0].mode = "hardlink-farm".into();
     c.store.save_state(&state).unwrap();
 
-    let outcome = do_remove(&c, &env, "weekly-report", false).unwrap();
+    let outcome = do_remove(&c, &env, "weekly-report").unwrap();
 
-    let RemoveOutcome::Removed { report, .. } = outcome else { panic!() };
+    let RemoveOutcome::Removed { report, .. } = outcome;
     // 那条关联没被动:猜着删就是拿删除逻辑动错误的目录形态。
     // canonical 已删,链接此时是断链——exists() 会解引用返回 false,须用 symlink_metadata
     assert!(
@@ -363,234 +461,13 @@ fn link_health_tells_broken_redirected_and_occupied_apart() {
     assert_eq!(health[0].health, LinkHealth::Broken);
 }
 
-// ============================================================ 修复关联
-
-#[test]
-fn repair_rebuilds_a_lost_link_and_reconciles_the_books() {
-    let (c, env) = ctx();
-    install_one(&c, &env, "weekly-report");
-    let link_path = link(&c, "weekly-report");
-    drop_link(&link_path);
-
-    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
-    let report =
-        skillsync_lib::core::acquire::repair_links(&installer, &c.store, "weekly-report", false)
-            .unwrap();
-
-    assert!(link_path.join("SKILL.md").is_file(), "链接没修回来");
-    assert!(!report.links.iter().any(|l| matches!(
-        l.result,
-        skillsync_lib::core::installer::LinkResult::Failed { .. }
-    )));
-    // 账与磁盘一致:links 记回来了,agents 仍是 claude-code
-    let state = c.store.load_state().unwrap().value;
-    assert_eq!(state.installed[0].links.len(), 1);
-    assert_eq!(state.installed[0].agents, ["claude-code"]);
-}
-
-#[cfg(unix)]
-#[test]
-fn repair_replaces_a_redirected_link_without_confirmation() {
-    // 被改指的是**链接**,不是用户数据本体——直接换回来,不必打扰用户
-    let (c, env) = ctx();
-    install_one(&c, &env, "weekly-report");
-    let link_path = link(&c, "weekly-report");
-    let elsewhere = c.home.join("elsewhere");
-    std::fs::create_dir_all(&elsewhere).unwrap();
-    std::fs::remove_file(&link_path).unwrap();
-    std::os::unix::fs::symlink(&elsewhere, &link_path).unwrap();
-
-    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
-    skillsync_lib::core::acquire::repair_links(&installer, &c.store, "weekly-report", false).unwrap();
-
-    // 链接以相对路径写入(便于整个 home 迁移),比对须走 canonicalize 解析
-    assert_eq!(
-        std::fs::canonicalize(&link_path).unwrap(),
-        std::fs::canonicalize(canonical(&c, "weekly-report")).unwrap(),
-        "链接没有指回技能本体"
-    );
-    assert!(elsewhere.exists(), "被指向的无辜目录不该被动");
-}
-
-#[test]
-fn repair_does_not_touch_an_occupying_directory_without_confirmation() {
-    let (c, env) = ctx();
-    install_one(&c, &env, "weekly-report");
-    let link_path = link(&c, "weekly-report");
-    let _ = std::fs::remove_file(&link_path);
-    let _ = std::fs::remove_dir_all(&link_path);
-    std::fs::create_dir_all(&link_path).unwrap();
-    std::fs::write(link_path.join("SKILL.md"), "用户自己放的\n").unwrap();
-    let theirs = std::fs::read(link_path.join("SKILL.md")).unwrap();
-
-    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
-    let report =
-        skillsync_lib::core::acquire::repair_links(&installer, &c.store, "weekly-report", false)
-            .unwrap();
-
-    // 修复本身完成,但这一条报失败;用户的目录一个字节没动
-    assert!(report.links.iter().any(|l| matches!(
-        l.result,
-        skillsync_lib::core::installer::LinkResult::Failed { .. }
-    )));
-    assert_eq!(std::fs::read(link_path.join("SKILL.md")).unwrap(), theirs);
-}
-
-#[test]
-fn repair_replaces_the_occupant_only_when_the_user_confirmed() {
-    let (c, env) = ctx();
-    install_one(&c, &env, "weekly-report");
-    let link_path = link(&c, "weekly-report");
-    let _ = std::fs::remove_file(&link_path);
-    let _ = std::fs::remove_dir_all(&link_path);
-    std::fs::create_dir_all(&link_path).unwrap();
-    std::fs::write(link_path.join("SKILL.md"), "用户自己放的\n").unwrap();
-
-    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
-    let report =
-        skillsync_lib::core::acquire::repair_links(&installer, &c.store, "weekly-report", true)
-            .unwrap();
-
-    assert!(!report.links.iter().any(|l| matches!(
-        l.result,
-        skillsync_lib::core::installer::LinkResult::Failed { .. }
-    )));
-    assert!(
-        link_path.join("SKILL.md").is_file(),
-        "替换后应能透过链接读到技能"
-    );
-    // 读到的是技能本体的内容,不是占位目录的
-    let body = std::fs::read_to_string(link_path.join("SKILL.md")).unwrap();
-    assert!(body.contains("weekly-report"), "读到的不是技能本体: {body}");
-}
-
-// ============================================================ 逐条补关联(安装时没建成的重试)
-
-/// trae 的全局技能目录。安装时只关联了 claude-code,trae 因此**不在账上**
-/// ——这正是 repair 够不到、需要 link_agents 的那一档。
-fn trae_link(c: &Ctx, slug: &str) -> PathBuf {
-    c.home.join(".trae").join("skills").join(slug)
-}
-
-#[test]
-fn retrying_an_unaccounted_agent_links_it_and_merges_the_books() {
-    let (c, env) = ctx();
-    install_one(&c, &env, "weekly-report");
-    let before = c.store.load_state().unwrap().value;
-    assert_eq!(before.installed[0].agents, vec!["claude-code".to_string()]);
-    let claude_link_count = before.installed[0].links.len();
-
-    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
-    skillsync_lib::core::acquire::link_agents(
-        &installer,
-        &c.store,
-        "weekly-report",
-        &["trae".to_string()],
-        false,
-    )
-    .unwrap();
-
-    assert!(trae_link(&c, "weekly-report").join("SKILL.md").is_file());
-
-    let after = c.store.load_state().unwrap().value;
-    // 并集合并:新的进来了,原有的**一条都不能少**——整份覆盖会让卸载时漏解 claude-code 的链接
-    assert!(after.installed[0].agents.contains(&"claude-code".to_string()));
-    assert!(after.installed[0].agents.contains(&"trae".to_string()));
-    assert_eq!(
-        after.installed[0].links.len(),
-        claude_link_count + 1,
-        "原有关联记账被覆盖掉了: {:?}",
-        after.installed[0].links
-    );
-}
-
-#[test]
-fn retrying_does_not_touch_an_occupying_directory_without_confirmation() {
-    let (c, env) = ctx();
-    install_one(&c, &env, "weekly-report");
-    let occupied = trae_link(&c, "weekly-report");
-    std::fs::create_dir_all(&occupied).unwrap();
-    let theirs = "别人放在这里的东西\n";
-    std::fs::write(occupied.join("SKILL.md"), theirs).unwrap();
-
-    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
-    let report = skillsync_lib::core::acquire::link_agents(
-        &installer,
-        &c.store,
-        "weekly-report",
-        &["trae".to_string()],
-        false,
-    )
-    .unwrap();
-
-    assert!(report.links.iter().any(|l| matches!(
-        l.result,
-        skillsync_lib::core::installer::LinkResult::Failed { .. }
-    )));
-    assert_eq!(
-        std::fs::read_to_string(occupied.join("SKILL.md")).unwrap(),
-        theirs,
-        "未确认就动了用户的目录"
-    );
-    // 没建成就不该记进账——记了界面会把它画成已生效
-    let after = c.store.load_state().unwrap().value;
-    assert!(!after.installed[0].agents.contains(&"trae".to_string()));
-}
-
-#[test]
-fn retrying_replaces_the_occupant_only_when_the_user_confirmed() {
-    let (c, env) = ctx();
-    install_one(&c, &env, "weekly-report");
-    let occupied = trae_link(&c, "weekly-report");
-    std::fs::create_dir_all(&occupied).unwrap();
-    std::fs::write(occupied.join("SKILL.md"), "别人放在这里的东西\n").unwrap();
-
-    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
-    skillsync_lib::core::acquire::link_agents(
-        &installer,
-        &c.store,
-        "weekly-report",
-        &["trae".to_string()],
-        true,
-    )
-    .unwrap();
-
-    let body = std::fs::read_to_string(occupied.join("SKILL.md")).unwrap();
-    assert!(body.contains("weekly-report"), "读到的不是技能本体: {body}");
-    let after = c.store.load_state().unwrap().value;
-    assert!(after.installed[0].agents.contains(&"trae".to_string()));
-}
-
-#[test]
-fn retrying_refuses_for_a_skill_that_is_not_installed() {
-    let (c, env) = ctx();
-    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
-
-    let err = skillsync_lib::core::acquire::link_agents(
-        &installer,
-        &c.store,
-        "never-installed",
-        &["trae".to_string()],
-        false,
-    )
-    .unwrap_err();
-
-    assert_eq!(err.code, "FS_NOT_INSTALLED");
-}
-
-#[test]
-fn repair_refuses_when_the_skill_body_is_gone() {
-    // 本体没了,修复无从谈起——这要走"重新获取",不能默默建一个指向空处的链接
-    let (c, env) = ctx();
-    install_one(&c, &env, "weekly-report");
-    std::fs::remove_dir_all(canonical(&c, "weekly-report")).unwrap();
-
-    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
-    let err =
-        skillsync_lib::core::acquire::repair_links(&installer, &c.store, "weekly-report", false)
-            .unwrap_err();
-    assert!(err.code.starts_with("FS_"), "{}", err.code);
-}
+// ============================================================ 修复关联(v6 二期已撤销)
+//
+// `repair_links` / `link_agents` 连同「修复关联」这个概念一起删除了(任务 4),
+// 原先挂在这里的九条用例随之作废。它们守的行为并没有消失,而是搬到了
+// `converge::set_agents`——`tests/converge_flow.rs` 逐条覆盖:断链自愈、
+// 被改指的链接换回来、占位实体目录同内容进废纸篓换链接/不同内容一个字节不动、
+// 记账并集合并、本体缺失时拒绝建链。**不要在这里重建一套平行的断言。**
 
 #[test]
 fn link_health_treats_a_degraded_copy_as_healthy() {
@@ -657,7 +534,7 @@ fn removing_also_clears_the_shared_baseline_it_leaves_behind() {
     }
     c.store.save_state(&state).unwrap();
 
-    do_remove(&c, &env, "weekly-report", false).unwrap();
+    do_remove(&c, &env, "weekly-report").unwrap();
 
     let after = c.store.load_state().unwrap().value;
     assert!(

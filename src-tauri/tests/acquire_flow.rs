@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use skillsync_lib::core::acquire::{self, AcquireRequest, ForeignOrigin, Precheck, Resolution, Stage};
+use skillsync_lib::core::acquire::{self, AcquireRequest, Precheck, Resolution, Stage};
 use skillsync_lib::core::agents::{AgentEnv, AgentRegistry};
 use skillsync_lib::core::fsops;
 use skillsync_lib::core::gitea::{GiteaClient, RepoRef};
@@ -274,7 +274,7 @@ async fn a_fresh_install_immediately_reads_back_as_unmodified() {
         "落盘后 body 的内容 hash 必须与记账一致,否则刚装完就会被判成「用户改过」"
     );
 
-    let checked = acquire::precheck(&installer, &env, &state, "weekly-report", "aaa1111", Some(&repo_ref()), Default::default()).unwrap();
+    let checked = acquire::precheck(&installer, &c.registry, &env, &state, "weekly-report", "aaa1111", Some(&repo_ref()), Default::default()).unwrap();
 
     assert_eq!(
         checked,
@@ -326,7 +326,7 @@ async fn deleted_body_with_books_still_prechecks_as_fresh() {
     let state = c.store.load_state().unwrap().value;
     assert_eq!(state.installed.len(), 1, "记账应当还在");
 
-    let checked = acquire::precheck(&installer, &env, &state, "weekly-report", "bbb2222", Some(&repo_ref()), Default::default()).unwrap();
+    let checked = acquire::precheck(&installer, &c.registry, &env, &state, "weekly-report", "bbb2222", Some(&repo_ref()), Default::default()).unwrap();
 
     assert_eq!(checked, Precheck::Fresh);
 }
@@ -547,7 +547,7 @@ async fn keeping_local_changes_touches_nothing_in_the_skill_body() {
     assert_eq!(record.commit_sha, "aaa1111", "保留本地时不该把版本推进到远端");
     let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
     assert_eq!(
-        acquire::precheck(&installer, &env, &state, "weekly-report", "ccc3333", Some(&repo_ref()), Default::default()).unwrap(),
+        acquire::precheck(&installer, &c.registry, &env, &state, "weekly-report", "ccc3333", Some(&repo_ref()), Default::default()).unwrap(),
         Precheck::LocallyModified { installed_sha: "aaa1111".into() },
         "保留本地之后,它仍应被认作有未分享的改动"
     );
@@ -578,7 +578,7 @@ async fn overwriting_is_only_done_when_explicitly_chosen() {
     // 覆盖后 hash 必须与新内容一致,否则下一次又会被判成"用户改过"
     let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
     assert!(matches!(
-        acquire::precheck(&installer, &env, &state, "weekly-report", "ccc3333", Some(&repo_ref()), Default::default()).unwrap(),
+        acquire::precheck(&installer, &c.registry, &env, &state, "weekly-report", "ccc3333", Some(&repo_ref()), Default::default()).unwrap(),
         Precheck::Managed { up_to_date: true, .. }
     ));
 }
@@ -607,11 +607,16 @@ async fn an_unmodified_skill_updates_without_asking() {
     assert_eq!(state.installed[0].installed_at, NOW, "首次安装时间要保留");
 }
 
-// ============================================================ 外来目录
+// ============================================================ 本地已有一份(无账)
 
+/// v6 二期:本地已有一份、内容与库里**不同** → 两选,磁盘零写入。
+///
+/// 这条取代了旧的 `a_foreign_directory_is_reported_as_foreign_not_as_modified`。
+/// 旧行为是告诉用户「这个位置上的技能不是本应用安装的」——那句话在"用户自己在
+/// Claude Code 里开发这个技能"的场景下是把作者当外人,正是本期要消灭的。
+/// 现在只问内容:不同就两选,不再猜"这个文件夹是谁建的"。
 #[tokio::test]
-async fn a_foreign_directory_is_reported_as_foreign_not_as_modified() {
-    // 关键:这里**没有** state.installed 记录 —— 两个分支若共用 fixture 就会塌成一个
+async fn a_local_copy_that_differs_asks_which_one_to_keep_and_writes_nothing() {
     let server = MockServer::start().await;
     mount(&server, "aaa1111", "weekly-report", "正文").await;
     let (c, env) = ctx();
@@ -625,41 +630,40 @@ async fn a_foreign_directory_is_reported_as_foreign_not_as_modified() {
 
     match outcome {
         acquire::AcquireOutcome::NeedsDecision {
-            precheck: Precheck::Foreign { origin },
-        } => assert_eq!(origin, ForeignOrigin::Unknown),
-        other => panic!("应当报成外来目录,实际: {other:?}"),
+            precheck: Precheck::LocalDiffers { existing },
+        } => assert_eq!(existing, dir.to_string_lossy(), "要说清是哪一份"),
+        other => panic!("内容不同应当两选,实际: {other:?}"),
     }
-    assert_eq!(std::fs::read(dir.join("SKILL.md")).unwrap(), theirs, "别人的目录被动过了");
+    assert_eq!(std::fs::read(dir.join("SKILL.md")).unwrap(), theirs, "拍板之前动了本地那一份");
+    assert!(c.trash.trashed().is_empty(), "拍板之前一个字节都不该进废纸篓");
 }
 
+/// 同一现场选「保留本地」:磁盘、记账、关联一个字节都不动。
+///
+/// **刻意不补建关联**:这一档没有任何记账,补了链接却没有账,移除时谁也摘不掉
+/// 它们(`remove::remove` 只按 `state.links` 摘链)。要建关联走「勾选工具」。
 #[tokio::test]
-async fn a_foreign_directory_from_npx_skills_names_its_source() {
+async fn keeping_the_local_copy_changes_nothing_at_all() {
     let server = MockServer::start().await;
     mount(&server, "aaa1111", "weekly-report", "正文").await;
     let (c, env) = ctx();
 
     let dir = canonical(&c.home, "weekly-report");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("SKILL.md"), "npx skills 装的\n").unwrap();
-    // 用排除法认出来源(设计方案 2.5②):能在 npx skills 的 lock 里查到就是它装的
-    std::fs::write(
-        c.home.join(".agents").join(".skill-lock.json"),
-        serde_json::json!({
-            "version": 3,
-            "skills": { "weekly-report": { "source": "acme/skills", "sourceType": "github" } }
-        })
-        .to_string(),
-    )
-    .unwrap();
+    std::fs::write(dir.join("SKILL.md"), "我自己写的\n").unwrap();
+    let mine = std::fs::read(dir.join("SKILL.md")).unwrap();
 
-    let outcome = run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+    let outcome = run(&server, &c, &env, "weekly-report", &[], Some(Resolution::KeepLocal))
+        .await
+        .unwrap();
 
-    match outcome {
-        acquire::AcquireOutcome::NeedsDecision {
-            precheck: Precheck::Foreign { origin },
-        } => assert_eq!(origin, ForeignOrigin::NpxSkills { source: "acme/skills".into() }),
-        other => panic!("应当认出 npx skills 来源,实际: {other:?}"),
-    }
+    assert!(
+        matches!(outcome, acquire::AcquireOutcome::Kept { remote_changed: true }),
+        "实际: {outcome:?}"
+    );
+    assert_eq!(std::fs::read(dir.join("SKILL.md")).unwrap(), mine);
+    assert!(c.store.load_state().unwrap().value.installed.is_empty(), "不该凭空记一条账");
+    assert!(c.trash.trashed().is_empty());
 }
 
 // ============================================================ 其他边界
@@ -757,9 +761,13 @@ async fn a_failed_link_is_never_recorded_as_active() {
     mount(&server, "aaa1111", "weekly-report", "正文").await;
     let (c, env) = ctx();
 
+    // ⚠️ **占位目录里刻意不放 SKILL.md**(v6 二期任务 4 改):放了的话它就是一份
+    // 合法的同名技能实体,`converge::scan_all` 会把它认成候选本体,整条流程走的是
+    // `LocalDiffers`(两选)而不是"装到 canonical 再建链"——那时测的就不是本条
+    // 想测的东西了。这里要的是"落点被一个**不是技能**的目录占着"。
     let occupied = c.home.join(".claude").join("skills").join("weekly-report");
     std::fs::create_dir_all(&occupied).unwrap();
-    std::fs::write(occupied.join("SKILL.md"), "用户自己放的\n").unwrap();
+    std::fs::write(occupied.join("notes.md"), "用户自己放的\n").unwrap();
 
     let outcome = run(&server, &c, &env, "weekly-report", &["claude-code".to_string()], None)
         .await
@@ -773,29 +781,13 @@ async fn a_failed_link_is_never_recorded_as_active() {
     assert!(record.links.is_empty(), "失败的链不该进记账 —— 卸载时会拿它去动用户自己的目录");
 }
 
-#[tokio::test]
-async fn keep_local_never_applies_to_a_foreign_directory() {
-    // 外来目录里没有"你的改动"可留。接受 KeepLocal 会把别人的内容当成我们装的记进 state,
-    // 之后更新检查永远显示"已是最新"。界面不给这个组合,但新的调用方(向导批量安装)
-    // 很可能一律传 KeepLocal —— 必须在 core 层堵死,不能靠界面的形状保证。
-    let server = MockServer::start().await;
-    mount(&server, "aaa1111", "weekly-report", "正文").await;
-    let (c, env) = ctx();
-
-    let dir = canonical(&c.home, "weekly-report");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("SKILL.md"), "别人装的技能\n").unwrap();
-    let theirs = std::fs::read(dir.join("SKILL.md")).unwrap();
-
-    let err = run(&server, &c, &env, "weekly-report", &[], Some(Resolution::KeepLocal))
-        .await
-        .unwrap_err();
-
-    assert_eq!(err.code, "CONFLICT_FOREIGN_DIR");
-    assert_eq!(std::fs::read(dir.join("SKILL.md")).unwrap(), theirs, "外来目录被动过了");
-    // 账上也不能多出一条:那份内容不是我们装的
-    assert!(c.store.load_state().unwrap().value.installed.is_empty());
-}
+// v6 二期任务 4:`keep_local_never_applies_to_a_foreign_directory` 已删除。
+//
+// 它守的是"向导一律传 KeepLocal 会把别人的内容当成我们装的记进 state"。
+// 那条路现在从根上不存在了:本地已有一份、内容与库里不同 + KeepLocal 走的是
+// `AcquireOutcome::Kept`——磁盘、记账、关联一个字节都不动,压根没有"记进 state"
+// 这个动作。同一个不变量由上面的 `keeping_the_local_copy_changes_nothing_at_all`
+// 正面断言(`installed.is_empty()`)。
 
 #[tokio::test]
 async fn acquiring_also_refreshes_the_store_index_cache() {
@@ -869,9 +861,10 @@ async fn author_is_me_never_yields_foreign() {
     );
 }
 
-/// 对照组:同一份现场,只是没登录。未登录时不知道你是谁,**行为一个字不变**。
+/// 对照组:同一份现场,只是没登录。未登录时不知道你是谁,于是只能按内容说话
+/// ——落进 `LocalDiffers`(两选),而不是 `Mine`(那一档只有作者本人才配)。
 #[tokio::test]
-async fn signed_out_keeps_foreign() {
+async fn signed_out_falls_back_to_comparing_content() {
     let server = MockServer::start().await;
     mount_authored(&server, "aaa1111", "weekly-report", "库里的正文", ME_DISPLAY).await;
     let (c, env) = ctx(); // 刻意不 sign_in
@@ -884,9 +877,9 @@ async fn signed_out_keeps_foreign() {
 
     match outcome {
         acquire::AcquireOutcome::NeedsDecision {
-            precheck: Precheck::Foreign { origin },
-        } => assert_eq!(origin, ForeignOrigin::Unknown),
-        other => panic!("未登录时应当维持原样,实际: {other:?}"),
+            precheck: Precheck::LocalDiffers { existing },
+        } => assert_eq!(existing, dir.to_string_lossy()),
+        other => panic!("未登录时应当按内容两选,实际: {other:?}"),
     }
 }
 
@@ -983,6 +976,7 @@ async fn mine_with_ledger_still_yields_mine_not_locally_modified() {
 
     let checked = acquire::precheck(
         &installer,
+        &c.registry,
         &env,
         &state,
         "weekly-report",
@@ -1000,6 +994,7 @@ async fn mine_with_ledger_still_yields_mine_not_locally_modified() {
     // 对照组:同一份 state、同一个目录,只是不知道我是谁
     let checked = acquire::precheck(
         &installer,
+        &c.registry,
         &env,
         &state,
         "weekly-report",
@@ -1035,6 +1030,7 @@ async fn a_new_library_head_with_identical_content_is_not_a_remote_change() {
 
     let checked = acquire::precheck(
         &installer,
+        &c.registry,
         &env,
         &state,
         "weekly-report",
@@ -1173,4 +1169,543 @@ async fn batch_skips_mine() {
         std::fs::read_to_string(dir.join("SKILL.md")).unwrap().contains("第一版"),
         "本地内容被自动覆盖了"
     );
+}
+
+// ============================================================ 本体住在工具目录里(v6 二期任务 4)
+//
+// 这一节钉的是本期的核心承诺:**本体只有一份、住在它现在所在的地方、永不搬动**。
+// 用户在 `~/.claude/skills/` 下开发技能是真实场景(项目记忆里那条原始诉求),
+// 旧模型会把它当外人、取回时把它删掉换成 canonical 里的一份。
+
+/// 在 `<home>/<rel_dir>/<slug>` 造一份与压缩包里那个技能**逐字节相同**的实体目录。
+///
+/// 三个文件一个都不能少:`dir_content_hash` 走的是"全部文件的相对路径 + 字节",
+/// 少一个 logo.png 就与索引里的 `content_hash` 不相等,`AlreadyHere` 那一档
+/// 根本走不到——而那正是这一节要测的东西。
+fn plant_identical_skill(home: &Path, rel_dir: &str, slug: &str, body: &str) -> PathBuf {
+    let dir = home.join(rel_dir).join(slug);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: 周报生成\ndescription: 汇总本周工作\n---\n\n{body}\n"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("logo.png"), PNG_BYTES).unwrap();
+    std::fs::write(dir.join("run.sh"), SCRIPT).unwrap();
+    dir
+}
+
+/// 造一份内容与库里**不同**的实体目录(只有 SKILL.md,足够被认成技能)。
+fn plant_draft(home: &Path, rel_dir: &str, slug: &str, body: &str) -> PathBuf {
+    let dir = home.join(rel_dir).join(slug);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: 周报生成\ndescription: 我自己写的\n---\n\n{body}\n"),
+    )
+    .unwrap();
+    dir
+}
+
+/// 索引缓存里这个技能的内容指纹(acquire 会顺带把缓存刷到同一版本)。
+fn index_hash(c: &Ctx, slug: &str) -> String {
+    let cache = skillsync_lib::core::store::cache_path(c.store.dir(), REGISTRY, &repo_ref());
+    let index = skillsync_lib::core::store::load_cache(&cache).expect("索引缓存应已写入");
+    index
+        .skills
+        .iter()
+        .find(|s| s.dir_slug == slug)
+        .expect("索引里应有这个技能")
+        .content_hash
+        .clone()
+}
+
+#[tokio::test]
+async fn a_local_dir_identical_to_the_library_is_adopted_without_writing_its_body() {
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "正文").await;
+    let (c, env) = ctx();
+    let body = plant_identical_skill(&c.home, ".claude/skills", "weekly-report", "正文");
+    let before = std::fs::read(body.join("SKILL.md")).unwrap();
+
+    let agents = vec!["claude-code".to_string(), "trae".to_string()];
+    let outcome = run(&server, &c, &env, "weekly-report", &agents, None).await.unwrap();
+    assert!(
+        matches!(outcome, acquire::AcquireOutcome::Installed { .. }),
+        "内容已经一样,不该停下来问: {outcome:?}"
+    );
+
+    let st = c.store.load_state().unwrap().value;
+    let rec = st.installed.iter().find(|s| s.name == "weekly-report").unwrap();
+    assert_eq!(
+        rec.body.as_deref(),
+        Some(body.to_string_lossy().as_ref()),
+        "本体必须留在原地,账上要记住它在哪"
+    );
+    assert_eq!(rec.content_hash, index_hash(&c, "weekly-report"), "基线等于索引指纹");
+    assert!(c.trash.trashed().is_empty(), "内容相同,一个字节都不该进废纸篓");
+    assert_eq!(std::fs::read(body.join("SKILL.md")).unwrap(), before, "本体被重写了");
+
+    // canonical 与另一个工具都变成指向本体的链接
+    assert_eq!(
+        fsops::read_link_target(&c.home.join(".agents").join("skills").join("weekly-report")),
+        Some(fsops::normalize(&body)),
+        "canonical 没有指回本体"
+    );
+    assert_eq!(
+        fsops::read_link_target(&c.home.join(".trae").join("skills").join("weekly-report")),
+        Some(fsops::normalize(&body)),
+        "trae 没有指回本体"
+    );
+    // 本体所在那个工具读的就是本体自己,不需要链接——但它确实生效,必须进账
+    assert!(
+        rec.agents.contains(&"claude-code".to_string()),
+        "本体所在工具被漏成没启用: {:?}",
+        rec.agents
+    );
+    assert!(rec.agents.contains(&"trae".to_string()), "{:?}", rec.agents);
+}
+
+/// 本地有**好几份**、内容全都与库里相同:选一份当本体,其余静默收成链接
+/// (进废纸篓,可逆)——内容一样就是无损,不必打扰用户。
+///
+/// 这条钉的是 `finish` 里那趟 `merge_converged_others`:收敛成功的位置必须
+/// **进账**,否则 `remove::remove`(只按 `state.links` 摘链)摘不掉它们,
+/// 移除本体之后会在各工具目录里留下一地悬空链接。
+#[tokio::test]
+async fn identical_copies_elsewhere_are_folded_into_links_and_recorded() {
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "正文").await;
+    let (c, env) = ctx();
+    let body = plant_identical_skill(&c.home, ".claude/skills", "weekly-report", "正文");
+    let dup = plant_identical_skill(&c.home, ".trae/skills", "weekly-report", "正文");
+
+    let outcome = run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+    assert!(matches!(outcome, acquire::AcquireOutcome::Installed { .. }), "{outcome:?}");
+
+    assert_eq!(
+        fsops::read_link_target(&dup),
+        Some(fsops::normalize(&body)),
+        "内容一样的副本应当被收成指向本体的链接"
+    );
+    assert_eq!(c.trash.trashed(), vec![dup.clone()], "副本要进废纸篓,不能直接删");
+    let st = c.store.load_state().unwrap().value;
+    let rec = st.installed.iter().find(|s| s.name == "weekly-report").unwrap();
+    assert!(
+        rec.links
+            .iter()
+            .any(|l| Path::new(&l.dir) == c.home.join(".trae").join("skills")),
+        "收敛成功的位置必须进账(remove 才摘得掉): {:?}",
+        rec.links
+    );
+}
+
+#[tokio::test]
+async fn a_local_dir_that_differs_needs_a_decision_and_overwrite_keeps_the_location() {
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "库里的正文").await;
+    let (c, env) = ctx();
+    let body = plant_draft(&c.home, ".claude/skills", "weekly-report", "我的草稿");
+
+    let agents = vec!["claude-code".to_string()];
+    let outcome = run(&server, &c, &env, "weekly-report", &agents, None).await.unwrap();
+    let acquire::AcquireOutcome::NeedsDecision { precheck } = outcome else {
+        panic!("内容不同必须停下来问")
+    };
+    assert_eq!(
+        precheck,
+        Precheck::LocalDiffers { existing: body.to_string_lossy().into_owned() }
+    );
+    assert!(
+        std::fs::read_to_string(body.join("SKILL.md")).unwrap().contains("我的草稿"),
+        "拍板前磁盘不动"
+    );
+
+    let outcome = run(&server, &c, &env, "weekly-report", &agents, Some(Resolution::Overwrite))
+        .await
+        .unwrap();
+    assert!(matches!(outcome, acquire::AcquireOutcome::Installed { .. }), "{outcome:?}");
+    assert_eq!(c.trash.trashed(), vec![body.clone()], "旧的那份要进废纸篓,不能直接删");
+    assert!(
+        std::fs::read_to_string(body.join("SKILL.md")).unwrap().contains("库里的正文"),
+        "库里的版本必须装到**同一位置**——本体不搬家"
+    );
+    assert!(
+        !c.home.join(".agents").join("skills").join("weekly-report").join("SKILL.md").is_file()
+            || fsops::read_link_target(&c.home.join(".agents").join("skills").join("weekly-report")).is_some(),
+        "canonical 上应当是一条链接,不是又装了一份实体"
+    );
+    let st = c.store.load_state().unwrap().value;
+    assert_eq!(
+        st.installed[0].body.as_deref(),
+        Some(body.to_string_lossy().as_ref()),
+        "账上要记住本体在哪"
+    );
+}
+
+#[tokio::test]
+async fn a_recorded_skill_with_a_stray_differing_copy_still_updates_normally() {
+    // 有账 + 工具目录里一份内容不同的杂散副本:`locate` 有账时恒返回 Body(账上),
+    // precheck 照旧走 Managed。否则一份副本就能让自动更新静默停摆。
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "第一版").await;
+    let (c, env) = ctx();
+    let agents = vec!["claude-code".to_string()];
+    run(&server, &c, &env, "weekly-report", &agents, None).await.unwrap();
+
+    // 摘掉链接,原位放一份内容不同的实体
+    let link = c.home.join(".claude").join("skills").join("weekly-report");
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_dir(&link);
+    let stray = plant_draft(&c.home, ".claude/skills", "weekly-report", "杂散副本");
+
+    let server2 = MockServer::start().await;
+    mount(&server2, "bbb2222", "weekly-report", "第二版").await;
+    let outcome = run(&server2, &c, &env, "weekly-report", &agents, None).await.unwrap();
+
+    assert!(
+        matches!(outcome, acquire::AcquireOutcome::Installed { .. }),
+        "不该退化成需要拍板: {outcome:?}"
+    );
+    assert!(
+        std::fs::read_to_string(canonical(&c.home, "weekly-report").join("SKILL.md"))
+            .unwrap()
+            .contains("第二版"),
+        "更新没落到本体上"
+    );
+    assert!(
+        std::fs::read_to_string(stray.join("SKILL.md")).unwrap().contains("杂散副本"),
+        "杂散副本一个字节都不该被动(建链撞上它 → converge Differs)"
+    );
+    assert!(c.trash.trashed().iter().all(|p| p != &stray), "杂散副本被丢进了废纸篓");
+}
+
+/// 编译期守卫:`Precheck` 不再有「这个目录不是本应用装的」那一档。
+///
+/// 穷尽 match 没有 `_` 兜底,任何人把 `Foreign` 加回来(或新增一档忘了处理)
+/// 都会在这里编译失败。
+#[test]
+fn foreign_is_gone_nobody_is_told_their_dir_is_not_ours() {
+    let _ = |p: Precheck| match p {
+        Precheck::Fresh
+        | Precheck::AlreadyHere { .. }
+        | Precheck::LocalDiffers { .. }
+        | Precheck::NeedsVersionChoice { .. }
+        | Precheck::Managed { .. }
+        | Precheck::LocallyModified { .. }
+        | Precheck::OtherLibrary { .. }
+        | Precheck::Mine { .. } => {}
+    };
+}
+
+#[tokio::test]
+async fn several_differing_copies_ask_the_user_to_pick_a_version_first() {
+    // 无账 + 两处实体、内容还不一样:`Resolution` 的两档都回答不了"留哪一份",
+    // 所以这一档**无视 resolution**,恒退回让用户先去拍板。磁盘零写入。
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "库里的正文").await;
+    let (c, env) = ctx();
+    let a = plant_draft(&c.home, ".claude/skills", "weekly-report", "A 版");
+    let b = plant_draft(&c.home, ".trae/skills", "weekly-report", "B 版");
+
+    for resolution in [None, Some(Resolution::Overwrite), Some(Resolution::KeepLocal)] {
+        let outcome = run(&server, &c, &env, "weekly-report", &[], resolution).await.unwrap();
+        let acquire::AcquireOutcome::NeedsDecision {
+            precheck: Precheck::NeedsVersionChoice { versions },
+        } = outcome
+        else {
+            panic!("有分歧版本时必须先拍板(resolution={resolution:?})")
+        };
+        let paths: Vec<&str> = versions.iter().map(|v| v.path.as_str()).collect();
+        assert!(paths.contains(&a.to_string_lossy().as_ref()), "{paths:?}");
+        assert!(paths.contains(&b.to_string_lossy().as_ref()), "{paths:?}");
+    }
+    assert!(std::fs::read_to_string(a.join("SKILL.md")).unwrap().contains("A 版"));
+    assert!(std::fs::read_to_string(b.join("SKILL.md")).unwrap().contains("B 版"));
+    assert!(c.trash.trashed().is_empty(), "拍板之前一个字节都不该进废纸篓");
+    assert!(c.store.load_state().unwrap().value.installed.is_empty());
+}
+
+#[tokio::test]
+async fn batch_skips_local_differs_and_version_choice_with_a_human_reason() {
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "库里的正文").await;
+    let (c, env) = ctx();
+    plant_draft(&c.home, ".claude/skills", "weekly-report", "我的草稿");
+
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    macro_rules! batch {
+        () => {
+            acquire::acquire_batch(
+                &client,
+                &c.registry,
+                &env,
+                &c.store,
+                acquire::SourceMeta { registry_id: REGISTRY, kind: "gitea", base_url: &server.uri() },
+                &repo_ref(),
+                &["weekly-report".to_string()],
+                acquire::BatchAgents::Uniform(&[]),
+                NOW,
+                1_753_800_000,
+                &c.trash,
+            )
+            .await
+            .unwrap()
+        };
+    }
+
+    let items = batch!();
+    match &items[0].outcome {
+        acquire::BatchOutcome::Skipped { reason } => {
+            assert!(reason.contains("内容不同"), "原因要说人话: {reason}");
+        }
+        other => panic!("批量流程必须跳过,实际: {other:?}"),
+    }
+
+    // 再加一份不同的,变成"多个分歧版本"
+    plant_draft(&c.home, ".trae/skills", "weekly-report", "另一份");
+    let items = batch!();
+    match &items[0].outcome {
+        acquire::BatchOutcome::Skipped { reason } => {
+            assert!(reason.contains("好几份"), "原因要说人话: {reason}");
+        }
+        other => panic!("批量流程必须跳过,实际: {other:?}"),
+    }
+    assert!(c.store.load_state().unwrap().value.installed.is_empty());
+    assert!(c.trash.trashed().is_empty());
+}
+
+#[tokio::test]
+async fn update_of_a_body_living_in_a_tool_dir_writes_in_place_and_trashes_the_old_version() {
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "正文").await;
+    let (c, env) = ctx();
+    let body = plant_identical_skill(&c.home, ".claude/skills", "weekly-report", "正文");
+    let agents = vec!["claude-code".to_string()];
+    run(&server, &c, &env, "weekly-report", &agents, None).await.unwrap(); // AlreadyHere → 记账
+
+    // 库里出新版
+    let server2 = MockServer::start().await;
+    mount(&server2, "bbb2222", "weekly-report", "第二版").await;
+    let outcome = run(&server2, &c, &env, "weekly-report", &agents, None).await.unwrap();
+
+    assert!(matches!(outcome, acquire::AcquireOutcome::Installed { .. }), "{outcome:?}");
+    assert!(
+        std::fs::read_to_string(body.join("SKILL.md")).unwrap().contains("第二版"),
+        "更新必须写在本体原地"
+    );
+    assert_eq!(c.trash.trashed(), vec![body.clone()], "旧的那一版进废纸篓");
+    assert_eq!(
+        fsops::dir_content_hash(&body).unwrap(),
+        index_hash(&c, "weekly-report"),
+        "hash 等式必须对 body 成立——不成立就是界面永远误报「有更新」"
+    );
+    let st = c.store.load_state().unwrap().value;
+    assert_eq!(st.installed.len(), 1, "更新不该再追加一条记录");
+    assert_eq!(st.installed[0].commit_sha, "bbb2222");
+    assert_eq!(st.installed[0].content_hash, index_hash(&c, "weekly-report"));
+}
+
+/// 「我分享的」技能取回时建的分享基线,`local_path` 记的必须是**本体**所在。
+///
+/// 记成 canonical 的话,`share::share_installed` 与 `remove` 都会拿一条指向
+/// 一条链接的路径去比对/清理——而 `remove` 正是按 `local_path` 清孤儿的
+/// (见 `remove_flow::removing_also_clears_the_shared_baseline_it_leaves_behind`)。
+#[tokio::test]
+async fn the_shared_baseline_points_at_the_body_not_at_the_canonical_link() {
+    let server = MockServer::start().await;
+    mount_authored(&server, "aaa1111", "weekly-report", "库里的正文", ME_DISPLAY).await;
+    let (c, env) = ctx();
+    sign_in(&c);
+    let body = plant_draft(&c.home, ".claude/skills", "weekly-report", "我的草稿");
+
+    // 作者在自己的技能上永远落进 `Mine`(无账 = 无基线,两边一律按"变了"算),
+    // 所以要用「用库里的」这一档才走到落盘 + 建基线。
+    let outcome = run(&server, &c, &env, "weekly-report", &["claude-code".to_string()], None)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            outcome,
+            acquire::AcquireOutcome::NeedsDecision { precheck: Precheck::Mine { .. } }
+        ),
+        "{outcome:?}"
+    );
+    run(&server, &c, &env, "weekly-report", &["claude-code".to_string()], Some(Resolution::Overwrite))
+        .await
+        .unwrap();
+
+    let st = c.store.load_state().unwrap().value;
+    assert_eq!(st.shared.len(), 1, "作者取回自己的技能必须留下分享基线");
+    assert_eq!(
+        std::path::Path::new(&st.shared[0].local_path),
+        body.as_path(),
+        "基线指向的必须是本体"
+    );
+    assert_eq!(st.shared[0].content_hash, fsops::dir_content_hash(&body).unwrap());
+}
+
+/// 记账的内容指纹从**本体**算,不从 `report.canonical_dir` 算。
+///
+/// 本体住在工具目录、而 canonical 那条链接**没建成**(这里把 `~/.agents` 占成一个
+/// 普通文件)时,两者的差别才现形:按 canonical 算会 `FS_HASH_FAILED`,整次获取
+/// 因此失败——可技能本体明明已经好好地落在盘上了。
+/// (canonical 链接建不成本就只该进报告,不该拦下整次获取。)
+#[tokio::test]
+async fn the_recorded_hash_is_computed_from_the_body_not_from_the_canonical_link() {
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "库里的正文").await;
+    let (c, env) = ctx();
+    let body = plant_identical_skill(&c.home, ".claude/skills", "weekly-report", "库里的正文");
+    // canonical 的父目录被占成一个普通文件 → canonical 那条链接必然建不成
+    std::fs::write(c.home.join(".agents"), b"not a directory").unwrap();
+
+    let outcome = run(&server, &c, &env, "weekly-report", &["claude-code".to_string()], None)
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(outcome, acquire::AcquireOutcome::Installed { .. }),
+        "canonical 链接建不成不该拦下整次获取: {outcome:?}"
+    );
+    let st = c.store.load_state().unwrap().value;
+    let rec = st.installed.iter().find(|s| s.name == "weekly-report").unwrap();
+    assert_eq!(
+        rec.content_hash,
+        fsops::dir_content_hash(&body).unwrap(),
+        "记账的指纹必须是本体的指纹"
+    );
+    assert!(!rec.content_hash.is_empty());
+}
+
+/// 🔴 R10:纯本地技能的记账用的是**全空的来源坐标**(任务 3 起,勾选工具 /
+/// 版本拍板时顺手建的 `adopted` 账)。空 owner 与任何真实 owner 都不相等——
+/// `OtherLibrary` 那一档不先问一句 `has_source()` 的话,商店里同名技能点获取
+/// **必然**被告知「同名技能已从 / 获取」,而它压根没有装自任何技能库。
+#[tokio::test]
+async fn a_record_with_no_library_source_is_never_called_another_library() {
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "库里的正文").await;
+    let (c, env) = ctx();
+
+    // 现场:用户在 Claude Code 下开发这个技能,勾过工具 → 一条来源全空的 adopted 账
+    let body = plant_draft(&c.home, ".claude/skills", "weekly-report", "我的草稿");
+    let mut state = c.store.load_state().map(|l| l.value).unwrap_or_default();
+    state.installed.push(skillsync_lib::core::state::InstalledSkill {
+        name: "weekly-report".into(),
+        source: skillsync_lib::core::state::SkillSource {
+            registry_id: String::new(),
+            owner: String::new(),
+            repo: String::new(),
+            path: String::new(),
+            git_ref: String::new(),
+        },
+        commit_sha: String::new(),
+        content_hash: fsops::dir_content_hash(&body).unwrap(),
+        origin: Some(skillsync_lib::core::state::ORIGIN_ADOPTED.into()),
+        body: Some(body.to_string_lossy().into_owned()),
+        agents: vec!["claude-code".into()],
+        links: Vec::new(),
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    });
+    c.store.save_state(&state).unwrap();
+
+    let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
+    let state = c.store.load_state().unwrap().value;
+    let checked = acquire::precheck(
+        &installer,
+        &c.registry,
+        &env,
+        &state,
+        "weekly-report",
+        "aaa1111",
+        Some(&repo_ref()),
+        Default::default(),
+    )
+    .unwrap();
+
+    assert!(
+        !matches!(checked, Precheck::OtherLibrary { .. }),
+        "来源全空的账被当成了「另一个技能库」: {checked:?}"
+    );
+    // ⚠️ **落进 `Managed` 这件事本身是待拍板的**(R10 只说了它"不该说什么",
+    // 没说该落进哪一档):`Managed` 的前提是"覆盖是安全的",而那建立在
+    // "记账里的内容来自技能库"上,对一份纯本地草稿并不成立——同样的内容差异
+    // 在**无账**时走的是 `LocalDiffers`(要问用户),一问一不问。
+    // 这里断言当前实现,不是断言它就该如此;拍板之后连同这句注释一起改。
+    assert_eq!(
+        checked,
+        Precheck::Managed { installed_sha: String::new(), up_to_date: false },
+        "当前实现:跳过 OtherLibrary 之后按内容比对落进 Managed"
+    );
+}
+
+// ============================================================ IPC 序列化形状
+
+/// 🔴 `#[serde(rename_all = ...)]` 挂在**枚举**上只改 variant 名,**不改 struct
+/// variant 的字段名**。`Precheck` 与 `AcquireOutcome` 从引入起就少了
+/// `rename_all_fields`,于是一直把蛇形键发给前端,而 `src/lib/ipc.ts` 的类型
+/// 与 `ConflictDialog` 读的是驼峰。两处真实后果:
+/// - 「装自另一个技能库」弹窗里那句库名渲染成 `undefined/undefined`;
+/// - `Kept.remoteChanged` 恒为 `undefined`(falsy)→ 后续分享**不强制走审核**,
+///   直推等于覆盖同事经审核改过的版本。
+///
+/// 这条正面钉住键名。core 侧没有别的地方会碰到这两个枚举的序列化形状。
+#[test]
+fn precheck_and_outcome_serialize_with_camel_case_field_names() {
+    let json = |v: &serde_json::Value| v.to_string();
+
+    let managed = serde_json::to_value(Precheck::Managed {
+        installed_sha: "aaa".into(),
+        up_to_date: true,
+    })
+    .unwrap();
+    assert_eq!(managed["status"], "managed");
+    assert!(managed.get("installedSha").is_some(), "{}", json(&managed));
+    assert!(managed.get("upToDate").is_some(), "{}", json(&managed));
+
+    let other = serde_json::to_value(Precheck::OtherLibrary {
+        installed_sha: "aaa".into(),
+        source_owner: "skills".into(),
+        source_repo: "skills".into(),
+    })
+    .unwrap();
+    assert_eq!(other["sourceOwner"], "skills", "{}", json(&other));
+    assert_eq!(other["sourceRepo"], "skills", "{}", json(&other));
+
+    let mine = serde_json::to_value(Precheck::Mine {
+        local_changed: true,
+        remote_changed: false,
+    })
+    .unwrap();
+    assert_eq!(mine["localChanged"], true, "{}", json(&mine));
+    assert_eq!(mine["remoteChanged"], false, "{}", json(&mine));
+
+    // v6 二期新增的三档:variant 名也要是驼峰
+    let here = serde_json::to_value(Precheck::AlreadyHere { body: "/x/s".into() }).unwrap();
+    assert_eq!(here["status"], "alreadyHere", "{}", json(&here));
+    assert_eq!(here["body"], "/x/s");
+    let differs = serde_json::to_value(Precheck::LocalDiffers { existing: "/x/s".into() }).unwrap();
+    assert_eq!(differs["status"], "localDiffers", "{}", json(&differs));
+    assert_eq!(differs["existing"], "/x/s");
+    let choice = serde_json::to_value(Precheck::NeedsVersionChoice { versions: Vec::new() }).unwrap();
+    assert_eq!(choice["status"], "needsVersionChoice", "{}", json(&choice));
+
+    let kept = serde_json::to_value(acquire::AcquireOutcome::Kept { remote_changed: true }).unwrap();
+    assert_eq!(kept["outcome"], "kept");
+    assert_eq!(kept["remoteChanged"], true, "{}", json(&kept));
+
+    let installed = serde_json::to_value(acquire::AcquireOutcome::Installed {
+        report: skillsync_lib::core::installer::InstallReport {
+            dir_name: "s".into(),
+            canonical_dir: "/x/s".into(),
+            links: Vec::new(),
+        },
+        local_kept: true,
+        lock: "written".into(),
+    })
+    .unwrap();
+    assert_eq!(installed["outcome"], "installed");
+    assert_eq!(installed["localKept"], true, "{}", json(&installed));
 }

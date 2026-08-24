@@ -23,12 +23,10 @@
 //!   一次往返换取"装上的就是此刻远端的内容",比缓存 50 个技能的全部文件划算。
 //!   顺手用同一份压缩包刷新索引缓存,免得再下一次。
 
-use std::path::Path;
-
 use serde::Serialize;
 
 use crate::core::agents::{AgentEnv, AgentRegistry};
-use crate::core::fsops::{self, OnOccupied};
+use crate::core::fsops;
 use crate::core::gitea::{RepoArchive, RepoRef, RepoSource};
 use crate::core::installer::{InstallReport, Installer, SkillPayload};
 use crate::core::ownership::{self, Identity};
@@ -56,12 +54,43 @@ pub const ORIGIN_ACQUIRED: &str = "acquired";
 
 // ============================================================ 预检
 
-/// canonical 目录当前的状况。
+/// 这个技能在这台电脑上当前的状况。
+///
+/// ⚠️ **`rename_all_fields` 不是可有可无的**(v6 二期任务 4 实测):`rename_all`
+/// 挂在**枚举**上只改 variant 名,**不改 struct variant 的字段名**——本枚举此前
+/// 因此把 `installed_sha` / `up_to_date` / `source_owner` / `source_repo` /
+/// `local_changed` / `remote_changed` 全部以蛇形发给前端,而 `src/lib/ipc.ts`
+/// 的 `Precheck` 类型与 `ConflictDialog` 读的一直是驼峰。表现是
+/// 「装自另一个技能库」的弹窗把库名显示成 `undefined/undefined`,
+/// 「我分享的」那一档的 `remoteChanged` 恒为 undefined(于是后续分享不强制走审核)。
+/// 序列化形状有测试正面钉住,别把这行属性删了。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "status")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "status")]
 pub enum Precheck {
-    /// 没有同名目录,直接装。
+    /// 这台电脑上没有这个技能,直接装。
     Fresh,
+    /// **无账**,本地已有一份实体,内容与库里这一版逐字节相同。
+    ///
+    /// 装 = 记账 + 建链,**本体一个字节都不写**(它已经是对的了)。典型场景:
+    /// 用户在 `~/.claude/skills/` 下开发技能、经 git 直接推进了技能库,
+    /// 换台电脑或重装 app 之后再取回。旧模型在这里说的是「这个位置上的技能
+    /// 不是本应用安装的」并把它当成外人——那句话正是 v6 二期要消灭的。
+    AlreadyHere {
+        /// 本体所在(实体目录)。
+        body: String,
+    },
+    /// **无账**,本地已有一份实体,内容与库里这一版不同。
+    ///
+    /// 两选:用库里的(`Resolution::Overwrite` → 旧的那份进废纸篓,库里的版本装到
+    /// **同一位置**,本体不搬家)/ 保留本地(`Resolution::KeepLocal` → 什么都不做)。
+    LocalDiffers {
+        /// 本地那一份实体所在。
+        existing: String,
+    },
+    /// **无账**,同名技能在多处各有一份实体且内容有分歧——先让用户拍板留哪一份
+    /// (`converge::keep_version`),再谈获取。任何 `Resolution` 都回答不了
+    /// "留哪一份",所以这一档**无视 `resolution`**,恒返回"需要拍板"。
+    NeedsVersionChoice { versions: Vec<crate::core::converge::Version> },
     /// 本应用装的,且本体与安装时一致——覆盖是安全的(这就是"更新")。
     Managed {
         installed_sha: String,
@@ -94,21 +123,6 @@ pub enum Precheck {
         local_changed: bool,
         remote_changed: bool,
     },
-    /// 有同名目录但不在本应用的记账里——别的工具装的,或用户自己建的。
-    ///
-    /// 这一档**没有"你的改动"可分享**,所以默认动作是取消,不是保留后分享。
-    Foreign { origin: ForeignOrigin },
-}
-
-/// 外来目录的来源。用排除法判定(设计方案 2.5②):能在 npx skills 的 lock 里查到就是它装的。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
-pub enum ForeignOrigin {
-    /// 能在 npx skills 的 lock 里查到,`source` 是归一化后的展示文案
-    /// (`ownership::source_label`,如 `owner/repo`)。
-    NpxSkills { source: String },
-    /// 两处记账都查不到,视为用户本地创建。
-    Unknown,
 }
 
 /// 用户对冲突的处置。界面负责给默认值,这里不替它决定。
@@ -174,9 +188,18 @@ fn remote_content_changed(
     }
 }
 
-/// 读磁盘与 state,判断 canonical 上的现状。不写任何东西。
+/// 读磁盘与 state,判断这个技能在这台电脑上的现状。不写任何东西。
+///
+/// v6 二期起判定的起点是 [`crate::core::converge::locate`](本体「实际住在哪」),
+/// 不再是"canonical 上有没有东西"——本体可以住在任何一个工具目录里,而
+/// canonical 只是一条指向它的链接。
+// 八个参数。拆成结构体不划算:`installer`/`registry`/`env`/`state` 是四个来源
+// 各不相同的上下文引用,打包只会多一层没有语义的壳,而 `PrecheckContext`
+// (真正相关的三样)已经打包过了。
+#[allow(clippy::too_many_arguments)]
 pub fn precheck(
     installer: &Installer,
+    registry: &AgentRegistry,
     env: &dyn AgentEnv,
     state: &state::State,
     dir_slug: &str,
@@ -185,24 +208,37 @@ pub fn precheck(
     target: Option<&RepoRef>,
     ctx: PrecheckContext<'_>,
 ) -> Result<Precheck, AppError> {
-    let home = crate::core::converge::home_of(installer, state, dir_slug)?;
-    let canonical = home.canonical;
-    if !canonical.exists() {
+    let located = crate::core::converge::locate(installer, registry, env, state, dir_slug)?;
+    let body = match located {
+        crate::core::converge::Located::None => return Ok(Precheck::Fresh),
+        // 有账时 `locate` 恒返回 `Body`(见该变体的文档),所以这一档只可能出现在
+        // 无账那条路上——有测试钉住:`a_recorded_skill_with_a_stray_differing_copy_still_updates_normally`
+        crate::core::converge::Located::Differs(versions) => {
+            return Ok(Precheck::NeedsVersionChoice { versions })
+        }
+        crate::core::converge::Located::Body { body, .. } => body,
+    };
+    // 账上记着本体、那个目录却已经不在磁盘上(用户手动删了):没有"本地内容"可谈,
+    // 按全新安装走,重新获取即可把它对齐回来。这条早退取代了 v6 二期之前的
+    // `!canonical.exists()`,行为等价——它守的是同一件事。
+    if !body.is_dir() {
         return Ok(Precheck::Fresh);
     }
 
-    let dir_name = canonical
+    // `installer.home` 保证过 body 的叶子名就是 canonical 的目录名(对不上会
+    // 报 `FS_BAD_BODY`),所以这里取到的与旧代码从 canonical 取的是同一个值。
+    let dir_name = body
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| dir_slug.to_string());
 
-    // 这里 canonical 一定在(不在已经早退成 Fresh),传真实值即 true
+    // 本体一定在(不在已经早退成 Fresh),传真实值即 true
     let mine = is_mine(&ctx, true);
 
     let Some(recorded) = state.installed.iter().find(|s| s.name == dir_name) else {
-        // 🔴 v6 的核心修复:**作者永远进不了 `Foreign`**。用户自己写的技能、直接推进
-        // 技能库(或换电脑后重装的 app)在本地没有任何记账,旧代码据此告诉他
-        // "这个位置上的技能不是本应用安装的"——app 把自己的作者当成了外人。
+        // 🔴 v6 的核心修复:**作者永远进不了"这不是本应用装的"那一档**。用户自己写的
+        // 技能、直接推进技能库(或换电脑后重装的 app)在本地没有任何记账,旧代码据此
+        // 告诉他"这个位置上的技能不是本应用安装的"——app 把自己的作者当成了外人。
         //
         // 没有记账 = 没有基线,两边一律按"变了"处理。保守方向只有这一个:
         // 少报 local_changed 会静默覆盖作者自己的内容(铁律 7),
@@ -213,8 +249,14 @@ pub fn precheck(
                 remote_changed: true,
             });
         }
-        return Ok(Precheck::Foreign {
-            origin: foreign_origin(env, &dir_name),
+        // 🔴 v6 二期:不是我分享的、也没有账,那就**只问内容**——不再去猜"这个
+        // 文件夹是谁建的"(磁盘上根本回答不了那个问题)。内容与库里相同 = 无损,
+        // 记账建链即可;不同 = 有损,停下来让用户两选。
+        let local = fsops::dir_content_hash(&body)?;
+        let existing = body.to_string_lossy().into_owned();
+        return Ok(match ctx.remote_content_hash {
+            Some(remote) if remote == local => Precheck::AlreadyHere { body: existing },
+            _ => Precheck::LocalDiffers { existing },
         });
     };
 
@@ -223,8 +265,14 @@ pub fn precheck(
     //
     // 这一档**不受 `Mine` 影响**:两个库里的同名技能是两个东西,哪怕两边的作者
     // 都是我,"用另一个库的同名技能替换掉现有的"仍然必须由用户拍板。
+    //
+    // 🔴 **先问一句 `has_source()`**(v6 二期任务 4,R10):任务 3 起,纯本地技能
+    // (勾选工具 / 版本拍板时顺手建的 `adopted` 账)用的是**全空的来源坐标**。
+    // 空 owner 与任何真实 owner 都不相等,不判这一句的话,商店里同名技能点获取
+    // **必然**得到「这个技能已装自另一个技能库」——而它压根没有装自任何技能库,
+    // 那是假话。
     if let Some(t) = target {
-        if recorded.source.owner != t.owner || recorded.source.repo != t.repo {
+        if recorded.has_source() && (recorded.source.owner != t.owner || recorded.source.repo != t.repo) {
             return Ok(Precheck::OtherLibrary {
                 installed_sha: recorded.commit_sha.clone(),
                 source_owner: recorded.source.owner.clone(),
@@ -234,7 +282,7 @@ pub fn precheck(
     }
 
     let remote_changed = remote_content_changed(recorded, &ctx, remote_sha);
-    let actual = fsops::dir_content_hash(&canonical)?;
+    let actual = fsops::dir_content_hash(&body)?;
     if actual != recorded.content_hash {
         // 有账之后也必须还能进 `Mine`:第一次取回就会往 `state.installed` 记一条,
         // 此后同名目录先命中 LocallyModified。只在"没记账"时判关系的话,
@@ -261,24 +309,6 @@ pub fn precheck(
         installed_sha: recorded.commit_sha.clone(),
         up_to_date,
     })
-}
-
-/// 查 npx skills 的 lock 判断外来目录的出处。查不到就是"未知来源"。
-///
-/// v6 任务 6:来源展示统一走 `ownership::source_label`(与 `share.rs::npx_origin`
-/// 同一份归一化,不再各自手搓 `doc["skills"][dir]["source"]` 的裸字符串)。
-fn foreign_origin(env: &dyn AgentEnv, dir_name: &str) -> ForeignOrigin {
-    let Some(path) = skill_lock::lock_path(env) else {
-        return ForeignOrigin::Unknown;
-    };
-    let entries = skill_lock::read_entries(&path);
-    let Some(entry) = entries.iter().find(|e| e.key == dir_name) else {
-        return ForeignOrigin::Unknown;
-    };
-    match ownership::source_label(&entry.source_type, &entry.source, &entry.source_url) {
-        Some(source) => ForeignOrigin::NpxSkills { source },
-        None => ForeignOrigin::Unknown,
-    }
 }
 
 // ============================================================ 进度
@@ -311,8 +341,12 @@ pub type ProgressSink<'a> = &'a (dyn Fn(Stage) + Send + Sync);
 
 // ============================================================ 结果
 
+/// ⚠️ `rename_all_fields` 的理由与 [`Precheck`] 上那条逐字相同(v6 二期任务 4 实测):
+/// 不加它,`local_kept` / `remote_changed` 会以蛇形发给前端,而 `src/lib/ipc.ts`
+/// 读的是 `localKept` / `remoteChanged`。后者尤其要命——它为真时后续分享必须
+/// 强制走审核,读成 `undefined` 就等于永远不强制,直推覆盖同事经审核改过的版本。
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase", tag = "outcome")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "outcome")]
 pub enum AcquireOutcome {
     /// 需要用户先决定怎么处理本地内容。**磁盘一个字节都没动。**
     NeedsDecision { precheck: Precheck },
@@ -532,15 +566,25 @@ async fn finish(
         author,
         remote_content_hash: Some(skill.content_hash.as_str()),
     };
+    // 本体「实际住在哪」。precheck 内部也会 locate 一次(它是独立可调的公开 API,
+    // 不该反过来要求调用方先喂给它一个 `Located`),这里再算一次是为了拿到
+    // `others`——同名、内容与本体相同的其余实体副本,装完要收成链接。
+    let located = crate::core::converge::locate(&installer, registry, env, &loaded.value, req.dir_slug)?;
+    let (existing_body, others) = match located {
+        // 账上记着本体、目录却已经不在磁盘上时,`body` 不是一个可用的落点
+        // ——退回 `home_of`(与 precheck 的 `Fresh` 早退同一个判据)。
+        crate::core::converge::Located::Body { body, others } if body.is_dir() => (Some(body), others),
+        _ => (None, Vec::new()),
+    };
     // 与 precheck 里那次是同一个判定实现(`is_mine` → `ownership::relation`),
-    // 但问的不是同一件事:precheck 用它挑档位(只在 canonical 上已有东西时才问),
+    // 但问的不是同一件事:precheck 用它挑档位(只在本地已有一份实体时才问),
     // 这里用它决定要不要给 `state.shared` 建内容基线——**换电脑那一档走的是
-    // `Fresh`**(canonical 上什么都没有),压根不经过 Mine 的折叠,而它恰恰是
+    // `Fresh`**(这台电脑上什么都没有),压根不经过 Mine 的折叠,而它恰恰是
     // 这条基线最需要从无到有建起来的场景。
-    let home = crate::core::converge::home_of(&installer, &loaded.value, req.dir_slug)?;
-    let mine = is_mine(&ctx, home.body.exists());
+    let mine = is_mine(&ctx, existing_body.is_some());
     let checked = precheck(
         &installer,
+        registry,
         env,
         &loaded.value,
         req.dir_slug,
@@ -549,13 +593,20 @@ async fn finish(
         ctx,
     )?;
 
-    // 需要用户拍板的情况:改过本体、目录是别人的、装自另一个技能库,
+    // 多份分歧版本:`Resolution` 的两档(保留本地 / 用远端覆盖)都回答不了
+    // "留哪一份",所以这一档**无视 resolution**,恒退回让用户先去
+    // `converge::keep_version` 拍板。磁盘零写入。
+    if matches!(checked, Precheck::NeedsVersionChoice { .. }) {
+        return Ok(AcquireOutcome::NeedsDecision { precheck: checked });
+    }
+
+    // 需要用户拍板的情况:改过本体、装自另一个技能库、本地那份与库里不同,
     // 或者「我分享的」技能两边都新。此时不动磁盘。
     let needs_decision = matches!(
         checked,
         Precheck::LocallyModified { .. }
-            | Precheck::Foreign { .. }
             | Precheck::OtherLibrary { .. }
+            | Precheck::LocalDiffers { .. }
             | Precheck::Mine {
                 local_changed: true,
                 ..
@@ -572,29 +623,34 @@ async fn finish(
             return Ok(AcquireOutcome::Kept { remote_changed });
         }
     }
-
-    // 外来目录里没有"你的改动"可留:接受 KeepLocal 会把别人的内容当成我们装的记进 state
-    // (contentHash 从外来字节算、commitSha 记成远端版本),之后更新检查会永远显示"已是最新"。
-    // 界面本来就不给这个选项,但**新的调用方**(向导批量安装)很可能一律传 KeepLocal,
-    // 所以在 core 这层直接堵掉,不靠界面的形状保证。
-    if matches!(checked, Precheck::Foreign { .. }) && req.resolution == Some(Resolution::KeepLocal) {
-        return Err(AppError::new(
-            "CONFLICT_FOREIGN_DIR",
-            "这个位置上的技能不是本应用安装的,请先确认要不要替换它",
-        )
-        .with_detail("KeepLocal is not a valid resolution for a foreign directory"));
+    // 本地那一份与库里不同 + 保留本地:与上面同一个出口。**不补建关联**——
+    // 这一档没有任何记账,补了链接却没有账,移除时谁也摘不掉它们
+    // (`remove::remove` 只按 `state.links` 摘链)。要建关联走「勾选工具」
+    // (`converge::set_agents`),那条路自己会建账。
+    // `remote_changed: true` 是这一档的定义:库里那一版与本地这一份内容不同。
+    if matches!(checked, Precheck::LocalDiffers { .. }) && req.resolution == Some(Resolution::KeepLocal) {
+        return Ok(AcquireOutcome::Kept { remote_changed: true });
     }
+
+    // 本体位置:本地已有一份实体就装在**同一位置**(本体永不搬家);
+    // 否则落回账上记的位置,再否则是 canonical。
+    let home = match &existing_body {
+        Some(body) => installer.home(req.dir_slug, Some(body))?,
+        None => crate::core::converge::home_of(&installer, &loaded.value, req.dir_slug)?,
+    };
 
     // 保留本地:只补建链接,绝不碰本体。
     let keep_local = needs_decision && req.resolution == Some(Resolution::KeepLocal);
+    // 本地那一份与库里逐字节相同:装 = 记账 + 建链,**本体一个字节都不写**。
+    let already_here = matches!(checked, Precheck::AlreadyHere { .. });
 
-    let report = if keep_local {
+    let mut report = if keep_local || already_here {
         progress(Stage::Linking);
         installer.link_only(&home, req.agent_names)?
     } else {
         progress(Stage::Writing);
-        // agent 目录那侧的实体目录占位是另一回事:保持 Fail,由结果面板逐目录报出来,
-        // 不在这里替用户决定要不要替换他自己建的目录。
+        // agent 目录那侧的实体目录占位是另一回事:保持 Fail,由 converge 在下面
+        // 逐个按内容判定——同内容进废纸篓换链接(无损、可逆),内容不同一个字节都不动。
         //
         // install() 内部是"先写后链"一气呵成,编排层插不进中间那一刻。报 Linking 是因为
         // 落盘之后紧接着就是建链——少报一个阶段会让进度条从写入直接跳到记账。
@@ -603,20 +659,47 @@ async fn finish(
         report
     };
 
+    // 其余同名实体副本收成链接。**放在落盘之后**:落盘之前它们与旧本体相同、
+    // 之后与新本体不同,`converge` 会如实报 `Differs` 并一个字节都不动
+    // ——那正是要的(用户没为这些副本拍过板)。`AlreadyHere` 那一档没有落盘,
+    // 副本与本体仍然逐字节相同,于是会被静默收成链接。
+    //
+    // 🔴 **不用 `?`**:这里已经在写盘窗口内(install/link_only 之后、`record`
+    // 之前),中断会让"磁盘已动、账未存"——每处结果并进 `report.links`,由
+    // `active_accounting` 一并记账,失败的那条按既有口径不记(见 `link_mode`)。
+    merge_converged_others(&installer, registry, env, &home, &others, &mut report);
+
     progress(Stage::Recording);
-    let canonical_visible = installer.canonical_visible_agents(req.agent_names)?;
+    // 记进账的 agents 还要加上**本体所在那个工具**:它读的就是本体自己,
+    // `link_targets_for` 有意跳过它(对着自己建链接毫无意义),于是它永远不会
+    // 出现在 `report.links` 里——只看 links 的话,把技能装进 `~/.claude/skills`
+    // 的用户会看到 claude-code 没被勾上。本体落在 canonical 时这一项与
+    // `canonical_visible_agents` 恰好等价,不改变任何既有安装的记账。
+    let mut extra_agents = installer.canonical_visible_agents(req.agent_names)?;
+    extra_agents.extend(
+        body_agents(registry, env, &home)
+            .into_iter()
+            .filter(|a| req.agent_names.contains(a)),
+    );
+    let origin = if already_here {
+        state::ORIGIN_ADOPTED
+    } else {
+        ORIGIN_ACQUIRED
+    };
     let lock = record(
         store,
         env,
         &loaded.value,
         &report,
+        &home,
         skill,
         req,
         remote_sha,
         now,
         keep_local,
         mine,
-        canonical_visible,
+        extra_agents,
+        origin,
     )?;
 
     progress(Stage::Done);
@@ -625,6 +708,65 @@ async fn finish(
         local_kept: keep_local,
         lock,
     })
+}
+
+/// 本体所在那个工具目录对应的 agent 名单(可能不止一个:多个工具共用同一个
+/// 全局技能目录是常态)。
+fn body_agents(
+    registry: &AgentRegistry,
+    env: &dyn AgentEnv,
+    home: &crate::core::installer::SkillHome,
+) -> Vec<String> {
+    home.body
+        .parent()
+        .and_then(|dir| registry.group_by_global_dir(env).get(dir).cloned())
+        .unwrap_or_default()
+}
+
+/// 把「其余同名实体副本」逐个收成指向本体的链接,结果并进安装报告。
+///
+/// 只有 `Converged::Linked`(确实建成了)与 `Err`(试过但没成功)会进报告:
+/// `Unchanged`/`SameLocation`/`Differs` 都不产生一条"本次建立的关联"
+/// ——`Differs` 尤其不能记,它的定义就是**一个字节都没动**。
+///
+/// 同一个目录在 `report.links` 里已有条目时**覆盖那一条,不追加**:安装时
+/// `link_dir` 撞上占位会记一条 `Failed`,收敛成功之后那条已经不是事实了,
+/// 两条都留着会让 `active_accounting` 给同一个目录记出两条 `LinkRecord`。
+fn merge_converged_others(
+    installer: &Installer<'_>,
+    registry: &AgentRegistry,
+    env: &dyn AgentEnv,
+    home: &crate::core::installer::SkillHome,
+    others: &[std::path::PathBuf],
+    report: &mut InstallReport,
+) {
+    use crate::core::converge::Converged;
+    use crate::core::installer::{LinkReport, LinkResult};
+    let grouped = registry.group_by_global_dir(env);
+    for other in others {
+        if other == &home.body {
+            continue;
+        }
+        let Some(dir) = other.parent() else { continue };
+        let result = match crate::core::converge::converge(installer, other, &home.body) {
+            Ok(Converged::Linked { mode }) => LinkResult::Linked { mode },
+            Ok(Converged::Unchanged | Converged::SameLocation | Converged::Differs { .. }) => continue,
+            Err(error) => LinkResult::Failed { error },
+        };
+        let dir_label = dir.to_string_lossy().into_owned();
+        match report
+            .links
+            .iter_mut()
+            .find(|l| std::path::Path::new(&l.dir) == dir)
+        {
+            Some(existing) => existing.result = result,
+            None => report.links.push(LinkReport {
+                dir: dir_label,
+                agents: grouped.get(dir).cloned().unwrap_or_default(),
+                result,
+            }),
+        }
+    }
 }
 
 // ============================================================ 批量获取(向导)
@@ -699,6 +841,7 @@ pub async fn acquire_batch(
     for dir_slug in dir_slugs {
         let item = install_one_from_archive(
             &installer,
+            registry,
             env,
             store,
             source,
@@ -723,6 +866,7 @@ pub async fn acquire_batch(
 #[allow(clippy::too_many_arguments)]
 fn install_one_from_archive(
     installer: &Installer<'_>,
+    registry: &AgentRegistry,
     env: &dyn AgentEnv,
     store: &Store,
     source: SourceMeta<'_>,
@@ -749,10 +893,14 @@ fn install_one_from_archive(
     // 每轮重新读 state:上一轮的记账已经写回,拿旧快照会互相覆盖
     let run = || -> Result<BatchOutcome, AppError> {
         let loaded = store.load_state()?;
-        let home = crate::core::converge::home_of(installer, &loaded.value, dir_slug)?;
+        let located = crate::core::converge::locate(installer, registry, env, &loaded.value, dir_slug)?;
+        let (existing_body, others) = match located {
+            crate::core::converge::Located::Body { body, others } if body.is_dir() => (Some(body), others),
+            _ => (None, Vec::new()),
+        };
         // 与逐个安装同一份判定:向导在新机器上一键全装,对「我分享的」技能同样要建
         // 分享基线(那正是换电脑场景)。同一件事在两个入口给两种结果是本项目栽过的跟头。
-        let mine = is_mine(&ctx, home.body.exists());
+        let mine = is_mine(&ctx, existing_body.is_some());
 
         // 链接目标:向导给统一列表;定时更新用账上的,绝不改写用户的关联
         let agent_names: Vec<String> = match agents {
@@ -769,7 +917,8 @@ fn install_one_from_archive(
         };
         let agent_names = agent_names.as_slice();
 
-        match precheck(installer, env, &loaded.value, dir_slug, head_sha, Some(repo), ctx)? {
+        let checked = precheck(installer, registry, env, &loaded.value, dir_slug, head_sha, Some(repo), ctx)?;
+        match &checked {
             // 自动流程绝不覆盖作者本地的内容(设计文档「不做」一节:scheduler 仍只管
             // 「我安装的」)。两边都新时该弹的拍板弹窗在批量流程里没有位置,
             // 而"库新本地没改"这一档虽然覆盖是安全的,自动替作者更新他自己的技能
@@ -784,9 +933,18 @@ fn install_one_from_archive(
                     reason: "已安装且有你的本地改动,未覆盖".into(),
                 })
             }
-            Precheck::Foreign { .. } => {
+            // 本地已有一份内容不同的实体:该走两选(用库里的 / 保留本地),
+            // 而批量流程按定义不弹拍板——跳过并说人话。
+            Precheck::LocalDiffers { .. } => {
                 return Ok(BatchOutcome::Skipped {
-                    reason: "这个位置已有其他来源的技能,未替换".into(),
+                    reason: "这台电脑上已有一份内容不同的同名技能,未替换".into(),
+                })
+            }
+            // 同名技能在多处各有一份、内容还不一样:先让用户拍板留哪份,
+            // 自动流程不替他挑。
+            Precheck::NeedsVersionChoice { .. } => {
+                return Ok(BatchOutcome::Skipped {
+                    reason: "这台电脑上有好几份内容不同的同名技能,请先选留哪一份".into(),
                 })
             }
             // 同名但装自另一个技能库:批量流程一律跳过并说人话
@@ -801,8 +959,15 @@ fn install_one_from_archive(
                     reason: "已安装,且是最新版本".into(),
                 })
             }
-            Precheck::Fresh | Precheck::Managed { .. } => {}
+            // 本地已有一份、且与库里逐字节相同:记账 + 建链就够,一个字节都不写。
+            Precheck::AlreadyHere { .. } | Precheck::Fresh | Precheck::Managed { .. } => {}
         }
+
+        let already_here = matches!(checked, Precheck::AlreadyHere { .. });
+        let home = match &existing_body {
+            Some(body) => installer.home(dir_slug, Some(body))?,
+            None => crate::core::converge::home_of(installer, &loaded.value, dir_slug)?,
+        };
 
         let payload = extract_payload(archive, skill);
         if payload.is_empty() {
@@ -811,13 +976,24 @@ fn install_one_from_archive(
                 "这个技能在该技能库里是空的,请联系它的维护者",
             ));
         }
-        let report = installer.install(&home, &payload, agent_names)?;
-        let canonical_visible = installer.canonical_visible_agents(agent_names)?;
+        let mut report = if already_here {
+            installer.link_only(&home, agent_names)?
+        } else {
+            installer.install(&home, &payload, agent_names)?
+        };
+        merge_converged_others(installer, registry, env, &home, &others, &mut report);
+        let mut extra_agents = installer.canonical_visible_agents(agent_names)?;
+        extra_agents.extend(
+            body_agents(registry, env, &home)
+                .into_iter()
+                .filter(|a| agent_names.contains(a)),
+        );
         record(
             store,
             env,
             &loaded.value,
             &report,
+            &home,
             skill,
             AcquireRequest {
                 source,
@@ -830,7 +1006,12 @@ fn install_one_from_archive(
             now,
             false,
             mine,
-            canonical_visible,
+            extra_agents,
+            if already_here {
+                state::ORIGIN_ADOPTED
+            } else {
+                ORIGIN_ACQUIRED
+            },
         )?;
         Ok(BatchOutcome::Installed { report })
     };
@@ -844,6 +1025,7 @@ fn record(
     env: &dyn AgentEnv,
     previous: &state::State,
     report: &InstallReport,
+    home: &crate::core::installer::SkillHome,
     skill: &IndexedSkill,
     req: AcquireRequest<'_>,
     remote_sha: &str,
@@ -851,48 +1033,53 @@ fn record(
     keep_local: bool,
     // 技能库里记的分享者就是当前登录的这个人(见 `is_mine`)。
     mine: bool,
-    canonical_visible: Vec<String>,
+    // 不经由 `report.links` 表达、但技能确实对其生效的 agent:落在 canonical
+    // 就能读到的那些(universal),以及**本体所在那个工具**(见 `finish`)。
+    extra_agents: Vec<String>,
+    // `ORIGIN_ACQUIRED` 或 `state::ORIGIN_ADOPTED`。纯留痕,不驱动任何判定。
+    origin: &str,
 ) -> Result<String, AppError> {
     let mut next = previous.clone();
     let existing = next.installed.iter().position(|s| s.name == report.dir_name);
 
-    // 内容 hash 必须从**落盘后的 canonical 目录**算,而不是从 payload 算:
+    // 内容 hash 必须从**落盘后的本体目录**算,而不是从 payload 算:
     // dir_content_hash 有自己的排除清单,口径必须与它一致,否则刚装完就被判成
     // "用户改过",更新流程会永远停在冲突提示上。
-    let content_hash = fsops::dir_content_hash(Path::new(&report.canonical_dir))?;
+    //
+    // 🔴 算的是 `home.body` 不是 `report.canonical_dir`(v6 二期任务 4):本体
+    // 住在工具目录里时,canonical 是一条**链接**,对着它算等于隔着链接去读——
+    // 而 `precheck` 比对的那一侧算的是 body。两侧口径必须是同一个。
+    let content_hash = fsops::dir_content_hash(&home.body)?;
+    // 本体就住在 canonical 时不记 body(既有 `state.json` 的形状一个字不变);
+    // 住在别处才记——那是"本体永不搬家"这条承诺唯一的落点。
+    let body_record = (!home.body_is_canonical()).then(|| home.body.to_string_lossy().into_owned());
 
-    let (links, agents) = active_accounting(report, canonical_visible);
+    let (links, agents) = active_accounting(report, extra_agents);
 
     match existing {
-        // 保留本地改动:关于**内容**的字段一个都不动。
-        // commitSha 保持旧值 → "有可用更新"仍然成立;
-        // contentHash 保持安装时的值 → "有未分享的改动"仍然成立。
-        // 这两个标记就是分享流程(任务 11)找到这条记录的依据,更新了就等于把它藏起来。
-        Some(idx) if keep_local => {
-            let record = &mut next.installed[idx];
-            record.agents = agents;
-            record.links = links;
-            record.updated_at = now.to_string();
-        }
         Some(idx) => {
             let record = &mut next.installed[idx];
-            record.source = source_of(&req, skill, remote_sha);
-            record.commit_sha = remote_sha.to_string();
-            record.content_hash = content_hash;
+            record.body = body_record;
             record.agents = agents;
             record.links = links;
             record.updated_at = now.to_string();
+            // 保留本地改动:关于**内容**的字段一个都不动。
+            // commitSha 保持旧值 → "有可用更新"仍然成立;
+            // contentHash 保持安装时的值 → "有未分享的改动"仍然成立。
+            // 这两个标记就是分享流程找到这条记录的依据,更新了就等于把它藏起来。
+            if !keep_local {
+                record.source = source_of(&req, skill, remote_sha);
+                record.commit_sha = remote_sha.to_string();
+                record.content_hash = content_hash;
+            }
         }
         None => next.installed.push(InstalledSkill {
             name: report.dir_name.clone(),
             source: source_of(&req, skill, remote_sha),
             commit_sha: remote_sha.to_string(),
             content_hash,
-            // 从技能库获取的:文件是本 app 装的,**不可取消认领**
-            // (只删记账会留下孤儿目录与孤儿链接)
-            origin: Some(ORIGIN_ACQUIRED.to_string()),
-            // 落盘在 canonical,没有需要记的本体位置(见 state.rs 的字段文档)
-            body: None,
+            origin: Some(origin.to_string()),
+            body: body_record,
             agents,
             links,
             installed_at: now.to_string(),
@@ -901,7 +1088,7 @@ fn record(
     }
 
     if mine && !keep_local {
-        seed_shared_baseline(&mut next, report, skill, &req, remote_sha);
+        seed_shared_baseline(&mut next, report, home, skill, &req, remote_sha);
     }
 
     store.save_state(&next)?;
@@ -955,14 +1142,16 @@ fn record(
 fn seed_shared_baseline(
     next: &mut state::State,
     report: &InstallReport,
+    home: &crate::core::installer::SkillHome,
     skill: &IndexedSkill,
     req: &AcquireRequest<'_>,
     remote_sha: &str,
 ) {
-    // 内容基线必须与 `share.rs` 同口径:从落盘后的目录现算。
+    // 内容基线必须与 `share.rs` 同口径:从落盘后的**本体**目录现算
+    // (v6 二期起本体不一定在 canonical,理由同 `record` 里那段)。
     // 算不出来(目录刚被别的进程动了)就不记——宁可没有基线,也不记一个错的:
     // 错的基线会让界面长期显示一个假的「有改动未分享」。
-    let Ok(content_hash) = fsops::dir_content_hash(Path::new(&report.canonical_dir)) else {
+    let Ok(content_hash) = fsops::dir_content_hash(&home.body) else {
         tracing::warn!(dir = %report.dir_name, "算不出内容指纹,本次不建分享基线");
         return;
     };
@@ -975,15 +1164,16 @@ fn seed_shared_baseline(
     };
     // 键与 `share::share` 写记账时用的是**同一把**(远端目录名),不新增第二种写法
     // ——`state.shared` 的读写双键不一致是 CLAUDE.md 记着的既有隐患,别把它变成三键。
+    let local_path = home.body.to_string_lossy().into_owned();
     match next.shared.iter().position(|s| s.name == report.dir_name) {
         Some(idx) => {
-            next.shared[idx].local_path = report.canonical_dir.clone();
+            next.shared[idx].local_path = local_path;
             next.shared[idx].target = target;
             next.shared[idx].content_hash = content_hash;
         }
         None => next.shared.push(state::SharedSkill {
             name: report.dir_name.clone(),
-            local_path: report.canonical_dir.clone(),
+            local_path,
             // 文件是用户自己的技能,不是别的工具装的
             origin: "local".to_string(),
             target,
@@ -1000,7 +1190,7 @@ fn seed_shared_baseline(
 /// 建链失败的被记成已生效(界面会把它画成启用中),universal 的又被整个漏掉。
 fn active_accounting(
     report: &InstallReport,
-    canonical_visible: Vec<String>,
+    extra_agents: Vec<String>,
 ) -> (Vec<LinkRecord>, Vec<String>) {
     let links: Vec<LinkRecord> = report
         .links
@@ -1013,106 +1203,20 @@ fn active_accounting(
         .filter(|l| link_mode(l).is_some())
         .flat_map(|l| l.agents.clone())
         .collect();
-    agents.extend(canonical_visible);
+    agents.extend(extra_agents);
     agents.sort();
     agents.dedup();
     (links, agents)
 }
 
-/// 修复关联:按 state 记账里的 agents 重建链接,**不碰技能本体**,并把账更新为实际结果。
-///
-/// [`fsops::link_dir`] 对各异常形态的语义正好是修复需要的:missing 重建、
-/// 被改指/断链的**链接**直接换回来(链接不是用户数据本体,无需确认),
-/// 而实体目录占位是否替换必须由 `replace_occupied`(前端确认结果,铁律 7)决定。
-/// 本体已丢时 `link_only` 会拒绝——那要走"重新获取",不是修复能解决的。
-pub fn repair_links(
-    installer: &Installer<'_>,
-    store: &Store,
-    dir_slug: &str,
-    replace_occupied: bool,
-) -> Result<InstallReport, AppError> {
-    let loaded = store.load_state()?;
-    let Some(idx) = loaded.value.installed.iter().position(|s| s.name == dir_slug) else {
-        return Err(AppError::new(
-            "FS_NOT_INSTALLED",
-            "这个技能不在已获取列表中,请先重新获取",
-        )
-        .with_detail(format!("not in state.installed: {dir_slug}")));
-    };
-    let record = &loaded.value.installed[idx];
-
-    let on_occupied = if replace_occupied {
-        OnOccupied::Replace
-    } else {
-        OnOccupied::Fail
-    };
-    let home = crate::core::converge::home_of(installer, &loaded.value, dir_slug)?;
-    let report = installer.link_only_at(&home, &record.agents, on_occupied)?;
-
-    let canonical_visible = installer.canonical_visible_agents(&record.agents)?;
-    let (links, agents) = active_accounting(&report, canonical_visible);
-    let mut next = loaded.value.clone();
-    next.installed[idx].links = links;
-    next.installed[idx].agents = agents;
-    store.save_state(&next)?;
-
-    Ok(report)
-}
-
-/// 把已装技能**补关联**到指定的一批工具上,并把成功的并进账里。
-///
-/// 与 [`repair_links`] 的分工:repair 处理"账上有、链接坏了",按账上的 agents **整体重来**;
-/// 本函数处理"安装那一刻就没建成、因而根本没进账"的 agent(M1 遗留:安装时占位是
-/// `OnOccupied::Fail` 只报不重试,修复够不到它们,用户只能回详情面板整个重装)。
-///
-/// 记账是**并集合并**而不是覆盖:只重链了一部分工具,拿这次的结果整份覆盖会把
-/// 其余工具从账上抹掉,卸载时就不会去解它们的链接了。
-///
-/// `replace_occupied` 必须是前端拿到的用户确认结果(铁律 7):那个位置上是别人的
-/// 实体目录,替换等于删用户文件。
-pub fn link_agents(
-    installer: &Installer<'_>,
-    store: &Store,
-    dir_slug: &str,
-    agent_names: &[String],
-    replace_occupied: bool,
-) -> Result<InstallReport, AppError> {
-    let loaded = store.load_state()?;
-    let Some(idx) = loaded.value.installed.iter().position(|s| s.name == dir_slug) else {
-        return Err(AppError::new(
-            "FS_NOT_INSTALLED",
-            "这个技能不在已获取列表中,请先重新获取",
-        )
-        .with_detail(format!("not in state.installed: {dir_slug}")));
-    };
-
-    let on_occupied = if replace_occupied {
-        OnOccupied::Replace
-    } else {
-        OnOccupied::Fail
-    };
-    let home = crate::core::converge::home_of(installer, &loaded.value, dir_slug)?;
-    let report = installer.link_only_at(&home, agent_names, on_occupied)?;
-
-    let canonical_visible = installer.canonical_visible_agents(agent_names)?;
-    let (new_links, new_agents) = active_accounting(&report, canonical_visible);
-
-    let mut next = loaded.value.clone();
-    let record = &mut next.installed[idx];
-    for link in new_links {
-        // 同一目录只留一条记账:重链后 mode 可能变了(比如从复制升回链接)
-        match record.links.iter_mut().find(|l| l.dir == link.dir) {
-            Some(existing) => existing.mode = link.mode,
-            None => record.links.push(link),
-        }
-    }
-    record.agents.extend(new_agents);
-    record.agents.sort();
-    record.agents.dedup();
-    store.save_state(&next)?;
-
-    Ok(report)
-}
+// v6 二期任务 4:`repair_links` / `link_agents` 已删除。
+//
+// 「修复关联」作为一个独立按钮的概念被整体取消——用户看到某个工具的勾异常时,
+// 唯一要做的动作就是再点一次那个勾,自愈落在 `converge::set_agents`(它对
+// `wanted` 里**每一个**目标都跑一次幂等的 `converge`,不是只处理新增的差集)。
+// 那条路同时消掉了这两个函数各自带的 `replace_occupied` 布尔开关:占位目录该不该
+// 替换,由 `converge` 先比内容再决定(同→进废纸篓换链接、异→停下问用户),
+// 不再由调用方传一个裸的"是/否"。
 
 fn source_of(req: &AcquireRequest<'_>, skill: &IndexedSkill, sha: &str) -> SkillSource {
     SkillSource {
