@@ -238,6 +238,17 @@ fn three_way_merge_relation_and_source_label_when_signed_in() {
 
     let rows = build(&ctx, &config, &state);
 
+    // 🔴 **行数是承重断言**(修复轮 2,复审探针实测):`row()` 用 `.find()` 取**首个**
+    // 匹配,没有这一句的话"同一个技能重复成两行"完全测不出来——去掉第 2/3 源里那句
+    // `seen_keys.insert(key)`,`shared-present` 会既出现在第 2 源、又被第 4 源当成
+    // "这台电脑上没有"再摆一行,而所有既有断言照样全绿。
+    assert_eq!(
+        rows.len(),
+        3,
+        "A/B/C 各一行,一行都不许重复:{:?}",
+        rows.iter().map(|r| (&r.dir_slug, r.local_present)).collect::<Vec<_>>()
+    );
+
     let a = row(&rows, "installed-skill");
     assert_eq!(a.relation, Relation::Installed);
     assert!(a.local_present);
@@ -900,7 +911,7 @@ fn installed_skill_view_serializes_with_the_same_camel_case_keys() {
 fn an_accounted_row_only_compares_versions_within_its_own_literal_name() {
     let ctx = ctx();
     let body = skill_dir_named(&ctx.home, ".claude/skills/Weekly Report", "Weekly Report");
-    skill_dir(&ctx.home, ".trae/skills/weekly-report", "另一个完全不同的技能");
+    let dashed = skill_dir(&ctx.home, ".trae/skills/weekly-report", "另一个完全不同的技能");
 
     let mut state = State::default();
     // 记账名是清洗后的;本体是那个带空格的字面目录
@@ -922,5 +933,55 @@ fn an_accounted_row_only_compares_versions_within_its_own_literal_name() {
         accounted.versions.is_empty(),
         "旁边那个 weekly-report 是另一个技能,绝不能摆进「留哪个」的选项里"
     );
-    assert!(rows.iter().any(|r| r.dir_slug == "weekly-report" && r.content_hash.is_empty()));
+    // 🔴 无账那一行的 `body` 必须是**它自己**那个文件夹(修复轮 2,复审探针实测)。
+    // `unmanaged_row` 里 `group.contains(body)` 那道闸正是 R20 自己的守卫:去掉它,
+    // `locate` 会把账上那份(另一个技能的本体)返回给这一行,于是它的
+    // `body`/`local_hash`/`share_blocked`/`tools`/`versions` **全部算自别的技能**
+    // ——而只断言 `dir_slug` 与 `content_hash.is_empty()` 的话,这一切照样全绿。
+    let unmanaged = rows
+        .iter()
+        .find(|r| r.dir_slug == "weekly-report")
+        .expect("另一个字面名要单独占一行");
+    assert!(unmanaged.content_hash.is_empty(), "它没有记账基线");
+    assert_eq!(
+        unmanaged.body,
+        dashed.to_string_lossy(),
+        "它的本体是它自己那个文件夹,不是账上那个属于另一个技能的本体"
+    );
+    assert!(unmanaged.versions.is_empty(), "它只有一份实体,没有版本要拍板");
+}
+
+/// 🔴 `literal_group` 的**正向**半(修复轮 2,复审顺着 #18 查出来的):
+/// 有账那一行**该提示的时候必须真的提示**「有两个版本」。
+///
+/// #18 钉的是"比多了"(跨字面组比),这条钉"比少了"——把 `literal_group` 注入成
+/// 恒空,`installed_list` 与 `--lib core::my_skills` 当时**全绿**,后果是有账行
+/// **永远不提示有两个版本**,用户在两个真实副本之间无从选择。
+///
+/// 现场与 R20 那条刻意相反:两处的字面名**相同**(同一个技能的两份副本),
+/// 内容不同,且有账。
+#[test]
+fn an_accounted_row_does_offer_versions_when_the_same_literal_name_differs() {
+    let ctx = ctx();
+    let body = skill_dir(&ctx.home, ".claude/skills/weekly-report", "v1");
+    let other = skill_dir(&ctx.home, ".trae/skills/weekly-report", "v2");
+
+    let mut state = State::default();
+    let mut rec = installed_record(
+        "weekly-report",
+        "skills/weekly-report",
+        &skillsync_lib::core::fsops::dir_content_hash(&body).unwrap(),
+    );
+    rec.body = Some(body.to_string_lossy().into_owned());
+    state.installed.push(rec);
+    ctx.store.save_state(&state).unwrap();
+
+    let rows = build(&ctx, &Config::default(), &state);
+    assert_eq!(rows.len(), 1, "字面名相同 = 同一个技能的两份副本,只占一行");
+    let r = &rows[0];
+    assert!(!r.content_hash.is_empty(), "这一行是有账的那一档(走 literal_group 那条路)");
+    assert_eq!(r.versions.len(), 2, "两份内容不同的副本都要摆出来给用户拍板");
+    let paths: Vec<&str> = r.versions.iter().map(|v| v.path.as_str()).collect();
+    assert!(paths.contains(&body.to_string_lossy().as_ref()), "本体自己必须在选项里");
+    assert!(paths.contains(&other.to_string_lossy().as_ref()));
 }
