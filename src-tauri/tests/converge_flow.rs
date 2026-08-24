@@ -274,6 +274,18 @@ fn keep_version_keeps_the_chosen_dir_in_place_and_links_the_rest() {
 
     assert_eq!(r.body, a.to_string_lossy());
     assert_eq!(c.sandbox.trashed(), vec![b.clone()]);
+    // 审查修复轮 4:每条 links 必须认得出是哪个位置、并带成败。只回一串
+    // 无名的 `Converged` 时,调用方分不清"哪个位置成了、哪个没成"。
+    assert_eq!(
+        r.links,
+        vec![(b.to_string_lossy().into_owned(), Ok(Converged::Linked { mode: "symlink".into() }))],
+        "落选位置要按 (路径, 结果) 逐条回报"
+    );
+    assert_eq!(
+        r.canonical,
+        Ok(Converged::Unchanged),
+        "canonical 这一步在候选循环里已经收敛过,第二次是幂等早退"
+    );
     assert_eq!(
         fsops::read_link_target(&b),
         Some(fsops::normalize(&a)),
@@ -851,17 +863,60 @@ fn set_agents_does_not_abort_when_an_unknown_agent_name_is_requested() {
     let inst = c.installer(&env);
     let body = skill_dir(&env.home, ".claude/skills/s", "v1");
 
-    let out = converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &["不存在的工具".into()], NOW).unwrap();
+    // trae:正常需要建链的工具;cursor:universal(skillsDir 就是 canonical,
+    // 正常路径里 `link_targets` 本就跳过它、它从不出现在 results);
+    // 不存在的工具:注册表不认识的坏名字。
+    let out = converge::set_agents(
+        &inst,
+        &c.registry,
+        &env,
+        &c.store,
+        "s",
+        &["trae".into(), "cursor".into(), "不存在的工具".into()],
+        NOW,
+    )
+    .unwrap();
 
     let SetAgentsOutcome::Done { results, .. } = out else {
         panic!("expected Done, not an error")
     };
+    // ① 坏名字自己一条 Err。
     assert!(
-        results.iter().any(|(a, r)| a == "不存在的工具" && r.is_err()),
+        results
+            .iter()
+            .any(|(a, r)| a == "不存在的工具" && r.as_ref().err().map(|e| e.code.as_str()) == Some("FS_UNKNOWN_AGENT")),
         "{results:?}"
     );
+    // ② 坏名字**只坑它自己**:合法的 trae 必须是 Ok,且链接真的建上了。
+    assert!(
+        matches!(results.iter().find(|(a, _)| a == "trae"), Some((_, Ok(Converged::Linked { .. })))),
+        "一个坏名字不得把 trae 一起判死: {results:?}"
+    );
+    assert_eq!(
+        fsops::read_link_target(&env.home.join(".trae/skills/s")),
+        Some(fsops::normalize(&body)),
+        "trae 的链接必须真的落盘,不能只是回报了个 Ok"
+    );
+    // ③ universal 工具不得被冤枉:它压根不需要建链,正常路径里不出现在 results,
+    //    回退路径也不许给它记一条它根本走不到的失败。
+    assert!(
+        !results.iter().any(|(a, _)| a == "cursor"),
+        "cursor 落在 canonical 即可见、从不需要建链目标,不该出现在 results 里: {results:?}"
+    );
     let st = c.store.load_state().unwrap().value;
-    assert!(st.installed.iter().any(|s| s.name == "s"), "账应当已经落地,没有中途夭折");
+    let rec = st.installed.iter().find(|s| s.name == "s").unwrap();
+    // ④ 账不得被毒化:垃圾名写进 `rec.agents` 之后,若界面回显勾选态再原样传回,
+    //    它会循环存在,而每一轮都被判进 `removed`,关联状态永远稳定不下来。
+    assert!(
+        !rec.agents.contains(&"不存在的工具".to_string()),
+        "注册表不认识的 agent 名不得写进账: {:?}",
+        rec.agents
+    );
+    assert!(
+        rec.agents.contains(&"trae".to_string()) && rec.agents.contains(&"cursor".to_string()),
+        "合法的两个都要在账上: {:?}",
+        rec.agents
+    );
     assert!(body.join("SKILL.md").is_file());
 }
 
@@ -872,13 +927,25 @@ fn set_agents_does_not_abort_when_the_account_has_a_stale_unknown_agent_name() {
     let (c, env) = ctx();
     let inst = c.installer(&env);
     let body = skill_dir(&env.home, ".claude/skills/s", "v1");
+    // trae 是一条真实的、账上有记录的健康链接:它必须照常被摘掉,不能因为
+    // 同一份 `removed` 里混着一个陈旧名字就整批作废(审查修复轮 4:摘链侧
+    // 与建链侧是同一个结构问题,一起按 agent 逐个 resolve)。
+    let trae_link = env.home.join(".trae/skills/s");
+    link(&body, &trae_link);
     let mut state = state_with_body("s", &body);
-    state.installed[0].agents = vec!["claude-code".into(), "早已下线的工具".into()];
+    state.installed[0].agents = vec!["claude-code".into(), "trae".into(), "早已下线的工具".into()];
+    state.installed[0].links = vec![state::LinkRecord {
+        dir: env.home.join(".trae/skills").to_string_lossy().into_owned(),
+        mode: "symlink".into(),
+    }];
     c.store.save_state(&state).unwrap();
 
     let out = converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &[], NOW).unwrap();
 
-    let SetAgentsOutcome::Done { unlink_failed, .. } = out else {
+    let SetAgentsOutcome::Done {
+        unlink_failed, unlinked, ..
+    } = out
+    else {
         panic!("expected Done, not an error")
     };
     assert!(
@@ -887,8 +954,24 @@ fn set_agents_does_not_abort_when_the_account_has_a_stale_unknown_agent_name() {
             .any(|(a, e)| a == "早已下线的工具" && e.code == "FS_UNKNOWN_AGENT"),
         "{unlink_failed:?}"
     );
+    // 坏名字只坑它自己:合法的 trae 照常摘掉,磁盘上那条链接真的没了。
+    assert!(unlinked.contains(&"trae".to_string()), "{unlinked:?} / {unlink_failed:?}");
+    assert!(
+        std::fs::symlink_metadata(&trae_link).is_err(),
+        "trae 的链接应当已经被摘掉"
+    );
+    assert!(body.join("SKILL.md").is_file(), "本体不动");
     let st = c.store.load_state().unwrap().value;
-    assert!(st.installed.iter().any(|s| s.name == "s"), "账应当已经落地,没有中途夭折");
+    let rec = st
+        .installed
+        .iter()
+        .find(|s| s.name == "s")
+        .expect("账应当已经落地,没有中途夭折");
+    assert!(
+        !rec.agents.contains(&"早已下线的工具".to_string()),
+        "注册表不认识的陈旧名字不得再被写回账上: {:?}",
+        rec.agents
+    );
 }
 
 /// R11 位置①:`ensure_canonical_link`(本函数**第一处写盘**)自己失败也不能
@@ -919,4 +1002,170 @@ fn set_agents_does_not_abort_when_the_canonical_link_itself_fails() {
     assert_eq!(fsops::read_link_target(&trae_link), Some(fsops::normalize(&body)));
     let st = c.store.load_state().unwrap().value;
     assert!(st.installed.iter().any(|s| s.name == "s"), "账应当已经落地,没有中途夭折");
+}
+
+// ============================================================ R11:keep_version(审查修复轮 4)
+//
+// 判据(裁定 R11):**从第一次写磁盘到 `save_state` 之间,任何失败都不得让函数
+// 带着"磁盘已动、账未存"的状态返回。** 修复轮 3 只在 `set_agents` 上做到了这条,
+// `keep_version` 漏了,而它的现场更险——循环里第一处写盘就是破坏性的
+// `trash_tree`,内容指纹却排在全部写盘之后。
+
+/// R11 前移②:基线指纹必须在**任何**写盘之前算。原先它排在候选循环与
+/// `ensure_canonical_link` 全跑完之后,一旦 hash 失败,落选版本已进废纸篓、
+/// 落选位置与 canonical 都已换成链接,函数却带着 `Err` 返回,账上一条都没有。
+#[cfg(unix)]
+#[test]
+fn keep_version_computes_the_baseline_hash_before_touching_disk() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let keep = skill_dir(&env.home, ".claude/skills/s", "v1");
+    let loser = skill_dir(&env.home, ".trae/skills/s", "v2");
+    let canonical = env.home.join(".agents/skills/s");
+
+    // 让 `dir_content_hash(keep)` 必然失败:目录里放一个读不了的文件。
+    let secret = keep.join("secret.txt");
+    std::fs::write(&secret, b"x").unwrap();
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let err = converge::keep_version(&inst, &c.registry, &env, &c.store, "s", &keep, NOW).unwrap_err();
+
+    assert_eq!(err.code, "FS_HASH_FAILED", "{err:?}");
+    assert!(c.sandbox.trashed().is_empty(), "报错之前一个字节都不该动: {:?}", c.sandbox.trashed());
+    assert!(
+        loser.join("SKILL.md").is_file() && fsops::read_link_target(&loser).is_none(),
+        "落选版本必须原封不动地留在原地,不能已经进了废纸篓、换成了链接"
+    );
+    assert!(!canonical.exists(), "canonical 也不该被抢先建出链接");
+    let st = c.store.load_state().unwrap().value;
+    assert!(st.installed.is_empty(), "账应当一条都没有: {:?}", st.installed);
+
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+/// R11 收集①:候选循环内的写盘失败必须**收集**,不能 `?` 中断——中断会把
+/// 同一轮里已经成功收敛的其余位置连同记账一起拖没了(它们的链接已落盘,
+/// `remove::remove` 却按 `state.links` 摘链,从此摘不掉)。
+#[cfg(unix)]
+#[test]
+fn keep_version_keeps_going_when_one_losing_position_cannot_be_converged() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let keep = skill_dir(&env.home, ".claude/skills/s", "v1");
+    // 候选按路径排序:.agents(先,正常) → .claude(keep,跳过) → .trae(后,失败)
+    let ok_loser = skill_dir(&env.home, ".agents/skills/s", "v2");
+    let bad_loser = skill_dir(&env.home, ".trae/skills/s", "v3");
+
+    // 父目录只读 → 挪进废纸篓(rename)必然失败。
+    let bad_parent = env.home.join(".trae/skills");
+    std::fs::set_permissions(&bad_parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let r = converge::keep_version(&inst, &c.registry, &env, &c.store, "s", &keep, NOW).unwrap();
+
+    assert!(
+        r.links
+            .iter()
+            .any(|(p, res)| Path::new(p) == bad_loser.as_path() && res.is_err()),
+        "失败的位置要如实回报,不能吞: {:?}",
+        r.links
+    );
+    assert!(
+        r.links
+            .iter()
+            .any(|(p, res)| Path::new(p) == ok_loser.as_path() && matches!(res, Ok(Converged::Linked { .. }))),
+        "同一轮里本该成功的位置必须照常收敛: {:?}",
+        r.links
+    );
+    assert_eq!(c.sandbox.trashed(), vec![ok_loser.clone()]);
+    assert_eq!(fsops::read_link_target(&ok_loser), Some(fsops::normalize(&keep)));
+    assert!(
+        bad_loser.join("SKILL.md").is_file() && fsops::read_link_target(&bad_loser).is_none(),
+        "摘不动的位置原样留着——绝不静默删除用户文件"
+    );
+    let st = c.store.load_state().unwrap().value;
+    let rec = st
+        .installed
+        .iter()
+        .find(|s| s.name == "s")
+        .expect("账必须已经落地,不能因为一个位置失败就整次夭折");
+    assert_eq!(rec.body.as_deref(), Some(keep.to_str().unwrap()));
+    assert!(
+        rec.links
+            .iter()
+            .any(|l| Path::new(&l.dir) == env.home.join(".agents/skills")),
+        "成功那条链接必须进账(remove 才摘得掉): {:?}",
+        rec.links
+    );
+
+    std::fs::set_permissions(&bad_parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// R11 收集②:`ensure_canonical_link` 失败也不能 `?` 中断——它排在候选循环
+/// **之后**,中断会把整轮已经落盘的收敛全部丢掉记账。
+#[test]
+fn keep_version_reports_a_failing_canonical_link_instead_of_swallowing_it() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let keep = skill_dir(&env.home, ".claude/skills/s", "v1");
+    let loser = skill_dir(&env.home, ".trae/skills/s", "v2");
+    // canonical 的祖先被占成一个普通文件 → 建链时 `create_dir_all` 必然失败。
+    std::fs::write(env.home.join(".agents"), b"not a directory").unwrap();
+
+    let r = converge::keep_version(&inst, &c.registry, &env, &c.store, "s", &keep, NOW).unwrap();
+
+    assert!(r.canonical.is_err(), "canonical 建链失败要如实回报: {:?}", r.canonical);
+    assert_eq!(c.sandbox.trashed(), vec![loser.clone()], "循环里的活照常干完");
+    assert_eq!(fsops::read_link_target(&loser), Some(fsops::normalize(&keep)));
+    let st = c.store.load_state().unwrap().value;
+    let rec = st
+        .installed
+        .iter()
+        .find(|s| s.name == "s")
+        .expect("账必须已经落地,不能因为 canonical 那一步失败就整次夭折");
+    assert_eq!(rec.body.as_deref(), Some(keep.to_str().unwrap()));
+}
+
+// ============================================================ IPC 序列化形状
+
+/// 🔴 `#[serde(rename_all = ...)]` 挂在**枚举**上只改 variant 名,**不改
+/// struct variant 的字段名**——本项目 IPC 一律驼峰,少了 `rename_all_fields`
+/// 就会把 `home_body` / `unlink_failed` 这样的蛇形键发给前端。任务 4 接线时
+/// 这条是唯一的护栏(core 侧没有任何别的地方会碰到序列化形状)。
+///
+/// 同时正面记录 `Result` 的既定形状:serde 内建 impl 给的是**大写**键
+/// `{"Ok": …}` / `{"Err": …}`,`rename_all` 管不到;元组序列化成 JSON 数组。
+#[test]
+fn set_agents_outcome_serializes_its_fields_in_camel_case() {
+    let out = SetAgentsOutcome::Done {
+        home_body: "/home/u/.claude/skills/s".into(),
+        canonical: Ok(Converged::Unchanged),
+        results: vec![(
+            "trae".into(),
+            Ok(Converged::Linked {
+                mode: "symlink".into(),
+            }),
+        )],
+        unlinked: vec!["trae-cn".into()],
+        unlink_failed: vec![(
+            "zed".into(),
+            skillsync_lib::error::AppError::new("FS_NOT_A_LINK", "该位置是一个实体技能目录,不会被自动删除"),
+        )],
+    };
+
+    let v = serde_json::to_value(&out).unwrap();
+
+    assert_eq!(v["outcome"], "done", "{v}");
+    assert_eq!(v["homeBody"], "/home/u/.claude/skills/s", "{v}");
+    assert!(v.get("home_body").is_none(), "蛇形键不得出现: {v}");
+    assert_eq!(v["unlinkFailed"][0][0], "zed", "{v}");
+    assert!(v.get("unlink_failed").is_none(), "蛇形键不得出现: {v}");
+    // 既定形状(不改实现,前端类型照这个写):元组 → 数组,Result → 大写键。
+    assert_eq!(v["results"][0][0], "trae", "{v}");
+    assert_eq!(v["results"][0][1]["Ok"]["kind"], "linked", "{v}");
+    assert_eq!(v["canonical"]["Ok"]["kind"], "unchanged", "{v}");
+    assert_eq!(v["unlinkFailed"][0][1]["code"], "FS_NOT_A_LINK", "{v}");
 }

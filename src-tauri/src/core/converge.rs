@@ -368,12 +368,28 @@ fn merge_link_record(
 // ============================================================ 版本拍板
 
 /// [`keep_version`] 的执行结果。
-#[derive(Debug, Clone)]
+///
+/// 🔴 **每一条都带目标标识与 `Result`(审查修复轮 4)**:上一版的
+/// `links: Vec<Converged>` 既认不出是哪个位置、也表达不了"这个位置没收敛成功"
+/// ——而 R11 要求循环内的失败**收集而不是中断**,收集了却没人看得见,就从
+/// "报错中断"退化成了**静默撒谎**(界面显示"已完成",实际那个位置根本没换成
+/// 链接)。形状与 [`SetAgentsOutcome::Done`] 保持同一口径:`(目标标识, 结果)`
+/// 的序对 + 一条单独的 `canonical`。
+///
+/// ⚠️ **序列化形状**(给任务 4/5/7 接前端类型用):`Result<T, E>` 走的是 serde
+/// 内建 impl,键是**大写**的 `{"Ok": …}` / `{"Err": …}`,`rename_all` 管不到它;
+/// 元组 `(String, Result<..>)` 序列化成 JSON 数组 `[目标, 结果]`。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KeepReport {
     pub body: String,
     /// 被丢弃、进了废纸篓的其余版本(路径的字符串形式)。
     pub trashed: Vec<String>,
-    pub links: Vec<Converged>,
+    /// 每处落选位置的收敛结果:`(该位置的路径, 收敛成链接的结果)`。
+    /// `Err` = 这个位置试过了但没成功(废纸篓失败、或建链失败),不是"没处理它"。
+    pub links: Vec<(String, Result<Converged, AppError>)>,
+    /// canonical ← `keep` 那条链接的收敛结果(I1)。同样可能失败,同样如实回报。
+    pub canonical: Result<Converged, AppError>,
 }
 
 /// 「有几个版本,选哪个」拍板落地:`keep` 原地留下当本体,其余全部进废纸篓、
@@ -395,6 +411,23 @@ pub struct KeepReport {
 /// - **I2**:`agents` 是并集合并,不是覆盖——一个工具若是通过健康链接关联的
 ///   (新模型下的常态),它的目录不会成为候选、不进 `touched_dirs`,整体覆盖
 ///   会把它从账上静默抹掉,即便磁盘上那条链接还在。
+///
+/// 🔴 **R11(审查修复轮 4,结构性)**——判据:**从第一次写磁盘到 `save_state`
+/// 之间,任何失败都不得让函数带着"磁盘已动、账未存"的状态返回。** `set_agents`
+/// 在修复轮 3 已按这条收干净,本函数当时**漏了**,现场比 `set_agents` 更险:
+/// 循环里第一处写盘就是 `trash_tree`(破坏性),而 `dir_content_hash(keep)` 排在
+/// 全部写盘之后——落选版本已进废纸篓、落选位置与 canonical 都已换成链接,hash
+/// 一失败函数就带着 `Err` 返回,账上一条都没有。逐处落地(两种处置,各有依据):
+/// - **前移(使 `?` 变安全)**——纯计算,挪到任何写盘之前即可,不必收集:
+///   `installer.home(dir_slug, Some(keep))`(算 `keep_home`,只拼路径)、
+///   `fsops::dir_content_hash(keep)`(只读)。这与修复轮 3 位置⑤ 是同一姿势:
+///   此刻还没有任何写盘发生过,提前返回不留半成品。
+/// - **收集(写盘之后,只能收)**——循环内的 `trash_tree` / `unlink_dir` /
+///   `link_dir`,以及 [`ensure_canonical_link`]:各自装进
+///   [`KeepReport::links`] / [`KeepReport::canonical`] 的 `Err` 分支,循环继续。
+/// - **唯一残留的窗口**:`store.save_state` 自身。它本身就是"落账"这个动作,
+///   失败了没有更早的地方可以退——这是这条判据下唯一仍然存在、也只能存在的
+///   失败窗口(与 `set_agents` 位置⑥ 同款)。
 pub fn keep_version(
     installer: &Installer<'_>,
     registry: &AgentRegistry,
@@ -421,54 +454,75 @@ pub fn keep_version(
         )));
     }
 
+    // R11 前移①:纯路径计算,挪到任何写盘之前——原先它排在候选循环之后,一旦
+    // `keep` 的叶子名与 slug 对不上(`FS_BAD_BODY`),落选版本已经全进废纸篓了。
+    let keep_home = installer.home(dir_slug, Some(keep))?;
+    // R11 前移②:只读,同样挪到写盘之前(原先排在全部写盘之后,见函数文档)。
+    let content_hash = fsops::dir_content_hash(keep)?;
+
     let mut next = store.load_state()?.value;
     let existing = next.installed.iter().find(|s| s.name == dir_slug);
     let mut agents: Vec<String> = existing.map(|s| s.agents.clone()).unwrap_or_default();
     let mut link_records: Vec<state::LinkRecord> = existing.map(|s| s.links.clone()).unwrap_or_default();
 
     let mut trashed = Vec::new();
-    let mut report_links = Vec::new();
+    let mut report_links: Vec<(String, Result<Converged, AppError>)> = Vec::new();
     let mut touched_dirs: Vec<PathBuf> = Vec::new();
     if let Some(p) = keep.parent() {
         touched_dirs.push(p.to_path_buf());
     }
 
+    // ↓↓↓ 这里开始写盘。到 `save_state` 之间一律收集,不用 `?`(R11)。
     for path in &candidates {
         if path == keep {
             continue;
         }
         let dir = path.parent();
+        // 失败位置的 agent 照样进并集:那个工具目录里**确实还有一份技能**
+        // (废纸篓/摘链没成功,东西还在原地),说它"没启用"才是假话;失败本身
+        // 已经在 `KeepReport::links` 里如实可见,不靠这份账来表达。
         if let Some(d) = dir {
             touched_dirs.push(d.to_path_buf());
         }
+        let label = path.to_string_lossy().into_owned();
+        // 腾位置:实体目录进废纸篓,链接/断链直接摘。失败即收集并跳过这个位置
+        // ——位置还占着,再去 `link_dir` 只会撞上 `OnOccupied::Fail`,报一个
+        // 掩盖真实原因的第二个错。
         match fsops::link_state(path, keep) {
-            LinkState::Real => {
-                fsops::trash_tree(installer.trasher(), path)?;
-                trashed.push(path.to_string_lossy().into_owned());
-            }
+            LinkState::Real => match fsops::trash_tree(installer.trasher(), path) {
+                Ok(_) => trashed.push(label.clone()),
+                Err(err) => {
+                    report_links.push((label, Err(err)));
+                    continue;
+                }
+            },
             LinkState::Broken | LinkState::Foreign(_) => {
-                fsops::unlink_dir(path)?;
+                if let Err(err) = fsops::unlink_dir(path) {
+                    report_links.push((label, Err(err)));
+                    continue;
+                }
             }
             LinkState::Linked(_) | LinkState::SameLocation | LinkState::Missing => {}
         }
-        let outcome = match fsops::link_dir(keep, path, installer.chain(), OnOccupied::Fail)? {
-            LinkOutcome::Created(k) | LinkOutcome::Unchanged(k) => Converged::Linked {
+        let outcome = match fsops::link_dir(keep, path, installer.chain(), OnOccupied::Fail) {
+            Ok(LinkOutcome::Created(k) | LinkOutcome::Unchanged(k)) => Ok(Converged::Linked {
                 mode: k.as_str().into(),
-            },
-            LinkOutcome::SameLocation => Converged::SameLocation,
+            }),
+            Ok(LinkOutcome::SameLocation) => Ok(Converged::SameLocation),
+            Err(err) => Err(err),
         };
-        if let Some(d) = dir {
-            merge_link_record(&mut link_records, d, path, keep, &outcome);
+        if let (Ok(o), Some(d)) = (&outcome, dir) {
+            merge_link_record(&mut link_records, d, path, keep, o);
         }
-        report_links.push(outcome);
+        report_links.push((label, outcome));
     }
 
     // I1:candidates 里没有 canonical 时,上面的循环够不到它;candidates 里已经
     // 有 canonical 时,这里是第二次收敛,`ensure_canonical_link` 幂等早退。
-    let keep_home = installer.home(dir_slug, Some(keep))?;
-    let canonical_outcome = ensure_canonical_link(installer, &keep_home)?;
-    if let Some(canonical_dir) = keep_home.canonical.parent() {
-        merge_link_record(&mut link_records, canonical_dir, &keep_home.canonical, keep, &canonical_outcome);
+    // R11:结果装进 `KeepReport::canonical`,不再 `?` 中断。
+    let canonical = ensure_canonical_link(installer, &keep_home);
+    if let (Ok(outcome), Some(canonical_dir)) = (&canonical, keep_home.canonical.parent()) {
+        merge_link_record(&mut link_records, canonical_dir, &keep_home.canonical, keep, outcome);
     }
 
     touched_dirs.sort();
@@ -479,7 +533,6 @@ pub fn keep_version(
     agents.sort();
     agents.dedup();
 
-    let content_hash = fsops::dir_content_hash(keep)?;
     match next.installed.iter().position(|s| s.name == dir_slug) {
         Some(idx) => {
             let rec = &mut next.installed[idx];
@@ -502,12 +555,14 @@ pub fn keep_version(
             updated_at: now.to_string(),
         }),
     }
+    // R11 唯一残留的失败窗口(见函数文档)。
     store.save_state(&next)?;
 
     Ok(KeepReport {
         body: keep.to_string_lossy().into_owned(),
         trashed,
         links: report_links,
+        canonical,
     })
 }
 
@@ -528,8 +583,19 @@ fn empty_source() -> state::SkillSource {
 // ============================================================ 勾选(建链/摘链)
 
 /// [`set_agents`] 的结果。
+///
+/// ⚠️ **序列化形状**(审查修复轮 4 实测订正,给任务 4/5/7 接前端类型用):
+/// - `#[serde(rename_all = ...)]` 挂在**枚举**上**只改 variant 名**
+///   (`Done` → `"done"`),**不改 struct variant 的字段名**——本项目 IPC 一律
+///   驼峰,所以必须另加 `rename_all_fields`(serde ≥ 1.0.181),否则实际发给
+///   前端的是 `home_body` / `unlink_failed` 这样的蛇形键。已有序列化形状测试
+///   正面钉住 `homeBody` / `unlinkFailed`;
+/// - `Result<T, E>` 走 serde 内建 impl,键是**大写**的 `{"Ok": …}` / `{"Err": …}`,
+///   `rename_all` / `rename_all_fields` 都管不到它。这是既定形状,不改实现,
+///   前端类型照这个写;
+/// - 元组 `(String, Result<..>)` 序列化成 JSON 数组 `[agent 名, 结果]`。
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase", tag = "outcome")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "outcome")]
 pub enum SetAgentsOutcome {
     /// 本体位置有分歧,不敢猜——交给用户先在 [`keep_version`] 里拍板。
     NeedsVersionChoice { versions: Vec<Version> },
@@ -565,6 +631,17 @@ pub enum SetAgentsOutcome {
 fn missing_skill_error(dir_slug: &str) -> AppError {
     AppError::new("FS_MISSING_SKILL", "这个技能的本体不在了,请重新获取一次")
         .with_detail(format!("no body found for {dir_slug}"))
+}
+
+/// 注册表不认识这个 agent 名。
+///
+/// ⚠️ code 与 message **与 `installer::link_targets` / `canonical_visible_agents`
+/// 里构造的那个逐字相同**(`FS_UNKNOWN_AGENT` /「这个 AI 工具不在支持列表中」)
+/// ——同一件事在两处构造是可接受的小重复,文案漂移不是(术语门会各自扫到,
+/// 而界面上会出现两句说同一件事的不同中文)。
+fn unknown_agent_error(name: &str) -> AppError {
+    AppError::new("FS_UNKNOWN_AGENT", "这个 AI 工具不在支持列表中")
+        .with_detail(format!("unknown agent: {name}"))
 }
 
 /// 「勾选哪些工具能用这个技能」落地:`wanted`(本次目标集合)里**每一个**目标
@@ -604,22 +681,36 @@ fn missing_skill_error(dir_slug: &str) -> AppError {
 /// 账未存"的状态返回。** 逐处落地:
 /// - [`ensure_canonical_link`](本函数第一处写盘):失败不再 `?`,装进
 ///   `SetAgentsOutcome::Done::canonical` 的 `Err` 分支;
-/// - `link_targets_for(&home, &wanted)` 这个**调用本身**也可能失败(`wanted`
-///   里混进注册表不认识的 agent 名,`FS_UNKNOWN_AGENT`)——同样不 `?`,把
-///   错误按 `wanted` 里(除了本体自己那个,它从不需要建链目标)每个 agent 名
-///   各记一条失败,进 `results`;
+/// - 两处 `link_targets_for`(建链目标 / 摘链目标)**前移到任何写盘之前**
+///   ——它们是纯计算(分组、只拼路径,不碰盘),挪到前面之后 `?` 就是安全的,
+///   与位置⑤ 的 hash 前移同一姿势。**审查修复轮 4 订正**:修复轮 3 当时是
+///   "留在原地 + 失败按名单逐个记 `Err`",那个写法有两处硬伤——① 一个坏名字
+///   会让整个调用失败,却给**每个** agent 各记一条同样的 `Err`,界面按键渲染
+///   就是「trae:这个 AI 工具不在支持列表中」,**对 trae 是假话**;② 回退分支
+///   只过滤了本体自己的 agent,**漏了 universal 那一档**(cursor/codex 的
+///   `skillsDir` 就是 canonical,正常路径里 `link_targets` 本就跳过它们、
+///   它们从不出现在 `results`),于是给一个技能**确实生效**的工具记了失败。
+///   现在改成**先按 agent 逐个 resolve**:注册表不认识的名字自己一条
+///   `FS_UNKNOWN_AGENT`(**坏名字只坑它自己**),认识的照常成组建链/摘链;
 /// - **`converge(...)`(建链循环内,主犯,复审者已复现)**:每个目标一个结果,
 ///   成功给 `Ok(Converged)`、失败给 `Err`,都装进 `results`,循环继续,不中断;
-/// - `link_targets_for(&home, &removed)` 同理不 `?`,失败按 `removed` 里每个
-///   agent 名各记一条,进 `unlink_failed`;
 /// - `dir_content_hash(&home.body)`(仅无账新建那一档需要):**挪到本函数
 ///   任何写盘调用之前算**——原先排在写盘全部完成之后,一旦这里失败,磁盘已经
 ///   全部写完却建不出账,新技能会永久停留在"我的技能"里看不到的状态。挪到
 ///   最前面之后,这里继续用 `?` 是安全的:此刻还没有任何 `ensure_canonical_
-///   link`/`converge` 调用发生过,提前返回不会留下"磁盘已动、账未存"的半成品;
+///   link`/`converge` 调用发生过,提前返回不会留下"磁盘已动、账未存"的半成品。
+///   **审查修复轮 4 顺带消掉了它留下的 `expect`**:"有没有账"这个判定改成在
+///   写盘前定好一个 `existing_idx`,落账时按同一个下标分流——写盘窗口里从此
+///   一个 `?`/`unwrap`/`expect`/提前 return 都没有;
 /// - `store.save_state` 自身:固有的、收集救不了的最后一道窗口——它本身就是
 ///   "落账"这个动作,失败了没有更早的地方可以退。这是这条判据下**唯一**
 ///   仍然存在、也只能存在的失败窗口。
+///
+/// 🔴 **账上绝不写进注册表不认识的 agent 名**(审查修复轮 4):`rec.agents`
+/// 写的是 `known`(`wanted` 减去未知名),不是 `wanted`。写进去的话方向恰好与
+/// R11 相反——变成「账已存、磁盘未动」;更糟的是若界面从 `rec.agents` 回显
+/// 勾选态再原样传回,垃圾名会**循环存在**,而它每次都会被判进 `removed`
+/// (它不在下一次的 `known` 里),这个技能的关联状态永远稳定不下来。
 pub fn set_agents(
     installer: &Installer<'_>,
     registry: &AgentRegistry,
@@ -662,20 +753,37 @@ pub fn set_agents(
     wanted.sort();
     wanted.dedup();
 
-    let existing = next.installed.iter().find(|s| s.name == dir_slug);
+    // 🔴 按 agent 逐个 resolve:注册表不认识的名字自己单独成一档,**坏名字只坑
+    // 它自己**,合法的照常建链/摘链(见函数文档 R11 那段的订正)。
+    let (known, unknown): (Vec<String>, Vec<String>) =
+        wanted.iter().cloned().partition(|a| registry.get(a).is_some());
+
+    // 这个下标在写盘之前定好,写盘期间没有任何代码改动 `next.installed` 的成员
+    // 关系,所以后面直接拿它落账——不必写盘之后再 `position` 一次,更不必为
+    // "刚才到底有没有账"留一个 `expect`(那是一条能在 Tauri command 里 panic
+    // 的路,`parse_owner_repo` 的 expect 是前车之鉴)。
+    let existing_idx = next.installed.iter().position(|s| s.name == dir_slug);
+    let existing = existing_idx.map(|i| &next.installed[i]);
     let existing_agents: Vec<String> = existing.map(|s| s.agents.clone()).unwrap_or_default();
     let mut link_records: Vec<state::LinkRecord> = existing.map(|s| s.links.clone()).unwrap_or_default();
-    let is_new_account = existing.is_none();
 
     let removed: Vec<String> = existing_agents.iter().filter(|a| !wanted.contains(a)).cloned().collect();
+    // 账上可能留着注册表不再认识的陈旧 agent 名(跨版本注册表变化)。它没有可解析
+    // 的目录,摘无可摘,如实回报;但绝不能让它拖垮其余合法目标的摘链。
+    let (removed_known, removed_unknown): (Vec<String>, Vec<String>) =
+        removed.iter().cloned().partition(|a| registry.get(a).is_some());
 
-    // R11:见函数文档——必须在任何写盘调用之前算,失败在这里用 `?` 是安全的
-    // (还没有任何磁盘写入发生过)。
-    let fresh_content_hash = if is_new_account {
-        Some(fsops::dir_content_hash(&home.body)?)
-    } else {
-        None
+    // R11:下面三处都必须在任何写盘调用之前算完,失败在这里用 `?` 是安全的
+    // (还没有任何磁盘写入发生过)。`link_targets_for` 是纯计算——按目录分组、
+    // 只拼路径,不碰盘。
+    // 只有"无账、这次要新建一条"时才需要基线指纹;有账时这个值不会被消费
+    // (下面按同一个 `existing_idx` 分流,走的是原地更新那一档)。
+    let fresh_content_hash = match existing_idx {
+        Some(_) => String::new(),
+        None => fsops::dir_content_hash(&home.body)?,
     };
+    let add_targets = installer.link_targets_for(&home, &known)?;
+    let remove_targets = installer.link_targets_for(&home, &removed_known)?;
 
     // I3 / R11:结果并进 Done,不再用 `?` 中断——这是本函数第一处写盘。
     let canonical = ensure_canonical_link(installer, &home);
@@ -692,81 +800,67 @@ pub fn set_agents(
     // `converge` 本身幂等:链接已经正确时早退返回 `Unchanged`,不写盘,所以
     // "全量重跑"的代价只是每个目标多一次 `link_state` 判定,可以忽略。
     let mut results: Vec<(String, Result<Converged, AppError>)> = Vec::new();
-    match installer.link_targets_for(&home, &wanted) {
-        Ok(targets) => {
-            for target in targets {
-                let link = target.dir.join(&home.dir_name);
-                // R11:不再用 `?`——建链失败(比如目标位置的父目录被占成了一个
-                // 普通文件,`link_dir` 内部 `create_dir_all(parent)` 报错)必须
-                // 收进 `results`,不能中断:循环里可能还有别的目标本该成功、
-                // 更早的 canonical 那步也可能已经写盘,中断会把它们的记账
-                // 一起拖没了。
-                let outcome = converge(installer, &link, &home.body);
-                if let Ok(o) = &outcome {
-                    merge_link_record(&mut link_records, &target.dir, &link, &home.body, o);
-                }
-                for agent_name in &target.agents {
-                    results.push((agent_name.clone(), outcome.clone()));
-                }
-            }
+    // 坏名字只坑它自己:一条独立的 `FS_UNKNOWN_AGENT`,不牵连任何别的 agent。
+    for agent_name in &unknown {
+        results.push((agent_name.clone(), Err(unknown_agent_error(agent_name))));
+    }
+    for target in add_targets {
+        let link = target.dir.join(&home.dir_name);
+        // R11:不再用 `?`——建链失败(比如目标位置的父目录被占成了一个
+        // 普通文件,`link_dir` 内部 `create_dir_all(parent)` 报错)必须
+        // 收进 `results`,不能中断:循环里可能还有别的目标本该成功、
+        // 更早的 canonical 那步也可能已经写盘,中断会把它们的记账
+        // 一起拖没了。
+        let outcome = converge(installer, &link, &home.body);
+        if let Ok(o) = &outcome {
+            merge_link_record(&mut link_records, &target.dir, &link, &home.body, o);
         }
-        Err(err) => {
-            // `wanted` 里混进了注册表不认识的 agent 名(`FS_UNKNOWN_AGENT`)。
-            // 本体自己的 agent 从不需要建链目标,不算进失败名单。
-            for agent_name in wanted.iter().filter(|a| !body_agents.contains(a)) {
-                results.push((agent_name.clone(), Err(err.clone())));
-            }
+        for agent_name in &target.agents {
+            results.push((agent_name.clone(), outcome.clone()));
         }
     }
 
     let mut unlinked = Vec::new();
     let mut unlink_failed: Vec<(String, AppError)> = Vec::new();
-    match installer.link_targets_for(&home, &removed) {
-        Ok(targets) => {
-            for target in targets {
-                let link = target.dir.join(&home.dir_name);
-                // I4:账上记的是 copy 档时,磁盘上那个位置是**实体目录**
-                // (降级复制的产物)。`unlink_dir` 对实体目录一律拒绝
-                // (`FS_NOT_A_LINK`),走废纸篓才对——判定与
-                // `installer::unlink_one` 对 Copy 档同款。
-                let recorded_copy = link_records
-                    .iter()
-                    .any(|l| Path::new(&l.dir) == target.dir.as_path() && l.mode == "copy");
-                let result = if recorded_copy {
-                    fsops::trash_tree(installer.trasher(), &link)
-                } else {
-                    fsops::unlink_dir(&link)
-                };
-                // I4③:收集失败,不用 `?` 中断——理由见函数文档 R11。
-                match result {
-                    Ok(true) => {
-                        link_records.retain(|l| Path::new(&l.dir) != target.dir.as_path());
-                        unlinked.extend(target.agents.iter().cloned());
-                    }
-                    Ok(false) => {}
-                    Err(err) => {
-                        for agent_name in &target.agents {
-                            unlink_failed.push((agent_name.clone(), err.clone()));
-                        }
-                    }
-                }
+    for agent_name in &removed_unknown {
+        unlink_failed.push((agent_name.clone(), unknown_agent_error(agent_name)));
+    }
+    for target in remove_targets {
+        let link = target.dir.join(&home.dir_name);
+        // I4:账上记的是 copy 档时,磁盘上那个位置是**实体目录**
+        // (降级复制的产物)。`unlink_dir` 对实体目录一律拒绝
+        // (`FS_NOT_A_LINK`),走废纸篓才对——判定与
+        // `installer::unlink_one` 对 Copy 档同款。
+        let recorded_copy = link_records
+            .iter()
+            .any(|l| Path::new(&l.dir) == target.dir.as_path() && l.mode == "copy");
+        let result = if recorded_copy {
+            fsops::trash_tree(installer.trasher(), &link)
+        } else {
+            fsops::unlink_dir(&link)
+        };
+        // I4③:收集失败,不用 `?` 中断——理由见函数文档 R11。
+        match result {
+            Ok(true) => {
+                link_records.retain(|l| Path::new(&l.dir) != target.dir.as_path());
+                unlinked.extend(target.agents.iter().cloned());
             }
-        }
-        Err(err) => {
-            // 账上可能留着注册表不再认识的陈旧 agent 名(跨版本)。跳过并
-            // 回报,不抛。
-            for agent_name in &removed {
-                unlink_failed.push((agent_name.clone(), err.clone()));
+            Ok(false) => {}
+            Err(err) => {
+                for agent_name in &target.agents {
+                    unlink_failed.push((agent_name.clone(), err.clone()));
+                }
             }
         }
     }
 
     let body_str = home.body.to_string_lossy().into_owned();
-    match next.installed.iter().position(|s| s.name == dir_slug) {
+    match existing_idx {
         Some(idx) => {
             let rec = &mut next.installed[idx];
             rec.body = Some(body_str.clone());
-            rec.agents = wanted;
+            // 只写注册表认识的名字——见函数文档最后一段(不毒化账)。
+            rec.agents = known;
             rec.links = link_records;
             rec.updated_at = now.to_string();
         }
@@ -774,10 +868,10 @@ pub fn set_agents(
             name: dir_slug.to_string(),
             source: empty_source(),
             commit_sha: String::new(),
-            content_hash: fresh_content_hash.expect("computed above whenever there is no existing account"),
+            content_hash: fresh_content_hash,
             origin: Some(state::ORIGIN_ADOPTED.to_string()),
             body: Some(body_str.clone()),
-            agents: wanted,
+            agents: known,
             links: link_records,
             installed_at: now.to_string(),
             updated_at: now.to_string(),
