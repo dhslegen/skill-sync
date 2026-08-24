@@ -588,6 +588,8 @@ fn adopt_into_management(
         // 基线取刚推上去的内容:不等就会立刻误报"有可用更新 / 有未分享的改动"
         content_hash,
         origin: Some(crate::core::acquire::ORIGIN_CLAIMED.to_string()),
+        // 直推进的是 canonical(分享候选只来自 share::scan_candidates 的 in_canonical 档)
+        body: None,
         // 关联没建过就如实留空——这里只记账,一个字节都不动磁盘
         agents: Vec::new(),
         links: Vec::new(),

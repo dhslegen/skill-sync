@@ -83,6 +83,8 @@ pub async fn run_check(
     repo: &RepoRef,
     now: &str,
     fetched_at: i64,
+    // 批量更新覆盖旧本体会经它进废纸篓,测试必须注入 `SandboxTrash`(v6 二期任务 2)。
+    trasher: &dyn crate::core::fsops::Trasher,
 ) -> Result<CheckReport, AppError> {
     let registry_id = source.registry_id;
     let state = store.load_state()?.value;
@@ -125,6 +127,7 @@ pub async fn run_check(
         BatchAgents::FromAccount,
         now,
         fetched_at,
+        trasher,
     )
     .await?;
 

@@ -57,8 +57,10 @@ pub fn remove(
     };
     let record = &loaded.value.installed[idx];
 
+    let home = crate::core::converge::home_of(installer, &loaded.value, dir_slug)?;
+
     // 预检:本体还在且内容与记账不符 = 用户改过。本体已不在则无改动可言,直接清账。
-    let canonical = installer.canonical_dir(dir_slug)?;
+    let canonical = home.canonical.clone();
     if !force && canonical.is_dir() {
         let actual = fsops::dir_content_hash(&canonical)?;
         if actual != record.content_hash {
@@ -67,7 +69,7 @@ pub fn remove(
     }
 
     let (recorded, unparseable) = state_links_to_recorded(&record.links);
-    let mut report = installer.uninstall(dir_slug, &recorded, true)?;
+    let mut report = installer.uninstall(&home, &recorded, true)?;
     // 认不出 mode 的记账不猜着删,但也不能不吭声:并进报告让界面逐条说明
     report.unlinks.extend(unparseable);
 

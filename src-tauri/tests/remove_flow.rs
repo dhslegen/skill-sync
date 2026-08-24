@@ -8,7 +8,6 @@ use skillsync_lib::core::agents::{AgentEnv, AgentRegistry};
 use skillsync_lib::core::fsops;
 use skillsync_lib::core::installer::{Installer, LinkHealth, SkillPayload};
 use skillsync_lib::core::remove::{self, RemoveOutcome};
-use skillsync_lib::core::fsops::OnOccupied;
 use skillsync_lib::core::state::{InstalledSkill, LinkRecord, SharedSkill, SkillSource, Store};
 
 const NOW: &str = "2026-07-30T12:00:00.000Z";
@@ -38,6 +37,9 @@ struct Ctx {
     home: PathBuf,
     registry: AgentRegistry,
     store: Store,
+    /// 移除会把本体经 `Installer::uninstall` 送进废纸篓——不注入的话,
+    /// 这个文件的每一条"移除"用例都会把测试产物丢进真实的系统废纸篓。
+    trash: fsops::SandboxTrash,
 }
 
 fn ctx() -> (Ctx, TmpEnv) {
@@ -48,12 +50,14 @@ fn ctx() -> (Ctx, TmpEnv) {
         vars: HashMap::new(),
     };
     let store = Store::new(home.join(".skillsync"));
+    let trash = fsops::SandboxTrash::new(home.join(".test-trash"));
     (
         Ctx {
             _tmp: tmp,
             home,
             registry: AgentRegistry::builtin(),
             store,
+            trash,
         },
         env,
     )
@@ -69,9 +73,10 @@ fn payload(body: &str) -> SkillPayload {
 /// 装一个技能并把账记全:canonical 落盘 + 建链 + state + lock。
 /// 不走 acquire(那需要 wiremock);移除编排消费的只是 state 里的记账,形状一致即可。
 fn install_one(c: &Ctx, env: &TmpEnv, slug: &str) {
-    let installer = Installer::new(&c.registry, env);
+    let installer = Installer::new(&c.registry, env).with_trasher(&c.trash);
+    let home = installer.home(slug, None).unwrap();
     let report = installer
-        .install(slug, &payload(slug), &["claude-code".to_string()], OnOccupied::Fail)
+        .install(&home, &payload(slug), &["claude-code".to_string()])
         .unwrap();
     assert!(report.links.iter().all(|l| !matches!(
         l.result,
@@ -92,6 +97,7 @@ fn install_one(c: &Ctx, env: &TmpEnv, slug: &str) {
         commit_sha: "aaa1111".into(),
         content_hash: fsops::dir_content_hash(&canonical).unwrap(),
         origin: None,
+        body: None,
         agents: vec!["claude-code".into()],
         links: report
             .links
@@ -124,7 +130,7 @@ fn install_one(c: &Ctx, env: &TmpEnv, slug: &str) {
 }
 
 fn do_remove(c: &Ctx, env: &TmpEnv, slug: &str, force: bool) -> Result<RemoveOutcome, skillsync_lib::error::AppError> {
-    let installer = Installer::new(&c.registry, env);
+    let installer = Installer::new(&c.registry, env).with_trasher(&c.trash);
     remove::remove(&installer, env, &c.store, slug, force)
 }
 
@@ -309,11 +315,12 @@ fn an_unrecognized_link_mode_is_skipped_not_guessed() {
 fn link_health_reports_healthy_after_install() {
     let (c, env) = ctx();
     install_one(&c, &env, "weekly-report");
-    let installer = Installer::new(&c.registry, &env);
+    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
+    let home = installer.home("weekly-report", None).unwrap();
     let state = c.store.load_state().unwrap().value;
     let (recorded, _) = remove::state_links_to_recorded(&state.installed[0].links);
 
-    let health = installer.link_health("weekly-report", &recorded).unwrap();
+    let health = installer.link_health(&home, &recorded).unwrap();
 
     assert_eq!(health.len(), 1);
     assert_eq!(health[0].health, LinkHealth::Healthy);
@@ -324,7 +331,8 @@ fn link_health_reports_healthy_after_install() {
 fn link_health_tells_broken_redirected_and_occupied_apart() {
     let (c, env) = ctx();
     install_one(&c, &env, "weekly-report");
-    let installer = Installer::new(&c.registry, &env);
+    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
+    let home = installer.home("weekly-report", None).unwrap();
     let state = c.store.load_state().unwrap().value;
     let (recorded, _) = remove::state_links_to_recorded(&state.installed[0].links);
     let link_path = link(&c, "weekly-report");
@@ -334,24 +342,24 @@ fn link_health_tells_broken_redirected_and_occupied_apart() {
     std::fs::create_dir_all(&elsewhere).unwrap();
     std::fs::remove_file(&link_path).unwrap();
     std::os::unix::fs::symlink(&elsewhere, &link_path).unwrap();
-    let health = installer.link_health("weekly-report", &recorded).unwrap();
+    let health = installer.link_health(&home, &recorded).unwrap();
     assert_eq!(health[0].health, LinkHealth::Redirected);
 
     // 被实体目录顶掉
     std::fs::remove_file(&link_path).unwrap();
     std::fs::create_dir_all(&link_path).unwrap();
-    let health = installer.link_health("weekly-report", &recorded).unwrap();
+    let health = installer.link_health(&home, &recorded).unwrap();
     assert_eq!(health[0].health, LinkHealth::Occupied);
     std::fs::remove_dir_all(&link_path).unwrap();
 
     // 关联整个不见了
-    let health = installer.link_health("weekly-report", &recorded).unwrap();
+    let health = installer.link_health(&home, &recorded).unwrap();
     assert_eq!(health[0].health, LinkHealth::Missing);
 
     // 链接在、本体没了 → 断链
     std::os::unix::fs::symlink(canonical(&c, "weekly-report"), &link_path).unwrap();
     std::fs::remove_dir_all(canonical(&c, "weekly-report")).unwrap();
-    let health = installer.link_health("weekly-report", &recorded).unwrap();
+    let health = installer.link_health(&home, &recorded).unwrap();
     assert_eq!(health[0].health, LinkHealth::Broken);
 }
 
@@ -364,7 +372,7 @@ fn repair_rebuilds_a_lost_link_and_reconciles_the_books() {
     let link_path = link(&c, "weekly-report");
     drop_link(&link_path);
 
-    let installer = Installer::new(&c.registry, &env);
+    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
     let report =
         skillsync_lib::core::acquire::repair_links(&installer, &c.store, "weekly-report", false)
             .unwrap();
@@ -392,7 +400,7 @@ fn repair_replaces_a_redirected_link_without_confirmation() {
     std::fs::remove_file(&link_path).unwrap();
     std::os::unix::fs::symlink(&elsewhere, &link_path).unwrap();
 
-    let installer = Installer::new(&c.registry, &env);
+    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
     skillsync_lib::core::acquire::repair_links(&installer, &c.store, "weekly-report", false).unwrap();
 
     // 链接以相对路径写入(便于整个 home 迁移),比对须走 canonicalize 解析
@@ -415,7 +423,7 @@ fn repair_does_not_touch_an_occupying_directory_without_confirmation() {
     std::fs::write(link_path.join("SKILL.md"), "用户自己放的\n").unwrap();
     let theirs = std::fs::read(link_path.join("SKILL.md")).unwrap();
 
-    let installer = Installer::new(&c.registry, &env);
+    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
     let report =
         skillsync_lib::core::acquire::repair_links(&installer, &c.store, "weekly-report", false)
             .unwrap();
@@ -438,7 +446,7 @@ fn repair_replaces_the_occupant_only_when_the_user_confirmed() {
     std::fs::create_dir_all(&link_path).unwrap();
     std::fs::write(link_path.join("SKILL.md"), "用户自己放的\n").unwrap();
 
-    let installer = Installer::new(&c.registry, &env);
+    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
     let report =
         skillsync_lib::core::acquire::repair_links(&installer, &c.store, "weekly-report", true)
             .unwrap();
@@ -472,7 +480,7 @@ fn retrying_an_unaccounted_agent_links_it_and_merges_the_books() {
     assert_eq!(before.installed[0].agents, vec!["claude-code".to_string()]);
     let claude_link_count = before.installed[0].links.len();
 
-    let installer = Installer::new(&c.registry, &env);
+    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
     skillsync_lib::core::acquire::link_agents(
         &installer,
         &c.store,
@@ -505,7 +513,7 @@ fn retrying_does_not_touch_an_occupying_directory_without_confirmation() {
     let theirs = "别人放在这里的东西\n";
     std::fs::write(occupied.join("SKILL.md"), theirs).unwrap();
 
-    let installer = Installer::new(&c.registry, &env);
+    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
     let report = skillsync_lib::core::acquire::link_agents(
         &installer,
         &c.store,
@@ -537,7 +545,7 @@ fn retrying_replaces_the_occupant_only_when_the_user_confirmed() {
     std::fs::create_dir_all(&occupied).unwrap();
     std::fs::write(occupied.join("SKILL.md"), "别人放在这里的东西\n").unwrap();
 
-    let installer = Installer::new(&c.registry, &env);
+    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
     skillsync_lib::core::acquire::link_agents(
         &installer,
         &c.store,
@@ -556,7 +564,7 @@ fn retrying_replaces_the_occupant_only_when_the_user_confirmed() {
 #[test]
 fn retrying_refuses_for_a_skill_that_is_not_installed() {
     let (c, env) = ctx();
-    let installer = Installer::new(&c.registry, &env);
+    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
 
     let err = skillsync_lib::core::acquire::link_agents(
         &installer,
@@ -577,7 +585,7 @@ fn repair_refuses_when_the_skill_body_is_gone() {
     install_one(&c, &env, "weekly-report");
     std::fs::remove_dir_all(canonical(&c, "weekly-report")).unwrap();
 
-    let installer = Installer::new(&c.registry, &env);
+    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
     let err =
         skillsync_lib::core::acquire::repair_links(&installer, &c.store, "weekly-report", false)
             .unwrap_err();
@@ -599,10 +607,11 @@ fn link_health_treats_a_degraded_copy_as_healthy() {
     state.installed[0].links[0].mode = "copy".into();
     c.store.save_state(&state).unwrap();
 
-    let installer = Installer::new(&c.registry, &env);
+    let installer = Installer::new(&c.registry, &env).with_trasher(&c.trash);
+    let home = installer.home("weekly-report", None).unwrap();
     let state = c.store.load_state().unwrap().value;
     let (recorded, _) = remove::state_links_to_recorded(&state.installed[0].links);
-    let health = installer.link_health("weekly-report", &recorded).unwrap();
+    let health = installer.link_health(&home, &recorded).unwrap();
     assert_eq!(health[0].health, LinkHealth::Healthy);
 }
 

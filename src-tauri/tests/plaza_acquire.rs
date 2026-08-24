@@ -134,6 +134,7 @@ async fn acquiring_through_the_plaza_registry_records_plaza_id_and_a_full_github
         },
         NOW,
         1_755_000_000,
+        &skillsync_lib::core::fsops::SYSTEM_TRASH,
         &|_: Stage| {},
     )
     .await
@@ -308,6 +309,7 @@ async fn a_skill_whose_skills_sh_id_differs_from_its_repo_directory_still_instal
         },
         NOW,
         1_755_000_000,
+        &skillsync_lib::core::fsops::SYSTEM_TRASH,
         &|_: Stage| {},
     )
     .await

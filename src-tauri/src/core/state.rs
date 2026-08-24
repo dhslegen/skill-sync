@@ -229,6 +229,15 @@ impl Default for State {
     }
 }
 
+/// `InstalledSkill.origin` 的第三个取值(v6 二期):本体本来就住在某个工具目录、
+/// 被"就地收进管理"而来的记账——与 `acquire::ORIGIN_ACQUIRED`(本 app 下载装的)、
+/// `acquire::ORIGIN_CLAIMED`(分享直推后自动记账)是同一族的第三种来历。
+///
+/// ⚠️ 本任务(v6 二期任务 2)只声明这个常量,**尚无任何写入路径会用到它**——
+/// "就地收进管理"这个动作本身是后续任务的范围。留在这里是为了让常量本身与它
+/// 描述的语义同批登记,不必等到真正实现那一天再补文档。
+pub const ORIGIN_ADOPTED: &str = "adopted";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledSkill {
@@ -252,6 +261,15 @@ pub struct InstalledSkill {
     /// 正常安装写远端 sha,只有当年的 claim 留空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// 本体的实际位置(v6 二期)。`None` = 没记账过,或本体就住在 canonical
+    /// ——两种情况下 `converge::home_of` 都会落回 canonical,这也是迄今为止
+    /// 唯一真实存在过的形态。`Some` 时是账上记的绝对路径,目录名必须与
+    /// `name` 一致(`Installer::home` 的 `FS_BAD_BODY` 守卫)。
+    ///
+    /// 本任务(v6 二期任务 2)尚无任何写入路径会填非 `None` 值——把本体「留在
+    /// 原地收进管理」是后续任务的范围,这里先把字段与读取路径打通。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
     /// 逐目录的关联记账。
     ///
     /// 设计方案 2.4 写的是单个 `linkMode`,但任务 6 确认关联是**按目录**建立的,
@@ -562,6 +580,7 @@ mod tests {
                 commit_sha: "abc123".into(),
                 content_hash: "sha256:deadbeef".into(),
                 origin: None,
+                body: None,
                 agents: vec!["claude-code".into()],
                 links: vec![LinkRecord {
                     dir: "/h/.claude/skills".into(),

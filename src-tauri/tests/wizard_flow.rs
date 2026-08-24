@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use skillsync_lib::core::acquire::{self, BatchOutcome};
 use skillsync_lib::core::agents::{AgentEnv, AgentRegistry};
+use skillsync_lib::core::fsops;
 use skillsync_lib::core::gitea::{GiteaClient, RepoRef};
 use skillsync_lib::core::state::Store;
 use wiremock::matchers::{method, path_regex};
@@ -42,6 +43,7 @@ struct Ctx {
     home: PathBuf,
     registry: AgentRegistry,
     store: Store,
+    trash: fsops::SandboxTrash,
 }
 
 fn ctx() -> (Ctx, TmpEnv) {
@@ -52,12 +54,14 @@ fn ctx() -> (Ctx, TmpEnv) {
         vars: HashMap::new(),
     };
     let store = Store::new(home.join(".skillsync"));
+    let trash = fsops::SandboxTrash::new(home.join(".test-trash"));
     (
         Ctx {
             _tmp: tmp,
             home,
             registry: AgentRegistry::builtin(),
             store,
+            trash,
         },
         env,
     )
@@ -127,6 +131,7 @@ async fn run_batch(
         acquire::BatchAgents::Uniform(&["claude-code".to_string()]),
         NOW,
         1_753_900_000,
+        &c.trash,
     )
     .await
     .unwrap()

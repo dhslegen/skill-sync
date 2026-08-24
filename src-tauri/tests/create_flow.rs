@@ -222,6 +222,7 @@ fn refuses_when_name_is_taken_by_an_installed_record_without_files() {
         commit_sha: "abc".into(),
         content_hash: "hash".into(),
         origin: None,
+        body: None,
         agents: vec![],
         links: vec![],
         installed_at: "2026-08-01T00:00:00.000Z".into(),

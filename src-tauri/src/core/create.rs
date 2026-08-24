@@ -99,8 +99,8 @@ pub fn create_skill(
         return Err(AppError::new("FS_UNUSABLE_NAME", "请填写这个技能是做什么的"));
     }
 
-    let dir = installer.canonical_dir(req.dir_slug)?;
     let state = store.load_state()?.value;
+    let dir = crate::core::converge::home_of(installer, &state, req.dir_slug)?.canonical;
 
     // 两种撞法各拒一次。第二条**不被第一条覆盖**:记账还在而用户把本体删了时
     // (断链态)目录并不存在,直接建会顶掉那份记账,而 `state.installed` 驱动着

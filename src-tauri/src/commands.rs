@@ -529,6 +529,7 @@ async fn run_all_sources_check() -> Option<scheduler::CheckReport> {
                 &repo,
                 &now_iso8601(),
                 auth::now_unix(),
+                &crate::core::fsops::SYSTEM_TRASH,
             )
             .await
         };
@@ -1423,6 +1424,7 @@ pub async fn skill_install(
                     payload,
                     &remote_sha,
                     &now_iso8601(),
+                    &crate::core::fsops::SYSTEM_TRASH,
                     &emit,
                 )
                 .await;
@@ -1438,6 +1440,7 @@ pub async fn skill_install(
         req,
         &now_iso8601(),
         auth::now_unix(),
+        &crate::core::fsops::SYSTEM_TRASH,
         &emit,
     )
     .await
@@ -1595,7 +1598,8 @@ fn resolve_local_skill_dir(args: &LocalSkillArgs) -> Result<std::path::PathBuf, 
     if let Some(slug) = args.dir_slug.as_deref() {
         let registry = AgentRegistry::builtin();
         let installer = Installer::new(&registry, &SystemEnv);
-        return installer.canonical_dir(slug);
+        let state = app_store()?.load_state()?.value;
+        return crate::core::converge::home_of(&installer, &state, slug).map(|h| h.body);
     }
     if let Some(path) = args.path.as_deref() {
         return Ok(std::path::PathBuf::from(path));
@@ -1663,6 +1667,7 @@ pub async fn skill_install_batch(
         acquire::BatchAgents::Uniform(&args.agent_ids),
         &now_iso8601(),
         auth::now_unix(),
+        &crate::core::fsops::SYSTEM_TRASH,
     )
     .await
 }
@@ -3011,6 +3016,7 @@ mod tests {
             commit_sha: "aaa1111".into(),
             content_hash: "sha256:x".into(),
             origin: None,
+            body: None,
             agents: vec![],
             links: vec![],
             installed_at: "2026-08-04T00:00:00.000Z".into(),
@@ -4204,6 +4210,9 @@ mod tests {
             payload,
             &remote_sha,
             NOW,
+            // 全新临时 HOME,body 从不预先存在,trash_tree 不会真的触发——用真实
+            // SYSTEM_TRASH 与用沙盒等价,这里图省事直接用真的。
+            &crate::core::fsops::SYSTEM_TRASH,
             &|_: acquire::Stage| {},
         )
         .await
@@ -4234,6 +4243,7 @@ mod tests {
             req_for(&repo, slug),
             NOW,
             0,
+            &crate::core::fsops::SYSTEM_TRASH,
             &|_: acquire::Stage| {},
         )
         .await

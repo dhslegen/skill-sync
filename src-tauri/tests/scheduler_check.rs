@@ -44,6 +44,9 @@ struct Ctx {
     home: PathBuf,
     registry: AgentRegistry,
     store: Store,
+    /// 单轮检查会把 `seed_installed` 造好的旧本体重新装一遍,不注入的话会把
+    /// 测试产物丢进这台机器真实的系统废纸篓。
+    trash: fsops::SandboxTrash,
 }
 
 fn ctx() -> (Ctx, TmpEnv) {
@@ -54,12 +57,14 @@ fn ctx() -> (Ctx, TmpEnv) {
         vars: HashMap::new(),
     };
     let store = Store::new(home.join(".skillsync"));
+    let trash = fsops::SandboxTrash::new(home.join(".test-trash"));
     (
         Ctx {
             _tmp: tmp,
             home,
             registry: AgentRegistry::builtin(),
             store,
+            trash,
         },
         env,
     )
@@ -124,6 +129,7 @@ fn seed_installed(c: &Ctx, slug: &str, body: &str, sha: &str, agents: &[&str]) -
         commit_sha: sha.to_string(),
         content_hash,
         origin: None,
+        body: None,
         agents: agents.iter().map(|s| s.to_string()).collect(),
         links: vec![],
         installed_at: NOW.into(),
@@ -148,6 +154,7 @@ async fn run(server: &MockServer, c: &Ctx, env: &TmpEnv) -> CheckReport {
         &repo_ref(),
         NOW,
         1_753_900_000,
+        &c.trash,
     )
     .await
     .unwrap()

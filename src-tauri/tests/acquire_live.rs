@@ -103,6 +103,7 @@ async fn installs_a_real_skill_from_the_fixture_registry() {
         },
         NOW,
         1_753_800_000,
+        &skillsync_lib::core::fsops::SYSTEM_TRASH,
         &sink,
     )
     .await

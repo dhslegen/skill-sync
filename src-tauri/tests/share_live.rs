@@ -431,6 +431,7 @@ async fn remote_conflict_detection_against_a_real_gitea() {
         commit_sha: "base".into(),
         content_hash: fsops::dir_content_hash(&dir).unwrap(),
         origin: None,
+        body: None,
         agents: vec![],
         links: vec![],
         installed_at: now.clone(),

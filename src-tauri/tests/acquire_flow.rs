@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use skillsync_lib::core::acquire::{self, AcquireRequest, ForeignOrigin, Precheck, Resolution, Stage};
 use skillsync_lib::core::agents::{AgentEnv, AgentRegistry};
+use skillsync_lib::core::fsops;
 use skillsync_lib::core::gitea::{GiteaClient, RepoRef};
 use skillsync_lib::core::state::Store;
 use wiremock::matchers::{method, path_regex};
@@ -141,6 +142,10 @@ struct Ctx {
     home: PathBuf,
     registry: AgentRegistry,
     store: Store,
+    /// **绝不用默认的 `SYSTEM_TRASH`**:这个测试文件里有覆盖/重装已有本体的场景
+    /// (`overwriting_is_only_done_when_explicitly_chosen` 等),不注入的话会把
+    /// 测试产物丢进这台机器真实的系统废纸篓。
+    trash: fsops::SandboxTrash,
 }
 
 fn ctx() -> (Ctx, TmpEnv) {
@@ -151,12 +156,14 @@ fn ctx() -> (Ctx, TmpEnv) {
         vars: HashMap::new(),
     };
     let store = Store::new(home.join(".skillsync"));
+    let trash = fsops::SandboxTrash::new(home.join(".test-trash"));
     (
         Ctx {
             _tmp: tmp,
             home,
             registry: AgentRegistry::builtin(),
             store,
+            trash,
         },
         env,
     )
@@ -196,6 +203,7 @@ async fn run(
         },
         NOW,
         1_753_800_000,
+        &c.trash,
         &sink,
     )
     .await
@@ -248,7 +256,9 @@ async fn records_the_sha_it_actually_installed() {
 #[tokio::test]
 async fn a_fresh_install_immediately_reads_back_as_unmodified() {
     // dir_content_hash 的排除清单口径若与落盘不一致,刚装完就会被判成"用户改过",
-    // 之后每次更新都停在冲突提示上。这条测试专门钉住那个口径。
+    // 之后每次更新都停在冲突提示上。这条测试专门钉住那个口径——
+    // **断言对象是 home.body**(v6 二期起本体的实际落点,不再默认就是 canonical):
+    // 落盘后从磁盘现算的 hash 必须与记账一致。
     let server = MockServer::start().await;
     mount(&server, "aaa1111", "weekly-report", "正文").await;
     let (c, env) = ctx();
@@ -256,11 +266,46 @@ async fn a_fresh_install_immediately_reads_back_as_unmodified() {
 
     let state = c.store.load_state().unwrap().value;
     let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
+    let home = skillsync_lib::core::converge::home_of(&installer, &state, "weekly-report").unwrap();
+    let record = state.installed.iter().find(|s| s.name == "weekly-report").unwrap();
+    assert_eq!(
+        fsops::dir_content_hash(&home.body).unwrap(),
+        record.content_hash,
+        "落盘后 body 的内容 hash 必须与记账一致,否则刚装完就会被判成「用户改过」"
+    );
+
     let checked = acquire::precheck(&installer, &env, &state, "weekly-report", "aaa1111", Some(&repo_ref()), Default::default()).unwrap();
 
     assert_eq!(
         checked,
         Precheck::Managed { installed_sha: "aaa1111".into(), up_to_date: true }
+    );
+}
+
+/// 同一条等式在本体不在 canonical 时依然成立——`dir_content_hash` 只看目录内容,
+/// 与目录物理位置无关。当前的 `acquire` 编排永远把本体落在 canonical(还没有任何
+/// 写入路径会填 `state.installed[].body`),所以这条不走 `acquire`,直接摆一个
+/// body 在工具目录里的 `SkillHome`,验证底层不变量在那个位置上依然成立。
+#[test]
+fn hash_equality_holds_even_when_the_body_lives_outside_canonical() {
+    let (c, env) = ctx();
+    let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env)
+        .with_trasher(&c.trash);
+    let payload = skillsync_lib::core::installer::SkillPayload::new()
+        .with_file("SKILL.md", "---\nname: 周报\ndescription: 写周报\n---\n正文\n");
+
+    let elsewhere = c.home.join(".claude").join("skills").join("weekly-report");
+    let home_elsewhere = installer.home("weekly-report", Some(&elsewhere)).unwrap();
+    installer.install(&home_elsewhere, &payload, &[]).unwrap();
+
+    // 对照:同样内容装进 canonical(另起一个目录名,避免与上面那次互相覆盖)
+    let home_canonical = installer.home("weekly-report-canonical", None).unwrap();
+    installer.install(&home_canonical, &payload, &[]).unwrap();
+
+    assert_eq!(
+        fsops::dir_content_hash(&home_elsewhere.body).unwrap(),
+        fsops::dir_content_hash(&home_canonical.body).unwrap(),
+        "hash 只看内容,不该因为本体住在别处就变"
     );
 }
 
@@ -276,7 +321,7 @@ async fn deleted_body_with_books_still_prechecks_as_fresh() {
 
     // 用户在文件系统里手动删掉了技能目录,记账原样留着
     let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
-    let canonical = installer.canonical_dir("weekly-report").unwrap();
+    let canonical = installer.home("weekly-report", None).unwrap().canonical;
     std::fs::remove_dir_all(&canonical).unwrap();
     let state = c.store.load_state().unwrap().value;
     assert_eq!(state.installed.len(), 1, "记账应当还在");
@@ -338,6 +383,7 @@ async fn a_same_named_skill_from_another_library_needs_a_decision_not_a_silent_s
         },
         NOW,
         1_753_800_000,
+        &c.trash,
         &sink,
     )
     .await
@@ -400,6 +446,7 @@ async fn batch_skips_a_same_named_skill_from_another_library_with_a_readable_rea
         acquire::BatchAgents::Uniform(&[]),
         NOW,
         1_753_800_000,
+        &c.trash,
     )
     .await
     .unwrap();
@@ -655,6 +702,7 @@ async fn progress_reports_every_stage_in_order() {
         },
         NOW,
         1_753_800_000,
+        &c.trash,
         &sink,
     )
     .await
@@ -1073,6 +1121,7 @@ async fn batch_skips_mine() {
         acquire::BatchAgents::Uniform(&[]),
         NOW,
         1_753_800_000,
+        &c.trash,
     )
     .await
     .unwrap();
@@ -1107,6 +1156,7 @@ async fn batch_skips_mine() {
         acquire::BatchAgents::FromAccount,
         NOW,
         1_753_800_000,
+        &c.trash,
     )
     .await
     .unwrap();

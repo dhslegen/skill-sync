@@ -183,7 +183,8 @@ pub fn precheck(
     target: Option<&RepoRef>,
     ctx: PrecheckContext<'_>,
 ) -> Result<Precheck, AppError> {
-    let canonical = installer.canonical_dir(dir_slug)?;
+    let home = crate::core::converge::home_of(installer, state, dir_slug)?;
+    let canonical = home.canonical;
     if !canonical.exists() {
         return Ok(Precheck::Fresh);
     }
@@ -407,6 +408,7 @@ pub async fn acquire(
     req: AcquireRequest<'_>,
     now: &str,
     fetched_at: i64,
+    trasher: &dyn fsops::Trasher,
     progress: ProgressSink<'_>,
 ) -> Result<AcquireOutcome, AppError> {
     progress(Stage::Fetching);
@@ -437,7 +439,7 @@ pub async fn acquire(
 
     let payload = extract_payload(&archive, skill);
 
-    finish(registry, env, store, req, skill, payload, &head.sha, now, progress).await
+    finish(registry, env, store, req, skill, payload, &head.sha, now, trasher, progress).await
 }
 
 /// 广场安装的 blob 快路径(M10 任务 3):取数那一步(下载压缩包 → 建索引 →
@@ -461,9 +463,10 @@ pub async fn acquire_prefetched(
     payload: SkillPayload,
     remote_sha: &str,
     now: &str,
+    trasher: &dyn fsops::Trasher,
     progress: ProgressSink<'_>,
 ) -> Result<AcquireOutcome, AppError> {
-    finish(registry, env, store, req, skill, payload, remote_sha, now, progress).await
+    finish(registry, env, store, req, skill, payload, remote_sha, now, trasher, progress).await
 }
 
 /// [`acquire`]/[`acquire_prefetched`] 共用的尾巴:预检 → 落盘 → 建链 → 记账。
@@ -480,6 +483,10 @@ async fn finish(
     payload: SkillPayload,
     remote_sha: &str,
     now: &str,
+    // 覆盖/重装会把旧本体经 `Installer::install` 送进废纸篓——生产用真实系统废纸篓
+    // (`fsops::SYSTEM_TRASH`),测试必须注入 `SandboxTrash`,否则会把测试产物
+    // 丢进这台机器真实的系统废纸篓(v6 二期任务 2)。
+    trasher: &dyn fsops::Trasher,
     progress: ProgressSink<'_>,
 ) -> Result<AcquireOutcome, AppError> {
     // 这段期间的文件事件不上报:`Installer::install` 是清空重建,监听器若在此时
@@ -504,7 +511,7 @@ async fn finish(
     }
 
     progress(Stage::Checking);
-    let installer = Installer::new(registry, env);
+    let installer = Installer::new(registry, env).with_trasher(trasher);
     let loaded = store.load_state()?;
     // 「我是谁」读 config 就够,不打网络(v6 任务 1 起登录时就落了盘)。
     // **读不出来一律上报,绝不降级成 `me = None`**:那等于在读不到配置的环境里
@@ -523,7 +530,8 @@ async fn finish(
     // 这里用它决定要不要给 `state.shared` 建内容基线——**换电脑那一档走的是
     // `Fresh`**(canonical 上什么都没有),压根不经过 Mine 的折叠,而它恰恰是
     // 这条基线最需要从无到有建起来的场景。
-    let mine = is_mine(&ctx, installer.canonical_dir(req.dir_slug)?.exists());
+    let home = crate::core::converge::home_of(&installer, &loaded.value, req.dir_slug)?;
+    let mine = is_mine(&ctx, home.body.exists());
     let checked = precheck(
         &installer,
         env,
@@ -575,7 +583,7 @@ async fn finish(
 
     let report = if keep_local {
         progress(Stage::Linking);
-        installer.link_only(req.dir_slug, req.agent_names, OnOccupied::Fail)?
+        installer.link_only(&home, req.agent_names)?
     } else {
         progress(Stage::Writing);
         // agent 目录那侧的实体目录占位是另一回事:保持 Fail,由结果面板逐目录报出来,
@@ -583,7 +591,7 @@ async fn finish(
         //
         // install() 内部是"先写后链"一气呵成,编排层插不进中间那一刻。报 Linking 是因为
         // 落盘之后紧接着就是建链——少报一个阶段会让进度条从写入直接跳到记账。
-        let report = installer.install(req.dir_slug, &payload, req.agent_names, OnOccupied::Fail)?;
+        let report = installer.install(&home, &payload, req.agent_names)?;
         progress(Stage::Linking);
         report
     };
@@ -659,6 +667,9 @@ pub async fn acquire_batch(
     agents: BatchAgents<'_>,
     now: &str,
     fetched_at: i64,
+    // 同 `acquire`/`finish`:更新覆盖旧本体会经它进废纸篓,测试必须注入
+    // `SandboxTrash`(v6 二期任务 2)。
+    trasher: &dyn fsops::Trasher,
 ) -> Result<Vec<BatchItem>, AppError> {
     // 这段期间的文件事件不上报:`Installer::install` 是清空重建,监听器若在此时
     // 触发,前端会拿到一个技能凭空消失或只写了一半的瞬间(见 core::watcher 模块头)。
@@ -671,7 +682,7 @@ pub async fn acquire_batch(
         eprintln!("[acquire] 刷新索引缓存失败(不影响安装): {err}");
     }
 
-    let installer = Installer::new(registry, env);
+    let installer = Installer::new(registry, env).with_trasher(trasher);
     // 身份读一次就够:整批共用同一个 (源, 库),`identities` 是按 registryId 存的。
     let config = store.load_config()?;
     let me = config.value.identities.get(source.registry_id);
@@ -729,9 +740,10 @@ fn install_one_from_archive(
     // 每轮重新读 state:上一轮的记账已经写回,拿旧快照会互相覆盖
     let run = || -> Result<BatchOutcome, AppError> {
         let loaded = store.load_state()?;
+        let home = crate::core::converge::home_of(installer, &loaded.value, dir_slug)?;
         // 与逐个安装同一份判定:向导在新机器上一键全装,对「我分享的」技能同样要建
         // 分享基线(那正是换电脑场景)。同一件事在两个入口给两种结果是本项目栽过的跟头。
-        let mine = is_mine(&ctx, installer.canonical_dir(dir_slug)?.exists());
+        let mine = is_mine(&ctx, home.body.exists());
 
         // 链接目标:向导给统一列表;定时更新用账上的,绝不改写用户的关联
         let agent_names: Vec<String> = match agents {
@@ -790,7 +802,7 @@ fn install_one_from_archive(
                 "这个技能在该技能库里是空的,请联系它的维护者",
             ));
         }
-        let report = installer.install(dir_slug, &payload, agent_names, OnOccupied::Fail)?;
+        let report = installer.install(&home, &payload, agent_names)?;
         let canonical_visible = installer.canonical_visible_agents(agent_names)?;
         record(
             store,
@@ -870,6 +882,8 @@ fn record(
             // 从技能库获取的:文件是本 app 装的,**不可取消认领**
             // (只删记账会留下孤儿目录与孤儿链接)
             origin: Some(ORIGIN_ACQUIRED.to_string()),
+            // 落盘在 canonical,没有需要记的本体位置(见 state.rs 的字段文档)
+            body: None,
             agents,
             links,
             installed_at: now.to_string(),
@@ -1023,7 +1037,8 @@ pub fn repair_links(
     } else {
         OnOccupied::Fail
     };
-    let report = installer.link_only(dir_slug, &record.agents, on_occupied)?;
+    let home = crate::core::converge::home_of(installer, &loaded.value, dir_slug)?;
+    let report = installer.link_only_at(&home, &record.agents, on_occupied)?;
 
     let canonical_visible = installer.canonical_visible_agents(&record.agents)?;
     let (links, agents) = active_accounting(&report, canonical_visible);
@@ -1067,7 +1082,8 @@ pub fn link_agents(
     } else {
         OnOccupied::Fail
     };
-    let report = installer.link_only(dir_slug, agent_names, on_occupied)?;
+    let home = crate::core::converge::home_of(installer, &loaded.value, dir_slug)?;
+    let report = installer.link_only_at(&home, agent_names, on_occupied)?;
 
     let canonical_visible = installer.canonical_visible_agents(agent_names)?;
     let (new_links, new_agents) = active_accounting(&report, canonical_visible);

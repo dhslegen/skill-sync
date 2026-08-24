@@ -213,10 +213,11 @@ pub fn build(
         .installed
         .iter()
         .filter_map(|s| {
-            let canonical = match installer.canonical_dir(&s.name) {
-                Ok(c) => c,
+            let home = match crate::core::converge::home_of(installer, state, &s.name) {
+                Ok(h) => h,
                 Err(e) => return Some(Err(e)),
             };
+            let canonical = home.canonical.clone();
             // 存在性以文件系统为准(M5 任务 2,用户拍板):目录被删就不占行。
             // 记账**保留**——重新获取同名技能时 precheck 按 Fresh 走正常安装,
             // 记账随之对齐(tests/acquire_flow.rs 有测试钉住),孤账无害。
@@ -245,7 +246,7 @@ pub fn build(
                 relation,
                 local_present: true,
                 source_label: source_label_of(&lock_entries, &s.name),
-                links: match installer.link_health(&s.name, &recorded) {
+                links: match installer.link_health(&home, &recorded) {
                     Ok(l) => l,
                     Err(e) => return Some(Err(e)),
                 },

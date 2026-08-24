@@ -95,6 +95,7 @@ async fn browses_and_installs_a_real_skill_from_github() {
         },
         NOW,
         1_753_900_000,
+        &skillsync_lib::core::fsops::SYSTEM_TRASH,
         &|_: Stage| {},
     )
     .await
