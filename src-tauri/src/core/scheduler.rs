@@ -88,7 +88,7 @@ pub async fn run_check(
 ) -> Result<CheckReport, AppError> {
     let registry_id = source.registry_id;
     let state = store.load_state()?.value;
-    let mine: Vec<String> = state
+    let mine: Vec<&crate::core::state::InstalledSkill> = state
         .installed
         .iter()
         .filter(|s| {
@@ -96,7 +96,6 @@ pub async fn run_check(
                 && s.source.owner == repo.owner
                 && s.source.repo == repo.repo
         })
-        .map(|s| s.name.clone())
         .collect();
 
     if mine.is_empty() {
@@ -105,17 +104,47 @@ pub async fn run_check(
     }
 
     let head = client.branch_head(repo).await?;
-    let all_current = state
-        .installed
-        .iter()
-        .filter(|s| mine.contains(&s.name))
-        .all(|s| s.commit_sha == head.sha);
+    let all_current = mine.iter().all(|s| s.commit_sha == head.sha);
     if all_current {
         tracing::info!(head = %head.sha, count = mine.len(), "定时检查:全部已是最新,不下载");
         return Ok(CheckReport::UpToDate { head_sha: head.sha });
     }
 
-    tracing::info!(head = %head.sha, count = mine.len(), "定时检查:发现新内容,开始批量更新");
+    // 🔴 喂给 `acquire_batch` 的必须是**技能库里的原始目录名**,不是账上的 `name`
+    // (v6 二期任务 4 修复轮 2)。`name` 是 `sanitize_name` 之后的落点名(会小写化),
+    // 而 `install_one_from_archive` 第一句就是拿它去 `index.skills[].dir_slug`
+    // (仓库原始目录名,不清洗)里找 —— `Weekly-Report` 这样的技能**必然找不到**,
+    // 得到「已不在该技能库中」并被静默跳过,每一轮都是,还不报任何错。
+    // 判据只有一处实现:`InstalledSkill::library_dir_slug`。
+    //
+    // **推不出来的绝不喂给 batch**:那等于拿一个已知错的键去查,拿回同一句会
+    // 误导人的「已不在该技能库中」。按 v5 那条同款姿势(推不出来就不做),
+    // 这里落成"跳过并说人话",不静默当成功。
+    let mut skipped: Vec<SkippedSkill> = Vec::new();
+    let mut slugs: Vec<String> = Vec::new();
+    for s in &mine {
+        match s.library_dir_slug() {
+            Some(slug) => slugs.push(slug),
+            None => {
+                tracing::warn!(name = %s.name, "定时检查:记账里没有技能库中的位置,本轮跳过它");
+                skipped.push(SkippedSkill {
+                    dir_slug: s.name.clone(),
+                    reason: "这个技能的获取记录不完整,请重新获取一次".into(),
+                });
+            }
+        }
+    }
+    if slugs.is_empty() {
+        tracing::info!(head = %head.sha, "定时检查:没有一个技能能定位到技能库中的位置");
+        return Ok(CheckReport::Checked {
+            head_sha: head.sha,
+            updated: Vec::new(),
+            skipped,
+            failed: Vec::new(),
+        });
+    }
+
+    tracing::info!(head = %head.sha, count = slugs.len(), "定时检查:发现新内容,开始批量更新");
     let items = acquire::acquire_batch(
         client,
         registry,
@@ -123,7 +152,7 @@ pub async fn run_check(
         store,
         source,
         repo,
-        &mine,
+        &slugs,
         BatchAgents::FromAccount,
         now,
         fetched_at,
@@ -132,7 +161,6 @@ pub async fn run_check(
     .await?;
 
     let mut updated = Vec::new();
-    let mut skipped = Vec::new();
     let mut failed = Vec::new();
     for item in items {
         match item.outcome {

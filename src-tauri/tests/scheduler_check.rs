@@ -139,6 +139,58 @@ fn seed_installed(c: &Ctx, slug: &str, body: &str, sha: &str, agents: &[&str]) -
     canonical
 }
 
+/// 同 [`seed_installed`],但**记账键与技能库里的目录名刻意不同**。
+///
+/// ⚠️ 两个概念在 `seed_installed` 里取的是同一个值(`slug` 既当落点名又拼进
+/// `source.path`),它们的差别在那份 fixture 上**测不出来** ——
+/// 这正是 CLAUDE.md 记的空转模式 ③。查账/查索引两把尺子的用例必须用这一份。
+///
+/// - `key`:落点目录名 = `state.installed[].name`(`sanitize_name` 之后的样子);
+/// - `library_dir`:技能库里的**原始**目录名,进 `source.path`,也是压缩包里的目录名。
+fn seed_installed_with_library_dir(
+    c: &Ctx,
+    key: &str,
+    library_dir: &str,
+    body: &str,
+    sha: &str,
+    agents: &[&str],
+) -> PathBuf {
+    let canonical = c.home.join(".agents/skills").join(key);
+    std::fs::create_dir_all(&canonical).unwrap();
+    std::fs::write(
+        canonical.join("SKILL.md"),
+        format!("---\nname: {library_dir} 展示名\ndescription: 旧版说明\n---\n{body}\n"),
+    )
+    .unwrap();
+    let content_hash = fsops::dir_content_hash(&canonical).unwrap();
+
+    let mut state = c.store.load_state().map(|l| l.value).unwrap_or_default();
+    state.installed.push(InstalledSkill {
+        name: key.to_string(),
+        source: SkillSource {
+            registry_id: REGISTRY.into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            path: if library_dir.is_empty() {
+                String::new()
+            } else {
+                format!("skills/{library_dir}")
+            },
+            git_ref: "main".into(),
+        },
+        commit_sha: sha.to_string(),
+        content_hash,
+        origin: None,
+        body: None,
+        agents: agents.iter().map(|s| s.to_string()).collect(),
+        links: vec![],
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    });
+    c.store.save_state(&state).unwrap();
+    canonical
+}
+
 async fn run(server: &MockServer, c: &Ctx, env: &TmpEnv) -> CheckReport {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     scheduler::run_check(
@@ -269,4 +321,89 @@ async fn a_locally_modified_skill_is_skipped_and_its_files_stay_byte_identical()
     // commit_sha 也不能被偷偷推进——那会把「有可用更新」的标记抹掉
     let state = c.store.load_state().unwrap().value;
     assert_eq!(state.installed[0].commit_sha, "sha-1");
+}
+
+// ============================================================ 查索引键(修复轮 2)
+//
+// 上一轮修的是"查**账**"那一侧(记账名);这一节是"查**索引**"那一侧
+// (技能库里的原始目录名)——同一根轴,方向相反。
+// `scheduler` 把 `state.installed[].name`(清洗名,会小写化)喂进 `acquire_batch`,
+// 而 `install_one_from_archive` 第一句拿它去 `index.skills[].dir_slug`
+// (仓库原始目录名,不清洗)里找。
+
+#[tokio::test]
+async fn a_mixed_case_library_dir_still_gets_updated_by_the_scheduler() {
+    let server = MockServer::start().await;
+    mount_head(&server, "sha-2").await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/api/v1/repos/skills/skills/archive/.*"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_bytes(zip_repo(&[("Weekly-Report", "新正文")])),
+        )
+        .mount(&server)
+        .await;
+    let (c, env) = ctx();
+    // 落点名是清洗后的 `weekly-report`,技能库里是 `Weekly-Report`
+    seed_installed_with_library_dir(&c, "weekly-report", "Weekly-Report", "旧正文", "sha-1", &["claude-code"]);
+    // 同一轮里再放一条**推不出库中位置**的坏记账:一条坏的绝不能拖垮其余
+    seed_installed_with_library_dir(&c, "broken", "", "旧正文", "sha-1", &["claude-code"]);
+
+    let report = run(&server, &c, &env).await;
+
+    let CheckReport::Checked { updated, skipped, failed, .. } = report else {
+        panic!("该走批量更新");
+    };
+    assert_eq!(
+        updated,
+        vec!["Weekly-Report".to_string()],
+        "大写目录名的技能没被更新(skipped={skipped:?})"
+    );
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(skipped.len(), 1, "{skipped:?}");
+    assert_eq!(skipped[0].dir_slug, "broken");
+    assert!(
+        skipped[0].reason.contains("获取记录不完整"),
+        "坏记账要给人话原因,不能静默当成功: {:?}",
+        skipped[0].reason
+    );
+
+    // 本体确实换成了新版,记账也跟上了远端
+    let body = std::fs::read_to_string(c.home.join(".agents/skills/weekly-report/SKILL.md")).unwrap();
+    assert!(body.contains("新正文"), "{body}");
+    let state = c.store.load_state().unwrap().value;
+    let record = state.installed.iter().find(|s| s.name == "weekly-report").unwrap();
+    assert_eq!(record.commit_sha, "sha-2");
+}
+
+#[tokio::test]
+async fn a_record_with_no_library_path_is_skipped_without_downloading_the_archive() {
+    let server = MockServer::start().await;
+    mount_head(&server, "sha-2").await;
+    // 一个技能都定位不到时,压缩包一次都不该下——拿一个已知错的键去查,
+    // 只会拿回一句会误导人的「已不在该技能库中」。
+    Mock::given(method("GET"))
+        .and(path_regex(r"/api/v1/repos/skills/skills/archive/.*"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let (c, env) = ctx();
+    let canonical = seed_installed_with_library_dir(&c, "broken", "", "旧正文", "sha-1", &["claude-code"]);
+    let before = std::fs::read(canonical.join("SKILL.md")).unwrap();
+
+    let report = run(&server, &c, &env).await;
+
+    let CheckReport::Checked { updated, skipped, failed, .. } = report else {
+        panic!("该如实回报跳过,而不是装作没有可更新的东西");
+    };
+    assert!(updated.is_empty(), "{updated:?}");
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(skipped.len(), 1, "{skipped:?}");
+    assert!(skipped[0].reason.contains("获取记录不完整"), "{:?}", skipped[0].reason);
+    assert_eq!(
+        std::fs::read(canonical.join("SKILL.md")).unwrap(),
+        before,
+        "本体不该被动"
+    );
+    assert!(c.trash.trashed().is_empty());
 }

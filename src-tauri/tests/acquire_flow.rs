@@ -1849,10 +1849,16 @@ async fn a_mixed_case_dir_slug_updates_the_body_where_the_books_say_it_lives() {
     );
 }
 
-/// 批量的 `FromAccount` 档(定时更新)同样按 `record_key` 查账。
+/// `acquire_batch` 的 `FromAccount` 档同样按 `record_key` 查账:**调用方喂进来的是
+/// 技能库里的原始目录名,而账上的键是清洗后的名字**,用错就会把装着的技能判成
+/// 「未安装,已跳过」。
 ///
-/// 用错的后果:大写目录名的技能在**每一轮定时更新**里都被判成「未安装,已跳过」
-/// ——它明明就装着,却永远收不到更新,而且界面上什么异常都看不出来。
+/// ⚠️ **这条证明的是 `acquire_batch` 的内部契约,不是"定时更新已经受保护"**
+/// (修复轮 2 订正措辞)。它传的是 `MIXED`(原始目录名),而生产里 `scheduler`
+/// 喂进来的曾经是**记账名**——那是同一根轴的反方向缺口,被
+/// `tests/scheduler_check.rs::a_mixed_case_library_dir_still_gets_updated_by_the_scheduler`
+/// 单独钉住。**别把这条的绿当成那条路的保护**:原注释就是那么写的,而"结论写进
+/// 注释、后来的人照着信"正是让这类判据错误活过好几轮审查的同一个机制。
 #[tokio::test]
 async fn batch_from_account_finds_the_record_for_a_mixed_case_slug() {
     let server = MockServer::start().await;

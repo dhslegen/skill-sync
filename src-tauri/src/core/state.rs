@@ -298,6 +298,31 @@ impl InstalledSkill {
     pub fn has_source(&self) -> bool {
         !self.source.registry_id.is_empty() && !self.source.owner.is_empty() && !self.source.repo.is_empty()
     }
+
+    /// 这个技能在**技能库里的原始目录名**(取 `source.path` 的末段)。
+    ///
+    /// 🔴 **`name` 不是它**(v6 二期任务 4 修复轮 2):`name` 是**清洗后**的目录名
+    /// (`sanitize_name`,会小写化),那是 canonical 与各工具目录下的落点、也是
+    /// 这本账自己的键;而 `store::IndexedSkill::dir_slug` 是**仓库里的原始目录名,
+    /// 一个字符都不清洗**。拿 `name` 去索引里找技能,`Weekly-Report` 这样的目录名
+    /// **必然找不到**——`acquire::acquire_batch` 会给出「已不在该技能库中」,于是
+    /// 那个技能**每一轮定时更新都被静默跳过**,还不报任何错。
+    ///
+    /// **这是"从账上推出取数用的目录名"的唯一判据,下游不得各自手搓**(理由同
+    /// [`Self::has_source`])。判据本身与 v5 项目级那条同款:
+    /// `project::update_target` 就是从 lock 的 `skillPath` 倒数第二段推目录名,
+    /// **推不出来就不摆更新按钮**(不做比做错好)。这里对应的姿势是**跳过并说人话**,
+    /// 绝不静默当成功。
+    ///
+    /// 推不出来(`path` 为空、或没有目录分隔符)返回 `None`。存量记账的 `path`
+    /// 一直是 `skills/<目录名>` 这个形状(`acquire::source_of` 写的就是
+    /// `IndexedSkill::path`),所以 `None` 只可能来自手改过的 `state.json`
+    /// 或空来源账。
+    pub fn library_dir_slug(&self) -> Option<String> {
+        let path = self.source.path.trim_end_matches('/');
+        let last = path.rsplit('/').next()?;
+        (!last.is_empty()).then(|| last.to_string())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
