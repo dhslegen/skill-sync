@@ -317,8 +317,10 @@ pub async fn app_restart(app: tauri::AppHandle) {
 /// 起本地技能目录的文件监听(M4 任务 6c 级别 3)。
 ///
 /// 三条不可让步的姿态,理由都在 `core::watcher` 模块头:
-/// 1. **本应用自己的写入不上报**——`Installer::install` 是清空重建,那期间上报会让
-///    前端读到半写状态(靠 `watcher::app_write()` 守卫 + 静默期);
+/// 1. **本应用自己的写入不上报**——`Installer::install` 的写入顺序是
+///    staging → 旧本体进废纸篓 → rename,"旧本体进废纸篓"与"新内容 rename 进来"
+///    之间有一个目标路径不存在的瞬间,那期间上报会让前端读到技能凭空消失的状态
+///    (靠 `watcher::app_write()` 守卫 + 静默期);
 /// 2. **起不来只记日志,不拦启动**——与托盘图标同款姿态,降级到级别 1 与 2;
 /// 3. **绝不创建用户没要求的目录**——canonical 不在就盯父目录,父目录也不在就不起。
 pub fn spawn_watcher(app: tauri::AppHandle) {

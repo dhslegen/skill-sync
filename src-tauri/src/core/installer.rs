@@ -33,8 +33,21 @@ pub struct SkillHome {
 }
 
 impl SkillHome {
+    /// 本体是否就住在 canonical。**不按字面 `PathBuf` 比**(审查修复轮 1 Minor):
+    /// `home()` 不做 realpath 归一化,而 macOS 上 `/var` → `/private/var` 这类
+    /// 软链会让同一处磁盘位置在字面上写成两条不同的路径,比字面值会比出假阴性
+    /// ——`project_pick` 的守卫已经吃过同一个亏,这里按同样的姿势兜住。
+    ///
+    /// ⚠️ **必须用 [`fsops::same_intended_location`],不能用 `fsops::same_physical_path`**
+    /// (第一版试过用后者,被自己新写的注入验证抓回来了):`same_physical_path` 在两边都
+    /// 存在时会连最后一级也走 realpath——一旦 `Installer::install` 已经把 canonical
+    /// 建成指向 body 的符号链接,连叶子一起解析就会"看穿"这条链接,让 `body_is_canonical`
+    /// 在 `uninstall` 里对着一条明明存在的链接误判成"就是 canonical",于是那条链接
+    /// 永远不会被摘掉。`same_intended_location` 只解析父目录、保留叶子名,不会被
+    /// 我们自己建的链接影响。
     pub fn body_is_canonical(&self) -> bool {
         self.body == self.canonical
+            || fsops::same_intended_location(&self.body, &self.canonical)
     }
 }
 
@@ -364,16 +377,19 @@ impl<'a> Installer<'a> {
     /// 安装:内容落到本体位置,再链接到各 agent 目录(以及本体不在 canonical 时,
     /// canonical 本身也要链接回本体)。
     ///
-    /// ⚠️ **本体会被无条件清空重建**,`on_occupied` 管的是各 agent 目录那一侧,
-    /// 管不到这里。若用户改过技能本体,重装/更新会把改动抹掉——这正是铁律 7 所说的破坏性操作。
-    /// 守卫属于编排层(`core::acquire`):调用方必须先拿 `state.installed[].contentHash`
-    /// 与本地实际内容比对,不一致时按设计方案 2.5③ 弹"保留本地 / 用远端覆盖 / 把本地改动
-    /// 分享上去"三选一,拿到用户结论后才调本函数。
+    /// ⚠️ **本体会被无条件替换**(审查修复轮 1 I-4 订正:此前这里写的是"清空重建,
+    /// `on_occupied` 管不到这里"——`on_occupied` 参数早已从这个函数的签名上删掉,
+    /// 那句话已经过期)。若用户改过技能本体,重装/更新会把改动连同旧内容一起替换掉
+    /// ——这正是铁律 7 所说的破坏性操作。守卫属于编排层(`core::acquire`):调用方必须
+    /// 先拿 `state.installed[].contentHash` 与本地实际内容比对,不一致时按设计方案
+    /// 2.5③ 弹"保留本地 / 用远端覆盖 / 把本地改动分享上去"三选一,拿到用户结论后才调
+    /// 本函数。
     ///
     /// 写入顺序刻意"先落到 staging、再腾出本体位置、最后一次 rename"(而不是先清空
     /// 本体再写):目标可能是用户在别的工具目录里正维护着的本体,写到一半失败不能
-    /// 把它变成一个内容残缺的半成品。旧本体经 [`fsops::trash_tree`] 进废纸篓,不是
-    /// 直接删——铁律 7 在这里的落点是"可逆",不只是"问过"。
+    /// 把它变成一个内容残缺的半成品(见 `a_failed_write_leaves_the_old_body_and_staging_untouched`)。
+    /// 旧本体经 [`fsops::trash_tree`] 进废纸篓,不是直接删——铁律 7 在这里的落点是
+    /// "可逆",不只是"问过"。
     pub fn install(
         &self,
         home: &SkillHome,
@@ -405,7 +421,15 @@ impl<'a> Installer<'a> {
         }
 
         // 旧本体(若有)进废纸篓;没有旧本体时 trash_tree 直接返回 Ok(false)。
-        fsops::trash_tree(self.trasher, &home.body)?;
+        //
+        // 🔴 失败(如 macOS Finder 自动化授权被拒)时必须清掉 staging 再返回错误
+        // (审查修复轮 1 I-1,以硬约束为准,不是任务书那版裸 `?`):staging 带着完整的
+        // SKILL.md,`share::scan_candidates` 不跳过点开头的目录,残骸留着就会在分享列表里
+        // 冒出一个叫 `.<slug>.skillsync-new` 的幽灵技能。
+        if let Err(e) = fsops::trash_tree(self.trasher, &home.body) {
+            let _ = fsops::remove_tree(&staging);
+            return Err(e);
+        }
         std::fs::rename(&staging, &home.body).map_err(|e| {
             let _ = fsops::remove_tree(&staging);
             AppError::new("FS_MOVE_FAILED", "技能写入最后一步没能完成,请重试")
@@ -428,7 +452,7 @@ impl<'a> Installer<'a> {
     /// 只建链,**不碰本体里的内容**。
     ///
     /// 用于两种场景:①用户改过技能本体、选择保留改动,但仍要把它关联到新的 agent;
-    /// ②修复断链。走 [`Self::install`] 会先清空重建本体,那正是要避开的事。
+    /// ②修复断链。走 [`Self::install`] 会先替换掉本体(旧内容进废纸篓),那正是要避开的事。
     pub fn link_only(&self, home: &SkillHome, agent_names: &[String]) -> Result<InstallReport, AppError> {
         self.link_only_at(home, agent_names, OnOccupied::Fail)
     }
@@ -564,21 +588,32 @@ impl<'a> Installer<'a> {
         recorded: &[RecordedLink],
         delete_body: bool,
     ) -> Result<UninstallReport, AppError> {
-        let unlinks = recorded
+        let mut unlinks: Vec<UnlinkReport> = recorded
             .iter()
             .map(|rec| {
                 let link = rec.dir.join(&home.dir_name);
                 UnlinkReport {
                     dir: rec.dir.to_string_lossy().into_owned(),
-                    result: unlink_one(&link, &home.body, rec.mode),
+                    result: unlink_one(&link, &home.body, rec.mode, self.trasher),
                 }
             })
             .collect();
 
         if !home.body_is_canonical() {
             // canonical → body 那条链接不是用户数据本体,摘掉它不需要按 recorded 走、
-            // 也不需要用户确认;摘不掉(它压根不是条链接)不该拦下整个卸载。
-            let _ = fsops::unlink_dir(&home.canonical);
+            // 也不需要用户确认;摘不掉(它压根不是条链接,比如被别的实体目录占了)也
+            // 不该拦下整个卸载——但**失败要并进报告,不能静默吞掉**(审查修复轮 1 I-3):
+            // 静默吞的话,界面无从知道 canonical 位置还留着一个没清干净的东西。
+            if let Err(error) = fsops::unlink_dir(&home.canonical) {
+                unlinks.push(UnlinkReport {
+                    dir: home
+                        .canonical
+                        .parent()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    result: UnlinkResult::Failed { error },
+                });
+            }
         }
 
         let canonical_removed = if delete_body {
@@ -596,12 +631,18 @@ impl<'a> Installer<'a> {
 }
 
 /// 解除单个目录下的关联。
-fn unlink_one(link: &Path, target: &Path, mode: LinkKind) -> UnlinkResult {
+///
+/// 🔴 **降级复制(Copy)出来的实体副本走 [`fsops::trash_tree`],不是 [`fsops::remove_tree`]**
+/// (审查修复轮 1 C-1):Windows 上 junction 建链失败会回退成 Copy,agent 目录里那份是
+/// **实体副本**——用户完全可能直接在这份副本上编辑过。`trash_tree` 对纯链接与
+/// [`fsops::remove_tree`] 语义相同(只摘链接,不进废纸篓),但对实体目录/文件会
+/// 送进废纸篓而不是直接删,铁律 7 在这条路上因此从"问过"升级成"可逆"。
+fn unlink_one(link: &Path, target: &Path, mode: LinkKind, trasher: &dyn Trasher) -> UnlinkResult {
     let state = fsops::link_state(link, target);
     let skip = |reason: &str| UnlinkResult::Skipped {
         reason: reason.to_string(),
     };
-    let remove = || match fsops::remove_tree(link) {
+    let remove = || match fsops::trash_tree(trasher, link) {
         Ok(true) => UnlinkResult::Unlinked,
         Ok(false) => UnlinkResult::Missing,
         Err(error) => UnlinkResult::Failed { error },
@@ -733,6 +774,32 @@ mod tests {
             .home("weekly-report", Some(&tmp.path().join(".claude").join("skills").join("other")))
             .unwrap_err();
         assert_eq!(err.code, "FS_BAD_BODY", "账上 body 的目录名必须等于 dir_name");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn body_is_canonical_survives_a_symlinked_alias_for_the_same_location() {
+        // Minor(审查修复轮 1):home() 不做 realpath 归一化,同一处磁盘位置换一条
+        // 字面路径写法就会被 `==` 判成"不是 canonical"——macOS 上 `/var` →
+        // `/private/var` 就是这么个真实场景(`project_pick` 的守卫已经吃过同一个亏)。
+        // 这里用一个软链别名模拟:tmp/alias 整个指向 canonical 根,于是
+        // tmp/alias/weekly-report 与 tmp/.agents/skills/weekly-report
+        // 是同一处磁盘位置,只是字面路径不同。
+        let (tmp, reg, env, trash) = setup();
+        let inst = Installer::new(&reg, &env).with_trasher(&trash);
+        let canonical_base = tmp.path().join(".agents").join("skills");
+        fs::create_dir_all(&canonical_base).unwrap();
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(&canonical_base, &alias).unwrap();
+        let body_via_alias = alias.join("weekly-report");
+
+        let home = inst.home("weekly-report", Some(&body_via_alias)).unwrap();
+
+        assert_ne!(home.body, home.canonical, "sanity: 字面路径确实不同");
+        assert!(
+            home.body_is_canonical(),
+            "同一处磁盘位置的别名应被判成就是 canonical,不该因为字面路径不同就判假"
+        );
     }
 
     // ---- 只建链,不碰本体 ----
@@ -871,6 +938,75 @@ mod tests {
         assert!(
             !home.body.parent().unwrap().join(".s.skillsync-new").exists(),
             "临时目录不残留"
+        );
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_old_body_and_staging_untouched() {
+        // "先落到 staging、再腾出本体位置、最后 rename" 这个写入顺序唯一的存在理由
+        // 就是这条(审查修复轮 1 I-2):写到一半失败时旧本体必须原封不动。删掉整段
+        // 错误处理这条测试也应该变红——用 BTreeMap 的键序制造一次必然失败的写入:
+        // "a" 排在 "a/b" 之前(短字符串是长字符串的前缀,天然排前面),
+        // 先把 "a" 写成文件,"a/b" 再想在它下面建目录就必然失败。
+        let (_tmp, reg, env, trash) = setup();
+        let inst = Installer::new(&reg, &env).with_trasher(&trash);
+        let home = inst.home("s", None).unwrap();
+        inst.install(&home, &versioned_payload("v1"), &[]).unwrap();
+        let old_body_content = fs::read_to_string(home.body.join("SKILL.md")).unwrap();
+
+        let broken = SkillPayload::new()
+            .with_file("SKILL.md", versioned_skill_md("v2"))
+            .with_file("a", "占位")
+            .with_file("a/b", "冲突");
+
+        let err = inst.install(&home, &broken, &[]).unwrap_err();
+
+        assert!(err.code.starts_with("FS_"), "{}", err.code);
+        assert_eq!(
+            fs::read_to_string(home.body.join("SKILL.md")).unwrap(),
+            old_body_content,
+            "写入失败时旧本体必须原封不动"
+        );
+        assert!(
+            !home.body.parent().unwrap().join(".s.skillsync-new").exists(),
+            "staging 不该残留"
+        );
+        assert!(trash.trashed().is_empty(), "还没到该把旧本体送进废纸篓的那一步");
+    }
+
+    #[test]
+    fn a_failed_trash_of_the_old_body_leaves_no_staging_ghost() {
+        // I-1(审查修复轮 1,以硬约束为准,不按任务书那版裸 `?`):trash_tree 失败
+        // (比如 macOS Finder 自动化授权被拒)时,staging 残骸必须清掉——它带着完整的
+        // SKILL.md,`share::scan_candidates` 不跳过点开头的目录,留着就会在分享列表里
+        // 冒出一个叫 `.<slug>.skillsync-new` 的幽灵技能。
+        struct BrokenTrasher;
+        impl Trasher for BrokenTrasher {
+            fn trash(&self, _: &Path) -> Result<(), AppError> {
+                Err(AppError::new(
+                    "FS_TRASH_FAILED",
+                    "没能把文件移到废纸篓,请手动处理后重试",
+                ))
+            }
+        }
+
+        let (_tmp, reg, env, _trash) = setup();
+        let inst = Installer::new(&reg, &env);
+        let home = inst.home("s", None).unwrap();
+        inst.install(&home, &versioned_payload("v1"), &[]).unwrap();
+
+        let broken_inst = Installer::new(&reg, &env).with_trasher(&BrokenTrasher);
+        let err = broken_inst.install(&home, &versioned_payload("v2"), &[]).unwrap_err();
+
+        assert_eq!(err.code, "FS_TRASH_FAILED");
+        assert!(
+            !home.body.parent().unwrap().join(".s.skillsync-new").exists(),
+            "staging 残骸不该留下(会被 share::scan_candidates 当成幽灵技能)"
+        );
+        // 旧本体因为 trash 失败而原地不动
+        assert_eq!(
+            fs::read_to_string(home.body.join("SKILL.md")).unwrap(),
+            versioned_skill_md("v1")
         );
     }
 
@@ -1189,6 +1325,10 @@ mod tests {
             UnlinkResult::Unlinked
         ));
         assert!(!copied.exists());
+        // C-1(审查修复轮 1):降级复制出来的实体副本必须走废纸篓,不是直接物理删——
+        // 用户完全可能在这份副本上编辑过,直接删就是铁律 7 在这条路上从"可逆"退回"问过"。
+        assert_eq!(trash.trashed(), vec![copied.clone()]);
+        assert!(trash.into.join("weekly-report").join("SKILL.md").is_file(), "副本整份在废纸篓里");
     }
 
     #[test]
@@ -1200,5 +1340,63 @@ mod tests {
         let report = inst.uninstall(&home, &[], true).unwrap();
 
         assert!(!report.canonical_removed);
+    }
+
+    // ---- 卸载:本体不在 canonical(v6 二期,审查修复轮 1 I-3)----
+
+    #[test]
+    fn uninstall_unlinks_canonical_and_trashes_the_body_when_they_differ() {
+        // 此前这一档(body ≠ canonical)在 uninstall 里完全没有测试覆盖——
+        // installer.rs 里已经有构造这种 SkillHome 的先例
+        // (install_writes_into_body_and_links_canonical_when_body_is_elsewhere),
+        // 补齐不需要新的基建。
+        let (tmp, reg, env, trash) = setup();
+        let inst = Installer::new(&reg, &env).with_trasher(&trash);
+        let body = tmp.path().join(".claude").join("skills").join("s");
+        let home = inst.home("s", Some(&body)).unwrap();
+        inst.install(&home, &payload(), &[]).unwrap();
+        assert!(
+            fsops::read_link_target(&home.canonical).is_some(),
+            "前置:canonical 应是指向 body 的链接"
+        );
+
+        let report = inst.uninstall(&home, &[], true).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&home.canonical).is_err(),
+            "canonical 那条链接应被摘掉,位置应完全清空"
+        );
+        assert!(report.canonical_removed);
+        assert!(!home.body.exists(), "本体应从原位消失");
+        assert_eq!(trash.trashed(), vec![home.body.clone()]);
+    }
+
+    #[test]
+    fn uninstall_reports_a_failed_canonical_unlink_instead_of_swallowing_it() {
+        // canonical 位置被一个与本应用无关的实体目录占了(不是我们建的链接):
+        // 摘不掉,但**不能悄悄吞掉**——之前是 `let _ = fsops::unlink_dir(..)`,
+        // 界面完全看不出 canonical 位置还留着一个没清干净的东西。
+        let (tmp, reg, env, trash) = setup();
+        let inst = Installer::new(&reg, &env).with_trasher(&trash);
+        let body = tmp.path().join(".claude").join("skills").join("s");
+        let canonical = tmp.path().join(".agents").join("skills").join("s");
+        fs::create_dir_all(&canonical).unwrap();
+        fs::write(canonical.join("SKILL.md"), "别处的东西").unwrap();
+        let home = inst.home("s", Some(&body)).unwrap();
+        // canonical 链接会因为占位而建链失败,但不阻断安装本身
+        inst.install(&home, &payload(), &[]).unwrap();
+
+        let report = inst.uninstall(&home, &[], true).unwrap();
+
+        assert!(
+            report.unlinks.iter().any(|u| matches!(
+                &u.result,
+                UnlinkResult::Failed { error } if error.code == "FS_NOT_A_LINK"
+            )),
+            "canonical 摘不掉的失败必须并进报告: {:?}",
+            report.unlinks
+        );
+        // 那个与本应用无关的实体目录一个字节都不该被动
+        assert_eq!(fs::read_to_string(canonical.join("SKILL.md")).unwrap(), "别处的东西");
     }
 }

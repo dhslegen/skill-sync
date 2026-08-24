@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn quiet_period_outlasts_the_guard() {
-        // 守卫刚释放,事件还在路上——这正是 Installer::install 清空重建的那一瞬
+        // 守卫刚释放,事件还在路上——这正是 Installer::install 落盘/替换本体的那一瞬
         assert!(!should_report_at(0, 1_000, 1_000));
         assert!(!should_report_at(0, 1_000, 1_000 + QUIET_AFTER_WRITE_MS - 1));
         // 静默期满,用户自己的改动可以报了

@@ -235,12 +235,32 @@ fn unlink(link: &Path) -> Result<(), AppError> {
 ///    `~/.claude/skills` 整体是指向 `~/.agents/skills` 的软链,`~/.claude/skills/周报` 还没建出来。
 ///    此时要解析的是**父目录**的真实路径,再接回原 basename。只实现第 1 道会漏判,
 ///    进而删掉刚写好的技能本体。
+///
+/// ⚠️ **这个函数连叶子一起走 realpath,`installer::SkillHome::body_is_canonical`
+/// 不能用它**(审查修复轮 1 Minor 的第一版试过、被自己的注入验证抓回来了):
+/// `body` 与 `canonical` 一旦已经被 `Installer::install` 建成"canonical 是指向 body
+/// 的符号链接",这个函数会连叶子一起解析、直接"看穿"那条链接,答案永远是 true——
+/// 而那条链接的存在本身正是"两者不是同一个位置"的证据,不是反证。`body_is_canonical`
+/// 要用的是下面的 [`same_intended_location`](只解析父目录,原样保留叶子名)。
 fn same_physical_path(a: &Path, b: &Path) -> bool {
     if let (Ok(ra), Ok(rb)) = (a.canonicalize(), b.canonicalize()) {
         if ra == rb {
             return true;
         }
     }
+    resolve_parent_symlinks(a) == resolve_parent_symlinks(b)
+}
+
+/// 两个路径**打算**指的是不是同一处(只解析父目录上的软链,原样保留最后一段)。
+///
+/// 与 [`same_physical_path`] 的关键差别:那个函数在两边都存在时会连叶子一起走
+/// realpath——如果叶子恰好是我们自己建的、指向对方的符号链接(`installer::SkillHome`
+/// 的 canonical→body 那条,审查修复轮 1 真撞过),连叶子一起解析就会把"canonical 是不是
+/// 链接到 body"这件事本身给解析掉,答案永远是 true。这个函数只解析父目录、
+/// 不碰叶子这一级,回答的是"这两个路径写的是不是本来就该是同一处"(比如 macOS
+/// `/var` → `/private/var` 这类与我们的链接无关的祖先软链),不回答"这两个路径
+/// 现在有没有互相链接"。
+pub fn same_intended_location(a: &Path, b: &Path) -> bool {
     resolve_parent_symlinks(a) == resolve_parent_symlinks(b)
 }
 

@@ -66,7 +66,8 @@
 //! "宁可少加速一次,也不猜一个可能错的结果"的姿势。安装本身仍然**完整走
 //! `acquire::acquire_prefetched`**(与 `acquire::acquire` 共用预检/落盘/记账那条
 //! 尾巴,见该函数文档)——blob 只换掉了"取数"那一步,冲突判定、
-//! `Installer::install` 的清空重建保护、`.skill-lock.json` 双写口径一个字都没有分叉。
+//! `Installer::install` 的替换保护(staging → 旧本体进废纸篓 → rename)、
+//! `.skill-lock.json` 双写口径一个字都没有分叉。
 //!
 //! # 详情走 blob(M10 任务 2)
 //!

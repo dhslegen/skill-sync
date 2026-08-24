@@ -318,6 +318,21 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
 - **canonical 永不作为建链目标**。真实可达场景:`CLAUDE_CONFIG_DIR` 指到 `~/.agents` 时
   claude-code 的目录恰好等于 canonical,若当成目标,解链就等于删技能本体。
 - Windows 用 `junction` crate(2.0,MIT,免提权,delete 只摘 reparse point)。
+- 🔴 **`npx skills list -g` 认得出 canonical 里指向工具目录本体的符号链接**——
+  这是 v6 二期「本体只有一份、住在它现在所在的地方、canonical 只是指向本体的链接」
+  这整个模型能不能与 `npx skills` 互通的地基事实,已实测确认,**不是没验证的假设**。
+  2026-08-24,本机 macOS,`npx skills@1.5.23`:
+  ```bash
+  H=$(mktemp -d); mkdir -p "$H/.agents/skills" "$H/.claude/skills/probe"
+  printf -- '---\nname: probe\ndescription: probe\n---\n' > "$H/.claude/skills/probe/SKILL.md"
+  ln -s "$H/.claude/skills/probe" "$H/.agents/skills/probe"
+  HOME=$H npx -y skills@1.5.23 list -g --json
+  ```
+  输出:`[{"name":"probe","path":".../.agents/skills/probe","scope":"global","agents":["Claude Code"],...}]`
+  ——正确发现,`agents` 字段也认出了 Claude Code。换了第二个临时目录与技能名重跑一次,
+  结果一致。**与"`Dirent.isDirectory()` 对符号链接恒为 false、大概率认不出"这个预判相反**
+  ——上游显然没有只靠 `Dirent` 的类型位判断,别再假设它认不出。因此**没有已知限制需要记**:
+  canonical 里放一条指向工具目录本体的符号链接,不影响 `npx skills` 一侧的可见性。
 
 **外部契约 `.skill-lock.json`(npx skills,v3)**
 - **落点有两个**:`XDG_STATE_HOME` 设了就是 `$XDG_STATE_HOME/skills/.skill-lock.json`,否则才是

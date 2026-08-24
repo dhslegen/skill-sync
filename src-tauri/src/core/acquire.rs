@@ -6,7 +6,9 @@
 //!
 //! # 这里是 contentHash 守卫真正生效的地方
 //!
-//! `Installer::install` 会**无条件清空重建 canonical**(它的文档里写明了)。
+//! `Installer::install` 会**无条件替换本体**(它的文档里写明了;v6 二期起写入顺序
+//! 是 staging → 旧本体进废纸篓 → rename,不再是原地清空重建,但对调用方的意义
+//! 不变——旧内容照样会被换掉)。
 //! 任务 7 备好的料——`state.installed[].contentHash` 与 `fsops::dir_content_hash`——
 //! 到本模块才第一次被接上:两者不符即说明用户改过技能本体,此时**先返回让界面去问**,
 //! 拿到用户结论才动磁盘。这是铁律 7「绝不静默删除用户文件」在获取路径上的落地。
@@ -448,7 +450,8 @@ pub async fn acquire(
 /// 下载整仓压缩包。**预检 → 落盘 → 建链 → 记账这条尾巴与 [`acquire`] 完全共用**
 /// (都是 [`finish`]),这正是"守卫在 acquire、不许绕开"这条硬约束落地的地方——
 /// blob 路径与 zipball 路径唯一的差别只在"payload 从哪来",冲突判定、
-/// `Installer::install` 的清空重建保护、`.skill-lock.json` 双写口径一个字都没有分叉。
+/// `Installer::install` 的替换保护(staging → 旧本体进废纸篓 → rename)、
+/// `.skill-lock.json` 双写口径一个字都没有分叉。
 ///
 /// **不刷新索引缓存**:blob 只知道"这一个技能",拿它建一份只有一条记录的索引
 /// 缓存写盘,会让这个仓后续正常浏览(切到「按仓浏览」)只看到一个技能——宁可让
@@ -489,17 +492,21 @@ async fn finish(
     trasher: &dyn fsops::Trasher,
     progress: ProgressSink<'_>,
 ) -> Result<AcquireOutcome, AppError> {
-    // 这段期间的文件事件不上报:`Installer::install` 是清空重建,监听器若在此时
-    // 触发,前端会拿到一个技能凭空消失或只写了一半的瞬间(见 core::watcher 模块头)。
+    // 这段期间的文件事件不上报(审查修复轮 1 I-4 订正措辞:`Installer::install`
+    // 已经不是"清空重建"——写入顺序是 staging → 旧本体进废纸篓 → rename,
+    // 落盘期间旧内容原样健在;但"旧本体进废纸篓"与"新内容 rename 进来"之间仍有
+    // 一个目标路径不存在的瞬间)。监听器若在此时触发,前端会拿到一个技能凭空消失
+    // 的瞬间(见 core::watcher 模块头)。
     let _quiet = crate::core::watcher::app_write();
 
-    // install() 一进去就 reset_dir。空 payload 会把 canonical 清成空目录,
-    // 也就是"技能还在列表里,装完却是个空壳"——宁可报错。
+    // `Installer::install` 会把 staging(哪怕是空的)rename 到本体位置,旧本体在那之前
+    // 已经被送进废纸篓——空 payload 会让"技能还在列表里,装完却是个空壳"这句话成真
+    // (旧内容仍可从废纸篓找回,但界面上看到的是个空壳)——宁可在这里报错拦下。
     //
     // 说明:zipball 路径走到这里 payload 理论上不可能为空——索引是从同一份压缩包的
     // 文本树建的,发现到 SKILL.md 就意味着 entries 里也有它(tree ⊂ entries);
     // blob 路径同样不可能为空——`blob_install_candidate` 已经确认过响应里有
-    // `SKILL.md`。留着这道检查是因为它守的是 `reset_dir` 这个破坏性动作,
+    // `SKILL.md`。留着这道检查是因为它守的是"用空内容替换掉本体"这个破坏性动作,
     // 两条路径各自唯一可能让它触发的原因(前者 prefix 拼错、后者上游响应形状突变)
     // 都另有各自的单测直接钉住。
     if payload.is_empty() {
@@ -671,8 +678,10 @@ pub async fn acquire_batch(
     // `SandboxTrash`(v6 二期任务 2)。
     trasher: &dyn fsops::Trasher,
 ) -> Result<Vec<BatchItem>, AppError> {
-    // 这段期间的文件事件不上报:`Installer::install` 是清空重建,监听器若在此时
-    // 触发,前端会拿到一个技能凭空消失或只写了一半的瞬间(见 core::watcher 模块头)。
+    // 这段期间的文件事件不上报:`Installer::install` 的写入顺序是
+    // staging → 旧本体进废纸篓 → rename,"旧本体进废纸篓"与"新内容 rename 进来"
+    // 之间仍有一个目标路径不存在的瞬间,监听器若在此时触发,前端会拿到一个技能
+    // 凭空消失的瞬间(见 core::watcher 模块头)。
     let _quiet = crate::core::watcher::app_write();
     let head = client.branch_head(repo).await?;
     let archive = client.download_archive(repo).await?;

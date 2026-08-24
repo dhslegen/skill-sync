@@ -2,7 +2,7 @@
 //!
 //! # 与全局链路的关系:并行,不共用
 //!
-//! **刻意不改 [`crate::core::installer`]**。它的不变量(canonical 无条件清空重建、
+//! **刻意不改 [`crate::core::installer`]**。它的不变量(本体无条件替换、
 //! 守卫在 `acquire` 而不在它自己身上)是全局链路的地基,把 base 目录参数化就等于
 //! 把项目级语义搅进那条路。这里只复用**原语**:[`crate::core::fsops`] 的建链/安全删除/
 //! safe_join、[`crate::core::skills`] 的解析与 `sanitize_name`、
