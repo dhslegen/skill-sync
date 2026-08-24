@@ -314,13 +314,34 @@ impl InstalledSkill {
     /// **推不出来就不摆更新按钮**(不做比做错好)。这里对应的姿势是**跳过并说人话**,
     /// 绝不静默当成功。
     ///
-    /// 推不出来(`path` 为空、或没有目录分隔符)返回 `None`。存量记账的 `path`
-    /// 一直是 `skills/<目录名>` 这个形状(`acquire::source_of` 写的就是
-    /// `IndexedSkill::path`),所以 `None` 只可能来自手改过的 `state.json`
+    /// 🔴 **这不是启发式,是对索引侧的等价重算**(复审给的判据,写在这里防住
+    /// 后来人"顺手改成更聪明的猜法"):`store::build_index` 里
+    /// `dir_slug = s.dir.rsplit('/').next()`、`path = s.dir.strip_prefix(root_prefix)`,
+    /// 而 `root_prefix` **以 `/` 结尾**——剥掉一个以 `/` 收尾的前缀不可能改变最后
+    /// 一个 `/` 分段,所以 `rsplit(path) ≡ rsplit(s.dir) ≡ dir_slug` 是**恒等**,
+    /// 不是"大多数时候成立"。
+    ///
+    /// **没有目录分隔符时返回整串**,这也是等式的一部分而不是兜底:技能直接躺在
+    /// 仓根时 `path` 本身就没有分隔符,索引侧那边 `dir_slug` 同样等于整串,两侧一致。
+    ///
+    /// 返回 `None` 的只有一种形状:`path` 去掉尾部 `/` 之后为空(即 `path` 是
+    /// `""` / `"/"` / `"//"` 这类)。⚠️ **`"skills/"` 不在此列**——尾斜杠先被
+    /// `trim_end_matches` 去掉,它返回 `Some("skills")`(八种形状逐个实测过)。
+    /// 存量记账的 `path` 一直是 `skills/<目录名>` 这个形状(`acquire::source_of`
+    /// 写的就是 `IndexedSkill::path`),所以 `None` 只可能来自手改过的 `state.json`
     /// 或空来源账。
+    ///
+    /// (v6 二期任务 4 收尾订正:原注释写「或没有目录分隔符返回 `None`」是**假话**
+    /// ——`rsplit` 对任何字符串都至少产出一项,那个 `?` 从来不会触发,是**死出口**,
+    /// 读的人会以为它就是 `None` 的来源。现在改成显式的 `rsplit_once` 分支,
+    /// 行为逐字节不变,但没有永不触发的路径可以误导人。)
     pub fn library_dir_slug(&self) -> Option<String> {
         let path = self.source.path.trim_end_matches('/');
-        let last = path.rsplit('/').next()?;
+        let last = match path.rsplit_once('/') {
+            Some((_, last)) => last,
+            // 没有分隔符 = 技能就在仓根,整串就是目录名(见上,与索引侧一致)
+            None => path,
+        };
         (!last.is_empty()).then(|| last.to_string())
     }
 }
