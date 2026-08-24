@@ -110,17 +110,25 @@ pub fn scan_all(registry: &AgentRegistry, env: &dyn AgentEnv) -> Result<BTreeMap
 /// 无账多处同内容时的选法:非 canonical 优先;多个非 canonical 时,按
 /// `ordered_tool_dirs` 给定的顺序(调用方通常是 `registry.group_by_global_dir`
 /// 按目录路径字典序排出的键序,排除 canonical 之后)取第一个匹配到候选路径的目录。
+///
+/// # 前置条件
+/// `paths` 必须非空——本函数是任务书指定的 `pub` API,`locate` 内部调用时保证
+/// 这一点(`locate` 只在候选数 ≥ 2 时才会走到这里),但别的调用方必须自己遵守。
+/// **debug 构建下违反会 `debug_assert!` 失败**;release 构建不 panic
+/// (审查修复轮 1 M1:它是 Tauri command 的下游依赖,`parse_owner_repo` 的
+/// expect-panic 是前车之鉴——在 command 里 panic 而不是返回 `AppError` 会让
+/// 整个后端崩掉),退化成一个空 `PathBuf` 占位。
 pub fn choose_body(paths: &[PathBuf], canonical_base: &Path, ordered_tool_dirs: &[PathBuf]) -> PathBuf {
+    debug_assert!(!paths.is_empty(), "choose_body 要求 paths 非空,调用方须先保证候选不为空");
     for dir in ordered_tool_dirs {
         if let Some(p) = paths.iter().find(|p| p.parent() == Some(dir.as_path())) {
             return p.clone();
         }
     }
-    paths
-        .iter()
-        .find(|p| p.parent() == Some(canonical_base))
-        .cloned()
-        .unwrap_or_else(|| paths[0].clone())
+    if let Some(p) = paths.iter().find(|p| p.parent() == Some(canonical_base)) {
+        return p.clone();
+    }
+    paths.first().cloned().unwrap_or_default()
 }
 
 /// 解析一个技能「实际住在哪」,给出唯一权威判定,供 [`converge`]/[`keep_version`]/
@@ -287,7 +295,11 @@ pub fn converge(installer: &Installer<'_>, target: &Path, body: &Path) -> Result
         LinkState::SameLocation => return Ok(Converged::SameLocation),
         LinkState::Linked(_) => return Ok(Converged::Unchanged),
         LinkState::Real => {
-            if !fsops::same_content(target, body)? {
+            // M3:目标位置是一个普通文件(不是目录)时,走 `same_content` 会对着
+            // 它调 `dir_content_hash`,以 `FS_HASH_FAILED`「无法读取技能目录内容,
+            // 请重试」报错——文不对题,用户重试多少次都一样。这本来就是"内容不同"
+            // 的一种极端形式,直接停下来问用户,磁盘同样零写入。
+            if !target.is_dir() || !fsops::same_content(target, body)? {
                 return Ok(Converged::Differs {
                     existing: target.to_string_lossy().into_owned(),
                 });
@@ -316,6 +328,43 @@ pub fn ensure_canonical_link(installer: &Installer<'_>, home: &SkillHome) -> Res
     converge(installer, &home.canonical, &home.body)
 }
 
+/// 把一次收敛结果并进账上的 `links`(审查修复轮 1 I4)。
+///
+/// **并集合并,不覆盖**——同一目录只留一条,mode 可能因这次收敛而变化(比如从
+/// 复制升回链接);`acquire.rs::link_agents` 已有同款写法,这里照抄同一个姿势。
+/// 只在这个位置确实"是一条指向本体的链接"时才记账:`Linked` 直接取返回的 mode;
+/// `Unchanged`(`converge` 的早退分支,不带 mode)反查一次 `fsops::link_state`
+/// 补上当前的链接方式;`SameLocation`(无需建链)与 `Differs`(磁盘没变)都不
+/// 产生一条链接记账。
+///
+/// 不维护这份账的后果是真实的(I4):`remove::remove` 只按 `state.links` 摘链,
+/// `converge`/`keep_version`/`set_agents` 建的链接若不进这份账,移除本体之后
+/// 各工具目录会留下一地悬空链接;降级复制(`Copy` 档,目标是实体目录)那一档
+/// 更险——不进账的话,连"这份实体目录是不是我们放的副本"都无从判断。
+fn merge_link_record(
+    links: &mut Vec<state::LinkRecord>,
+    dir: &Path,
+    link_path: &Path,
+    body: &Path,
+    outcome: &Converged,
+) {
+    let mode = match outcome {
+        Converged::Linked { mode } => mode.clone(),
+        Converged::Unchanged => match fsops::link_state(link_path, body) {
+            LinkState::Linked(kind) => kind.as_str().to_string(),
+            _ => return,
+        },
+        Converged::SameLocation | Converged::Differs { .. } => return,
+    };
+    match links.iter_mut().find(|l| Path::new(&l.dir) == dir) {
+        Some(existing) => existing.mode = mode,
+        None => links.push(state::LinkRecord {
+            dir: dir.to_string_lossy().into_owned(),
+            mode,
+        }),
+    }
+}
+
 // ============================================================ 版本拍板
 
 /// [`keep_version`] 的执行结果。
@@ -328,11 +377,24 @@ pub struct KeepReport {
 }
 
 /// 「有几个版本,选哪个」拍板落地:`keep` 原地留下当本体,其余全部进废纸篓、
-/// 原位换成指向 `keep` 的链接;写账 `body`(没有账就顺手建一条 `adopted` 账)。
+/// 原位换成指向 `keep` 的链接;补齐 canonical 链接;写账 `body`/`agents`/`links`
+/// (没有账就顺手建一条 `adopted` 账)。
 ///
 /// **不走 [`converge`] 的内容相等闸**:这里处理的正是内容有分歧的那些位置
 /// (否则用户不需要拍板),它们进废纸篓是用户刚做出的、明确的拍板结果,
 /// 不是"看起来无损所以自动做"。
+///
+/// 三处审查修复轮 1 补的行为(都在这一个函数里):
+/// - **C1**:`keep` 经 IPC 由前端传入,是不可信输入,必须是本次候选之一,
+///   否则在动任何磁盘之前拒绝——不然它可以是任意路径,把真实本体全部送进
+///   废纸篓、换成指向一个无关目录的链接,还会把账永久毒化。
+/// - **I1**:candidates 只来自 [`scan_all`](只看得见实体目录),canonical 位置
+///   若本来没有实体目录就不会成为候选、循环够不到它;不补一次
+///   [`ensure_canonical_link`] 的话,拍板完这个技能会从「我的技能」页整行消失
+///   (canonical 是 cursor/codex 与全部 universal 工具唯一的读取位置)。
+/// - **I2**:`agents` 是并集合并,不是覆盖——一个工具若是通过健康链接关联的
+///   (新模型下的常态),它的目录不会成为候选、不进 `touched_dirs`,整体覆盖
+///   会把它从账上静默抹掉,即便磁盘上那条链接还在。
 pub fn keep_version(
     installer: &Installer<'_>,
     registry: &AgentRegistry,
@@ -346,8 +408,26 @@ pub fn keep_version(
     let all = scan_all(registry, env)?;
     let candidates = all.get(&home.dir_name).cloned().unwrap_or_default();
 
+    // C1:见函数文档。必须在任何磁盘写入之前判定。
+    if !candidates.iter().any(|p| p == keep) {
+        return Err(AppError::new(
+            "FS_BAD_VERSION_CHOICE",
+            "选择的版本不是这个技能眼下的候选之一,请重新选择",
+        )
+        .with_detail(format!(
+            "keep {} is not among the {} candidates for {dir_slug}",
+            keep.display(),
+            candidates.len()
+        )));
+    }
+
+    let mut next = store.load_state()?.value;
+    let existing = next.installed.iter().find(|s| s.name == dir_slug);
+    let mut agents: Vec<String> = existing.map(|s| s.agents.clone()).unwrap_or_default();
+    let mut link_records: Vec<state::LinkRecord> = existing.map(|s| s.links.clone()).unwrap_or_default();
+
     let mut trashed = Vec::new();
-    let mut links = Vec::new();
+    let mut report_links = Vec::new();
     let mut touched_dirs: Vec<PathBuf> = Vec::new();
     if let Some(p) = keep.parent() {
         touched_dirs.push(p.to_path_buf());
@@ -357,8 +437,9 @@ pub fn keep_version(
         if path == keep {
             continue;
         }
-        if let Some(p) = path.parent() {
-            touched_dirs.push(p.to_path_buf());
+        let dir = path.parent();
+        if let Some(d) = dir {
+            touched_dirs.push(d.to_path_buf());
         }
         match fsops::link_state(path, keep) {
             LinkState::Real => {
@@ -376,29 +457,36 @@ pub fn keep_version(
             },
             LinkOutcome::SameLocation => Converged::SameLocation,
         };
-        links.push(outcome);
+        if let Some(d) = dir {
+            merge_link_record(&mut link_records, d, path, keep, &outcome);
+        }
+        report_links.push(outcome);
+    }
+
+    // I1:candidates 里没有 canonical 时,上面的循环够不到它;candidates 里已经
+    // 有 canonical 时,这里是第二次收敛,`ensure_canonical_link` 幂等早退。
+    let keep_home = installer.home(dir_slug, Some(keep))?;
+    let canonical_outcome = ensure_canonical_link(installer, &keep_home)?;
+    if let Some(canonical_dir) = keep_home.canonical.parent() {
+        merge_link_record(&mut link_records, canonical_dir, &keep_home.canonical, keep, &canonical_outcome);
     }
 
     touched_dirs.sort();
     touched_dirs.dedup();
     let grouped = registry.group_by_global_dir(env);
-    let mut agents: Vec<String> = touched_dirs
-        .iter()
-        .filter_map(|d| grouped.get(d))
-        .flatten()
-        .cloned()
-        .collect();
+    // I2:并集合并,不覆盖——理由见函数文档。
+    agents.extend(touched_dirs.iter().filter_map(|d| grouped.get(d)).flatten().cloned());
     agents.sort();
     agents.dedup();
 
     let content_hash = fsops::dir_content_hash(keep)?;
-    let mut next = store.load_state()?.value;
     match next.installed.iter().position(|s| s.name == dir_slug) {
         Some(idx) => {
             let rec = &mut next.installed[idx];
             rec.body = Some(keep.to_string_lossy().into_owned());
             rec.content_hash = content_hash.clone();
             rec.agents = agents;
+            rec.links = link_records;
             rec.updated_at = now.to_string();
         }
         None => next.installed.push(state::InstalledSkill {
@@ -409,7 +497,7 @@ pub fn keep_version(
             origin: Some(state::ORIGIN_ADOPTED.to_string()),
             body: Some(keep.to_string_lossy().into_owned()),
             agents,
-            links: Vec::new(),
+            links: link_records,
             installed_at: now.to_string(),
             updated_at: now.to_string(),
         }),
@@ -419,7 +507,7 @@ pub fn keep_version(
     Ok(KeepReport {
         body: keep.to_string_lossy().into_owned(),
         trashed,
-        links,
+        links: report_links,
     })
 }
 
@@ -447,10 +535,22 @@ pub enum SetAgentsOutcome {
     NeedsVersionChoice { versions: Vec<Version> },
     Done {
         home_body: String,
+        /// canonical ← body 那条链接的收敛结果(审查修复轮 1 I3)。此前这个结果
+        /// 被静默吞掉:有账 + body 不在 canonical + canonical 被一份**内容不同**
+        /// 的实体目录占着时(`locate` 有账分支会把这份异内容副本直接丢弃、不进
+        /// `Located`,到不了 `NeedsVersionChoice`),`set_agents` 会在磁盘零写入的
+        /// 前提下悄悄返回 `Done`——但 canonical 是 cursor/codex 与全部 universal
+        /// 工具唯一的读取位置,它们其实都读不到,而结果里一个字都没提。
+        canonical: Converged,
         results: Vec<(String, Converged)>,
         /// 被摘掉关联的 agent 名单(本体不受影响)。
         unlinked: Vec<String>,
     },
+}
+
+fn missing_skill_error(dir_slug: &str) -> AppError {
+    AppError::new("FS_MISSING_SKILL", "这个技能的本体不在了,请重新获取一次")
+        .with_detail(format!("no body found for {dir_slug}"))
 }
 
 /// 「勾选哪些工具能用这个技能」落地:`wanted`(本次目标集合)里**每一个**目标
@@ -468,7 +568,19 @@ pub enum SetAgentsOutcome {
 ///
 /// 本体所在工具**永远保留**,不因用户没勾选它就被摘掉——技能就住在那里,
 /// 摘掉等于删本体。canonical 与本体不在一处时,每次调用都顺带
-/// [`ensure_canonical_link`](幂等,与本次勾选变化无关)。
+/// [`ensure_canonical_link`](幂等,与本次勾选变化无关),结果并进
+/// [`SetAgentsOutcome::Done::canonical`](I3)。
+///
+/// 🔴 **C2**:`locate` 有账时恒返回 `Body{账上}`,但账上记的本体完全可能已经
+/// 不在磁盘上了(它自己的文档写明"判断本体缺失是调用方的职责")——本函数在
+/// 建任何链接之前先判 `body.is_dir()`,不在就报 `FS_MISSING_SKILL`,不会对着
+/// 一个不存在的目标建出悬空链接、再谎称"已启用"。
+///
+/// 🔴 **I4**:每一条成功的收敛(含 canonical 那条)都并进 `rec.links`(见
+/// [`merge_link_record`]),否则 `remove::remove` 找不到这些链接、摘不掉;
+/// `removed` 摘链时若账上记的是 `copy` 档,走废纸篓而不是 `unlink_dir`——后者
+/// 对实体目录(降级复制的产物)一律拒绝,不特判会让整个 `set_agents` 在这里
+/// 中途夭折,而前面已建好的链接因为 `store.save_state` 还没跑到,一条都不会进账。
 pub fn set_agents(
     installer: &Installer<'_>,
     registry: &AgentRegistry,
@@ -483,15 +595,14 @@ pub fn set_agents(
     let located = locate(installer, registry, env, &next, dir_slug)?;
     let body = match located {
         Located::Differs(versions) => return Ok(SetAgentsOutcome::NeedsVersionChoice { versions }),
-        Located::None => {
-            return Err(AppError::new(
-                "FS_MISSING_SKILL",
-                "这个技能的本体不在了,请重新获取一次",
-            )
-            .with_detail(format!("no body found for {dir_slug}")));
-        }
+        Located::None => return Err(missing_skill_error(dir_slug)),
         Located::Body { body, .. } => body,
     };
+
+    // C2:见函数文档。
+    if !body.is_dir() {
+        return Err(missing_skill_error(dir_slug));
+    }
 
     let home = installer.home(dir_slug, Some(&body))?;
 
@@ -512,16 +623,19 @@ pub fn set_agents(
     wanted.sort();
     wanted.dedup();
 
-    let existing_agents: Vec<String> = next
-        .installed
-        .iter()
-        .find(|s| s.name == dir_slug)
-        .map(|s| s.agents.clone())
-        .unwrap_or_default();
+    let existing = next.installed.iter().find(|s| s.name == dir_slug);
+    let existing_agents: Vec<String> = existing.map(|s| s.agents.clone()).unwrap_or_default();
+    let mut link_records: Vec<state::LinkRecord> = existing.map(|s| s.links.clone()).unwrap_or_default();
 
     let removed: Vec<String> = existing_agents.iter().filter(|a| !wanted.contains(a)).cloned().collect();
 
-    ensure_canonical_link(installer, &home)?;
+    // I3:结果并进 Done,不再静默吞掉。
+    let canonical = ensure_canonical_link(installer, &home)?;
+    if !home.body_is_canonical() {
+        if let Some(canonical_dir) = home.canonical.parent() {
+            merge_link_record(&mut link_records, canonical_dir, &home.canonical, &home.body, &canonical);
+        }
+    }
 
     // 🔴 对 `wanted` 里**每一个**目标都跑 `converge`,不是只跑本次新增的那些
     // (调用方裁定,取代了原先"只处理差集"的写法)。「修复关联」这个概念已经被
@@ -533,6 +647,7 @@ pub fn set_agents(
     for target in installer.link_targets_for(&home, &wanted)? {
         let link = target.dir.join(&home.dir_name);
         let outcome = converge(installer, &link, &home.body)?;
+        merge_link_record(&mut link_records, &target.dir, &link, &home.body, &outcome);
         for agent_name in &target.agents {
             results.push((agent_name.clone(), outcome.clone()));
         }
@@ -541,7 +656,19 @@ pub fn set_agents(
     let mut unlinked = Vec::new();
     for target in installer.link_targets_for(&home, &removed)? {
         let link = target.dir.join(&home.dir_name);
-        if fsops::unlink_dir(&link)? {
+        // I4:账上记的是 copy 档时,磁盘上那个位置是**实体目录**(降级复制的产物)。
+        // `unlink_dir` 对实体目录一律拒绝(`FS_NOT_A_LINK`),走废纸篓才对——
+        // 判定与 `installer::unlink_one` 对 Copy 档同款。
+        let recorded_copy = link_records
+            .iter()
+            .any(|l| Path::new(&l.dir) == target.dir.as_path() && l.mode == "copy");
+        let removed_ok = if recorded_copy {
+            fsops::trash_tree(installer.trasher(), &link)?
+        } else {
+            fsops::unlink_dir(&link)?
+        };
+        if removed_ok {
+            link_records.retain(|l| Path::new(&l.dir) != target.dir.as_path());
             unlinked.extend(target.agents.iter().cloned());
         }
     }
@@ -552,6 +679,7 @@ pub fn set_agents(
             let rec = &mut next.installed[idx];
             rec.body = Some(body_str.clone());
             rec.agents = wanted;
+            rec.links = link_records;
             rec.updated_at = now.to_string();
         }
         None => next.installed.push(state::InstalledSkill {
@@ -562,7 +690,7 @@ pub fn set_agents(
             origin: Some(state::ORIGIN_ADOPTED.to_string()),
             body: Some(body_str.clone()),
             agents: wanted,
-            links: Vec::new(),
+            links: link_records,
             installed_at: now.to_string(),
             updated_at: now.to_string(),
         }),
@@ -571,6 +699,7 @@ pub fn set_agents(
 
     Ok(SetAgentsOutcome::Done {
         home_body: body_str,
+        canonical,
         results,
         unlinked,
     })

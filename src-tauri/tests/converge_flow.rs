@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use skillsync_lib::core::agents::{AgentEnv, AgentRegistry};
 use skillsync_lib::core::converge::{self, Converged, KeepReport, Located, SetAgentsOutcome};
-use skillsync_lib::core::fsops::{self, OnOccupied};
+use skillsync_lib::core::fsops::{self, LinkKind, OnOccupied};
 use skillsync_lib::core::installer::Installer;
 use skillsync_lib::core::state::{self, State};
 
@@ -405,4 +405,268 @@ fn set_agents_reports_differs_without_touching_disk_when_a_wanted_position_holds
     );
     assert_eq!(fsops::dir_content_hash(&trae_link).unwrap(), before, "磁盘零写入");
     assert!(c.sandbox.trashed().is_empty());
+}
+
+// ============================================================ 审查修复轮 1
+
+/// C1:`keep` 经 IPC 由前端传入,是不可信输入。必须是这次候选之一,否则在动
+/// 任何磁盘之前拒绝——覆盖"存在但无关的目录"与"根本不存在的路径"两种形状。
+#[test]
+fn keep_version_rejects_a_path_that_is_not_a_candidate() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let a = skill_dir(&env.home, ".claude/skills/s", "v1");
+    let b = skill_dir(&env.home, ".agents/skills/s", "v2");
+    let unrelated = skill_dir(&env.home, ".elsewhere/other", "v9");
+    let missing = env.home.join(".nowhere/skills/s");
+
+    let before_a = fsops::dir_content_hash(&a).unwrap();
+    let before_b = fsops::dir_content_hash(&b).unwrap();
+
+    let err = converge::keep_version(&inst, &c.registry, &env, &c.store, "s", &unrelated, NOW).unwrap_err();
+    assert_eq!(err.code, "FS_BAD_VERSION_CHOICE");
+    let err2 = converge::keep_version(&inst, &c.registry, &env, &c.store, "s", &missing, NOW).unwrap_err();
+    assert_eq!(err2.code, "FS_BAD_VERSION_CHOICE");
+
+    assert!(a.is_dir() && b.is_dir(), "两处真实本体都不该被动");
+    assert_eq!(fsops::dir_content_hash(&a).unwrap(), before_a);
+    assert_eq!(fsops::dir_content_hash(&b).unwrap(), before_b);
+    assert!(c.sandbox.trashed().is_empty(), "磁盘零写入");
+}
+
+/// C2:`locate` 有账时恒返回 `Body{账上}`,但账上记的本体完全可能已经不在磁盘上。
+/// `set_agents` 必须在建任何链接之前判掉这一档,不能对着不存在的目标建出悬空链接
+/// 还谎称"已启用"。
+#[test]
+fn set_agents_errors_instead_of_dangling_when_the_recorded_body_is_gone() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".claude/skills/s", "v1");
+    let state = state_with_body("s", &body);
+    c.store.save_state(&state).unwrap();
+    std::fs::remove_dir_all(&body).unwrap();
+
+    let err = converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &["trae".into()], NOW).unwrap_err();
+
+    assert_eq!(err.code, "FS_MISSING_SKILL");
+    let trae_link = env.home.join(".trae/skills/s");
+    assert!(
+        std::fs::symlink_metadata(&trae_link).is_err(),
+        "不该在本体缺失的情况下建出悬空链接"
+    );
+}
+
+/// I1:两个候选都不在 canonical 时(打破任务书 fixture 里"canonical 恰好是候选
+/// 之一"的巧合),拍板后 canonical 仍必须被补一条指向 body 的链接——否则技能会
+/// 从「我的技能」页整行消失(canonical 是 cursor/codex 与全部 universal 工具
+/// 唯一的读取位置)。
+#[test]
+fn keep_version_links_canonical_even_when_canonical_is_not_a_candidate() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let a = skill_dir(&env.home, ".claude/skills/s", "v1");
+    let b = skill_dir(&env.home, ".trae/skills/s", "v2");
+    let canonical = env.home.join(".agents/skills/s");
+    assert!(!canonical.exists(), "sanity: canonical 一开始没有任何实体或链接");
+
+    let r = converge::keep_version(&inst, &c.registry, &env, &c.store, "s", &a, NOW).unwrap();
+
+    assert_eq!(r.body, a.to_string_lossy());
+    assert_eq!(c.sandbox.trashed(), vec![b.clone()]);
+    assert_eq!(
+        fsops::read_link_target(&canonical),
+        Some(fsops::normalize(&a)),
+        "canonical 不是候选之一,也必须被补链"
+    );
+}
+
+/// I2:`agents` 必须是并集合并,不是覆盖。一个工具若是通过健康链接关联的(新模型
+/// 下的常态),它的目录不会成为 `scan_all` 的候选、不进 `touched_dirs`,整体覆盖
+/// 会把它从账上静默抹掉,即便磁盘上那条链接原封不动。
+#[test]
+fn keep_version_preserves_an_agent_whose_link_is_healthy_and_not_a_candidate() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let claude_body = skill_dir(&env.home, ".claude/skills/s", "v1");
+    let trae_link = env.home.join(".trae/skills/s");
+    link(&claude_body, &trae_link); // 健康链接,不是 scan_all 的候选
+
+    let mut state = state_with_body("s", &claude_body);
+    state.installed[0].agents = vec!["claude-code".into(), "trae".into()];
+    state.installed[0].links = vec![state::LinkRecord {
+        dir: env.home.join(".trae/skills").to_string_lossy().into_owned(),
+        mode: "symlink".into(),
+    }];
+    c.store.save_state(&state).unwrap();
+
+    // canonical 内容不同,构成第二个候选(账上照旧恒选 claude_body 当本体)。
+    let canonical = skill_dir(&env.home, ".agents/skills/s", "v2");
+
+    let r = converge::keep_version(&inst, &c.registry, &env, &c.store, "s", &claude_body, NOW).unwrap();
+
+    assert_eq!(r.body, claude_body.to_string_lossy());
+    assert_eq!(c.sandbox.trashed(), vec![canonical.clone()]);
+    let st = c.store.load_state().unwrap().value;
+    let rec = st.installed.iter().find(|s| s.name == "s").unwrap();
+    assert!(
+        rec.agents.contains(&"trae".to_string()),
+        "trae 是健康链接、不进候选,整体覆盖会把它从账上静默抹掉: {:?}",
+        rec.agents
+    );
+    assert_eq!(
+        fsops::read_link_target(&trae_link),
+        Some(fsops::normalize(&claude_body)),
+        "trae 那条链接磁盘上应当原样健在,没被这次拍板动过"
+    );
+}
+
+/// I3:有账 + body 不在 canonical + canonical 被一份内容不同的实体目录占着——
+/// `locate` 的有账分支会把这份异内容副本直接丢弃、不进 `Located`,到不了
+/// `NeedsVersionChoice`。此前 `set_agents` 会在磁盘零写入的前提下悄悄返回
+/// `Done`,而 canonical 那条链接的收敛结果一个字都没提。
+#[test]
+fn set_agents_reports_the_canonical_differs_instead_of_swallowing_it() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let claude_body = skill_dir(&env.home, ".claude/skills/s", "v1");
+    let state = state_with_body("s", &claude_body);
+    c.store.save_state(&state).unwrap();
+    let canonical = skill_dir(&env.home, ".agents/skills/s", "v9");
+    let before = fsops::dir_content_hash(&canonical).unwrap();
+
+    let out = converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &["trae".into()], NOW).unwrap();
+
+    let SetAgentsOutcome::Done { canonical: outcome, .. } = out else {
+        panic!("expected Done")
+    };
+    assert_eq!(
+        outcome,
+        Converged::Differs {
+            existing: canonical.to_string_lossy().into_owned()
+        }
+    );
+    assert_eq!(fsops::dir_content_hash(&canonical).unwrap(), before, "canonical 磁盘零写入");
+    assert!(c.sandbox.trashed().is_empty());
+}
+
+/// I4a:每一条成功的收敛(含 canonical 那条)都必须并进账上的 `links`,否则
+/// `remove::remove` 只按 `state.links` 摘链,找不到就摘不掉;第二次调用换了一个
+/// 不相关的目标时,原先的记账不该被覆盖掉(并集合并)。
+#[test]
+fn set_agents_keeps_every_successful_link_in_the_account_for_remove_to_find_later() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".claude/skills/s", "v1");
+
+    converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &["trae".into()], NOW).unwrap();
+
+    let trae_dir = env.home.join(".trae").join("skills");
+    let canonical_dir = env.home.join(".agents").join("skills");
+    let st = c.store.load_state().unwrap().value;
+    let rec = st.installed.iter().find(|s| s.name == "s").unwrap();
+    assert!(
+        rec.links.iter().any(|l| Path::new(&l.dir) == trae_dir && l.mode == "symlink"),
+        "trae 的链接必须进账,remove 才摘得掉它: {:?}",
+        rec.links
+    );
+    assert!(
+        rec.links.iter().any(|l| Path::new(&l.dir) == canonical_dir && l.mode == "symlink"),
+        "canonical 那条链接也必须进账: {:?}",
+        rec.links
+    );
+
+    // 再勾一个不相关的 agent,trae 那条记账不该被覆盖掉。
+    converge::set_agents(
+        &inst,
+        &c.registry,
+        &env,
+        &c.store,
+        "s",
+        &["trae".into(), "trae-cn".into()],
+        NOW,
+    )
+    .unwrap();
+    let st2 = c.store.load_state().unwrap().value;
+    let rec2 = st2.installed.iter().find(|s| s.name == "s").unwrap();
+    assert!(
+        rec2.links.iter().any(|l| Path::new(&l.dir) == trae_dir),
+        "trae 的记账不该在勾选别的 agent 时被覆盖掉: {:?}",
+        rec2.links
+    );
+    assert!(body.join("SKILL.md").is_file(), "本体全程不受这两次勾选影响");
+}
+
+/// I4b:账上记的是 `copy` 档(降级复制,目标位置是**实体目录**)时,取消勾选
+/// 必须走废纸篓,不能用 `unlink_dir`——它对实体目录一律拒绝(`FS_NOT_A_LINK`),
+/// 不特判会让整个 `set_agents` 在这里中途夭折,而前面已建好的链接因为
+/// `store.save_state` 还没跑到,一条都不会进账。
+#[test]
+fn set_agents_removes_a_copy_degraded_link_via_trash_instead_of_crashing() {
+    let (c, env) = ctx();
+    let inst_copy = Installer::new(&c.registry, &env)
+        .with_trasher(&c.sandbox)
+        .with_chain(vec![LinkKind::Copy]);
+    let body = skill_dir(&env.home, ".claude/skills/s", "v1");
+
+    converge::set_agents(&inst_copy, &c.registry, &env, &c.store, "s", &["trae".into()], NOW).unwrap();
+
+    let trae_link = env.home.join(".trae/skills/s");
+    assert!(trae_link.is_dir(), "sanity: 降级复制落盘是实体目录");
+    assert!(fsops::read_link_target(&trae_link).is_none(), "sanity: 不是链接");
+    let st = c.store.load_state().unwrap().value;
+    let rec = st.installed.iter().find(|s| s.name == "s").unwrap();
+    assert_eq!(
+        rec.links
+            .iter()
+            .find(|l| Path::new(&l.dir) == env.home.join(".trae/skills"))
+            .map(|l| l.mode.as_str()),
+        Some("copy")
+    );
+
+    let out = converge::set_agents(&inst_copy, &c.registry, &env, &c.store, "s", &[], NOW).unwrap();
+
+    let SetAgentsOutcome::Done { unlinked, .. } = out else {
+        panic!("expected Done, not an error")
+    };
+    assert_eq!(unlinked, vec!["trae".to_string()]);
+    assert!(!trae_link.exists(), "降级复制出来的实体目录应当被摘掉(进废纸篓)");
+    assert!(c.sandbox.trashed().iter().any(|p| p == &trae_link));
+    assert!(body.join("SKILL.md").is_file(), "本体自己不受这次摘链影响");
+}
+
+/// M3:目标位置是普通文件(不是目录)时,早退成 `Differs`、磁盘零写入,而不是
+/// 报一句文不对题的「无法读取技能目录内容,请重试」(用户重试多少次都一样)。
+#[test]
+fn converge_reports_differs_without_touching_disk_when_target_is_a_file() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".claude/skills/s", "v1");
+    let target = env.home.join(".agents/skills/s");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, b"not a skill directory").unwrap();
+
+    let r = converge::converge(&inst, &target, &body).unwrap();
+
+    assert_eq!(
+        r,
+        Converged::Differs {
+            existing: target.to_string_lossy().into_owned()
+        }
+    );
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"not a skill directory",
+        "磁盘零写入"
+    );
+    assert!(c.sandbox.trashed().is_empty());
+}
+
+/// M1:`choose_body` 是任务书指定的 `pub` API,直接传空切片违反了它的前置条件。
+/// debug 构建下必须 `debug_assert!` 失败(给开发/测试期一道安全网),不能在
+/// release 构建的 Tauri command 里 panic——那件事本身在别处已单独确认过
+/// (改成 `paths.first().cloned().unwrap_or_default()`,这里只钉住 debug 那一半)。
+#[test]
+#[should_panic(expected = "choose_body 要求 paths 非空")]
+fn choose_body_debug_asserts_on_an_empty_slice() {
+    let _ = converge::choose_body(&[], Path::new("/canon"), &[]);
 }

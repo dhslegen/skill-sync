@@ -281,6 +281,25 @@ pub struct InstalledSkill {
     pub updated_at: String,
 }
 
+impl InstalledSkill {
+    /// 这条记账有没有一个真实的来源技能库——`registry_id`/`owner`/`repo` 三者皆非空
+    /// 才算数(与 `SkillSource` 各字段"必填但可以是空字符串占位"的既有口径一致)。
+    ///
+    /// **这是判断"这条记账有没有来源"的唯一判据,下游不得各自手搓**——本项目最贵的
+    /// 教训就是同一判定散在多处各自漂移。`origin == Some(ORIGIN_ADOPTED)` 的账
+    /// (`converge::keep_version`/`converge::set_agents` 首次给纯本地技能建账)
+    /// 用空字符串占位三个字段,因为它压根没有经过任何技能库,`has_source()` 对它
+    /// 恒为 `false`;正常获取/分享直推来的账三个字段都是真值,恒为 `true`。
+    ///
+    /// 已知至少四处下游判据都得先问这一句,才不会对着一条没有来源的记账做出
+    /// "这是从另一个技能库装的"(`acquire::precheck` 的 `OtherLibrary`)、
+    /// "来源已移除"(`my_skills::library_reachability`)之类的误判——接线在
+    /// 各自任务里做,这里只登记这唯一的判据。
+    pub fn has_source(&self) -> bool {
+        !self.source.registry_id.is_empty() && !self.source.owner.is_empty() && !self.source.repo.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkRecord {
@@ -591,6 +610,27 @@ mod tests {
             }],
             shared: vec![],
         }
+    }
+
+    #[test]
+    fn has_source_requires_all_three_coordinate_fields_non_empty() {
+        let full = sample_state().installed.remove(0);
+        assert!(full.has_source(), "sample_state 三个字段都是真值");
+
+        let mut adopted = full.clone();
+        adopted.source = SkillSource {
+            registry_id: String::new(),
+            owner: String::new(),
+            repo: String::new(),
+            path: String::new(),
+            git_ref: String::new(),
+        };
+        assert!(!adopted.has_source(), "adopted 账三个字段全空");
+
+        // 三选一漏填也算没有来源——不是"三者都空才算没有",是"三者都非空才算有"。
+        let mut partial = full.clone();
+        partial.source.owner = String::new();
+        assert!(!partial.has_source());
     }
 
     #[test]

@@ -909,8 +909,12 @@ mod tests {
         // ——`same_physical_path` 连叶子一起 realpath,会"看穿" canonical 指向 body 的链接,
         // 把两者判成同一处;`same_intended_location` 只解析父目录、保留叶子名,
         // 不会被我们自己建的链接影响,因而给出不同的结论。
+        //
+        // ⚠️ 两侧**叶子名必须相同**(都叫 `s`)——审查修复轮 1 M4:此前 body 的叶子名
+        // 是 `body`、canonical 的叶子名是 `s`,`!same_intended_location` 有一半是被
+        // "名字本来就不同"顺带满足的,判据没有被"看没看穿链接"这一件事单独隔离出来。
         let tmp = tempfile::tempdir().unwrap();
-        let body = skill_dir(tmp.path(), "body", "内容");
+        let body = skill_dir(tmp.path(), "real/s", "内容");
         let canonical = tmp.path().join("canonical").join("s");
         link_dir(&body, &canonical, default_link_chain(), OnOccupied::Fail).unwrap();
 
@@ -920,7 +924,7 @@ mod tests {
         );
         assert!(
             !same_intended_location(&body, &canonical),
-            "same_intended_location 保留叶子名,body 与 canonical/s 不是同一处写法"
+            "same_intended_location 保留叶子名(两侧都叫 s),纯因父目录不同而判为不同处"
         );
     }
 
