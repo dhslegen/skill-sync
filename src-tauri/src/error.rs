@@ -6,7 +6,10 @@
 
 use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize)]
+/// `PartialEq`(审查修复轮 3):`converge::SetAgentsOutcome` 把每个目标的收敛结果
+/// 收进 `Result<Converged, AppError>`,测试要能直接 `assert_eq!` 整个 `Result`,
+/// 不必为了比对拆开 `code`/`message`/`detail` 三个字段。
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppError {
     /// 稳定的机器可读错误码,如 `NET_UNREACHABLE`、`CONFLICT_STALE`。

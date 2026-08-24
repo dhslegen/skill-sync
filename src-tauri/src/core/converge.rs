@@ -535,14 +535,18 @@ pub enum SetAgentsOutcome {
     NeedsVersionChoice { versions: Vec<Version> },
     Done {
         home_body: String,
-        /// canonical ← body 那条链接的收敛结果(审查修复轮 1 I3)。此前这个结果
-        /// 被静默吞掉:有账 + body 不在 canonical + canonical 被一份**内容不同**
-        /// 的实体目录占着时(`locate` 有账分支会把这份异内容副本直接丢弃、不进
-        /// `Located`,到不了 `NeedsVersionChoice`),`set_agents` 会在磁盘零写入的
-        /// 前提下悄悄返回 `Done`——但 canonical 是 cursor/codex 与全部 universal
-        /// 工具唯一的读取位置,它们其实都读不到,而结果里一个字都没提。
-        canonical: Converged,
-        results: Vec<(String, Converged)>,
+        /// canonical ← body 那条链接的收敛结果(审查修复轮 1 I3 引入;审查修复轮 3
+        /// R11 改成 `Result`)。`Err` 表示这一步(本函数**第一处写盘**)本身失败了
+        /// ——不能再用 `?` 直接中断,那样会让函数带着"后面可能还没写的东西固然
+        /// 没写,但这一步本身连结果都没告诉任何人"的半吞状态返回;失败也要如实
+        /// 装进这里,交给上层决定要不要提示用户。
+        canonical: Result<Converged, AppError>,
+        /// 每个目标 agent 的收敛结果。`Err` 表示这个目标建链失败了(比如目标
+        /// 位置的父目录被占成了一个普通文件)——不是"没处理它"、是"试过了但没
+        /// 成功",必须如实回报,不能只进日志:那样界面看到的会是"什么都没
+        /// 发生",而真实情况可能是"本体已经动过、这个工具却没配上"
+        /// (审查修复轮 3 R11)。
+        results: Vec<(String, Result<Converged, AppError>)>,
         /// 被摘掉关联的 agent 名单(本体不受影响)。
         unlinked: Vec<String>,
         /// 摘链失败的 agent 名单及原因(审查修复轮 2 I4③)。
@@ -591,14 +595,31 @@ fn missing_skill_error(dir_slug: &str) -> AppError {
 /// `removed` 摘链时若账上记的是 `copy` 档,走废纸篓而不是 `unlink_dir`——后者
 /// 对实体目录(降级复制的产物)一律拒绝。
 ///
-/// 🔴 **I4③**(审查修复轮 2):摘链失败——不管是账上记 `copy` 但没走废纸篓分支
-/// 那种,还是账上记 `symlink`、外部却把那个位置换成了实体目录那种(两者都会让
-/// `unlink_dir`/`trash_tree` 报错)——一律**收集进 [`SetAgentsOutcome::Done::
-/// unlink_failed`]**,不用 `?` 中断循环。中断的代价不只是这一条摘不掉:
-/// `store.save_state` 排在整个摘链循环**之后**,一旦中途 `?` 返回,连
-/// `wanted` 循环里刚建好的新链接(比如同一次调用里新勾选的另一个工具)都会
-/// 因为没跑到 `save_state` 而"磁盘已经动了、账却没存"——那条新链接从此不在
-/// `rec.links` 里,`remove::remove` 永远摘不掉它。
+/// 🔴 **I4③ → R11(审查修复轮 3,结构性)**:I4③ 只堵了摘链循环这一个口子,
+/// 复审者在建链循环里复现了同一形状(把某个工具技能目录的父路径造成一个普通
+/// 文件,`link_dir` 内部 `create_dir_all(parent)` 失败),证明问题不是某个特例、
+/// 是整个函数的结构——"修了特例以为修了结构"在这一个任务里已经重演第二次
+/// (上一轮是 Copy 档 → 这一轮是摘链循环 → 这次是建链循环)。裁定 R11 是一句话:
+/// **从第一次写磁盘到 `save_state` 之间,任何失败都不得让函数带着"磁盘已动、
+/// 账未存"的状态返回。** 逐处落地:
+/// - [`ensure_canonical_link`](本函数第一处写盘):失败不再 `?`,装进
+///   `SetAgentsOutcome::Done::canonical` 的 `Err` 分支;
+/// - `link_targets_for(&home, &wanted)` 这个**调用本身**也可能失败(`wanted`
+///   里混进注册表不认识的 agent 名,`FS_UNKNOWN_AGENT`)——同样不 `?`,把
+///   错误按 `wanted` 里(除了本体自己那个,它从不需要建链目标)每个 agent 名
+///   各记一条失败,进 `results`;
+/// - **`converge(...)`(建链循环内,主犯,复审者已复现)**:每个目标一个结果,
+///   成功给 `Ok(Converged)`、失败给 `Err`,都装进 `results`,循环继续,不中断;
+/// - `link_targets_for(&home, &removed)` 同理不 `?`,失败按 `removed` 里每个
+///   agent 名各记一条,进 `unlink_failed`;
+/// - `dir_content_hash(&home.body)`(仅无账新建那一档需要):**挪到本函数
+///   任何写盘调用之前算**——原先排在写盘全部完成之后,一旦这里失败,磁盘已经
+///   全部写完却建不出账,新技能会永久停留在"我的技能"里看不到的状态。挪到
+///   最前面之后,这里继续用 `?` 是安全的:此刻还没有任何 `ensure_canonical_
+///   link`/`converge` 调用发生过,提前返回不会留下"磁盘已动、账未存"的半成品;
+/// - `store.save_state` 自身:固有的、收集救不了的最后一道窗口——它本身就是
+///   "落账"这个动作,失败了没有更早的地方可以退。这是这条判据下**唯一**
+///   仍然存在、也只能存在的失败窗口。
 pub fn set_agents(
     installer: &Installer<'_>,
     registry: &AgentRegistry,
@@ -644,14 +665,23 @@ pub fn set_agents(
     let existing = next.installed.iter().find(|s| s.name == dir_slug);
     let existing_agents: Vec<String> = existing.map(|s| s.agents.clone()).unwrap_or_default();
     let mut link_records: Vec<state::LinkRecord> = existing.map(|s| s.links.clone()).unwrap_or_default();
+    let is_new_account = existing.is_none();
 
     let removed: Vec<String> = existing_agents.iter().filter(|a| !wanted.contains(a)).cloned().collect();
 
-    // I3:结果并进 Done,不再静默吞掉。
-    let canonical = ensure_canonical_link(installer, &home)?;
+    // R11:见函数文档——必须在任何写盘调用之前算,失败在这里用 `?` 是安全的
+    // (还没有任何磁盘写入发生过)。
+    let fresh_content_hash = if is_new_account {
+        Some(fsops::dir_content_hash(&home.body)?)
+    } else {
+        None
+    };
+
+    // I3 / R11:结果并进 Done,不再用 `?` 中断——这是本函数第一处写盘。
+    let canonical = ensure_canonical_link(installer, &home);
     if !home.body_is_canonical() {
-        if let Some(canonical_dir) = home.canonical.parent() {
-            merge_link_record(&mut link_records, canonical_dir, &home.canonical, &home.body, &canonical);
+        if let (Ok(outcome), Some(canonical_dir)) = (&canonical, home.canonical.parent()) {
+            merge_link_record(&mut link_records, canonical_dir, &home.canonical, &home.body, outcome);
         }
     }
 
@@ -661,48 +691,72 @@ pub fn set_agents(
     // 灰的/异常的,再点一次(哪怕账上已经记着这个 agent),它就该自己好。
     // `converge` 本身幂等:链接已经正确时早退返回 `Unchanged`,不写盘,所以
     // "全量重跑"的代价只是每个目标多一次 `link_state` 判定,可以忽略。
-    let mut results = Vec::new();
-    for target in installer.link_targets_for(&home, &wanted)? {
-        let link = target.dir.join(&home.dir_name);
-        let outcome = converge(installer, &link, &home.body)?;
-        merge_link_record(&mut link_records, &target.dir, &link, &home.body, &outcome);
-        for agent_name in &target.agents {
-            results.push((agent_name.clone(), outcome.clone()));
+    let mut results: Vec<(String, Result<Converged, AppError>)> = Vec::new();
+    match installer.link_targets_for(&home, &wanted) {
+        Ok(targets) => {
+            for target in targets {
+                let link = target.dir.join(&home.dir_name);
+                // R11:不再用 `?`——建链失败(比如目标位置的父目录被占成了一个
+                // 普通文件,`link_dir` 内部 `create_dir_all(parent)` 报错)必须
+                // 收进 `results`,不能中断:循环里可能还有别的目标本该成功、
+                // 更早的 canonical 那步也可能已经写盘,中断会把它们的记账
+                // 一起拖没了。
+                let outcome = converge(installer, &link, &home.body);
+                if let Ok(o) = &outcome {
+                    merge_link_record(&mut link_records, &target.dir, &link, &home.body, o);
+                }
+                for agent_name in &target.agents {
+                    results.push((agent_name.clone(), outcome.clone()));
+                }
+            }
+        }
+        Err(err) => {
+            // `wanted` 里混进了注册表不认识的 agent 名(`FS_UNKNOWN_AGENT`)。
+            // 本体自己的 agent 从不需要建链目标,不算进失败名单。
+            for agent_name in wanted.iter().filter(|a| !body_agents.contains(a)) {
+                results.push((agent_name.clone(), Err(err.clone())));
+            }
         }
     }
 
     let mut unlinked = Vec::new();
     let mut unlink_failed: Vec<(String, AppError)> = Vec::new();
-    for target in installer.link_targets_for(&home, &removed)? {
-        let link = target.dir.join(&home.dir_name);
-        // I4:账上记的是 copy 档时,磁盘上那个位置是**实体目录**(降级复制的产物)。
-        // `unlink_dir` 对实体目录一律拒绝(`FS_NOT_A_LINK`),走废纸篓才对——
-        // 判定与 `installer::unlink_one` 对 Copy 档同款。
-        let recorded_copy = link_records
-            .iter()
-            .any(|l| Path::new(&l.dir) == target.dir.as_path() && l.mode == "copy");
-        let result = if recorded_copy {
-            fsops::trash_tree(installer.trasher(), &link)
-        } else {
-            fsops::unlink_dir(&link)
-        };
-        // 审查修复轮 2 I4③:**收集失败,不用 `?` 中断**。同一个结构问题不止
-        // Copy 档一种触发方式——账上记的是 symlink,但外部(用户自己、或别的
-        // 工具)把那个位置换成了一个实体目录,`unlink_dir` 一样会报
-        // `FS_NOT_A_LINK`。若在这里 `?` 直接返回,循环里**已经处理过的**
-        // targets(包括上面 `wanted` 循环新建的链接)全部还没来得及
-        // `store.save_state`,于是"磁盘已经动了、账却没存"——新勾选的工具的
-        // 链接会飘在磁盘上,`remove::remove` 只认账,永远摘不掉它。
-        match result {
-            Ok(true) => {
-                link_records.retain(|l| Path::new(&l.dir) != target.dir.as_path());
-                unlinked.extend(target.agents.iter().cloned());
-            }
-            Ok(false) => {}
-            Err(err) => {
-                for agent_name in &target.agents {
-                    unlink_failed.push((agent_name.clone(), err.clone()));
+    match installer.link_targets_for(&home, &removed) {
+        Ok(targets) => {
+            for target in targets {
+                let link = target.dir.join(&home.dir_name);
+                // I4:账上记的是 copy 档时,磁盘上那个位置是**实体目录**
+                // (降级复制的产物)。`unlink_dir` 对实体目录一律拒绝
+                // (`FS_NOT_A_LINK`),走废纸篓才对——判定与
+                // `installer::unlink_one` 对 Copy 档同款。
+                let recorded_copy = link_records
+                    .iter()
+                    .any(|l| Path::new(&l.dir) == target.dir.as_path() && l.mode == "copy");
+                let result = if recorded_copy {
+                    fsops::trash_tree(installer.trasher(), &link)
+                } else {
+                    fsops::unlink_dir(&link)
+                };
+                // I4③:收集失败,不用 `?` 中断——理由见函数文档 R11。
+                match result {
+                    Ok(true) => {
+                        link_records.retain(|l| Path::new(&l.dir) != target.dir.as_path());
+                        unlinked.extend(target.agents.iter().cloned());
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        for agent_name in &target.agents {
+                            unlink_failed.push((agent_name.clone(), err.clone()));
+                        }
+                    }
                 }
+            }
+        }
+        Err(err) => {
+            // 账上可能留着注册表不再认识的陈旧 agent 名(跨版本)。跳过并
+            // 回报,不抛。
+            for agent_name in &removed {
+                unlink_failed.push((agent_name.clone(), err.clone()));
             }
         }
     }
@@ -720,7 +774,7 @@ pub fn set_agents(
             name: dir_slug.to_string(),
             source: empty_source(),
             commit_sha: String::new(),
-            content_hash: fsops::dir_content_hash(&home.body)?,
+            content_hash: fresh_content_hash.expect("computed above whenever there is no existing account"),
             origin: Some(state::ORIGIN_ADOPTED.to_string()),
             body: Some(body_str.clone()),
             agents: wanted,

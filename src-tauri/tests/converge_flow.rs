@@ -300,7 +300,7 @@ fn set_agents_adds_links_removes_links_and_never_removes_the_body_tool() {
     let SetAgentsOutcome::Done { results, .. } = out else {
         panic!("expected Done")
     };
-    assert!(matches!(&results[0], (a, Converged::Linked { .. }) if a == "trae"));
+    assert!(matches!(&results[0], (a, Ok(Converged::Linked { .. })) if a == "trae"));
     assert_eq!(
         fsops::read_link_target(&env.home.join(".agents/skills/s")),
         Some(fsops::normalize(&body)),
@@ -369,7 +369,7 @@ fn set_agents_self_heals_a_link_that_was_repointed_elsewhere() {
     let SetAgentsOutcome::Done { results, .. } = out else {
         panic!("expected Done")
     };
-    assert!(matches!(&results[0], (a, Converged::Linked { .. }) if a == "trae"));
+    assert!(matches!(&results[0], (a, Ok(Converged::Linked { .. })) if a == "trae"));
     assert_eq!(
         fsops::read_link_target(&trae_link),
         Some(fsops::normalize(&body)),
@@ -402,9 +402,9 @@ fn set_agents_reports_differs_without_touching_disk_when_a_wanted_position_holds
     assert_eq!(agent, "trae");
     assert_eq!(
         outcome,
-        &Converged::Differs {
+        &Ok(Converged::Differs {
             existing: trae_link.to_string_lossy().into_owned()
-        }
+        })
     );
     assert_eq!(fsops::dir_content_hash(&trae_link).unwrap(), before, "磁盘零写入");
     assert!(c.sandbox.trashed().is_empty());
@@ -559,9 +559,9 @@ fn set_agents_reports_the_canonical_differs_instead_of_swallowing_it() {
     };
     assert_eq!(
         outcome,
-        Converged::Differs {
+        Ok(Converged::Differs {
             existing: canonical.to_string_lossy().into_owned()
-        }
+        })
     );
     assert_eq!(fsops::dir_content_hash(&canonical).unwrap(), before, "canonical 磁盘零写入");
     assert!(c.sandbox.trashed().is_empty());
@@ -733,7 +733,7 @@ fn set_agents_still_records_new_links_when_an_unrelated_removal_fails() {
     assert!(!unlinked.contains(&"trae".to_string()));
 
     // ② 新勾的 trae-cn 已经进账——不能因为 trae 那条失败就中途夭折。
-    assert!(matches!(&results[0], (a, Converged::Linked { .. }) if a == "trae-cn"));
+    assert!(matches!(&results[0], (a, Ok(Converged::Linked { .. })) if a == "trae-cn"));
     let trae_cn_link = env.home.join(".trae-cn/skills/s");
     assert_eq!(
         fsops::read_link_target(&trae_cn_link),
@@ -751,3 +751,172 @@ fn set_agents_still_records_new_links_when_an_unrelated_removal_fails() {
     );
 }
 
+
+// ============================================================ 审查修复轮 3(R11:结构性)
+
+/// R11 主犯,复审者已复现:`.trae-cn` 本身被造成一个**普通文件**(不是目录)——
+/// 建链时 `link_dir` 内部的 `create_dir_all(parent)` 必然失败。此前建链循环里
+/// 的 `converge(...)?` 会让整个 `set_agents` 在这里中途夭折:trae 的链接已经
+/// 落盘,却因为函数提前返回 `Err` 而永远没机会 `save_state`,账上一条记录都没有
+/// ——`remove::remove` 只认账,那条 trae 链接会永远留在磁盘上摘不掉。
+#[test]
+fn set_agents_does_not_abort_when_one_targets_link_dir_is_blocked_by_a_file() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".claude/skills/s", "v1");
+    // .trae-cn 本身是一个普通文件,不是目录——建链时 create_dir_all(parent) 必失败。
+    std::fs::write(env.home.join(".trae-cn"), b"not a directory").unwrap();
+
+    let out = converge::set_agents(
+        &inst,
+        &c.registry,
+        &env,
+        &c.store,
+        "s",
+        &["trae".into(), "trae-cn".into()],
+        NOW,
+    )
+    .unwrap();
+
+    let SetAgentsOutcome::Done { results, .. } = out else {
+        panic!("expected Done, not an error——一个目标建链失败不该拖垮整个调用")
+    };
+
+    // 两条都必须如实出现在 results 里:trae 成功、trae-cn 失败——不是"trae-cn
+    // 没被处理",是"处理过了但没成功"。
+    assert!(
+        results.iter().any(|(a, r)| a == "trae" && matches!(r, Ok(Converged::Linked { .. }))),
+        "{results:?}"
+    );
+    assert!(
+        results.iter().any(|(a, r)| a == "trae-cn" && r.is_err()),
+        "trae-cn 的失败必须如实回报,不能只进日志: {results:?}"
+    );
+
+    // 成功的那条(trae)确实进了账,否则 remove 永远摘不掉它。
+    let trae_link = env.home.join(".trae/skills/s");
+    assert_eq!(
+        fsops::read_link_target(&trae_link),
+        Some(fsops::normalize(&body)),
+        "trae 的链接应当已经落盘"
+    );
+    let st = c.store.load_state().unwrap().value;
+    let rec = st.installed.iter().find(|s| s.name == "s").unwrap();
+    assert!(
+        rec.links.iter().any(|l| Path::new(&l.dir) == env.home.join(".trae/skills")),
+        "trae 的链接必须进账: {:?}",
+        rec.links
+    );
+}
+
+/// R11:无账新建那一档的 `dir_content_hash` 必须挪到任何写盘调用之前算——
+/// 原先排在写盘全部完成之后,一旦这里失败,磁盘已经全部写完却建不出账,新技能
+/// 会永久停留在"我的技能"里看不到的状态。
+#[test]
+#[cfg(unix)]
+fn set_agents_computes_the_fresh_hash_before_touching_disk_for_a_new_account() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".claude/skills/s", "v1");
+    let secret = body.join("secret.txt");
+    std::fs::write(&secret, b"top secret").unwrap();
+    // 权限拒读,让 dir_content_hash 必然失败(不依赖磁盘满/断电这类难构造的故障)。
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let err = converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &["trae".into()], NOW).unwrap_err();
+
+    assert_eq!(err.code, "FS_HASH_FAILED");
+    // 磁盘零写入:hash 失败必须发生在任何 converge/canonical 调用之前。
+    assert!(
+        fsops::read_link_target(&env.home.join(".agents/skills/s")).is_none(),
+        "canonical 不该被建"
+    );
+    assert!(
+        std::fs::symlink_metadata(env.home.join(".trae/skills/s")).is_err(),
+        "trae 不该被建"
+    );
+    assert!(c.store.load_state().unwrap().value.installed.is_empty(), "账不该被写");
+
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+/// R11 位置②:`link_targets_for(&home, &wanted)` 这个**调用本身**失败
+/// (`wanted` 里混进注册表不认识的 agent 名)也不能中断——同样按 agent 名收进
+/// `results`,不拖垮整次调用。
+#[test]
+fn set_agents_does_not_abort_when_an_unknown_agent_name_is_requested() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".claude/skills/s", "v1");
+
+    let out = converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &["不存在的工具".into()], NOW).unwrap();
+
+    let SetAgentsOutcome::Done { results, .. } = out else {
+        panic!("expected Done, not an error")
+    };
+    assert!(
+        results.iter().any(|(a, r)| a == "不存在的工具" && r.is_err()),
+        "{results:?}"
+    );
+    let st = c.store.load_state().unwrap().value;
+    assert!(st.installed.iter().any(|s| s.name == "s"), "账应当已经落地,没有中途夭折");
+    assert!(body.join("SKILL.md").is_file());
+}
+
+/// R11 位置④:`link_targets_for(&home, &removed)` 这个调用本身失败(账上留着
+/// 注册表已经不认识的陈旧 agent 名,典型场景是跨版本注册表变化)也不能中断。
+#[test]
+fn set_agents_does_not_abort_when_the_account_has_a_stale_unknown_agent_name() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".claude/skills/s", "v1");
+    let mut state = state_with_body("s", &body);
+    state.installed[0].agents = vec!["claude-code".into(), "早已下线的工具".into()];
+    c.store.save_state(&state).unwrap();
+
+    let out = converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &[], NOW).unwrap();
+
+    let SetAgentsOutcome::Done { unlink_failed, .. } = out else {
+        panic!("expected Done, not an error")
+    };
+    assert!(
+        unlink_failed
+            .iter()
+            .any(|(a, e)| a == "早已下线的工具" && e.code == "FS_UNKNOWN_AGENT"),
+        "{unlink_failed:?}"
+    );
+    let st = c.store.load_state().unwrap().value;
+    assert!(st.installed.iter().any(|s| s.name == "s"), "账应当已经落地,没有中途夭折");
+}
+
+/// R11 位置①:`ensure_canonical_link`(本函数**第一处写盘**)自己失败也不能
+/// 中断——即便危害相对轻(`installer::uninstall` 对 canonical 是无条件摘、
+/// 不依赖 `state.links`),为了这条判据的完整性也一并收。
+#[test]
+fn set_agents_does_not_abort_when_the_canonical_link_itself_fails() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".claude/skills/s", "v1");
+    // ~/.agents 本身是一个普通文件——canonical 链接的父目录建不出来。
+    std::fs::write(env.home.join(".agents"), b"not a directory").unwrap();
+
+    let out = converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &["trae".into()], NOW).unwrap();
+
+    let SetAgentsOutcome::Done { canonical, results, .. } = out else {
+        panic!("expected Done, not an error")
+    };
+    assert!(canonical.is_err(), "{canonical:?}");
+    // trae 仍然成功建链、进账——不能因为 canonical 那一步失败就中途夭折。
+    assert!(
+        results
+            .iter()
+            .any(|(a, r)| a == "trae" && matches!(r, Ok(Converged::Linked { .. }))),
+        "{results:?}"
+    );
+    let trae_link = env.home.join(".trae/skills/s");
+    assert_eq!(fsops::read_link_target(&trae_link), Some(fsops::normalize(&body)));
+    let st = c.store.load_state().unwrap().value;
+    assert!(st.installed.iter().any(|s| s.name == "s"), "账应当已经落地,没有中途夭折");
+}
