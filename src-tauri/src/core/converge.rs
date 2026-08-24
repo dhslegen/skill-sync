@@ -29,15 +29,45 @@ use crate::core::installer::{Installer, SkillHome};
 use crate::core::state;
 use crate::error::AppError;
 
+/// 「这个技能在 `state.installed` 里的记账键」。**全仓唯一实现,别再手搓。**
+///
+/// 🔴 **记账键是清洗后的目录名,不是调用方手上的 `dir_slug`**(v6 二期任务 4
+/// 修复轮 1,I-1):`acquire::record` 写的是 `InstallReport::dir_name`
+/// = `SkillHome::dir_name` = `sanitize_name(dir_slug)`,而 `sanitize_name`
+/// **会小写化**;调用方手上的 `dir_slug` 则是 `store::IndexedSkill::dir_slug`
+/// ——**技能库里的原始目录名,一个字符都不清洗**。
+///
+/// 两者在全 ASCII 小写的技能上恰好相同(公司库 20 个技能全是这一档),
+/// 所以这条错位一直没人撞上;技能广场是任意 GitHub 仓,`Weekly-Report`
+/// 这样的目录名完全可能。撞上之后有两个后果,一个比一个隐蔽:
+/// 1. `locate` 查不到账 → 走无账路 → 工具目录里一份内容不同的杂散副本就让
+///    `precheck` 输出 `NeedsVersionChoice`,**自动更新静默停摆**(与本任务
+///    修掉的 `Located::Body` 判据缺陷是同一个形状,只是换了根轴);
+/// 2. 账上 `body` 为 `None`(本体在 canonical)且别处有一份**同内容**副本时,
+///    走无账路会让 [`choose_body`] **优先选非 canonical** → 本体被"搬"进
+///    `.claude/skills/`,**「本体永不搬家」这条承诺被打破,而且没问过用户**。
+///
+/// 实现刻意走 [`Installer::home`] 而不是直接调 `sanitize_name`:那样就是同一把
+/// 尺子的**第二份实现**,口径一漂两边照样各自全绿(本项目的空转模式 ①)。
+pub fn record_key(installer: &Installer<'_>, dir_slug: &str) -> Result<String, AppError> {
+    Ok(installer.home(dir_slug, None)?.dir_name)
+}
+
 /// 解析一个技能「住在哪里」:先查 `state.installed` 有没有记账过的 body,
 /// 没有(或没找到这条记账)就交给 [`Installer::home`] 落回 canonical 的默认值。
+///
+/// 查账用 [`record_key`],**不是 `dir_slug`**(理由见该函数)。
 pub fn home_of(installer: &Installer<'_>, state: &state::State, dir_slug: &str) -> Result<SkillHome, AppError> {
+    let base = installer.home(dir_slug, None)?;
     let recorded = state
         .installed
         .iter()
-        .find(|s| s.name == dir_slug)
+        .find(|s| s.name == base.dir_name)
         .and_then(|s| s.body.as_deref());
-    installer.home(dir_slug, recorded.map(Path::new))
+    match recorded {
+        None => Ok(base),
+        Some(body) => installer.home(dir_slug, Some(Path::new(body))),
+    }
 }
 
 // ============================================================ 定位
@@ -156,7 +186,8 @@ pub fn locate(
     // `Differs`,于是 `precheck` 退化成 `NeedsVersionChoice`、自动更新静默停摆,
     // `set_agents` 也会拿一个假的"版本分歧"把用户的勾选顶回去。
     // 本变体的文档从任务 3 起写的就是"**有账时恒为这一档**",实现当时对不上。
-    let recorded = state.installed.iter().find(|s| s.name == dir_slug);
+    // 查账键用 `home.dir_name`(= `record_key`),不是 `dir_slug`——理由见 `record_key`。
+    let recorded = state.installed.iter().find(|s| s.name == home.dir_name);
 
     if recorded.is_some() {
         let mut others = Vec::new();
@@ -465,7 +496,9 @@ pub fn keep_version(
     let content_hash = fsops::dir_content_hash(keep)?;
 
     let mut next = store.load_state()?.value;
-    let existing = next.installed.iter().find(|s| s.name == dir_slug);
+    // 查账/落账一律用 `home.dir_name`(= `record_key`),不是 `dir_slug`——见 `record_key`。
+    let key = home.dir_name.clone();
+    let existing = next.installed.iter().find(|s| s.name == key);
     let mut agents: Vec<String> = existing.map(|s| s.agents.clone()).unwrap_or_default();
     let mut link_records: Vec<state::LinkRecord> = existing.map(|s| s.links.clone()).unwrap_or_default();
 
@@ -537,7 +570,7 @@ pub fn keep_version(
     agents.sort();
     agents.dedup();
 
-    match next.installed.iter().position(|s| s.name == dir_slug) {
+    match next.installed.iter().position(|s| s.name == key) {
         Some(idx) => {
             let rec = &mut next.installed[idx];
             rec.body = Some(keep.to_string_lossy().into_owned());
@@ -547,7 +580,7 @@ pub fn keep_version(
             rec.updated_at = now.to_string();
         }
         None => next.installed.push(state::InstalledSkill {
-            name: dir_slug.to_string(),
+            name: key,
             source: empty_source(),
             commit_sha: String::new(),
             content_hash: content_hash.clone(),
@@ -766,7 +799,9 @@ pub fn set_agents(
     // 关系,所以后面直接拿它落账——不必写盘之后再 `position` 一次,更不必为
     // "刚才到底有没有账"留一个 `expect`(那是一条能在 Tauri command 里 panic
     // 的路,`parse_owner_repo` 的 expect 是前车之鉴)。
-    let existing_idx = next.installed.iter().position(|s| s.name == dir_slug);
+    // 查账/落账一律用 `home.dir_name`(= `record_key`),不是 `dir_slug`——见 `record_key`。
+    let key = home.dir_name.clone();
+    let existing_idx = next.installed.iter().position(|s| s.name == key);
     let existing = existing_idx.map(|i| &next.installed[i]);
     let existing_agents: Vec<String> = existing.map(|s| s.agents.clone()).unwrap_or_default();
     let mut link_records: Vec<state::LinkRecord> = existing.map(|s| s.links.clone()).unwrap_or_default();
@@ -869,7 +904,7 @@ pub fn set_agents(
             rec.updated_at = now.to_string();
         }
         None => next.installed.push(state::InstalledSkill {
-            name: dir_slug.to_string(),
+            name: key,
             source: empty_source(),
             commit_sha: String::new(),
             content_hash: fresh_content_hash,

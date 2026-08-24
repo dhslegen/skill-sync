@@ -1174,6 +1174,62 @@ fn keep_version_reports_a_failing_canonical_link_instead_of_swallowing_it() {
     assert_eq!(rec.body.as_deref(), Some(keep.to_str().unwrap()));
 }
 
+// ============================================================ 查账键(I-1,修复轮 1)
+//
+// 记账写的是**清洗后**的目录名(`sanitize_name` 会小写化),而调用方手上的
+// `dir_slug` 可能是技能库里带大写的原始目录名。全小写 fixture 下两把尺子恰好相同
+// ——**所以这两条必须用大写 slug**,否则等于没测。
+
+const MIXED: &str = "Weekly-Report";
+const MIXED_KEY: &str = "weekly-report";
+
+/// `set_agents` 查账/落账都用 `record_key`,不是 `dir_slug`。
+///
+/// 用错的后果:已有的那条账查不到 → 走"无账首次勾选"那一档 → **往
+/// `state.installed` 里推第二条同一个技能的记录**(键还是原始大写名),
+/// 从此这个技能在账上有两条、彼此覆盖不到,`remove` 只清得掉一条。
+#[test]
+fn set_agents_finds_the_existing_record_for_a_mixed_case_slug() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".claude/skills/weekly-report", "v1");
+    let mut state = state_with_body(MIXED_KEY, &body);
+    state.installed[0].commit_sha = "aaa1111".into();
+    c.store.save_state(&state).unwrap();
+
+    let r = converge::set_agents(&inst, &c.registry, &env, &c.store, MIXED, &["trae".into()], NOW).unwrap();
+    assert!(matches!(r, SetAgentsOutcome::Done { .. }), "{r:?}");
+
+    let st = c.store.load_state().unwrap().value;
+    assert_eq!(st.installed.len(), 1, "查账键错位会推出第二条重复记录: {:?}", st.installed);
+    assert_eq!(st.installed[0].name, MIXED_KEY, "记账键必须是清洗后的名字");
+    assert_eq!(
+        st.installed[0].commit_sha, "aaa1111",
+        "命中的应当是原来那条账(它的 sha 还在),不是新建的一条"
+    );
+}
+
+/// `keep_version` 同理:查账/落账都用 `record_key`。
+#[test]
+fn keep_version_finds_the_existing_record_for_a_mixed_case_slug() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let keep = skill_dir(&env.home, ".claude/skills/weekly-report", "v1");
+    let loser = skill_dir(&env.home, ".agents/skills/weekly-report", "v2");
+    let mut state = state_with_body(MIXED_KEY, &keep);
+    state.installed[0].commit_sha = "aaa1111".into();
+    c.store.save_state(&state).unwrap();
+
+    let r = converge::keep_version(&inst, &c.registry, &env, &c.store, MIXED, &keep, NOW).unwrap();
+    assert_eq!(r.body, keep.to_string_lossy());
+    assert_eq!(c.sandbox.trashed(), vec![loser.clone()]);
+
+    let st = c.store.load_state().unwrap().value;
+    assert_eq!(st.installed.len(), 1, "查账键错位会推出第二条重复记录: {:?}", st.installed);
+    assert_eq!(st.installed[0].name, MIXED_KEY);
+    assert_eq!(st.installed[0].commit_sha, "aaa1111", "命中的应当是原来那条账");
+}
+
 // ============================================================ IPC 序列化形状
 
 /// 🔴 `#[serde(rename_all = ...)]` 挂在**枚举**上只改 variant 名,**不改

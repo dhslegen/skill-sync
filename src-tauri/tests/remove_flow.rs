@@ -217,12 +217,17 @@ fn a_modified_skill_is_removed_in_one_step_and_stays_recoverable() {
     );
 }
 
-/// 纯本地技能(勾选工具时顺手建的 `adopted` 账,来源坐标全空)**不给移除**:
-/// 那是用户自己在工具目录里开发的东西,本应用没有资格把它丢进废纸篓。
+/// 🔴 纯本地技能(勾选工具时顺手建的 `adopted` 账,来源坐标全空)**照样能移除**
+/// (修复轮 1,R16 —— 撤回了上一版加的 `has_source()` 闸)。
+///
+/// 拦住它就是把已经做过的事做成死路:用户自己建的、勾过工具的技能在 app 里删不掉。
+/// 而这个动作本来就是可逆的(本体进废纸篓)。另外 v0.5.0 的 `acquire::claim` 在
+/// 绑不上来源时写的就是全空来源账,拦住会**误伤存量用户**。
 #[test]
-fn a_skill_with_no_library_source_refuses_to_be_removed() {
+fn a_skill_with_no_library_source_can_still_be_removed() {
     let (c, env) = ctx();
     install_one(&c, &env, "weekly-report");
+    let dir = canonical(&c, "weekly-report");
     let mut state = c.store.load_state().unwrap().value;
     state.installed[0].source = SkillSource {
         registry_id: String::new(),
@@ -231,14 +236,22 @@ fn a_skill_with_no_library_source_refuses_to_be_removed() {
         path: String::new(),
         git_ref: String::new(),
     };
+    state.installed[0].origin = Some(skillsync_lib::core::state::ORIGIN_ADOPTED.into());
     c.store.save_state(&state).unwrap();
 
-    let err = do_remove(&c, &env, "weekly-report").unwrap_err();
+    let RemoveOutcome::Removed { report, .. } = do_remove(&c, &env, "weekly-report").unwrap();
 
-    assert_eq!(err.code, "FS_NOT_ACQUIRED");
-    assert!(canonical(&c, "weekly-report").join("SKILL.md").is_file(), "本体被动了");
-    assert!(c.trash.trashed().is_empty(), "一个字节都不该进废纸篓");
-    assert_eq!(c.store.load_state().unwrap().value.installed.len(), 1, "账被清了");
+    assert!(report.canonical_removed, "本体没被送走");
+    assert_eq!(c.trash.trashed(), vec![dir.clone()], "本体必须经废纸篓,不能直接删");
+    assert!(!dir.exists(), "本体还在原地");
+    assert!(
+        std::fs::symlink_metadata(link(&c, "weekly-report")).is_err(),
+        "关联没摘掉——这正是拦住它会让用户没辙的那一条"
+    );
+    assert!(
+        c.store.load_state().unwrap().value.installed.is_empty(),
+        "账没清干净"
+    );
 }
 
 #[test]
@@ -545,4 +558,63 @@ fn removing_also_clears_the_shared_baseline_it_leaves_behind() {
     // 只清自己那条:别的技能的记账不许被误伤
     assert_eq!(after.shared.len(), 1);
     assert_eq!(after.shared[0].local_path, canonical(&c, "meeting-notes").to_string_lossy());
+}
+
+// ============================================================ 查账键(I-1,修复轮 1)
+
+/// `remove` 查账用的是**清洗后**的目录名,不是调用方手上的 `dir_slug`。
+///
+/// 今天界面传过来的一直是记账名(「我的技能」那一行就是 `state.installed[].name`),
+/// 所以这条错位在生产上还碰不到;但同一把钥匙在 `locate`/`home_of`/批量更新那三处
+/// **已经真的错过**(见 acquire_flow / converge_flow 的 mixed_case 用例)。
+/// 四处用同一个 `converge::record_key`,这条把 remove 那一处钉住。
+#[test]
+fn removing_by_a_mixed_case_dir_slug_still_finds_the_record() {
+    let (c, env) = ctx();
+    install_one(&c, &env, "weekly-report");
+    assert_eq!(
+        c.store.load_state().unwrap().value.installed[0].name,
+        "weekly-report",
+        "前置:记账键是清洗后的名字"
+    );
+
+    // 技能库里的目录名带大写,调用方原样传进来
+    let RemoveOutcome::Removed { report, .. } = do_remove(&c, &env, "Weekly-Report").unwrap();
+
+    assert!(report.canonical_removed);
+    assert!(!canonical(&c, "weekly-report").exists(), "本体还在");
+    assert!(
+        std::fs::symlink_metadata(link(&c, "weekly-report")).is_err(),
+        "关联还在"
+    );
+    assert!(c.store.load_state().unwrap().value.installed.is_empty(), "账没清");
+}
+
+// ============================================================ IPC 序列化形状
+
+/// M-3(修复轮 1):`RemoveOutcome` 的字段今天是 `report`/`lock` 两个单词,不会变形
+/// ——但**将来加一个带下划线的字段时会静默复发**任务 4 抓到的那个缺陷
+/// (`rename_all` 挂在枚举上只改 variant 名,不改 struct variant 的字段名)。
+/// 补一条正面断言把 `rename_all_fields` 钉住,别等下一个人再踩一遍。
+#[test]
+fn remove_outcome_serializes_with_camel_case_field_names() {
+    let v = serde_json::to_value(RemoveOutcome::Removed {
+        report: skillsync_lib::core::installer::UninstallReport {
+            dir_name: "weekly-report".into(),
+            unlinks: Vec::new(),
+            canonical_removed: true,
+        },
+        lock: "written".into(),
+    })
+    .unwrap();
+
+    assert_eq!(v["outcome"], "removed", "{v}");
+    assert_eq!(v["lock"], "written", "{v}");
+    // 嵌套的 UninstallReport 是 struct,`rename_all` 在 struct 上确实改字段名
+    assert_eq!(v["report"]["dirName"], "weekly-report", "{v}");
+    assert_eq!(v["report"]["canonicalRemoved"], true, "{v}");
+    // 键的完整集合:多一个少一个都要有人知道(避免"只断言存在"那种空转)
+    let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort();
+    assert_eq!(keys, vec!["lock", "outcome", "report"], "{v}");
 }

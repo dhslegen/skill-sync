@@ -283,9 +283,15 @@ async fn a_fresh_install_immediately_reads_back_as_unmodified() {
 }
 
 /// 同一条等式在本体不在 canonical 时依然成立——`dir_content_hash` 只看目录内容,
-/// 与目录物理位置无关。当前的 `acquire` 编排永远把本体落在 canonical(还没有任何
-/// 写入路径会填 `state.installed[].body`),所以这条不走 `acquire`,直接摆一个
-/// body 在工具目录里的 `SkillHome`,验证底层不变量在那个位置上依然成立。
+/// 与目录物理位置无关。这条**不走 `acquire`**,直接摆一个 body 在工具目录里的
+/// `SkillHome`,把不变量钉在 `Installer` 这一层。
+///
+/// (v6 二期任务 4 修复轮 1 订正:原注释写着"当前的 `acquire` 编排永远把本体落在
+/// canonical、还没有任何写入路径会填 `state.installed[].body`"——任务 4 之后这句
+/// 反了,`AlreadyHere` / `LocalDiffers+Overwrite` 两条路都会把本体落在工具目录里
+/// 并把位置写进账。走 `acquire` 的那一档由
+/// `a_local_dir_identical_to_the_library_is_adopted_without_writing_its_body`
+/// 与 `update_of_a_body_living_in_a_tool_dir_...` 覆盖。)
 #[test]
 fn hash_equality_holds_even_when_the_body_lives_outside_canonical() {
     let (c, env) = ctx();
@@ -1207,6 +1213,31 @@ fn plant_draft(home: &Path, rel_dir: &str, slug: &str, body: &str) -> PathBuf {
     dir
 }
 
+/// 造一条**全空来源坐标**的记账(任务 3 起,勾选工具 / 版本拍板给纯本地技能建的
+/// `adopted` 账就是这个形状)。`content_hash` 是真值——"勾的那一刻的快照"。
+fn seed_sourceless_record(c: &Ctx, slug: &str, body: &Path) {
+    let mut state = c.store.load_state().map(|l| l.value).unwrap_or_default();
+    state.installed.push(skillsync_lib::core::state::InstalledSkill {
+        name: slug.to_string(),
+        source: skillsync_lib::core::state::SkillSource {
+            registry_id: String::new(),
+            owner: String::new(),
+            repo: String::new(),
+            path: String::new(),
+            git_ref: String::new(),
+        },
+        commit_sha: String::new(),
+        content_hash: fsops::dir_content_hash(body).unwrap(),
+        origin: Some(skillsync_lib::core::state::ORIGIN_ADOPTED.into()),
+        body: Some(body.to_string_lossy().into_owned()),
+        agents: vec!["claude-code".into()],
+        links: Vec::new(),
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    });
+    c.store.save_state(&state).unwrap();
+}
+
 /// 索引缓存里这个技能的内容指纹(acquire 会顺带把缓存刷到同一版本)。
 fn index_hash(c: &Ctx, slug: &str) -> String {
     let cache = skillsync_lib::core::store::cache_path(c.store.dir(), REGISTRY, &repo_ref());
@@ -1243,6 +1274,12 @@ async fn a_local_dir_identical_to_the_library_is_adopted_without_writing_its_bod
         "本体必须留在原地,账上要记住它在哪"
     );
     assert_eq!(rec.content_hash, index_hash(&c, "weekly-report"), "基线等于索引指纹");
+    // 刻意分了两个 origin 值,就该有断言——否则这段代码删掉也没人知道(修复轮 1,M-4)
+    assert_eq!(
+        rec.origin.as_deref(),
+        Some(skillsync_lib::core::state::ORIGIN_ADOPTED),
+        "本地已有一份、只是记账建链,来历该记 adopted 而不是 acquired"
+    );
     assert!(c.trash.trashed().is_empty(), "内容相同,一个字节都不该进废纸篓");
     assert_eq!(std::fs::read(body.join("SKILL.md")).unwrap(), before, "本体被重写了");
 
@@ -1578,38 +1615,24 @@ async fn the_recorded_hash_is_computed_from_the_body_not_from_the_canonical_link
     assert!(!rec.content_hash.is_empty());
 }
 
-/// 🔴 R10:纯本地技能的记账用的是**全空的来源坐标**(任务 3 起,勾选工具 /
-/// 版本拍板时顺手建的 `adopted` 账)。空 owner 与任何真实 owner 都不相等——
-/// `OtherLibrary` 那一档不先问一句 `has_source()` 的话,商店里同名技能点获取
-/// **必然**被告知「同名技能已从 / 获取」,而它压根没有装自任何技能库。
+/// 🔴 R10 + R14:纯本地技能的记账用的是**全空的来源坐标**(任务 3 起,勾选工具 /
+/// 版本拍板时顺手建的 `adopted` 账)。它有两件事都不能做:
+///
+/// 1. **不能被说成「装自另一个技能库」**(R10):空 owner 与任何真实 owner 都不相等,
+///    不过滤的话商店里同名技能点获取**必然**得到那句假话——它压根没装自任何技能库;
+/// 2. **不能享有 `Managed` 的"无决策直接覆盖"**(R14,修复轮 1):`Managed` 的语义前提
+///    是"记账里的内容来自技能库,覆盖是安全的",而空来源账的 `content_hash` 只是
+///    "勾的那一刻的快照"。它必须走与**无账**完全相同的内容比对分档
+///    (`AlreadyHere` / `LocalDiffers`),该问的要问。
 #[tokio::test]
-async fn a_record_with_no_library_source_is_never_called_another_library() {
+async fn a_record_with_no_library_source_walks_the_same_path_as_no_record() {
     let server = MockServer::start().await;
     mount(&server, "aaa1111", "weekly-report", "库里的正文").await;
     let (c, env) = ctx();
 
     // 现场:用户在 Claude Code 下开发这个技能,勾过工具 → 一条来源全空的 adopted 账
     let body = plant_draft(&c.home, ".claude/skills", "weekly-report", "我的草稿");
-    let mut state = c.store.load_state().map(|l| l.value).unwrap_or_default();
-    state.installed.push(skillsync_lib::core::state::InstalledSkill {
-        name: "weekly-report".into(),
-        source: skillsync_lib::core::state::SkillSource {
-            registry_id: String::new(),
-            owner: String::new(),
-            repo: String::new(),
-            path: String::new(),
-            git_ref: String::new(),
-        },
-        commit_sha: String::new(),
-        content_hash: fsops::dir_content_hash(&body).unwrap(),
-        origin: Some(skillsync_lib::core::state::ORIGIN_ADOPTED.into()),
-        body: Some(body.to_string_lossy().into_owned()),
-        agents: vec!["claude-code".into()],
-        links: Vec::new(),
-        installed_at: NOW.into(),
-        updated_at: NOW.into(),
-    });
-    c.store.save_state(&state).unwrap();
+    seed_sourceless_record(&c, "weekly-report", &body);
 
     let installer = skillsync_lib::core::installer::Installer::new(&c.registry, &env);
     let state = c.store.load_state().unwrap().value;
@@ -1629,16 +1652,246 @@ async fn a_record_with_no_library_source_is_never_called_another_library() {
         !matches!(checked, Precheck::OtherLibrary { .. }),
         "来源全空的账被当成了「另一个技能库」: {checked:?}"
     );
-    // ⚠️ **落进 `Managed` 这件事本身是待拍板的**(R10 只说了它"不该说什么",
-    // 没说该落进哪一档):`Managed` 的前提是"覆盖是安全的",而那建立在
-    // "记账里的内容来自技能库"上,对一份纯本地草稿并不成立——同样的内容差异
-    // 在**无账**时走的是 `LocalDiffers`(要问用户),一问一不问。
-    // 这里断言当前实现,不是断言它就该如此;拍板之后连同这句注释一起改。
     assert_eq!(
         checked,
-        Precheck::Managed { installed_sha: String::new(), up_to_date: false },
-        "当前实现:跳过 OtherLibrary 之后按内容比对落进 Managed"
+        Precheck::LocalDiffers { existing: body.to_string_lossy().into_owned() },
+        "内容与库里不同 → 必须两选,不能落进 Managed 被无决策覆盖"
     );
+}
+
+/// R14 的端到端:草稿**不会**被静默换掉。
+///
+/// 这是这条裁定的全部价值——修复轮 1 之前,同一现场 `acquire` 会一路走到
+/// `Managed{up_to_date:false}` → `needs_decision` 不含它 → **直接 install**,
+/// 用户的草稿本体进废纸篓,全程没问过一句。
+#[tokio::test]
+async fn a_sourceless_draft_is_never_overwritten_without_a_decision() {
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "库里的正文").await;
+    let (c, env) = ctx();
+    let body = plant_draft(&c.home, ".claude/skills", "weekly-report", "我的草稿");
+    seed_sourceless_record(&c, "weekly-report", &body);
+
+    let outcome = run(&server, &c, &env, "weekly-report", &["claude-code".to_string()], None)
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(
+            outcome,
+            acquire::AcquireOutcome::NeedsDecision { precheck: Precheck::LocalDiffers { .. } }
+        ),
+        "草稿必须停下来问,实际: {outcome:?}"
+    );
+    assert!(
+        std::fs::read_to_string(body.join("SKILL.md")).unwrap().contains("我的草稿"),
+        "拍板之前草稿被动过了"
+    );
+    assert!(c.trash.trashed().is_empty(), "拍板之前一个字节都不该进废纸篓");
+}
+
+/// R14 的另一半:空来源账 + 内容与库里**逐字节相同** → `AlreadyHere`(无损,直接办)。
+///
+/// 与上一条是同一条判据的两个方向:该问的问、不该问的不问。
+#[tokio::test]
+async fn a_sourceless_record_whose_content_matches_is_adopted_not_rewritten() {
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "正文").await;
+    let (c, env) = ctx();
+    let body = plant_identical_skill(&c.home, ".claude/skills", "weekly-report", "正文");
+    seed_sourceless_record(&c, "weekly-report", &body);
+
+    let outcome = run(&server, &c, &env, "weekly-report", &["claude-code".to_string()], None)
+        .await
+        .unwrap();
+
+    assert!(matches!(outcome, acquire::AcquireOutcome::Installed { .. }), "{outcome:?}");
+    assert!(c.trash.trashed().is_empty(), "内容一样,一个字节都不该进废纸篓");
+    let st = c.store.load_state().unwrap().value;
+    let rec = st.installed.iter().find(|s| s.name == "weekly-report").unwrap();
+    assert_eq!(rec.source.owner, "skills", "收编之后来源要落到库坐标上");
+    assert_eq!(rec.commit_sha, "aaa1111");
+}
+
+// ============================================================ 查账键(I-1,修复轮 1)
+//
+// 记账写的是**清洗后**的目录名(`sanitize_name` 会小写化),而调用方手上的
+// `dir_slug` 是**技能库里的原始目录名**。两把尺子在全 ASCII 小写的技能上恰好相同
+// ——**所以全小写 fixture 测不出任何东西**,这两条一律用大写 slug。
+// 公司库 20 个技能都是小写,但技能广场是任意 GitHub 仓。
+
+const MIXED: &str = "Weekly-Report";
+/// `sanitize_name("Weekly-Report")`,也就是记账键与磁盘目录名。
+const MIXED_KEY: &str = "weekly-report";
+
+#[tokio::test]
+async fn a_mixed_case_dir_slug_still_finds_its_record_on_the_next_acquire() {
+    // 与 `a_recorded_skill_with_a_stray_differing_copy_still_updates_normally` 同一现场,
+    // 只是技能库里的目录名带大写。查账键一错就走无账路 →
+    // 一份杂散副本让 precheck 输出 NeedsVersionChoice → **自动更新静默停摆**。
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", MIXED, "第一版").await;
+    let (c, env) = ctx();
+    let agents = vec!["claude-code".to_string()];
+    run(&server, &c, &env, MIXED, &agents, None).await.unwrap();
+
+    let st = c.store.load_state().unwrap().value;
+    assert_eq!(st.installed[0].name, MIXED_KEY, "前置:记账键是清洗后的名字");
+
+    // 摘掉链接,原位放一份内容不同的实体
+    let link = c.home.join(".claude").join("skills").join(MIXED_KEY);
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_dir(&link);
+    let stray = plant_draft(&c.home, ".claude/skills", MIXED_KEY, "杂散副本");
+
+    let server2 = MockServer::start().await;
+    mount(&server2, "bbb2222", MIXED, "第二版").await;
+    let outcome = run(&server2, &c, &env, MIXED, &agents, None).await.unwrap();
+
+    assert!(
+        matches!(outcome, acquire::AcquireOutcome::Installed { .. }),
+        "大写目录名让查账失效 → 退化成需要拍板: {outcome:?}"
+    );
+    assert!(
+        std::fs::read_to_string(canonical(&c.home, MIXED_KEY).join("SKILL.md"))
+            .unwrap()
+            .contains("第二版"),
+        "更新没落到本体上"
+    );
+    assert!(
+        std::fs::read_to_string(stray.join("SKILL.md")).unwrap().contains("杂散副本"),
+        "杂散副本一个字节都不该被动"
+    );
+}
+
+#[tokio::test]
+async fn a_mixed_case_dir_slug_never_lets_the_body_move_house() {
+    // 更隐蔽的那个后果:账上 `body = None`(本体在 canonical)+ 别处有一份**同内容**
+    // 副本时,查账键一错就走无账路 → `choose_body` **优先非 canonical** → 本体被
+    // "搬"进 `.claude/skills/`(原 canonical 实体进废纸篓、换成链接)。
+    // 内容没丢(可逆),但「本体永不搬家」这条承诺被打破,而且没问过用户。
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", MIXED, "正文").await;
+    let (c, env) = ctx();
+    run(&server, &c, &env, MIXED, &[], None).await.unwrap();
+
+    let body = canonical(&c.home, MIXED_KEY);
+    assert!(body.join("SKILL.md").is_file(), "前置:本体落在 canonical");
+    let st = c.store.load_state().unwrap().value;
+    assert_eq!(st.installed[0].body, None, "前置:本体就在 canonical,账上不记 body");
+
+    // 别的工具目录里放一份与本体**逐字节相同**的副本
+    let dup = plant_identical_skill(&c.home, ".trae/skills", MIXED_KEY, "正文");
+    assert_eq!(
+        fsops::dir_content_hash(&dup).unwrap(),
+        fsops::dir_content_hash(&body).unwrap(),
+        "前置:两份内容必须逐字节相同,否则测的是另一档"
+    );
+
+    run(&server, &c, &env, MIXED, &[], None).await.unwrap();
+
+    assert!(
+        fsops::read_link_target(&body).is_none() && body.join("SKILL.md").is_file(),
+        "本体被搬走了:canonical 上现在是一条链接而不是实体"
+    );
+    assert_eq!(
+        fsops::read_link_target(&dup),
+        Some(fsops::normalize(&body)),
+        "方向反了——副本应当被收成指向 canonical 本体的链接,而不是反过来"
+    );
+    let st = c.store.load_state().unwrap().value;
+    assert_eq!(st.installed[0].body, None, "账上的本体位置被改指到了别处");
+    // ⚠️ 刻意不断言"canonical 没进废纸篓":这一轮走的是正常更新
+    // (`Managed`),`Installer::install` 本来就是"旧本体进废纸篓 → rename",
+    // canonical 出现在废纸篓里是**对的**。要钉的是"本体还在原地",
+    // 上面三条断言(canonical 仍是实体 / 副本指向它 / 账上 body 仍为 None)才是判据。
+}
+
+#[tokio::test]
+async fn a_mixed_case_dir_slug_updates_the_body_where_the_books_say_it_lives() {
+    // 第三个后果,专钉 `home_of` 那把钥匙:账上明明记着本体住在 `.claude/skills/`,
+    // 查账键一错就读不到那条 `body`,更新会落回 canonical ——
+    // **本体被搬回 canonical,原地那份变成一份没人管的陈旧实体**。
+    // (前两条测试钉的是 `locate` 那把钥匙,`home_of` 这把在它们的现场恰好不影响结果。)
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", MIXED, "正文").await;
+    let (c, env) = ctx();
+    let body = plant_identical_skill(&c.home, ".claude/skills", MIXED_KEY, "正文");
+    let agents = vec!["claude-code".to_string()];
+    run(&server, &c, &env, MIXED, &agents, None).await.unwrap(); // AlreadyHere → 记账
+
+    let st = c.store.load_state().unwrap().value;
+    assert_eq!(
+        st.installed[0].body.as_deref(),
+        Some(body.to_string_lossy().as_ref()),
+        "前置:账上必须记着本体住在工具目录里"
+    );
+
+    let server2 = MockServer::start().await;
+    mount(&server2, "bbb2222", MIXED, "第二版").await;
+    run(&server2, &c, &env, MIXED, &agents, None).await.unwrap();
+
+    assert!(
+        std::fs::read_to_string(body.join("SKILL.md")).unwrap().contains("第二版"),
+        "更新没写在账上记的那个位置——本体被搬走了"
+    );
+    assert_eq!(
+        fsops::read_link_target(&canonical(&c.home, MIXED_KEY)),
+        Some(fsops::normalize(&body)),
+        "canonical 应当仍是一条指向本体的链接,而不是又装了一份实体"
+    );
+    let st = c.store.load_state().unwrap().value;
+    assert_eq!(st.installed.len(), 1, "更新不该再追加一条记录");
+    assert_eq!(
+        st.installed[0].body.as_deref(),
+        Some(body.to_string_lossy().as_ref()),
+        "账上的本体位置被改指了"
+    );
+}
+
+/// 批量的 `FromAccount` 档(定时更新)同样按 `record_key` 查账。
+///
+/// 用错的后果:大写目录名的技能在**每一轮定时更新**里都被判成「未安装,已跳过」
+/// ——它明明就装着,却永远收不到更新,而且界面上什么异常都看不出来。
+#[tokio::test]
+async fn batch_from_account_finds_the_record_for_a_mixed_case_slug() {
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", MIXED, "第一版").await;
+    let (c, env) = ctx();
+    run(&server, &c, &env, MIXED, &["claude-code".to_string()], None).await.unwrap();
+
+    let server2 = MockServer::start().await;
+    mount(&server2, "bbb2222", MIXED, "第二版").await;
+    let client = GiteaClient::new(server2.uri(), None).unwrap();
+    let items = acquire::acquire_batch(
+        &client,
+        &c.registry,
+        &env,
+        &c.store,
+        acquire::SourceMeta { registry_id: REGISTRY, kind: "gitea", base_url: &server2.uri() },
+        &repo_ref(),
+        &[MIXED.to_string()],
+        acquire::BatchAgents::FromAccount,
+        NOW,
+        1_753_800_000,
+        &c.trash,
+    )
+    .await
+    .unwrap();
+
+    match &items[0].outcome {
+        acquire::BatchOutcome::Installed { .. } => {}
+        other => panic!("装着的技能被定时更新判成没装,实际: {other:?}"),
+    }
+    assert!(
+        std::fs::read_to_string(canonical(&c.home, MIXED_KEY).join("SKILL.md"))
+            .unwrap()
+            .contains("第二版"),
+        "更新没落盘"
+    );
+    let st = c.store.load_state().unwrap().value;
+    assert_eq!(st.installed.len(), 1);
+    assert_eq!(st.installed[0].commit_sha, "bbb2222");
 }
 
 // ============================================================ IPC 序列化形状

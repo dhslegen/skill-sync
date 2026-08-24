@@ -235,7 +235,22 @@ pub fn precheck(
     // 本体一定在(不在已经早退成 Fresh),传真实值即 true
     let mine = is_mine(&ctx, true);
 
-    let Some(recorded) = state.installed.iter().find(|s| s.name == dir_name) else {
+    // 🔴 **空来源账不算"从技能库装的",一律走无账那条路**(v6 二期任务 4 修复轮 1,
+    // R14)。`Managed` 的语义是"从某个技能库装的、且与安装时一致,覆盖是安全的
+    // (这就是更新)",而全空来源的 `adopted` 账(任务 3 起,勾选工具 / 版本拍板
+    // 时顺手建的)**不满足这个前提**:它的 `content_hash` 只是"勾的那一刻的快照",
+    // 不是"从库里装下来的那一版"。不过滤掉的话,`commit_sha` 为空 → `up_to_date`
+    // 恒 false → `Managed{up_to_date:false}` → `needs_decision` 不含它 →
+    // **用户的纯本地草稿被无决策直接覆盖**(内容进废纸篓可逆,但没问过一句)。
+    //
+    // 过滤之后 `OtherLibrary` 那一档就不必再问一次 `has_source()` 了——同一条规则
+    // 查两遍是本项目的空转模式 ①,多余那道闸会吞掉注入信号。
+    let recorded = state
+        .installed
+        .iter()
+        .find(|s| s.name == dir_name)
+        .filter(|r| r.has_source());
+    let Some(recorded) = recorded else {
         // 🔴 v6 的核心修复:**作者永远进不了"这不是本应用装的"那一档**。用户自己写的
         // 技能、直接推进技能库(或换电脑后重装的 app)在本地没有任何记账,旧代码据此
         // 告诉他"这个位置上的技能不是本应用安装的"——app 把自己的作者当成了外人。
@@ -266,13 +281,11 @@ pub fn precheck(
     // 这一档**不受 `Mine` 影响**:两个库里的同名技能是两个东西,哪怕两边的作者
     // 都是我,"用另一个库的同名技能替换掉现有的"仍然必须由用户拍板。
     //
-    // 🔴 **先问一句 `has_source()`**(v6 二期任务 4,R10):任务 3 起,纯本地技能
-    // (勾选工具 / 版本拍板时顺手建的 `adopted` 账)用的是**全空的来源坐标**。
-    // 空 owner 与任何真实 owner 都不相等,不判这一句的话,商店里同名技能点获取
-    // **必然**得到「这个技能已装自另一个技能库」——而它压根没有装自任何技能库,
-    // 那是假话。
+    // 走到这里的 `recorded` 一定有来源坐标(上面已按 `has_source()` 过滤),所以
+    // 这里直接比 owner/repo 就够——空来源账不会落到这一档说出「这个技能已装自
+    // 另一个技能库」那句假话(它压根没有装自任何技能库)。
     if let Some(t) = target {
-        if recorded.has_source() && (recorded.source.owner != t.owner || recorded.source.repo != t.repo) {
+        if recorded.source.owner != t.owner || recorded.source.repo != t.repo {
             return Ok(Precheck::OtherLibrary {
                 installed_sha: recorded.commit_sha.clone(),
                 source_owner: recorded.source.owner.clone(),
@@ -744,9 +757,9 @@ fn merge_converged_others(
     use crate::core::installer::{LinkReport, LinkResult};
     let grouped = registry.group_by_global_dir(env);
     for other in others {
-        if other == &home.body {
-            continue;
-        }
+        // 不必再判 `other == home.body`:`locate` 给出的 `others` 已经排除了 body,
+        // 而 `converge` 自己还有 `SameLocation` 早退。同一条规则查三遍是本项目的
+        // 空转模式 ①,多余的闸会吞掉注入信号(修复轮 1,M-7)。
         let Some(dir) = other.parent() else { continue };
         let result = match crate::core::converge::converge(installer, other, &home.body) {
             Ok(Converged::Linked { mode }) => LinkResult::Linked { mode },
@@ -893,6 +906,8 @@ fn install_one_from_archive(
     // 每轮重新读 state:上一轮的记账已经写回,拿旧快照会互相覆盖
     let run = || -> Result<BatchOutcome, AppError> {
         let loaded = store.load_state()?;
+        // 查账键是**清洗后**的目录名,不是 `dir_slug`(见 `converge::record_key`)。
+        let key = crate::core::converge::record_key(installer, dir_slug)?;
         let located = crate::core::converge::locate(installer, registry, env, &loaded.value, dir_slug)?;
         let (existing_body, others) = match located {
             crate::core::converge::Located::Body { body, others } if body.is_dir() => (Some(body), others),
@@ -906,8 +921,7 @@ fn install_one_from_archive(
         let agent_names: Vec<String> = match agents {
             BatchAgents::Uniform(list) => list.to_vec(),
             BatchAgents::FromAccount => {
-                let Some(record) = loaded.value.installed.iter().find(|s| s.name == *dir_slug)
-                else {
+                let Some(record) = loaded.value.installed.iter().find(|s| s.name == key) else {
                     return Ok(BatchOutcome::Skipped {
                         reason: "未安装,已跳过".into(),
                     });

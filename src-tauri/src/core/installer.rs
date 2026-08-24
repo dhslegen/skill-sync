@@ -253,9 +253,19 @@ impl<'a> Installer<'a> {
     /// canonical 技能目录:`~/.agents/skills/<清洗后的 slug>`。
     ///
     /// `dir_slug` 是**技能在仓库中的目录名**(如 `skills/docx-to-markdown` 取 `docx-to-markdown`),
-    /// 不是 frontmatter 里的 `name`——对齐上游远端安装路径(`installer.ts:640` 用的是
-    /// `installName: entry.name`,即条目目录名)。真实公司技能库 20 个技能全为 ASCII kebab-case,
-    /// 与该约定一致;中文展示名由 frontmatter 提供,不参与目录命名。
+    /// 不是 frontmatter 里的 `name`。
+    ///
+    /// ⚠️ **这是一次刻意的分叉,不是"对齐上游"**(2026-08-19 查上游产物证伪了原来那句
+    /// 「对齐 `installer.ts:640` 的 `installName: entry.name`」,CLAUDE.md 已记):上游
+    /// 1.5.20/1.5.23 的远端安装两条路**都用 frontmatter `name`**,它自己是自洽的;
+    /// 分叉的是本 app。理由换成了真的——目录名是 `store::build_index` 的索引键、
+    /// `state.installed` 的记账键与 `.skill-lock.json` 键的**同一把尺子**,内部自洽;
+    /// 而 frontmatter `name` 可以被作者随时改掉(改了就等于换了个技能),当键不稳。
+    /// 官方判据另见 CLAUDE.md「命名与目录」:Claude Code 里调用名来自**目录名**,
+    /// frontmatter `name` 只是显示标签。
+    ///
+    /// 真实公司技能库 20 个技能全为 ASCII kebab-case,两个口径在那批技能上恰好相同;
+    /// 中文展示名由 frontmatter 提供,不参与目录命名。
     ///
     /// 经 [`sanitize_name`] 清洗(与上游、与 `.skill-lock.json` 的键同一套规则);
     /// 清洗后已不可能含路径分隔符,`safe_join` 是第二道防线。
@@ -457,7 +467,6 @@ impl<'a> Installer<'a> {
     /// 替换由 [`crate::core::converge::converge`] 先比对内容再决定(同→进废纸篓
     /// 换链接,异→停下问用户),不再由调用方传一个裸的布尔开关。
     pub fn link_only(&self, home: &SkillHome, agent_names: &[String]) -> Result<InstallReport, AppError> {
-        let on_occupied = OnOccupied::Fail;
         if !home.body.is_dir() {
             return Err(AppError::new(
                 "FS_MISSING_SKILL",
@@ -466,7 +475,7 @@ impl<'a> Installer<'a> {
             .with_detail(format!("body absent: {}", home.body.display())));
         }
         let targets = self.link_targets_for(home, agent_names)?;
-        let mut links = self.link_all(&home.body, &home.dir_name, targets, on_occupied);
+        let mut links = self.link_all(&home.body, &home.dir_name, targets, OnOccupied::Fail);
         if !home.body_is_canonical() {
             links.push(self.canonical_link(home));
         }

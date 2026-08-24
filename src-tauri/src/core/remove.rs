@@ -42,12 +42,18 @@ pub enum RemoveOutcome {
 
 /// 移除一个已安装的技能:解除全部关联,本体进废纸篓,清账。
 ///
-/// **只服务"从技能库获取的技能"**(判据 [`crate::core::state::InstalledSkill::has_source`])。
-/// 🔴 纯本地技能(用户自己在工具目录里开发的,任务 3 起勾选工具会顺手给它建一条
-/// 全空来源的 `adopted` 账)**必须在这里拒绝**:否则用户在 Claude Code 里正开发的
-/// 技能,只因为点过一次勾就获得了一个「移除」按钮,点下去本体就进了废纸篓——
-/// 那不是本应用该替他做的决定。界面上也不该摆这个按钮(任务 5),core 这一层
-/// 是不靠界面形状的第二道。
+/// 🔴 **不按来源分档:纯本地技能(全空来源的 `adopted` 账)照样能移除**
+/// (v6 二期任务 4 修复轮 1,R16——**撤回了本任务上一版加的 `has_source()` 闸**)。
+/// 三条理由:
+/// 1. 这个动作已经是**可逆**的(本体进废纸篓)且界面上有确认,保护到位了;
+/// 2. 拦住它就是**把已经做过的事做成死路**——用户自己建的、勾过工具的技能在
+///    app 里删不掉,而这个项目的用户明确反对过这种形状(v5 原话:
+///    「装过的也能装,保留足够权利」);
+/// 3. 会**误伤存量**:v0.5.0 的 `acquire::claim` 在绑不上来源时写的就是全空来源账,
+///    升级后这批用户会从此摘不掉那些关联,而退路(逐个取消勾选)并不显然。
+///
+/// `has_source()` 的用途因此收窄到两处,都在 [`crate::core::acquire::precheck`]:
+/// `OtherLibrary` 的判据,以及"空来源账不享有 `Managed` 的无决策直接覆盖"。
 pub fn remove(
     installer: &Installer<'_>,
     env: &dyn AgentEnv,
@@ -57,7 +63,9 @@ pub fn remove(
     // 删本体期间的文件事件不上报——那是本应用自己干的,界面已经会刷新
     let _quiet = crate::core::watcher::app_write();
     let loaded = store.load_state()?;
-    let Some(idx) = loaded.value.installed.iter().position(|s| s.name == dir_slug) else {
+    // 查账键是**清洗后**的目录名,不是调用方手上的 `dir_slug`(见 `converge::record_key`)。
+    let key = crate::core::converge::record_key(installer, dir_slug)?;
+    let Some(idx) = loaded.value.installed.iter().position(|s| s.name == key) else {
         return Err(AppError::new(
             "FS_NOT_INSTALLED",
             "这个技能不在已获取列表中,可能已被移除",
@@ -65,13 +73,6 @@ pub fn remove(
         .with_detail(format!("not in state.installed: {dir_slug}")));
     };
     let record = &loaded.value.installed[idx];
-    if !record.has_source() {
-        return Err(AppError::new(
-            "FS_NOT_ACQUIRED",
-            "这个技能不是从技能库获取的,要删除请直接在文件夹里删",
-        )
-        .with_detail(format!("no source recorded for {dir_slug}")));
-    }
 
     let home = crate::core::converge::home_of(installer, &loaded.value, dir_slug)?;
 
