@@ -882,6 +882,48 @@ mod tests {
         assert_eq!(fs::read_to_string(target.join("SKILL.md")).unwrap(), "本体");
     }
 
+    // ---- same_intended_location(v6 二期任务 3 补测:此前只有经调用方的间接覆盖)----
+
+    #[test]
+    #[cfg(unix)]
+    fn same_intended_location_treats_a_symlinked_ancestor_as_equal_before_the_leaf_exists() {
+        // 祖先目录是软链、叶子尚不存在:macOS `/var` -> `/private/var` 这类场景的缩影。
+        // 这一档两个函数应当**结论一致**——它们的差别只体现在"叶子本身是我们自建的链接"
+        // 这一种形状(见下一条测试),不体现在祖先软链上。
+        let tmp = tempfile::tempdir().unwrap();
+        let real_base = tmp.path().join("real_base");
+        fs::create_dir_all(&real_base).unwrap();
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(&real_base, &alias).unwrap();
+
+        let via_alias = alias.join("s"); // 叶子尚不存在
+        let via_real = real_base.join("s");
+
+        assert!(same_intended_location(&via_alias, &via_real));
+        assert!(same_physical_path(&via_alias, &via_real), "这一档两者应当一致");
+    }
+
+    #[test]
+    fn same_intended_location_disagrees_with_same_physical_path_once_a_link_exists() {
+        // 叶子本身是一条已建好的链接:这正是 `same_intended_location` 存在的理由
+        // ——`same_physical_path` 连叶子一起 realpath,会"看穿" canonical 指向 body 的链接,
+        // 把两者判成同一处;`same_intended_location` 只解析父目录、保留叶子名,
+        // 不会被我们自己建的链接影响,因而给出不同的结论。
+        let tmp = tempfile::tempdir().unwrap();
+        let body = skill_dir(tmp.path(), "body", "内容");
+        let canonical = tmp.path().join("canonical").join("s");
+        link_dir(&body, &canonical, default_link_chain(), OnOccupied::Fail).unwrap();
+
+        assert!(
+            same_physical_path(&body, &canonical),
+            "same_physical_path 连叶子一起解析,应当看穿链接判成同一处"
+        );
+        assert!(
+            !same_intended_location(&body, &canonical),
+            "same_intended_location 保留叶子名,body 与 canonical/s 不是同一处写法"
+        );
+    }
+
     // ---- 解链 ----
 
     #[test]
