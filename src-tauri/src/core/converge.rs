@@ -545,6 +545,16 @@ pub enum SetAgentsOutcome {
         results: Vec<(String, Converged)>,
         /// 被摘掉关联的 agent 名单(本体不受影响)。
         unlinked: Vec<String>,
+        /// 摘链失败的 agent 名单及原因(审查修复轮 2 I4③)。
+        ///
+        /// **收集而非用 `?` 中断**:摘链循环之后还有 `store.save_state`,一旦
+        /// 半途中断,循环里已经成功建好的链接(尤其是本次 `wanted` 新增的那批)
+        /// 会因为 `save_state` 没跑到而"磁盘已经动了、账却没存"——`remove::remove`
+        /// 只按 `state.links` 摘链,这批链接从此摘不掉,留下一地悬空链接。
+        /// 与 `installer::uninstall` 把每条解链结果收进 `UnlinkReport`、不是
+        /// 遇错即抛同一姿势:摘不掉的位置(比如账上记的是链接、外部却把它换成了
+        /// 一个实体目录)如实回报给界面,不吞、也不让它拖垮整次调用。
+        unlink_failed: Vec<(String, AppError)>,
     },
 }
 
@@ -579,8 +589,16 @@ fn missing_skill_error(dir_slug: &str) -> AppError {
 /// 🔴 **I4**:每一条成功的收敛(含 canonical 那条)都并进 `rec.links`(见
 /// [`merge_link_record`]),否则 `remove::remove` 找不到这些链接、摘不掉;
 /// `removed` 摘链时若账上记的是 `copy` 档,走废纸篓而不是 `unlink_dir`——后者
-/// 对实体目录(降级复制的产物)一律拒绝,不特判会让整个 `set_agents` 在这里
-/// 中途夭折,而前面已建好的链接因为 `store.save_state` 还没跑到,一条都不会进账。
+/// 对实体目录(降级复制的产物)一律拒绝。
+///
+/// 🔴 **I4③**(审查修复轮 2):摘链失败——不管是账上记 `copy` 但没走废纸篓分支
+/// 那种,还是账上记 `symlink`、外部却把那个位置换成了实体目录那种(两者都会让
+/// `unlink_dir`/`trash_tree` 报错)——一律**收集进 [`SetAgentsOutcome::Done::
+/// unlink_failed`]**,不用 `?` 中断循环。中断的代价不只是这一条摘不掉:
+/// `store.save_state` 排在整个摘链循环**之后**,一旦中途 `?` 返回,连
+/// `wanted` 循环里刚建好的新链接(比如同一次调用里新勾选的另一个工具)都会
+/// 因为没跑到 `save_state` 而"磁盘已经动了、账却没存"——那条新链接从此不在
+/// `rec.links` 里,`remove::remove` 永远摘不掉它。
 pub fn set_agents(
     installer: &Installer<'_>,
     registry: &AgentRegistry,
@@ -654,6 +672,7 @@ pub fn set_agents(
     }
 
     let mut unlinked = Vec::new();
+    let mut unlink_failed: Vec<(String, AppError)> = Vec::new();
     for target in installer.link_targets_for(&home, &removed)? {
         let link = target.dir.join(&home.dir_name);
         // I4:账上记的是 copy 档时,磁盘上那个位置是**实体目录**(降级复制的产物)。
@@ -662,14 +681,29 @@ pub fn set_agents(
         let recorded_copy = link_records
             .iter()
             .any(|l| Path::new(&l.dir) == target.dir.as_path() && l.mode == "copy");
-        let removed_ok = if recorded_copy {
-            fsops::trash_tree(installer.trasher(), &link)?
+        let result = if recorded_copy {
+            fsops::trash_tree(installer.trasher(), &link)
         } else {
-            fsops::unlink_dir(&link)?
+            fsops::unlink_dir(&link)
         };
-        if removed_ok {
-            link_records.retain(|l| Path::new(&l.dir) != target.dir.as_path());
-            unlinked.extend(target.agents.iter().cloned());
+        // 审查修复轮 2 I4③:**收集失败,不用 `?` 中断**。同一个结构问题不止
+        // Copy 档一种触发方式——账上记的是 symlink,但外部(用户自己、或别的
+        // 工具)把那个位置换成了一个实体目录,`unlink_dir` 一样会报
+        // `FS_NOT_A_LINK`。若在这里 `?` 直接返回,循环里**已经处理过的**
+        // targets(包括上面 `wanted` 循环新建的链接)全部还没来得及
+        // `store.save_state`,于是"磁盘已经动了、账却没存"——新勾选的工具的
+        // 链接会飘在磁盘上,`remove::remove` 只认账,永远摘不掉它。
+        match result {
+            Ok(true) => {
+                link_records.retain(|l| Path::new(&l.dir) != target.dir.as_path());
+                unlinked.extend(target.agents.iter().cloned());
+            }
+            Ok(false) => {}
+            Err(err) => {
+                for agent_name in &target.agents {
+                    unlink_failed.push((agent_name.clone(), err.clone()));
+                }
+            }
         }
     }
 
@@ -702,5 +736,6 @@ pub fn set_agents(
         canonical,
         results,
         unlinked,
+        unlink_failed,
     })
 }

@@ -628,9 +628,19 @@ mod tests {
         assert!(!adopted.has_source(), "adopted 账三个字段全空");
 
         // 三选一漏填也算没有来源——不是"三者都空才算没有",是"三者都非空才算有"。
-        let mut partial = full.clone();
-        partial.source.owner = String::new();
-        assert!(!partial.has_source());
+        // 三个字段各自单独试一遍(审查修复轮 2:此前只单独试了 owner 一个,
+        // 把实现削成只看 owner 照样绿,是本项目最贵的一类问题——空转测试)。
+        let mut missing_registry_id = full.clone();
+        missing_registry_id.source.registry_id = String::new();
+        assert!(!missing_registry_id.has_source(), "registry_id 空应当为 false");
+
+        let mut missing_owner = full.clone();
+        missing_owner.source.owner = String::new();
+        assert!(!missing_owner.has_source(), "owner 空应当为 false");
+
+        let mut missing_repo = full;
+        missing_repo.source.repo = String::new();
+        assert!(!missing_repo.has_source(), "repo 空应当为 false");
     }
 
     #[test]

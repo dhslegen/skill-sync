@@ -318,13 +318,16 @@ fn set_agents_adds_links_removes_links_and_never_removes_the_body_tool() {
 
     // 试图取消本体所在的 claude-code:静默保留,账上 agents 仍含 claude-code。
     let st = c.store.load_state().unwrap().value;
-    assert!(st
-        .installed
-        .iter()
-        .find(|s| s.name == "s")
-        .unwrap()
-        .agents
-        .contains(&"claude-code".to_string()));
+    let rec = st.installed.iter().find(|s| s.name == "s").unwrap();
+    assert!(rec.agents.contains(&"claude-code".to_string()));
+    // I2 的反向(审查修复轮 2):trae 被取消之后必须真的从账上 agents 里消失,
+    // 不能只删磁盘链接、账上还留着——`rec.agents = wanted` 是覆盖写,这条正面
+    // 断言把它钉住(此前只测了"没被覆盖掉的那一半",覆盖语义本身没人守)。
+    assert!(
+        !rec.agents.contains(&"trae".to_string()),
+        "trae 取消之后必须从账上 agents 消失: {:?}",
+        rec.agents
+    );
 }
 
 #[test]
@@ -417,7 +420,12 @@ fn keep_version_rejects_a_path_that_is_not_a_candidate() {
     let inst = c.installer(&env);
     let a = skill_dir(&env.home, ".claude/skills/s", "v1");
     let b = skill_dir(&env.home, ".agents/skills/s", "v2");
-    let unrelated = skill_dir(&env.home, ".elsewhere/other", "v9");
+    // ⚠️ 叶子名必须是 "s"(与 dir_slug 同名)——审查修复轮 2:此前叶子名是
+    // "other",会被 `installer::home` 既有的叶子名守卫(`FS_BAD_BODY`)先兜住,
+    // 注入去掉 C1 判据后依旧报错,测试"看起来"钉住了,实际没测到 C1 本身要挡的
+    // 那个洞。真正危险的形状是**同叶子名**的无关目录——那种形状下没有旁的守卫
+    // 能兜底,零报错、两处本体全进废纸篓、账上写成无关路径。
+    let unrelated = skill_dir(&env.home, ".elsewhere/s", "v9");
     let missing = env.home.join(".nowhere/skills/s");
 
     let before_a = fsops::dir_content_hash(&a).unwrap();
@@ -428,7 +436,17 @@ fn keep_version_rejects_a_path_that_is_not_a_candidate() {
     let err2 = converge::keep_version(&inst, &c.registry, &env, &c.store, "s", &missing, NOW).unwrap_err();
     assert_eq!(err2.code, "FS_BAD_VERSION_CHOICE");
 
-    assert!(a.is_dir() && b.is_dir(), "两处真实本体都不该被动");
+    // `is_dir()` 单独不是有效断言:被注入的那种破坏恰恰是把 a/b 换成指向
+    // `unrelated` 的链接,而 `unrelated` 本身是个真实目录,`is_dir()` 会跟着
+    // 链接走、照样返回 true。真正拦得住的是"没被换成链接"+"内容没变"。
+    assert!(
+        a.is_dir() && fsops::read_link_target(&a).is_none(),
+        "a 应当仍是原地的实体目录,没被换成链接"
+    );
+    assert!(
+        b.is_dir() && fsops::read_link_target(&b).is_none(),
+        "b 应当仍是原地的实体目录,没被换成链接"
+    );
     assert_eq!(fsops::dir_content_hash(&a).unwrap(), before_a);
     assert_eq!(fsops::dir_content_hash(&b).unwrap(), before_b);
     assert!(c.sandbox.trashed().is_empty(), "磁盘零写入");
@@ -670,3 +688,66 @@ fn converge_reports_differs_without_touching_disk_when_target_is_a_file() {
 fn choose_body_debug_asserts_on_an_empty_slice() {
     let _ = converge::choose_body(&[], Path::new("/canon"), &[]);
 }
+
+// ============================================================ 审查修复轮 2
+
+/// I4③(定向复审抓到的结构性问题,不是 I4 的 Copy 特例):账上记的是
+/// `symlink`,但外部(用户自己、或别的工具)把那个位置换成了一个实体目录——
+/// `unlink_dir` 一样会报 `FS_NOT_A_LINK`。摘链循环之后还有 `store.save_state`,
+/// 若用 `?` 中断,循环里(以及更早的 `wanted` 循环)已经成功建好的链接——包括
+/// 这次调用**同时新勾选**的另一个工具——会因为没跑到 `save_state` 而
+/// "磁盘已经动了、账却没存"。必须收集失败、不中断,新链接照常进账。
+#[test]
+fn set_agents_still_records_new_links_when_an_unrelated_removal_fails() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".claude/skills/s", "v1");
+
+    converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &["trae".into()], NOW).unwrap();
+    let trae_link = env.home.join(".trae/skills/s");
+    assert!(fsops::read_link_target(&trae_link).is_some(), "sanity: trae 目前是链接");
+
+    // 外部把这条链接换成了一个实体目录,账上仍记着 symlink。
+    fsops::unlink_dir(&trae_link).unwrap();
+    std::fs::create_dir_all(&trae_link).unwrap();
+    std::fs::write(trae_link.join("SKILL.md"), skill_md("v9")).unwrap();
+
+    // 取消 trae、同时勾上 trae-cn(不同目录的另一个工具)。
+    let out = converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &["trae-cn".into()], NOW).unwrap();
+
+    let SetAgentsOutcome::Done {
+        results,
+        unlinked,
+        unlink_failed,
+        ..
+    } = out
+    else {
+        panic!("expected Done, not an error——不该被这一条摘链失败拖垮整个调用")
+    };
+
+    // ① 不 panic、不吞错:trae 的摘链失败如实回报,没有被算进 unlinked。
+    assert!(
+        unlink_failed.iter().any(|(a, e)| a == "trae" && e.code == "FS_NOT_A_LINK"),
+        "trae 摘链失败必须如实出现在结果里: {unlink_failed:?}"
+    );
+    assert!(!unlinked.contains(&"trae".to_string()));
+
+    // ② 新勾的 trae-cn 已经进账——不能因为 trae 那条失败就中途夭折。
+    assert!(matches!(&results[0], (a, Converged::Linked { .. }) if a == "trae-cn"));
+    let trae_cn_link = env.home.join(".trae-cn/skills/s");
+    assert_eq!(
+        fsops::read_link_target(&trae_cn_link),
+        Some(fsops::normalize(&body)),
+        "trae-cn 的链接应当已经落盘"
+    );
+    let st = c.store.load_state().unwrap().value;
+    let rec = st.installed.iter().find(|s| s.name == "s").unwrap();
+    assert!(
+        rec.links
+            .iter()
+            .any(|l| Path::new(&l.dir) == env.home.join(".trae-cn/skills")),
+        "trae-cn 的链接必须进账,否则 remove 找不到它: {:?}",
+        rec.links
+    );
+}
+
