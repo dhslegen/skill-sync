@@ -307,7 +307,11 @@ fn link_failed(link: &Path, detail: &str) -> AppError {
 }
 
 /// 词法归一化:消掉 `.` 与 `..`,不访问文件系统。
-fn normalize(path: &Path) -> PathBuf {
+///
+/// **不做 realpath**:不解析软链、不展开家目录之类的软链祖先。任务 2/3 的测试用它
+/// 断言链接目标时,断言的是"词法上写的是哪条路径",不是"这条路径最终解析到哪"
+/// ——两者在家目录本身是软链的机器上会给出不同答案,断言 realpath 会漏判。
+pub fn normalize(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
     for c in path.components() {
@@ -536,7 +540,12 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Re
 
 /// 复制时排除的条目(上游 installer.ts:423)。`metadata.json` 是上游安装器自己的记账文件,
 /// 目录三项则是绝不该随技能分发的构建/版本控制产物。
-const EXCLUDE_FILES: &[&str] = &["metadata.json"];
+///
+/// `.DS_Store` / `Thumbs.db` / `desktop.ini` 是三大平台的文件管理器(访达/资源管理器)
+/// 自己随手生成的系统元文件——在技能目录里打开过一次就会冒出来,与技能内容毫无关系。
+/// 不排除的后果是内容指纹漂移,界面对着一个字节没改过的技能永远误报"你改过这个技能"
+/// (v6 二期任务 1 修的真实缺陷,原先记在 CLAUDE.md「待处理」的"功能缺口"一节)。
+const EXCLUDE_FILES: &[&str] = &["metadata.json", ".DS_Store", "Thumbs.db", "desktop.ini"];
 const EXCLUDE_DIRS: &[&str] = &[".git", "__pycache__", "__pypackages__"];
 
 /// 列出目录下全部文件的相对路径(排序后),排除清单与 [`dir_content_hash`] / [`copy_dir`] 同一套。
@@ -594,6 +603,100 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+// ============================================================ 废纸篓(v6 二期)
+//
+// 铁律 7「绝不静默删除用户文件」在此前一直靠"删之前问一遍用户"落实
+// (ConflictDialog/RemoveDialog 的确认弹窗)。但确认框本身不是可逆性——用户手滑点了
+// "确定"、或者程序逻辑判断错了,东西照样没了。进废纸篓是同一条铁律更彻底的落点:
+// 就算前面的确认这一关没拦住,用户仍能在系统废纸篓里把文件捞回来。
+// 抽象成 trait 是为了让"实体目录/文件都进真实系统废纸篓"这件事在测试里可控——
+// 系统废纸篓是进程外的真实状态,单测不该也不能依赖它,故留 `SandboxTrash` 只在
+// 临时目录内部"移动",验证的是编排逻辑(链接摘链接、实体目录进篓),不验证操作系统本身。
+
+/// 把一个路径移进废纸篓的能力。抽象出来是为了测试可控——真实实现调操作系统 API,
+/// 测试用 [`SandboxTrash`] 在临时目录内部模拟。
+pub trait Trasher: Sync {
+    /// 把 `path`(实体目录或文件)移进废纸篓。失败必须报错,**绝不**回退成删除
+    /// ——静默降级成删除等于让这一层抽象白做了,用户以为能找回、实际上找不回。
+    fn trash(&self, path: &Path) -> Result<(), AppError>;
+}
+
+/// 生产环境实现:调系统废纸篓(macOS Finder / Windows 回收站 / Linux XDG trash)。
+pub struct SystemTrash;
+
+/// 无状态,全局唯一实例,调用方直接 `&SYSTEM_TRASH` 即可、不必每次 new。
+pub static SYSTEM_TRASH: SystemTrash = SystemTrash;
+
+impl Trasher for SystemTrash {
+    fn trash(&self, path: &Path) -> Result<(), AppError> {
+        trash::delete(path).map_err(|e| {
+            AppError::new("FS_TRASH_FAILED", "没能把文件移到废纸篓,请手动处理后重试")
+                .with_detail(format!("trash {}: {e}", path.display()))
+        })
+    }
+}
+
+/// 测试用实现:把路径 `rename` 进一个临时目录,而不是调真实系统 API。
+///
+/// 记录每次成功的调用(`trashed()`),供测试断言"进了几次废纸篓、进的是谁"。
+pub struct SandboxTrash {
+    pub into: PathBuf,
+    calls: std::sync::Mutex<Vec<PathBuf>>,
+}
+
+impl SandboxTrash {
+    pub fn new(into: impl Into<PathBuf>) -> Self {
+        Self {
+            into: into.into(),
+            calls: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn trashed(&self) -> Vec<PathBuf> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl Trasher for SandboxTrash {
+    fn trash(&self, path: &Path) -> Result<(), AppError> {
+        let trash_failed = |e: std::io::Error| {
+            AppError::new("FS_TRASH_FAILED", "没能把文件移到废纸篓,请手动处理后重试")
+                .with_detail(format!("sandbox trash {}: {e}", path.display()))
+        };
+        std::fs::create_dir_all(&self.into).map_err(trash_failed)?;
+        let name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+        let mut dest = self.into.join(&name);
+        // 同名已存在(同一批测试反复丢同名目录)时另起一个后缀,不覆盖上一份。
+        let mut n = 1;
+        while dest.exists() {
+            dest = self.into.join(format!("{}.{n}", name.to_string_lossy()));
+            n += 1;
+        }
+        std::fs::rename(path, &dest).map_err(trash_failed)?;
+        self.calls.lock().unwrap().push(path.to_path_buf());
+        Ok(())
+    }
+}
+
+/// 把一个路径挪进废纸篓:链接只摘链接(废纸篓收不到"链接"这个东西,摘掉才是正确语义,
+/// 且绝不能把目标本体一起带进废纸篓);实体目录/文件真的进废纸篓。返回是否确有东西被处理。
+///
+/// 调用方须自行确保这是本 app 的目录——本函数不做归属判断(与 [`remove_tree`] 同一取舍)。
+pub fn trash_tree(trasher: &dyn Trasher, path: &Path) -> Result<bool, AppError> {
+    if link_kind_at(path).is_some() {
+        return unlink(path).map(|()| true);
+    }
+    if std::fs::symlink_metadata(path).is_err() {
+        return Ok(false);
+    }
+    trasher.trash(path).map(|()| true)
+}
+
+/// 两个目录的 [`dir_content_hash`] 是否相等。
+pub fn same_content(a: &Path, b: &Path) -> Result<bool, AppError> {
+    Ok(dir_content_hash(a)? == dir_content_hash(b)?)
 }
 
 #[cfg(test)]
@@ -938,6 +1041,25 @@ mod tests {
     }
 
     #[test]
+    fn system_metadata_files_never_enter_the_content_hash() {
+        // 「待处理」记的真实缺陷:访达/资源管理器打开过某技能目录就会生成
+        // .DS_Store/Thumbs.db/desktop.ini,不排除的话内容指纹会漂移,
+        // 界面永远误报"你改过这个技能"。
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("s");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "---\nname: s\ndescription: d\n---\n").unwrap();
+        let before = dir_content_hash(&dir).unwrap();
+        for junk in [".DS_Store", "Thumbs.db", "desktop.ini"] {
+            std::fs::write(dir.join(junk), b"\x00\x01").unwrap();
+        }
+        assert_eq!(dir_content_hash(&dir).unwrap(), before, "系统元文件不得改变指纹");
+        // 对照组:真正的文件必须改变指纹
+        std::fs::write(dir.join("extra.md"), "x").unwrap();
+        assert_ne!(dir_content_hash(&dir).unwrap(), before);
+    }
+
+    #[test]
     fn missing_directory_is_an_error_not_a_silent_empty_hash() {
         // 静默返回"空目录的 hash"会让"技能被整个删掉"看起来像"没有改动"。
         let tmp = tempfile::tempdir().unwrap();
@@ -1033,5 +1155,63 @@ mod tests {
         assert_eq!(fs::read_to_string(link.join("SKILL.md")).unwrap(), "新内容");
         // 换链不得动到旧目标的内容
         assert_eq!(fs::read_to_string(old.join("SKILL.md")).unwrap(), "旧内容");
+    }
+
+    // ---- 废纸篓 ----
+
+    #[test]
+    fn trash_tree_only_unlinks_links_and_trashes_real_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sandbox = SandboxTrash::new(tmp.path().join(".trash"));
+        let real = tmp.path().join("real");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("SKILL.md"), "x").unwrap();
+        let link = tmp.path().join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        #[cfg(windows)]
+        junction::create(&real, &link).unwrap();
+
+        assert!(trash_tree(&sandbox, &link).unwrap());
+        assert!(fs::symlink_metadata(&link).is_err(), "链接被摘掉");
+        assert!(real.join("SKILL.md").is_file(), "摘链接不碰本体");
+        assert!(sandbox.trashed().is_empty(), "链接不进废纸篓");
+
+        assert!(trash_tree(&sandbox, &real).unwrap());
+        assert!(!real.exists(), "实体目录从原位消失");
+        assert_eq!(sandbox.trashed(), vec![real.clone()]);
+        assert!(sandbox.into.join("real").join("SKILL.md").is_file(), "沙盒里可找回");
+
+        assert!(!trash_tree(&sandbox, &tmp.path().join("nope")).unwrap());
+    }
+
+    #[test]
+    fn trash_failure_never_falls_back_to_deletion() {
+        struct Broken;
+        impl Trasher for Broken {
+            fn trash(&self, _: &Path) -> Result<(), AppError> {
+                Err(AppError::new(
+                    "FS_TRASH_FAILED",
+                    "没能把文件移到废纸篓,请手动处理后重试",
+                ))
+            }
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        fs::create_dir_all(&real).unwrap();
+        let err = trash_tree(&Broken, &real).unwrap_err();
+        assert_eq!(err.code, "FS_TRASH_FAILED");
+        assert!(real.is_dir(), "失败时原地不动");
+    }
+
+    #[test]
+    fn same_content_compares_dir_content_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = skill_dir(tmp.path(), "a", "正文");
+        let b = skill_dir(tmp.path(), "b", "正文");
+        assert!(same_content(&a, &b).unwrap(), "内容相同应判定相同");
+
+        fs::write(b.join("SKILL.md"), "改过的正文").unwrap();
+        assert!(!same_content(&a, &b).unwrap(), "内容不同应判定不同");
     }
 }

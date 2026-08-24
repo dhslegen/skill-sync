@@ -62,6 +62,13 @@ tracing-appender = "0.2"
 # Windows 用 ReadDirectoryChangesW、Linux 用 inotify,都由 notify 按平台自选。
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 tauri-plugin-dialog = "2"
+# v6 二期(技能归属模型):从"直接删"改成"移进系统废纸篓"(core::fsops::Trasher)。
+# 可逆是"少问用户"的地基——铁律 7 绝不静默删用户文件,进废纸篓意味着用户误删/误操作后
+# 自己在 Finder/资源管理器的废纸篓里就能找回,不必依赖本 app 再问一遍"确定吗"。
+# 5.x 是取 cargo add 当时(2026-08-24)解析到的最新兼容版本,按平台走系统原生废纸篓 API
+# (macOS Finder.app AppleScript / Windows Shell API / Linux XDG trash 规范),
+# 不引入任何需要网络访问的能力。
+trash = "5.2.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "4.1.5", default-features = false, features = [
