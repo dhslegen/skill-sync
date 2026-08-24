@@ -13,6 +13,7 @@ use crate::core::app_update::{self, AppUpdateStatus, ReadyState};
 use crate::core::auth::{self, CredentialStore, KeyringStore, OAuthConfig};
 use crate::core::builtin;
 use crate::core::create;
+use crate::core::converge;
 use crate::core::watcher;
 use crate::core::gitea::{GiteaClient, RepoRef};
 use crate::core::github;
@@ -26,6 +27,7 @@ use crate::core::registry::{self, BUILTIN_REGISTRY_ID};
 use crate::core::remove;
 use crate::core::scheduler;
 use crate::core::share;
+use crate::core::skills;
 use crate::core::session::{self, BrowserOpener, SessionStatus, SessionUser};
 use crate::core::state;
 use crate::core::store::{self, SkillDetail, StoreIndexView};
@@ -322,7 +324,13 @@ pub async fn app_restart(app: tauri::AppHandle) {
 ///    之间有一个目标路径不存在的瞬间,那期间上报会让前端读到技能凭空消失的状态
 ///    (靠 `watcher::app_write()` 守卫 + 静默期);
 /// 2. **起不来只记日志,不拦启动**——与托盘图标同款姿态,降级到级别 1 与 2;
-/// 3. **绝不创建用户没要求的目录**——canonical 不在就盯父目录,父目录也不在就不起。
+/// 3. **绝不创建用户没要求的目录**——canonical 不在就盯父目录,父目录也不在就不起;
+///    工具目录不存在就不盯(也不退到它的父目录,那是别的工具的家,噪音太大)。
+///
+/// v6 二期任务 5 起**盯多个根**:canonical + 每个已存在的工具全局技能目录
+/// ——本体从此可以住在 `~/.claude/skills/` 这类地方,只盯 canonical 就等于对
+/// 最典型的编辑场景视而不见。「盯哪些」与「哪些算数」是两份清单,见
+/// `core::watcher` 模块头。
 pub fn spawn_watcher(app: tauri::AppHandle) {
     use notify::{RecursiveMode, Watcher};
 
@@ -331,13 +339,26 @@ pub fn spawn_watcher(app: tauri::AppHandle) {
         tracing::info!("跳过技能目录监听: 找不到用户主目录");
         return;
     };
-    let Some(root) = watcher::watch_root(&canonical) else {
+    let tool_dirs: Vec<std::path::PathBuf> = registry
+        .group_by_global_dir(&SystemEnv)
+        .into_keys()
+        .filter(|d| d != &canonical)
+        .collect();
+    let watch_list = watcher::watch_roots(&canonical, &tool_dirs);
+    if watch_list.is_empty() {
         tracing::info!(
             path = %canonical.display(),
             "跳过技能目录监听: 目录还不存在(装第一个技能后重启即可生效)"
         );
         return;
-    };
+    }
+    // 「关心哪些变更」与「盯哪些目录」刻意是两份清单:canonical 不存在时盯的是
+    // 它的父目录 `~/.agents`,而那里的 `.skill-lock.json` 与技能列表无关。
+    // 工具目录**与存不存在无关**都进这份清单——它们此刻不存在就产生不了事件,
+    // 而将来在被盯着的父目录下出现时,这份清单正好认得它。
+    let interest: Vec<std::path::PathBuf> = std::iter::once(canonical.clone())
+        .chain(tool_dirs)
+        .collect();
 
     std::thread::spawn(move || {
         // 先钉死单调时钟的基准,再开始收事件——否则第一次调用 now_ms() 的地方
@@ -351,18 +372,32 @@ pub fn spawn_watcher(app: tauri::AppHandle) {
                 return;
             }
         };
-        if let Err(e) = w.watch(&root, RecursiveMode::Recursive) {
-            tracing::warn!(error = %e, path = %root.display(), "技能目录监听注册失败");
+        // 🔴 一个根注册失败**不能拖垮其余的根**(多根之后新出现的风险):
+        // 原先是 `return`,一个工具目录刚好被删掉/权限不对,canonical 就一起不盯了。
+        let mut watched = 0usize;
+        for root in &watch_list {
+            match w.watch(root, RecursiveMode::Recursive) {
+                Ok(()) => {
+                    watched += 1;
+                    tracing::info!(path = %root.display(), "技能目录监听已启动");
+                }
+                Err(e) => tracing::warn!(error = %e, path = %root.display(), "技能目录监听注册失败"),
+            }
+        }
+        if watched == 0 {
+            tracing::warn!("技能目录监听一个根都没注册上,降级到窗口焦点刷新");
             return;
         }
-        tracing::info!(path = %root.display(), "技能目录监听已启动");
 
         let mut debouncer = watcher::Debouncer::default();
         loop {
             // 收事件用 TICK 超时轮询:既能及时收,又能在没有新事件时检查防抖是否到点
             match rx.recv_timeout(watcher::TICK) {
                 Ok(Ok(event)) => {
-                    if event.paths.iter().any(|p| watcher::is_interesting(&canonical, p)) {
+                    if let Some(p) = event.paths.iter().find(|p| watcher::is_interesting(&interest, p)) {
+                        // 多根之后,"事件来自哪个根"是排查时唯一有用的线索
+                        // (`RUST_LOG=skillsync=debug` 才打;默认档一个字不多写)。
+                        tracing::debug!(path = %p.display(), "技能目录有变更");
                         debouncer.record(watcher::now_ms());
                     }
                 }
@@ -1505,6 +1540,24 @@ pub struct InstalledSkillView {
     pub source_label: Option<String>,
     /// 各关联目录的健康态(universal agent 不建链,不在此列)。
     pub links: Vec<installer::LinkHealthReport>,
+    /// 本体现在住在哪(绝对路径);第 4 源(只在库里、本地没有)是空串。
+    /// 「本体永不搬动」这条承诺在界面上的落点——用户要能看见技能就在他自己那个
+    /// 文件夹里,而不是被告知一个他从没听说过的 canonical 路径。
+    pub body: String,
+    /// 本体此刻的**实时**内容指纹(读不出来留空)。与 `content_hash`(**安装那一刻
+    /// 的基线**,无记账的行恒为空)是两样东西——没有基线的行要回答"本地与库里
+    /// 一不一样",只能靠它。
+    pub local_hash: String,
+    /// 各工具的启用态。**这组勾的唯一真相**,不是 `agents`(那是账上的期望态,
+    /// 会把本体所在目录的整组 agent 并进去,还会把建链失败的目标留在里面)。
+    /// 口径见 `my_skills::tools_of`;前端再按 `agents_detected` 收窄到已探测的。
+    pub tools: Vec<my_skills::ToolView>,
+    /// 这个技能眼下有几份内容不同的实体(含本体自己)。空 = 没有分歧;
+    /// 非空时要让用户拍板留哪份(`skill_keep_version`)。
+    pub versions: Vec<converge::Version>,
+    /// 分享前的标准校验没过的话,是哪一条(v6 二期 A-2:不合格不让分享,
+    /// 但照常显示 + 说明哪不合格 + 给「打开文件夹」的出口)。`None` = 可以分享。
+    pub share_blocked: Option<skills::ShareBlock>,
 }
 
 /// 一个已装技能的来源还通不通(M4 任务 2)。返回 `(source_removed, library_removed)`。
@@ -1551,6 +1604,11 @@ impl From<my_skills::InstalledRow> for InstalledSkillView {
             local_present: r.local_present,
             source_label: r.source_label,
             links: r.links,
+            body: r.body,
+            local_hash: r.local_hash,
+            tools: r.tools,
+            versions: r.versions,
+            share_blocked: r.share_blocked,
         }
     }
 }

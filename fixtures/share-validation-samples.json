@@ -1,0 +1,110 @@
+{
+  "_comment": "「能不能分享出去」的口径契约,Rust 与前端**共读这一份**。判据是 Agent Skills 开放标准(https://agentskills.io/specification):name 必填、必须等于文件夹名、只能是 lowercase a-z / 0-9 / 连字符且不首尾连字符不连续连字符;文件夹名同规则;description 必填、1-1024 个 Unicode 标量。Rust 侧 core/skills.rs 的 validate_for_share、前端 lib/share-validation.ts 各有一条测试读本表——任一侧口径漂了,那一侧的测试就红。expect 的取值是 ShareBlock 序列化后的字面量,或 \"ok\"。判定顺序也由本表钉住:dirFormat 先于 nameFormat(第 4 条),nameFormat 先于 nameMismatch(第 3 条)。",
+  "samples": [
+    {
+      "dir": "weekly-report",
+      "name": "weekly-report",
+      "description": "生成周报",
+      "expect": "ok",
+      "why": "标准形状,全部通过"
+    },
+    {
+      "dir": "react-best-practices",
+      "name": "vercel-react-best-practices",
+      "description": "x",
+      "expect": "nameMismatch",
+      "why": "两侧格式都合法,但 name 不等于文件夹名(广场实测 47 个里 8 个是这一档)"
+    },
+    {
+      "dir": "ceshi",
+      "name": "测试",
+      "description": "x",
+      "expect": "nameFormat",
+      "why": "name 是中文;它同时也不等于文件夹名,期望值钉住 nameFormat 先判"
+    },
+    {
+      "dir": "Weekly-Report",
+      "name": "Weekly-Report",
+      "description": "x",
+      "expect": "dirFormat",
+      "why": "大写;name 同样不合格,期望值钉住 dirFormat 先判"
+    },
+    {
+      "dir": "a--b",
+      "name": "a--b",
+      "description": "x",
+      "expect": "dirFormat",
+      "why": "连续连字符"
+    },
+    {
+      "dir": "-lead",
+      "name": "-lead",
+      "description": "x",
+      "expect": "dirFormat",
+      "why": "首连字符"
+    },
+    {
+      "dir": "trail-",
+      "name": "trail-",
+      "description": "x",
+      "expect": "dirFormat",
+      "why": "尾连字符"
+    },
+    {
+      "dir": "a_b",
+      "name": "a_b",
+      "description": "x",
+      "expect": "dirFormat",
+      "why": "下划线:本地文件夹名(sanitize 不动点)放行,分享标准不放行——两把尺子刻意不同"
+    },
+    {
+      "dir": "ok",
+      "name": null,
+      "description": "x",
+      "expect": "nameMissing",
+      "why": "frontmatter 没有 name"
+    },
+    {
+      "dir": "ok",
+      "name": "ok",
+      "description": "",
+      "expect": "descriptionMissing",
+      "why": "description 是空串"
+    },
+    {
+      "dir": "ok",
+      "name": "ok",
+      "description": null,
+      "expect": "descriptionMissing",
+      "why": "frontmatter 没有 description"
+    },
+    {
+      "dir": "ok",
+      "name": "ok",
+      "description": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expect": "descriptionTooLong",
+      "why": "1025 个字符,越界一个"
+    },
+    {
+      "dir": "ok",
+      "name": "ok",
+      "description": "字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字",
+      "expect": "ok",
+      "why": "1024 个中文字符:按 Unicode 标量数,不按 UTF-8 字节数(3072 字节)"
+    },
+    {
+      "dir": "a",
+      "name": "a",
+      "description": "x",
+      "expect": "ok",
+      "why": "单字符合法"
+    },
+    {
+      "dir": "a-1-b",
+      "name": "a-1-b",
+      "description": "x",
+      "expect": "ok",
+      "why": "数字与多段连字符合法"
+    }
+  ]
+}

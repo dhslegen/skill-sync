@@ -285,13 +285,26 @@ impl<'a> Installer<'a> {
     /// `Some` 时校验目录名必须等于 `dir_name`(= `canonical_dir(dir_slug)` 的
     /// `file_name`):账上的 body 目录名与 canonical 目录名对不上,说明记账已经
     /// 损坏或来自别处,不能糊弄着继续走下去。
+    ///
+    /// 🔴 **比的是 body 叶子名 `sanitize_name` 之后的样子**(v6 二期任务 5):
+    /// `dir_name` 出自 `canonical_dir`,已经清洗过(会小写化);而 body 是磁盘上
+    /// 真实存在的目录,叶子名一个字符都没清洗过。用户在 `~/.claude/skills/` 下
+    /// 手建的 `Weekly-Report` 就是这一档——按字面比会报 `FS_BAD_BODY`
+    /// 「这个技能的记账已经损坏,请重新获取一次」,而它既没有记账、也不是从任何
+    /// 技能库来的,**这句话对它是假话,而且是条死路**(「我的技能」页发现得了它,
+    /// 每个动作却都必然报错)。
+    ///
+    /// 放宽的只有"清洗会折掉的那些差异"(大小写、空格折成连字符等),别的照旧拦:
+    /// `/x/Weekly_Report` 清洗后是 `weekly_report`,与 `weekly-report` 仍不相等。
+    /// **body 的叶子名保持字面,不改名不搬家**——canonical 与各工具目录下的链接
+    /// 一律用清洗后的 `dir_name`,两者可以不同名,这正是「本体永不搬动」的形状。
     pub fn home(&self, dir_slug: &str, body: Option<&Path>) -> Result<SkillHome, AppError> {
         let canonical = self.canonical_dir(dir_slug)?;
         let dir_name = dir_name_of(&canonical);
         let body = match body {
             None => canonical.clone(),
             Some(b) => {
-                if dir_name_of(b) != dir_name {
+                if sanitize_name(&dir_name_of(b)) != dir_name {
                     return Err(AppError::new(
                         "FS_BAD_BODY",
                         "这个技能的记账已经损坏,请重新获取一次",
@@ -770,6 +783,21 @@ mod tests {
             .home("weekly-report", Some(&tmp.path().join(".claude").join("skills").join("other")))
             .unwrap_err();
         assert_eq!(err.code, "FS_BAD_BODY", "账上 body 的目录名必须等于 dir_name");
+
+        // v6 二期任务 5:守卫比的是**清洗后**的叶子名,所以用户手建的大写目录
+        // 放得进来(本体不改名不搬家,`dir_name` 仍是清洗后的那个)。
+        let upper = tmp.path().join(".claude").join("skills").join("Weekly-Report");
+        let h = inst.home("weekly-report", Some(&upper)).unwrap();
+        assert_eq!(h.body, upper, "本体叶子名保持字面");
+        assert_eq!(h.dir_name, "weekly-report", "canonical 与各处链接一律用清洗后的名字");
+
+        // 🔴 放宽的只有"清洗会折掉的那些差异",守卫本身照旧拦得住:
+        // `Weekly_Report` 清洗后是 `weekly_report`(下划线不折成连字符),仍然不等。
+        // 少了这条,守卫只有"放宽方向"被钉住,"还拦不拦得住"没人测。
+        let err = inst
+            .home("weekly-report", Some(&tmp.path().join(".claude").join("skills").join("Weekly_Report")))
+            .unwrap_err();
+        assert_eq!(err.code, "FS_BAD_BODY", "清洗折不掉的差异必须照旧拦下");
     }
 
     #[test]

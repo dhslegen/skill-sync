@@ -19,10 +19,25 @@
 //! ——FSEvents / ReadDirectoryChangesW 的投递都有延迟,写完那一刻的事件往往
 //! 在守卫释放之后才到。
 //!
-//! # 只看 canonical
+//! # 多根监听(v6 二期任务 5 起)
 //!
-//! 各 agent 的全局目录**不监听**:那些目录由别的工具主动写,递归监听只换来噪音;
-//! 而用户手改技能内容改的是 canonical 里的本体(agent 目录里多半是指向它的链接)。
+//! 原先**只盯 canonical**,理由是"用户手改技能内容改的是 canonical 里的本体,
+//! agent 目录里多半是指向它的链接"。v6 二期把这个前提推翻了:**本体住在它现在
+//! 所在的地方,永不搬动**——用户在 `~/.claude/skills/` 下开发的技能,本体就在
+//! 那里,canonical 里才是指向它的链接。只盯 canonical 就等于对最典型的编辑场景
+//! 视而不见。
+//!
+//! 现在盯 canonical + **每一个已经存在的**工具全局技能目录。不存在的目录
+//! **不建、不盯**(绝不创建用户没要求的目录),它出现之后靠级别 1(窗口焦点)
+//! 与级别 2(切页)补上。
+//!
+//! ⚠️ **「盯哪些目录」与「哪些变更算数」是两份清单,别合并**:
+//! - [`watch_roots`] 给 `notify` 用,canonical 不存在时**退到它的父目录**
+//!   (`~/.agents`)——那正是为了看见 canonical 被创建的那一刻;
+//! - [`is_interesting`] 用的是**关心的根**(canonical + 全部工具目录,与存不存在
+//!   无关)。拿 watch 清单去判的话,盯着 `~/.agents` 时
+//!   `~/.agents/.skill-lock.json` 会被判成"值得刷新"——那是 npx skills 的文件,
+//!   与技能列表无关(既有测试正面钉住这一条)。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -118,16 +133,23 @@ pub fn should_report() -> bool {
 
 /// 这个路径的变更值得刷新界面吗。
 ///
-/// 只认 canonical 下的内容。排除规则**复用 [`crate::core::fsops::is_excluded_rel`]**
-/// ——那份名单决定了哪些文件不参与内容 hash,不参与 hash 就不可能改变任何界面上的
-/// 判断,为它刷新纯属白费。两份实现迟早漂移(本项目记录的空转测试模式 #1)。
-pub fn is_interesting(canonical: &Path, changed: &Path) -> bool {
-    let Ok(rel) = changed.strip_prefix(canonical) else {
-        return false; // canonical 之外的(比如 .skill-lock.json)不关我们的事
+/// `roots` 是**关心的根**(canonical + 各工具全局技能目录),不是 watch 清单
+/// ——两者的区别见模块头。任一根之下命中即算数;排除名单对**每一个**根都生效。
+///
+/// 排除规则**复用 [`crate::core::fsops::is_excluded_rel`]**——那份名单决定了哪些
+/// 文件不参与内容 hash,不参与 hash 就不可能改变任何界面上的判断,为它刷新纯属
+/// 白费。两份实现迟早漂移(本项目记录的空转测试模式 #1)。
+pub fn is_interesting(roots: &[PathBuf], changed: &Path) -> bool {
+    roots.iter().any(|root| is_interesting_under(root, changed))
+}
+
+fn is_interesting_under(root: &Path, changed: &Path) -> bool {
+    let Ok(rel) = changed.strip_prefix(root) else {
+        return false; // 根之外的(比如 .skill-lock.json)不关我们的事
     };
     let rel_str = rel.to_string_lossy().replace('\\', "/");
     if rel_str.is_empty() {
-        return true; // canonical 自身被创建/删除
+        return true; // 根自身被创建/删除
     }
     !crate::core::fsops::is_excluded_rel(&rel_str)
 }
@@ -143,6 +165,31 @@ pub fn watch_root(canonical: &Path) -> Option<PathBuf> {
         return Some(canonical.to_path_buf());
     }
     canonical.parent().filter(|p| p.is_dir()).map(|p| p.to_path_buf())
+}
+
+/// 要交给 `notify` 的全部监听根:canonical 走 [`watch_root`] 的既有规则
+/// (不存在就退到父目录),工具目录**只收已经存在的**。
+///
+/// 工具目录刻意**不退到父目录**:那些父目录(`~/.claude`、`~/.trae`…)是别的
+/// 工具的家,里面的配置文件、缓存、会话记录都在变,盯上去换来的全是噪音——
+/// 而 canonical 的父目录 `~/.agents` 只放 `.skill-lock.json` 与 `skills/`,
+/// 代价小得多。目录不存在就**不建、不盯**(绝不创建用户没要求的目录),
+/// 它出现之后靠窗口焦点/切页那两级刷新补上。
+///
+/// canonical 排在最前,其余按传入顺序;重复的目录去掉(多个 agent 共用一个
+/// 目录是常态,`group_by_global_dir` 的键已经去过重,但 canonical 可能与某个
+/// 工具目录重合,比如 `CLAUDE_CONFIG_DIR` 指到 `~/.agents` 那种)。
+pub fn watch_roots(canonical: &Path, tool_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    if let Some(root) = watch_root(canonical) {
+        out.push(root);
+    }
+    for dir in tool_dirs {
+        if dir.is_dir() && !out.contains(dir) {
+            out.push(dir.clone());
+        }
+    }
+    out
 }
 
 /// 防抖累加器:攒住事件,直到静默 [`DEBOUNCE_MS`] 才吐一次。
@@ -271,31 +318,78 @@ mod tests {
 
     #[test]
     fn only_changes_inside_canonical_matter() {
-        let canonical = Path::new("/home/u/.agents/skills");
-        assert!(is_interesting(canonical, Path::new("/home/u/.agents/skills/wr/SKILL.md")));
-        assert!(is_interesting(canonical, canonical), "canonical 自身被建/删也算");
+        let canonical = PathBuf::from("/home/u/.agents/skills");
+        let roots = vec![canonical.clone()];
+        assert!(is_interesting(&roots, Path::new("/home/u/.agents/skills/wr/SKILL.md")));
+        assert!(is_interesting(&roots, &canonical), "canonical 自身被建/删也算");
         // lock 在父目录里,是 npx skills 的东西,与界面上的技能列表无关
-        assert!(!is_interesting(canonical, Path::new("/home/u/.agents/.skill-lock.json")));
-        assert!(!is_interesting(canonical, Path::new("/home/u/other/x")));
+        assert!(!is_interesting(&roots, Path::new("/home/u/.agents/.skill-lock.json")));
+        assert!(!is_interesting(&roots, Path::new("/home/u/other/x")));
     }
 
     /// 与内容 hash 共用同一份排除名单:不参与 hash 就改不了界面上的任何判断,
     /// 为它刷新纯属白费。这里的样本要跟着 `fsops` 的名单走,不能另猜一份。
     ///
-    /// 注意 **`.DS_Store` 不在名单里**(名单只有 `metadata.json` / `.git` /
-    /// `__pycache__` / `__pypackages__`),所以它确实会触发一次刷新。刷新是无害的;
-    /// 真正的隐患是它同样参与 `dir_content_hash`——已记进 CLAUDE.md 待处理。
+    /// ⚠️ 这里原先写着「`.DS_Store` 不在名单里,所以它确实会触发一次刷新」
+    /// ——**v6 二期任务 1 已经把它连同 `Thumbs.db`/`desktop.ini` 一起加进
+    /// `EXCLUDE_FILES`**(那条真缺陷是"访达开一次目录就让内容指纹漂移"),
+    /// 那句注释从那一刻起就成了假话。现在正面钉住它**不**触发刷新。
     #[test]
     fn excluded_files_do_not_trigger_a_refresh() {
-        let canonical = Path::new("/home/u/.agents/skills");
-        assert!(!is_interesting(canonical, Path::new("/home/u/.agents/skills/wr/.git/HEAD")));
-        assert!(!is_interesting(canonical, Path::new("/home/u/.agents/skills/wr/metadata.json")));
+        let roots = vec![PathBuf::from("/home/u/.agents/skills")];
+        assert!(!is_interesting(&roots, Path::new("/home/u/.agents/skills/wr/.git/HEAD")));
+        assert!(!is_interesting(&roots, Path::new("/home/u/.agents/skills/wr/metadata.json")));
+        assert!(!is_interesting(&roots, Path::new("/home/u/.agents/skills/wr/.DS_Store")));
         assert!(!is_interesting(
-            canonical,
+            &roots,
             Path::new("/home/u/.agents/skills/wr/__pycache__/x.pyc")
         ));
-        assert!(is_interesting(canonical, Path::new("/home/u/.agents/skills/wr/scripts/run.sh")));
-        assert!(is_interesting(canonical, Path::new("/home/u/.agents/skills/wr/SKILL.md")));
+        assert!(is_interesting(&roots, Path::new("/home/u/.agents/skills/wr/scripts/run.sh")));
+        assert!(is_interesting(&roots, Path::new("/home/u/.agents/skills/wr/SKILL.md")));
+    }
+
+    /// 多根(v6 二期任务 5):工具目录也算数,不存在的**不盯也不建**。
+    #[test]
+    fn changes_under_any_root_are_interesting_and_missing_tool_dirs_are_not_watched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical = tmp.path().join(".agents/skills");
+        let claude = tmp.path().join(".claude/skills");
+        std::fs::create_dir_all(&canonical).unwrap();
+        std::fs::create_dir_all(&claude).unwrap();
+        let ghost = tmp.path().join(".trae/skills");
+
+        let roots = watch_roots(&canonical, &[claude.clone(), ghost.clone()]);
+        assert_eq!(roots, vec![canonical.clone(), claude.clone()], "不存在的工具目录不盯、不建");
+        assert!(!ghost.exists(), "绝不创建用户没要求的目录");
+
+        assert!(is_interesting(&roots, &claude.join("s/SKILL.md")));
+        assert!(is_interesting(&roots, &canonical.join("s/SKILL.md")), "canonical 照旧算数");
+        assert!(!is_interesting(&roots, &claude.join("s/.DS_Store")), "排除名单对每个根都生效");
+        // `.claude/settings.json` 在技能目录**之外**:那是 Claude Code 自己的配置
+        assert!(!is_interesting(&roots, &tmp.path().join(".claude/settings.json")));
+        // 没被盯上的工具目录同样不算数
+        assert!(!is_interesting(&roots, &ghost.join("s/SKILL.md")));
+    }
+
+    /// canonical 不存在时退到父目录,而**关心的根仍然是 canonical 本身**
+    /// ——两份清单不能合并(见模块头)。
+    #[test]
+    fn watching_the_parent_does_not_make_the_lock_file_interesting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agents = tmp.path().join(".agents");
+        let canonical = agents.join("skills");
+        std::fs::create_dir_all(&agents).unwrap();
+
+        let watch = watch_roots(&canonical, &[]);
+        assert_eq!(watch, vec![agents.clone()], "canonical 不在时退到父目录才盯得住它被创建");
+
+        // `commands::spawn_watcher` 判"值不值得刷新"用的是**关心的根**,不是 watch 清单
+        let interest = vec![canonical.clone()];
+        assert!(is_interesting(&interest, &canonical.join("s/SKILL.md")));
+        assert!(
+            !is_interesting(&interest, &agents.join(".skill-lock.json")),
+            "lock 是 npx skills 的文件,与技能列表无关"
+        );
     }
 
     #[test]

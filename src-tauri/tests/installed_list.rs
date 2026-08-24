@@ -325,3 +325,446 @@ fn signed_out_downgrades_b_and_drops_c() {
         "D 作者是别人,未登录时同样不该出现"
     );
 }
+
+
+// ============================================================ v6 二期任务 5 的补充装置
+
+/// 在 `home` 之下按相对路径造一个技能目录,frontmatter 的 `name` 取**叶子名**,
+/// `description` 非空(所以默认是"可以分享"的形状),正文用 `content` 区分版本。
+fn skill_dir(home: &Path, rel: &str, content: &str) -> PathBuf {
+    let leaf = rel.rsplit('/').next().unwrap().to_string();
+    skill_dir_named(home, rel, &leaf).tap_write(content)
+}
+
+/// 同上,但 frontmatter 的 `name` 由调用方指定(用来造 `name != 文件夹名` 那一档)。
+fn skill_dir_named(home: &Path, rel: &str, name: &str) -> PathBuf {
+    let dir = home.join(rel);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: 用于测试\n---\n正文\n"),
+    )
+    .unwrap();
+    dir
+}
+
+/// `skill_dir` 用的小尾巴:往正文里写一段可区分的内容。
+trait TapWrite {
+    fn tap_write(self, content: &str) -> PathBuf;
+}
+impl TapWrite for PathBuf {
+    fn tap_write(self, content: &str) -> PathBuf {
+        let raw = std::fs::read_to_string(self.join("SKILL.md")).unwrap();
+        std::fs::write(self.join("SKILL.md"), format!("{raw}{content}\n")).unwrap();
+        self
+    }
+}
+
+/// 整棵 home 的内容快照:(相对路径, 内容)。用来正面断言"扫描/构建没有写盘"。
+fn snapshot(home: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let p = e.path();
+            let meta = std::fs::symlink_metadata(&p).unwrap();
+            let rel = p.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+            if meta.is_dir() {
+                out.push((format!("{rel}/"), Vec::new()));
+                walk(root, &p, out);
+            } else if meta.is_symlink() {
+                out.push((format!("{rel}@"), std::fs::read_link(&p).unwrap().to_string_lossy().into_owned().into_bytes()));
+            } else {
+                out.push((rel, std::fs::read(&p).unwrap()));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(home, home, &mut out);
+    out.sort();
+    out
+}
+
+fn tool_state(row: &my_skills::InstalledRow, agent: &str) -> Option<my_skills::ToolState> {
+    row.tools.iter().find(|t| t.agent == agent).map(|t| t.state)
+}
+
+fn installed_record(name: &str, path: &str, content_hash: &str) -> InstalledSkill {
+    InstalledSkill {
+        name: name.into(),
+        source: SkillSource {
+            registry_id: registry::BUILTIN_REGISTRY_ID.into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            path: path.into(),
+            git_ref: "abc1111".into(),
+        },
+        commit_sha: "abc1111".into(),
+        content_hash: content_hash.into(),
+        origin: Some("acquired".into()),
+        body: None,
+        agents: Vec::new(),
+        links: Vec::new(),
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    }
+}
+
+/// 第 2 源:本体住在**工具目录**里(用户在 `~/.claude/skills/` 下开发技能),
+/// 没有任何记账。它必须出现在这一页上,`body` 指向真实位置,`tools` 里
+/// claude-code 是 `Body`、没启用过的 trae 是 `Off`,并且**没有记账基线**。
+#[test]
+fn tool_dir_bodies_appear_with_body_path_tools_and_no_baseline() {
+    let ctx = ctx();
+    let body = skill_dir(&ctx.home, ".claude/skills/s", "v1");
+
+    let rows = build(&ctx, &Config::default(), &State::default());
+    let r = row(&rows, "s");
+
+    assert_eq!(r.body, body.to_string_lossy(), "本体就住在用户开发它的那个目录里");
+    assert_eq!(r.content_hash, "", "无账无基线");
+    assert!(!r.local_hash.is_empty(), "实时指纹照样要算得出来(R4)");
+    assert!(!r.local_modified, "没有基线就无从判断改没改过,不能误报");
+    assert!(r.local_present);
+    assert_eq!(r.relation, Relation::Draft, "库里没有它、本地有本体 = 草稿");
+    assert_eq!(tool_state(r, "claude-code"), Some(my_skills::ToolState::Body));
+    assert_eq!(tool_state(r, "trae"), Some(my_skills::ToolState::Off));
+    assert!(r.versions.is_empty(), "只有一份实体,没有版本要拍板");
+    assert_eq!(r.share_blocked, None, "名字与描述都合标准,可以分享");
+}
+
+/// 第 3 源:同名实体在两处、内容不同——**只占一行**,分歧摆进 `versions`
+/// (含本体自己,否则用户没法选"就留我现在这份")。
+///
+/// 🔴 同时正面断言**磁盘一个字节都没动**:发现是只读的,写入一律交给
+/// `converge`/`keep_version`(铁律 7 在这一层的落点)。
+#[test]
+fn differing_copies_merge_into_one_row_with_versions_and_nothing_is_written() {
+    let ctx = ctx();
+    let claude = skill_dir(&ctx.home, ".claude/skills/s", "v1");
+    let canonical = skill_dir(&ctx.home, ".agents/skills/s", "v2");
+
+    let before = snapshot(&ctx.home);
+    let rows = build(&ctx, &Config::default(), &State::default());
+    assert_eq!(snapshot(&ctx.home), before, "扫描与构建绝不写盘:目录内容必须一字不变");
+
+    assert_eq!(rows.iter().filter(|r| r.dir_slug == "s").count(), 1, "一个技能只占一行");
+    let r = row(&rows, "s");
+    assert_eq!(r.versions.len(), 2, "两份内容不同的实体都要摆出来给用户拍板");
+    let paths: Vec<&str> = r.versions.iter().map(|v| v.path.as_str()).collect();
+    assert!(paths.contains(&canonical.to_string_lossy().as_ref()));
+    assert!(
+        paths.contains(&claude.to_string_lossy().as_ref()),
+        "本体自己必须在选项里,否则「就留我现在这份」没法选"
+    );
+}
+
+/// 内容**相同**的第二份不是"另一个版本",是待收成链接的重复品——不该摆进 `versions`
+/// (摆了等于让用户在两个一模一样的东西之间做一次没有意义的选择)。
+#[test]
+fn identical_copies_are_not_offered_as_a_version_choice() {
+    let ctx = ctx();
+    skill_dir(&ctx.home, ".claude/skills/s", "same");
+    skill_dir(&ctx.home, ".agents/skills/s", "same");
+
+    let rows = build(&ctx, &Config::default(), &State::default());
+    let r = row(&rows, "s");
+    assert!(r.versions.is_empty(), "内容一样就没有版本分歧");
+}
+
+/// 分享前的标准校验逐行给出:`name != 文件夹名` 这一档(广场实测 47 个里 8 个)。
+#[test]
+fn share_block_is_reported_per_row() {
+    let ctx = ctx();
+    skill_dir_named(
+        &ctx.home,
+        ".agents/skills/react-best-practices",
+        "vercel-react-best-practices",
+    );
+
+    let rows = build(&ctx, &Config::default(), &State::default());
+    assert_eq!(
+        row(&rows, "react-best-practices").share_blocked,
+        Some(skillsync_lib::core::skills::ShareBlock::NameMismatch)
+    );
+}
+
+/// 🔴 同轴缺陷 ①:**尺子是 `home.body`,不是 canonical**。
+///
+/// 本体住在 `~/.claude/skills/` 且 canonical 链接**根本没建成**(建链失败、
+/// 或用户把它删了)时,这一行必须照样在——按 canonical 判的话整行会从页面上
+/// 消失,用户看着技能装上了却连移除入口都没有。`local_modified` 同理:
+/// 按 canonical 算在 Windows 降级复制那一档会漏报。
+#[test]
+fn rows_and_local_modified_follow_the_body_not_canonical() {
+    let ctx = ctx();
+    let body = skill_dir(&ctx.home, ".claude/skills/x", "v1");
+    let hash = skillsync_lib::core::fsops::dir_content_hash(&body).unwrap();
+
+    let mut state = State::default();
+    let mut rec = installed_record("x", "skills/x", &hash);
+    rec.body = Some(body.to_string_lossy().into_owned());
+    state.installed.push(rec);
+    ctx.store.save_state(&state).unwrap();
+
+    assert!(!ctx.canonical("x").exists(), "现场前提:canonical 链接不存在");
+
+    let rows = build(&ctx, &Config::default(), &state);
+    let r = row(&rows, "x");
+    assert_eq!(r.body, body.to_string_lossy());
+    assert_eq!(r.local_hash, hash, "实时指纹算的是本体,不是 canonical");
+    assert!(!r.local_modified, "内容与基线一致");
+
+    // 改本体 → 必须报"改过了"(按 canonical 算的话这里恒为 false)
+    std::fs::write(body.join("SKILL.md"), "---\nname: x\ndescription: 用于测试\n---\n改过了\n").unwrap();
+    let rows = build(&ctx, &Config::default(), &state);
+    assert!(row(&rows, "x").local_modified, "改过本体就要如实报出来");
+}
+
+/// 🔴 同轴缺陷 ②:发给前端的 `dir_slug` 是**技能库里的原始目录名**,
+/// 不是清洗过的记账名。
+///
+/// fixture 刻意用大写目录名 `Weekly-Report`:全小写现场里记账名与库里目录名
+/// 恰好相同,两把尺子的差别整个测没了(本项目记录的空转模式 ③)。
+/// 承重断言有两条,缺一不可:①`dir_slug` 本身;②作者查索引也走这把尺子
+/// ——查错了作者就查不到,`relation` 会从「我分享的」退成「我安装的」。
+#[test]
+fn dir_slug_and_author_lookup_use_the_library_directory_name() {
+    let ctx = ctx();
+    // 记账名是清洗后的(sanitize 会小写化),canonical 目录同名
+    write_skill_md(&ctx.canonical("weekly-report"));
+    let mut state = State::default();
+    state.installed.push(installed_record(
+        "weekly-report",
+        "skills/Weekly-Report",
+        "deadbeef",
+    ));
+    ctx.store.save_state(&state).unwrap();
+
+    // 索引缓存按**库里的原始目录名**建键
+    write_index_cache(&ctx, vec![indexed_skill("Weekly-Report", Some("赵文浩"))]);
+    let mut config = Config::default();
+    config.identities.insert(registry::BUILTIN_REGISTRY_ID.into(), me());
+
+    let rows = build(&ctx, &config, &state);
+    let r = row(&rows, "Weekly-Report");
+    assert_eq!(r.dir_slug, "Weekly-Report", "商店索引按这把尺子建键,hasUpdate 才对得上");
+    assert_eq!(
+        r.relation,
+        Relation::Shared,
+        "作者也要按库里的原始目录名查——查错了「我分享的」就变成「我安装的」"
+    );
+}
+
+/// 🔴 同轴缺陷 ③:工具目录里**手建**的大写目录必须被发现。
+///
+/// `scan_all` 原先按字面名分组、`locate` 按清洗名查,这个目录永远发现不了。
+/// 附带钉住两件事:①本体叶子名**保持字面**(不改名不搬家);
+/// ②它诚实地报 `DirFormat`——app 不替用户改名,但要告诉他哪不合标准。
+#[test]
+fn a_hand_made_uppercase_directory_in_a_tool_dir_is_discovered() {
+    let ctx = ctx();
+    let body = skill_dir(&ctx.home, ".claude/skills/Weekly-Report", "v1");
+
+    let rows = build(&ctx, &Config::default(), &State::default());
+    let r = row(&rows, "Weekly-Report");
+    assert_eq!(r.body, body.to_string_lossy(), "本体住在原地,叶子名一个字符不改");
+    assert_eq!(tool_state(r, "claude-code"), Some(my_skills::ToolState::Body));
+    assert_eq!(
+        r.share_blocked,
+        Some(skillsync_lib::core::skills::ShareBlock::DirFormat),
+        "大写文件夹名不合 Agent Skills 标准,分享要拦下并说清楚"
+    );
+}
+
+/// 🔴 R10:**空来源的记账既不是「来源已移除」也不是「库不在源里」**——
+/// 它从来就没有来源(`converge::keep_version`/`set_agents` 给纯本地技能建的
+/// `adopted` 账,三个坐标字段都是空串)。两句话对它都不成立,说哪句都是假话。
+#[test]
+fn an_adopted_account_without_a_source_is_not_reported_as_removed() {
+    let ctx = ctx();
+    let body = skill_dir(&ctx.home, ".claude/skills/local-one", "v1");
+
+    let mut state = State::default();
+    state.installed.push(InstalledSkill {
+        name: "local-one".into(),
+        source: SkillSource {
+            registry_id: String::new(),
+            owner: String::new(),
+            repo: String::new(),
+            path: String::new(),
+            git_ref: String::new(),
+        },
+        commit_sha: String::new(),
+        content_hash: skillsync_lib::core::fsops::dir_content_hash(&body).unwrap(),
+        origin: Some("adopted".into()),
+        body: Some(body.to_string_lossy().into_owned()),
+        agents: vec!["claude-code".into()],
+        links: Vec::new(),
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    });
+    ctx.store.save_state(&state).unwrap();
+
+    let rows = build(&ctx, &Config::default(), &state);
+    let r = row(&rows, "local-one");
+    assert!(!r.source_removed, "它从来就没有来源,说「来源已移除」是假话");
+    assert!(!r.library_removed, "同上,说「技能库不在源的列表里」也是假话");
+    assert_eq!(
+        r.relation,
+        Relation::Draft,
+        "空来源账压根没经过任何技能库,in_library 硬填 true 会把手写草稿判成「我安装的」"
+    );
+}
+
+/// `tools` 的成员口径:**一个勾存在,当且仅当执行它的那把尺子真的会对它动手**。
+///
+/// 两类必须缺席,各有独立理由(不是同一条规则查两遍):
+/// - universal agent(cursor/codex/cline/zed/warp…):落在 canonical 就能读到,
+///   `link_targets` 按设计跳过它们,摆出来就是**永远点不亮的死勾**;
+/// - canonical 自身:永不作为建链目标,否则"取消关联"等于删本体。
+#[test]
+fn tools_only_lists_agents_that_linking_would_actually_touch() {
+    let ctx = ctx();
+    skill_dir(&ctx.home, ".claude/skills/s", "v1");
+
+    let rows = build(&ctx, &Config::default(), &State::default());
+    let r = row(&rows, "s");
+    let names: Vec<&str> = r.tools.iter().map(|t| t.agent.as_str()).collect();
+
+    for needs_link in ["claude-code", "trae", "trae-cn", "zencoder"] {
+        assert!(names.contains(&needs_link), "{needs_link} 需要建链,必须有一个勾");
+    }
+    // universal:落 canonical 即可见(cursor/codex 的全局目录并不是 canonical,
+    // 所以这条**不是** "dir != canonical" 那一条的重复)
+    for universal in ["cursor", "codex", "universal", "cline", "zed", "warp"] {
+        assert!(
+            !names.contains(&universal),
+            "{universal} 是 universal agent,勾了什么也不会发生,不该摆出来"
+        );
+    }
+    assert!(!names.is_empty());
+    // 账上那份名单是"期望态",不是勾的真相——这里连一条记账都没有,勾照样算得出来
+    assert!(r.agents.is_empty());
+}
+
+/// 健康的链接显示 `Linked`;账上有这个目录、磁盘上却对不上账的显示 `Missing`
+/// ——**绝不因为账上写着就显示成已启用**,那是撒谎。
+#[test]
+fn tool_state_comes_from_disk_not_from_the_account() {
+    use skillsync_lib::core::fsops::{self, OnOccupied};
+
+    let ctx = ctx();
+    let body = skill_dir(&ctx.home, ".agents/skills/s", "v1");
+
+    // claude-code:真的建一条链接过去
+    let claude_dir = ctx.home.join(".claude/skills");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    fsops::link_dir(&body, &claude_dir.join("s"), fsops::default_link_chain(), OnOccupied::Fail).unwrap();
+
+    // trae:账上记着,磁盘上什么都没有(建链失败 / 被别的工具删了)
+    let trae_dir = ctx.home.join(".trae/skills");
+
+    let mut state = State::default();
+    let mut rec = installed_record("s", "skills/s", &fsops::dir_content_hash(&body).unwrap());
+    rec.links = vec![
+        skillsync_lib::core::state::LinkRecord {
+            dir: claude_dir.to_string_lossy().into_owned(),
+            mode: "symlink".into(),
+        },
+        skillsync_lib::core::state::LinkRecord {
+            dir: trae_dir.to_string_lossy().into_owned(),
+            mode: "symlink".into(),
+        },
+    ];
+    state.installed.push(rec);
+    ctx.store.save_state(&state).unwrap();
+
+    let rows = build(&ctx, &Config::default(), &state);
+    let r = row(&rows, "s");
+    assert_eq!(tool_state(r, "claude-code"), Some(my_skills::ToolState::Linked));
+    assert_eq!(
+        tool_state(r, "trae"),
+        Some(my_skills::ToolState::Missing),
+        "账上有、磁盘上没有 = 用户以为启用着其实读不到,必须如实说 Missing"
+    );
+    assert_eq!(tool_state(r, "trae-cn"), Some(my_skills::ToolState::Off), "账上都没有 = 没启用过");
+}
+
+/// 序列化形状(前端类型照这个写):断言**键的完整集合**,不是"某个键存在"
+/// ——后者区分不了"字段被省略"与"字段名拼错"(本项目记过的空转模式 ②)。
+#[test]
+fn installed_row_serializes_with_camel_case_keys() {
+    let ctx = ctx();
+    skill_dir(&ctx.home, ".claude/skills/s", "v1");
+    let rows = build(&ctx, &Config::default(), &State::default());
+    let value = serde_json::to_value(row(&rows, "s")).unwrap();
+    let mut keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            "agents",
+            "body",
+            "commitSha",
+            "contentHash",
+            "dirSlug",
+            "installedAt",
+            "libraryRemoved",
+            "links",
+            "localHash",
+            "localModified",
+            "localPresent",
+            "registryId",
+            "relation",
+            "shareBlocked",
+            "sourceLabel",
+            "sourceOwner",
+            "sourceRemoved",
+            "sourceRepo",
+            "tools",
+            "updatedAt",
+            "versions",
+        ]
+    );
+
+    // ToolView / ToolState 的字面量同样是对外契约
+    let tools = value["tools"].as_array().unwrap();
+    let claude = tools.iter().find(|t| t["agent"] == "claude-code").unwrap();
+    let mut tool_keys: Vec<&str> = claude.as_object().unwrap().keys().map(String::as_str).collect();
+    tool_keys.sort();
+    assert_eq!(tool_keys, vec!["agent", "state"]);
+    assert_eq!(claude["state"], serde_json::json!("body"));
+}
+
+/// 🔴 同轴缺陷 ③ 在这一页上的可见后果:**同一个技能不许占两行**。
+///
+/// 记账名是清洗后的 `weekly-report`,而磁盘上的本体目录是字面的
+/// `Weekly-Report`。`scan_all` 若按字面名分组,第 2 源的键就与 `seen` 里的
+/// 记账键对不上,同一个技能会被摆成两行——一行有账(能移除、能更新),
+/// 一行没账(什么都做不了),用户根本分不清该点哪个。
+#[test]
+fn one_skill_never_takes_two_rows_when_the_directory_name_is_not_lowercase() {
+    let ctx = ctx();
+    let body = skill_dir(&ctx.home, ".claude/skills/Weekly-Report", "v1");
+
+    let mut state = State::default();
+    let mut rec = installed_record(
+        "weekly-report",
+        "skills/Weekly-Report",
+        &skillsync_lib::core::fsops::dir_content_hash(&body).unwrap(),
+    );
+    rec.body = Some(body.to_string_lossy().into_owned());
+    state.installed.push(rec);
+    ctx.store.save_state(&state).unwrap();
+
+    let rows = build(&ctx, &Config::default(), &state);
+    assert_eq!(
+        rows.len(),
+        1,
+        "同一个技能只占一行,实际:{:?}",
+        rows.iter().map(|r| (&r.dir_slug, &r.body)).collect::<Vec<_>>()
+    );
+    let r = &rows[0];
+    assert_eq!(r.dir_slug, "Weekly-Report");
+    assert!(!r.content_hash.is_empty(), "留下的那一行必须是有账的那一行(能移除、能更新)");
+}

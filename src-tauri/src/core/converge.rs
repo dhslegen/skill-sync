@@ -26,6 +26,7 @@ use serde::Serialize;
 use crate::core::agents::{AgentEnv, AgentRegistry};
 use crate::core::fsops::{self, LinkOutcome, LinkState, OnOccupied};
 use crate::core::installer::{Installer, SkillHome};
+use crate::core::skills::sanitize_name;
 use crate::core::state;
 use crate::error::AppError;
 
@@ -99,9 +100,39 @@ pub enum Located {
     Differs(Vec<Version>),
 }
 
+/// [`scan_all`] 的分组键:清洗后的目录名,清洗会塌成 `unnamed-skill` 时退回字面名。
+///
+/// 刻意直接调 [`sanitize_name`] 而不绕 `Installer::home`:那条路要 `&Installer`
+/// (本函数的签名由任务书定死,不带它),而 `home` 内部算 `dir_name` 用的正是
+/// 这一个函数——**同一把尺子的同一次调用,不是第二份实现**。[`record_key`]
+/// 禁止的是"另写一遍清洗规则",不是"调用清洗函数"。
+fn group_key(literal: &str) -> String {
+    let sanitized = sanitize_name(literal);
+    if sanitized == "unnamed-skill" && literal != "unnamed-skill" {
+        return literal.to_string();
+    }
+    sanitized
+}
+
 /// 扫 canonical + 每个工具全局目录下**实体**(非链接)且含 SKILL.md 的目录,
 /// 按目录名分组。**绝不写盘**——发现是这一层唯一职责,写入的事一律交给
 /// [`converge`]/[`keep_version`]/[`set_agents`]。
+///
+/// 🔴 **分组键是 `sanitize_name(磁盘上的字面目录名)`,不是字面目录名本身**
+/// (v6 二期任务 5 修的第三条同轴缺陷):[`locate`] 按 `home.dir_name`
+/// (= [`record_key`] = 清洗后的名字)来 `get`,而本函数原先按字面名建键
+/// ——用户在 `~/.claude/skills/` 下手建的 `Weekly-Report` 目录**永远发现不了**
+/// (键是 `Weekly-Report`,查的是 `weekly-report`),于是它既不出现在
+/// 「我的技能」里,`locate` 也永远返回 `None`。与任务 4 修的 `record_key`
+/// 是同一根轴的第三面镜子,口径必须一致。
+///
+/// 值(路径)保持**字面**:本体住在哪儿就是哪儿,叶子名不改、目录不搬。
+///
+/// **清洗后会塌成 `unnamed-skill` 的名字(纯中文目录名)保留字面键**:
+/// 那批目录本来就当不了本应用的记账键(`installer::usable_dir_name` 对它们
+/// 报 `FS_UNUSABLE_NAME`),把两个不同的中文目录合并到同一个 `unnamed-skill`
+/// 键下只会让它们互相遮蔽——留字面键,「我的技能」页照样一行一个如实摆出来,
+/// 分享那一栏会诚实地告诉用户文件夹名不合标准(A-5「显示 + 说明哪不合格 + 出口」)。
 pub fn scan_all(registry: &AgentRegistry, env: &dyn AgentEnv) -> Result<BTreeMap<String, Vec<PathBuf>>, AppError> {
     let mut roots: Vec<PathBuf> = Vec::new();
     if let Some(base) = registry.canonical_global_dir(env) {
@@ -128,7 +159,7 @@ pub fn scan_all(registry: &AgentRegistry, env: &dyn AgentEnv) -> Result<BTreeMap
             let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
                 continue;
             };
-            out.entry(name).or_default().push(path);
+            out.entry(group_key(&name)).or_default().push(path);
         }
     }
     for paths in out.values_mut() {
@@ -254,6 +285,47 @@ pub fn locate(
     // 已裁定:按路径排序后返回,理由同上。
     versions.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(Located::Differs(versions))
+}
+
+/// 「这个技能眼下有几个内容不同的版本」——[`Located`] 之外的一层薄派生,
+/// 给「我的技能」页的那一行用(v6 二期任务 5)。
+///
+/// 返回空 = 没有分歧(候选只有本体,或其余候选与本体逐字节相同);否则返回
+/// **本体 + 与本体内容不同的那些候选**,按路径排序。
+///
+/// 🔴 **本体自己必须在列表里**(对任务书 Step 4 那句 "账外的同名实体且内容不同"
+/// 的刻意偏离,理由是硬的):这份列表就是「有两个版本,留哪个」对话框的选项,
+/// 而 [`keep_version`] 的 C1 校验要求 `keep` 必须是本次候选之一——只给"别处那几份"
+/// 的话,**用户没法选"就留我现在这份"**,那恰恰是最常见的选择。
+///
+/// **内容相同的副本不进列表**:它们不是"另一个版本",是待收成链接的重复品
+/// (`converge` 会静默换成链接,无损),摆在选项里等于让用户在两个一模一样的东西
+/// 之间做一次没有意义的选择。
+///
+/// `body` 不是实体目录时返回空:此刻无从比对内容,而"本体不在了"这件事由调用方
+/// 单独表达,不该在这里编出一堆版本来。
+pub fn versions_of(body: &Path, candidates: &[PathBuf]) -> Result<Vec<Version>, AppError> {
+    if !body.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut differing: Vec<&PathBuf> = Vec::new();
+    for path in candidates {
+        if path == body {
+            continue;
+        }
+        if !fsops::same_content(body, path)? {
+            differing.push(path);
+        }
+    }
+    if differing.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = vec![build_version(body)?];
+    for path in differing {
+        out.push(build_version(path)?);
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
 }
 
 fn build_version(path: &Path) -> Result<Version, AppError> {

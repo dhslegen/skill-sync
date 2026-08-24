@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use saphyr::{LoadableYamlNode, Yaml};
+use serde::Serialize;
 
 /// 技能定义文件名。上游大小写敏感,此处保持一致。
 pub const SKILL_FILE: &str = "SKILL.md";
@@ -671,9 +672,282 @@ pub fn has_executable_scripts(dir: &str, files: &[String]) -> bool {
         .any(|f| f.strip_prefix(prefix.as_str()).is_some_and(is_script_extension))
 }
 
+// ============================================================ 分享前的标准校验
+
+/// `description` 的长度上限,单位是 **Unicode 标量**(不是 UTF-8 字节)。
+/// 出处:Agent Skills 开放标准 <https://agentskills.io/specification>。
+const MAX_DESCRIPTION_CHARS: usize = 1024;
+
+/// 「这个技能为什么不能分享出去」。
+///
+/// v6 二期 A-2 拍板:**分享前按 Agent Skills 开放标准全量校验,不合格不让分享**,
+/// 且分享环节零编辑——名称/描述/文件夹名一律只读,frontmatter 补齐链路取消。
+/// 不合格时界面照常显示这个技能,只是分享按钮不可用 + 一句人话说明哪不合格 +
+/// 「打开文件夹」的出口,改名由用户在本地自行完成(A-3:名字冲突划在边界之外)。
+///
+/// **core 只返回枚举,不返回给用户看的中文句子**(既有铁律):文案在
+/// `src/i18n/zh-CN.json`,前端按这个字面量查表。
+///
+/// 判据出处两条,合起来才是完整的:
+/// - Agent Skills 开放标准要求 `name` **必填**、**必须等于父目录名**,字符集限
+///   lowercase a-z / 0-9 / 连字符,不首尾连字符、不连续连字符;`description`
+///   必填、1–1024 个 Unicode 标量;
+/// - Claude Code 官方文档 <https://code.claude.com/docs/en/skills> 比标准宽容
+///   (放行 `name != 目录名`,只把 `name` 当显示标签),所以这类技能在本机能用
+///   ——但它**不符合标准**,别的遵循标准的工具不保证认。分享是"发给全公司用",
+///   所以这里按标准判,不按 Claude Code 的宽容度判。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ShareBlock {
+    /// frontmatter 里没有 `name`(或是空值)。
+    NameMissing,
+    /// `name` 与文件夹名不一致。
+    NameMismatch,
+    /// `name` 不符合字符集规则。
+    NameFormat,
+    /// 文件夹名不符合字符集规则。
+    DirFormat,
+    /// frontmatter 里没有 `description`(或是空值)。
+    DescriptionMissing,
+    /// `description` 超过 1024 个 Unicode 标量。
+    DescriptionTooLong,
+    /// SKILL.md 读不出来或解析不了(缺 frontmatter、YAML 语法错、字段不是文字)。
+    SkillMdUnreadable,
+}
+
+/// 一段文本是不是合法的 Agent Skills 标准名:`^[a-z0-9]+(-[a-z0-9]+)*$`。
+///
+/// **与 `create::usable_slug`(`sanitize_name` 的不动点)刻意是两把不同的尺子**:
+/// 那把管的是"能不能当本地文件夹名",放行 `.` 与 `_`;这把管的是"能不能分享到
+/// 技能库",按开放标准只放行小写字母/数字/连字符。`a_b` 在前者合格、在后者不合格
+/// ——`fixtures/share-validation-samples.json` 里有一条样本正面钉住这个差异,
+/// 免得后来人以为两者应该合并。
+///
+/// 手写而不引正则依赖:规则只有三条(字符集 / 不空段 / 段间单连字符),
+/// 用 `split('-')` 表达比正则更直白,也不必为一条规则多一个 crate。
+pub fn is_standard_slug(s: &str) -> bool {
+    !s.is_empty()
+        && s.split('-')
+            .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()))
+}
+
+/// 分享前的标准校验(**唯一一处判定实现**,`share.rs` 与「我的技能」页共用)。
+///
+/// `name`/`description` 传 `None` 表示 frontmatter 里压根没有这个字段。
+///
+/// 🔴 **判定顺序由 `fixtures/share-validation-samples.json` 钉住,不要随手调**:
+/// 一个技能常常同时犯几条(比如 `Weekly-Report` 目录 + 同名 `name`,大写既让
+/// 目录名不合格也让 `name` 不合格),先报哪一条决定了用户看到的那句话——
+/// 报"文件夹名不合格"他改文件夹名就全好了,报"name 不合格"他改 frontmatter
+/// 反而会把 `name == 目录名` 这条也弄坏。所以从"改哪里能一次修好"倒推:
+/// 文件夹名 → name 缺失 → name 格式 → name 与文件夹名不一致 → description。
+pub fn validate_for_share(
+    dir_name: &str,
+    name: Option<&str>,
+    description: Option<&str>,
+) -> Result<(), ShareBlock> {
+    if !is_standard_slug(dir_name) {
+        return Err(ShareBlock::DirFormat);
+    }
+    let name = match name {
+        None => return Err(ShareBlock::NameMissing),
+        Some(n) if n.trim().is_empty() => return Err(ShareBlock::NameMissing),
+        Some(n) => n,
+    };
+    if !is_standard_slug(name) {
+        return Err(ShareBlock::NameFormat);
+    }
+    if name != dir_name {
+        return Err(ShareBlock::NameMismatch);
+    }
+    let description = match description {
+        None => return Err(ShareBlock::DescriptionMissing),
+        Some(d) if d.trim().is_empty() => return Err(ShareBlock::DescriptionMissing),
+        Some(d) => d,
+    };
+    // 按 Unicode 标量数,**不按 UTF-8 字节数**:1024 个中文是 3072 字节,
+    // 按字节判会把一份合格的中文说明拦下来(fixture 里有正面样本)。
+    if description.chars().count() > MAX_DESCRIPTION_CHARS {
+        return Err(ShareBlock::DescriptionTooLong);
+    }
+    Ok(())
+}
+
+/// 读一个本机技能目录的 SKILL.md,再走 [`validate_for_share`]。
+///
+/// **文件夹名取磁盘上的字面叶子名,不是清洗后的记账键**:清洗会把 `Weekly-Report`
+/// 折成 `weekly-report`,拿它去判就永远判不出"文件夹名不合格"这一档,而那正是
+/// 用户需要知道、也只有他自己能修的那件事(A-3:改名由用户在本地完成)。
+pub fn validate_skill_dir(dir: &Path) -> Result<(), ShareBlock> {
+    let dir_name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let raw = std::fs::read_to_string(dir.join(SKILL_FILE)).map_err(|_| ShareBlock::SkillMdUnreadable)?;
+    match parse_skill_md(&raw) {
+        Ok(parsed) => validate_for_share(&dir_name, Some(&parsed.name), Some(&parsed.description)),
+        Err(e) => {
+            // 目录名这道闸先过,与 `validate_for_share` 的顺序保持一致——否则
+            // 同一个技能"SKILL.md 能解析"与"不能解析"两条路会报不同的那一条。
+            if !is_standard_slug(&dir_name) {
+                return Err(ShareBlock::DirFormat);
+            }
+            match e {
+                // 解析器把"字段缺失"与"空值"归成同一档(上游的真值判断),
+                // 到这里正好对应 NameMissing / DescriptionMissing。
+                SkillParseError::MissingFields(fields) => Err(if fields.iter().any(|f| f == "name") {
+                    ShareBlock::NameMissing
+                } else {
+                    ShareBlock::DescriptionMissing
+                }),
+                // 缺 frontmatter / YAML 语法错 / 字段不是文字:都不是"哪一项不合格"
+                // 能说清的,统一报"这份 SKILL.md 读不出来"。
+                SkillParseError::NoFrontmatter
+                | SkillParseError::Yaml(_)
+                | SkillParseError::NotString { .. } => Err(ShareBlock::SkillMdUnreadable),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- 分享前的标准校验(v6 二期任务 5)----
+
+    /// 与前端共读 `fixtures/share-validation-samples.json`——**一份真相,两侧各测一次**。
+    /// 手抄两份样本表的话,口径漂了两边照样各自全绿,那道护栏就是空转的
+    /// (与 `create::usable_slug_agrees_with_the_shared_sample_file` 同一姿势)。
+    ///
+    /// 顺带钉住**序列化字面量**:断言比的是 `serde_json::to_value(block)`,
+    /// 前端按同一批字面量查 i18n 文案,枚举改名会在这里当场变红。
+    #[test]
+    fn validate_for_share_agrees_with_the_shared_sample_file() {
+        const RAW: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../fixtures/share-validation-samples.json"
+        ));
+        let doc: serde_json::Value = serde_json::from_str(RAW).expect("样本文件应当是合法 JSON");
+        let samples = doc["samples"].as_array().expect("samples 应当是数组");
+        assert!(samples.len() >= 15, "样本表被删剩 {} 条了", samples.len());
+        for s in samples {
+            let dir = s["dir"].as_str().expect("dir 应当是字符串");
+            let name = s["name"].as_str();
+            let description = s["description"].as_str();
+            let expect = s["expect"].as_str().expect("expect 应当是字符串");
+            let got = match validate_for_share(dir, name, description) {
+                Ok(()) => "ok".to_string(),
+                Err(block) => serde_json::to_value(block)
+                    .expect("ShareBlock 应当可序列化")
+                    .as_str()
+                    .expect("ShareBlock 序列化后应当是字符串")
+                    .to_string(),
+            };
+            assert_eq!(
+                got,
+                expect,
+                "dir={dir:?} name={name:?} 与样本表不一致({})",
+                s["why"].as_str().unwrap_or("")
+            );
+        }
+    }
+
+    /// 样本表覆盖不到的两件事,各一条:
+    /// ①**每一个 `ShareBlock` 变体都要有样本或专门用例**,否则新增一档没人测;
+    /// ②`SkillMdUnreadable` 只可能从 [`validate_skill_dir`] 出来(纯函数那条路
+    ///   拿到的 `name`/`description` 已经是解析好的),所以它在下面单独测。
+    #[test]
+    fn every_share_block_variant_is_covered_by_the_sample_file_or_a_dedicated_test() {
+        const RAW: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../fixtures/share-validation-samples.json"
+        ));
+        let doc: serde_json::Value = serde_json::from_str(RAW).unwrap();
+        let covered: Vec<String> = doc["samples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s["expect"].as_str().map(str::to_string))
+            .collect();
+        for variant in [
+            ShareBlock::NameMissing,
+            ShareBlock::NameMismatch,
+            ShareBlock::NameFormat,
+            ShareBlock::DirFormat,
+            ShareBlock::DescriptionMissing,
+            ShareBlock::DescriptionTooLong,
+        ] {
+            let literal = serde_json::to_value(variant).unwrap().as_str().unwrap().to_string();
+            assert!(covered.contains(&literal), "{literal} 没有任何样本覆盖");
+        }
+        // SkillMdUnreadable 走的是读盘那条路,见下面三条 validate_skill_dir 用例
+        assert_eq!(
+            serde_json::to_value(ShareBlock::SkillMdUnreadable).unwrap(),
+            serde_json::json!("skillMdUnreadable")
+        );
+    }
+
+    #[test]
+    fn standard_slug_rejects_what_the_standard_rejects() {
+        for good in ["a", "ok", "weekly-report", "a-1-b", "x9"] {
+            assert!(is_standard_slug(good), "{good} 应当合格");
+        }
+        for bad in ["", "-a", "a-", "a--b", "A", "a_b", "a.b", "中文", "a b"] {
+            assert!(!is_standard_slug(bad), "{bad} 不该合格");
+        }
+    }
+
+    /// [`validate_skill_dir`] 的三条:读不到 / 解析不了 / 缺字段,各归各档。
+    /// **文件夹名取磁盘上的字面叶子名**——大写目录必须报 `DirFormat`,
+    /// 这是"清洗后再判就永远判不出这一档"的正面护栏。
+    #[test]
+    fn validate_skill_dir_maps_read_and_parse_failures_to_their_own_blocks() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // 没有 SKILL.md
+        let empty = tmp.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert_eq!(validate_skill_dir(&empty), Err(ShareBlock::SkillMdUnreadable));
+
+        // 有 SKILL.md 但没有 frontmatter
+        let broken = tmp.path().join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join(SKILL_FILE), "只有正文,没有 --- 包裹\n").unwrap();
+        assert_eq!(validate_skill_dir(&broken), Err(ShareBlock::SkillMdUnreadable));
+
+        // 缺 description
+        let no_desc = tmp.path().join("no-desc");
+        std::fs::create_dir_all(&no_desc).unwrap();
+        std::fs::write(no_desc.join(SKILL_FILE), "---\nname: no-desc\n---\n正文\n").unwrap();
+        assert_eq!(validate_skill_dir(&no_desc), Err(ShareBlock::DescriptionMissing));
+
+        // 大写目录名 + 解析得开:字面叶子名不合格
+        let upper = tmp.path().join("Weekly-Report");
+        std::fs::create_dir_all(&upper).unwrap();
+        std::fs::write(
+            upper.join(SKILL_FILE),
+            "---\nname: Weekly-Report\ndescription: 生成周报\n---\n正文\n",
+        )
+        .unwrap();
+        assert_eq!(validate_skill_dir(&upper), Err(ShareBlock::DirFormat));
+
+        // 大写目录名 + 解析不开:同样先报 DirFormat(两条路顺序一致)
+        let upper_broken = tmp.path().join("Broken-Dir");
+        std::fs::create_dir_all(&upper_broken).unwrap();
+        std::fs::write(upper_broken.join(SKILL_FILE), "没有 frontmatter\n").unwrap();
+        assert_eq!(validate_skill_dir(&upper_broken), Err(ShareBlock::DirFormat));
+
+        // 全合格
+        let good = tmp.path().join("weekly-report");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(
+            good.join(SKILL_FILE),
+            "---\nname: weekly-report\ndescription: 生成周报\n---\n正文\n",
+        )
+        .unwrap();
+        assert_eq!(validate_skill_dir(&good), Ok(()));
+    }
 
     fn skill_md(name: &str, description: &str) -> String {
         format!("---\nname: {name}\ndescription: {description}\n---\n\n正文内容\n")

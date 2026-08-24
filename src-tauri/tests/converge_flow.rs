@@ -1270,3 +1270,49 @@ fn set_agents_outcome_serializes_its_fields_in_camel_case() {
     assert_eq!(v["canonical"]["Ok"]["kind"], "unchanged", "{v}");
     assert_eq!(v["unlinkFailed"][0][1]["code"], "FS_NOT_A_LINK", "{v}");
 }
+
+/// 🔴 v6 二期任务 5 的第三条同轴缺陷:`scan_all` 的分组键必须与 `locate` 的
+/// 查表键(`record_key` = 清洗后的目录名)**同尺**。
+///
+/// 现场是用户在 `~/.claude/skills/` 下手建的 `Weekly-Report` 目录:
+/// 按字面名分组的话键是 `Weekly-Report`,而 `locate` 查的是 `weekly-report`
+/// ——**这个技能永远发现不了**,`locate` 恒返回 `None`,于是「勾选工具」
+/// 报"本体不在了"、`precheck` 也看不见它。
+///
+/// fixture 刻意用**大写**目录名:全小写现场里两把尺子恰好相同,
+/// 这条规则改坏了照样全绿(本项目记录的空转模式 ③)。
+#[test]
+fn scan_all_groups_by_the_record_key_so_uppercase_dirs_are_found() {
+    let (ctx, env) = ctx();
+    let body = skill_dir(&env.home, ".claude/skills/Weekly-Report", "v1");
+
+    let all = converge::scan_all(&ctx.registry, &env).unwrap();
+    assert_eq!(
+        all.keys().collect::<Vec<_>>(),
+        vec!["weekly-report"],
+        "分组键必须是清洗后的名字,否则 locate 永远查不到它"
+    );
+    assert_eq!(all["weekly-report"], vec![body.clone()], "值保持字面路径:本体不改名不搬家");
+
+    let installer = ctx.installer(&env);
+    let located = converge::locate(&installer, &ctx.registry, &env, &State::default(), "weekly-report").unwrap();
+    assert_eq!(
+        located,
+        Located::Body { body, others: Vec::new() },
+        "定位得到那个大写目录本身"
+    );
+}
+
+/// 清洗后会塌成 `unnamed-skill` 的名字(纯中文目录名)**保留字面键**:
+/// 合并到同一个 `unnamed-skill` 键下只会让两个不同的技能互相遮蔽。
+#[test]
+fn names_that_collapse_to_unnamed_skill_keep_their_literal_key() {
+    let (ctx, env) = ctx();
+    skill_dir(&env.home, ".agents/skills/测试", "v1");
+    skill_dir(&env.home, ".agents/skills/周报", "v2");
+
+    let all = converge::scan_all(&ctx.registry, &env).unwrap();
+    let mut keys: Vec<&String> = all.keys().collect();
+    keys.sort();
+    assert_eq!(keys, vec!["周报", "测试"], "两个中文目录各占一个键,不许互相遮蔽");
+}
