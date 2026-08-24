@@ -48,7 +48,7 @@
 //! 既有的 [`InstalledRow::agents`](账上记的 agent 名单)**不是**——理由写在
 //! [`tools_of`] 的文档里。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 
@@ -152,8 +152,8 @@ pub struct InstalledRow {
 ///
 /// # 成员口径(本任务要求显式定死并写明理由)
 ///
-/// 成员来自 **`Installer::link_targets`**,不是 `registry.group_by_global_dir`
-/// 的原始产物。理由一句话:**一个勾存在,当且仅当执行它的那把尺子
+/// 成员 = **`Installer::link_targets` ∪ {本体所在目录对应的 agent}**
+/// (修复轮 1 R19)。前一半的理由一句话:**一个勾存在,当且仅当执行它的那把尺子
 /// (`link_targets`,`converge::set_agents` 用的就是它)真的会对它动手**。
 /// 直接用分组产物会摆出两类永远点不亮的死勾:
 /// - **universal agent**(`skillsDir == ".agents/skills"`,共 19 个,其中 **13 个的
@@ -163,6 +163,14 @@ pub struct InstalledRow {
 /// - **canonical 自身**(`CLAUDE_CONFIG_DIR` 指到 `~/.agents` 时 claude-code 的
 ///   目录恰好等于 canonical):canonical 永不作为建链目标,否则"取消关联"就等于
 ///   删本体。
+///
+/// 🔴 **但只取前一半是错的(R19,审查者探针实测)**:本体住在
+/// `~/.cursor/skills/s` 时,那一行 56 个勾全是 `Off`、**cursor 根本不在勾里、
+/// 没有任何 `Body`——而 cursor 此刻正读着它**。产品模型承诺「各个工具里,
+/// 每个工具一个勾」,本体所在的那个工具恰恰是用户最需要看到的一个。
+/// 所以并上本体所在目录的全部 agent,状态恒 `Body`:那一档按既定语义
+/// **恒勾且不可取消**(取消等于删本体),不会引入任何死动作,两边的好处都拿到。
+/// 本体住 canonical 时同理——那 6 个共用 canonical 的 agent 确实正读着它。
 ///
 /// **不按 `config.disabledAgents` 过滤、也不按"这台机器上有没有装那个工具"过滤**:
 /// 前者按既有约定只影响默认勾选、不影响既有关联(账上已有的关联被过滤掉就等于
@@ -178,11 +186,26 @@ pub struct InstalledRow {
 /// 成已启用——那是撒谎**。这里一律现算磁盘状态,失败就显示 `Missing`。
 fn tools_of(
     targets: &[installer::LinkTarget],
+    grouped: &BTreeMap<PathBuf, Vec<String>>,
     home: &installer::SkillHome,
     recorded_links: &[state::LinkRecord],
 ) -> Vec<ToolView> {
     let body_dir = home.body.parent().map(fsops::normalize);
-    let mut out: Vec<ToolView> = Vec::new();
+    // `BTreeMap` 兼作去重与排序:目录枚举顺序不该影响界面。
+    let mut out: BTreeMap<String, ToolState> = BTreeMap::new();
+
+    // R19 的那一半:本体所在目录的全部 agent 恒 `Body`,先放进去。
+    // 用 `fsops::normalize` 比,不按字面 `PathBuf` 比——两侧一个来自模板展开、
+    // 一个来自账上的字符串,字面写法可能不同而指的是同一处
+    // (本项目「路径按 Path 比、不按字符串比」这条教训的同款落点)。
+    if let Some(dir) = &body_dir {
+        if let Some((_, agents)) = grouped.iter().find(|(d, _)| &fsops::normalize(d) == dir) {
+            for agent in agents {
+                out.insert(agent.clone(), ToolState::Body);
+            }
+        }
+    }
+
     for target in targets {
         let state = if body_dir.as_deref() == Some(fsops::normalize(&target.dir).as_path()) {
             ToolState::Body
@@ -200,13 +223,12 @@ fn tools_of(
                 _ => ToolState::Off,
             }
         };
+        // `or_insert`:本体那一档已经放进去的不被覆盖(它是最强的事实)。
         for agent in &target.agents {
-            out.push(ToolView { agent: agent.clone(), state });
+            out.entry(agent.clone()).or_insert(state);
         }
     }
-    // 目录枚举顺序不该影响界面
-    out.sort_by(|a, b| a.agent.cmp(&b.agent));
-    out
+    out.into_iter().map(|(agent, state)| ToolView { agent, state }).collect()
 }
 
 /// 已配置的全部 (源, 库) 坐标:内建主仓 + 追加仓、自定义源各库、广场已挂仓。
@@ -385,13 +407,26 @@ pub fn build(
     // 🔴 只读发现,绝不写盘、绝不写账(`scan_all` 自己也有这条承诺)。
     let all = converge::scan_all(registry, env)?;
     // 建链目标口径见 `tools_of`:成员来自执行建链的那把尺子,不是原始分组。
-    let all_agents: Vec<String> = registry.group_by_global_dir(env).into_values().flatten().collect();
+    let grouped = registry.group_by_global_dir(env);
+    let all_agents: Vec<String> = grouped.values().flatten().cloned().collect();
     let tool_targets = installer.link_targets(&all_agents)?;
 
     let mut rows: Vec<InstalledRow> = Vec::new();
-    // 去重按**记账键**(清洗后的目录名),不按 `dir_slug`——后者现在可能是技能库里
-    // 的原始大小写,拿它去重会让同一个技能在第 1 源与第 2 源各占一行。
-    let mut seen: HashSet<String> = HashSet::new();
+    // 🔴 **两套去重集合,回答的是两个不同的问题**(修复轮 1 R20):
+    // - `seen_literals` = 磁盘上的**字面目录名**。第 1 源与第 2/3 源之间按它去重
+    //   ——`~/.claude/skills/Weekly Report` 与 `~/.trae/skills/weekly-report` 清洗后
+    //   同名,但 Claude Code 是**按字面目录名调用**技能的,它们是**两个技能**。
+    //   按清洗名合并会把它们摆成一行、`versions=2`,于是弹一次"留哪个"、
+    //   落选那份进废纸篓——那是让用户在两个不同的技能之间二选一。设计原文写得
+    //   很清楚:「不同 + 异名 → 这是两个东西」。
+    // - `seen_keys` = **记账键**(清洗名)。只给第 4 源用:那一档问的是"这台电脑上
+    //   有没有本体",而 canonical 上同一个键只有一个位置,`weekly-report` 在本地
+    //   存在时对 `Weekly-Report` 说"这台电脑上没有"是假话。
+    //
+    // ⚠️ 分组与查账**仍然用清洗名**(缺陷 ③ 的修复靠它,别动);改的只是
+    // "几份实体算不算同一行"这个判据。
+    let mut seen_literals: HashSet<String> = HashSet::new();
+    let mut seen_keys: HashSet<String> = HashSet::new();
 
     // ── 第 1 源:`state.installed` 的记账 ────────────────────────────────
     for record in &state.installed {
@@ -411,7 +446,10 @@ pub fn build(
         if !home.body.is_dir() {
             continue;
         }
-        seen.insert(home.dir_name.clone());
+        // 这一行"占住"的是本体那个**字面**目录名(R20);同名的其他字面组另占一行。
+        let body_literal = leaf_of(&home.body);
+        seen_literals.insert(body_literal.clone());
+        seen_keys.insert(home.dir_name.clone());
 
         // 同轴缺陷 ②:发给前端的是**技能库里的原始目录名**,不是清洗过的记账名。
         let dir_slug = record
@@ -456,31 +494,39 @@ pub fn build(
             links: installer.link_health(&home, &recorded)?,
             body: home.body.to_string_lossy().into_owned(),
             local_hash,
-            tools: tools_of(&tool_targets, &home, &record.links),
-            versions: versions_for(&home.body, all.get(&home.dir_name).map(Vec::as_slice)),
+            tools: tools_of(&tool_targets, &grouped, &home, &record.links),
+            // 只跟**同一个字面目录名**的那些实体比版本:字面名不同的是另一个技能,
+            // 把它摆进"留哪个"的选项里就是在诱导用户销毁另一个技能(R20)。
+            versions: versions_for(&home.body, literal_group(&all, &home.dir_name, &body_literal)),
             share_blocked: skills::validate_skill_dir(&home.body).err(),
         });
     }
 
     // ── 第 2+3 源:磁盘上有实体、但没有记账 ─────────────────────────────
-    // `all` 的键已经是记账键口径(`converge::scan_all` 的分组键),与 `seen` 同尺。
+    // `all` 的键是记账键(清洗名),但**一行 = 一个字面目录名**(R20):
+    // 清洗后撞名的两个不同文件夹是两个技能,各占一行。
     for (key, paths) in &all {
-        if seen.contains(key) || paths.is_empty() {
-            continue;
+        for (literal, group) in by_literal_name(paths) {
+            if seen_literals.contains(&literal) || group.is_empty() {
+                continue;
+            }
+            seen_literals.insert(literal.clone());
+            seen_keys.insert(key.clone());
+            rows.push(unmanaged_row(
+                installer,
+                registry,
+                env,
+                state,
+                config,
+                &library,
+                &lock_entries,
+                &tool_targets,
+                &grouped,
+                key,
+                &literal,
+                &group,
+            ));
         }
-        seen.insert(key.clone());
-        rows.push(unmanaged_row(
-            installer,
-            registry,
-            env,
-            state,
-            config,
-            &library,
-            &lock_entries,
-            &tool_targets,
-            key,
-            paths,
-        ));
     }
 
     // ── 第 4 源:只在库里、这台电脑没有本体 ─────────────────────────────
@@ -496,7 +542,9 @@ pub fn build(
     // 历史,这一档从没装过,填了是假话。
     for (dir_slug, entry) in &library {
         let key = converge::record_key(installer, dir_slug).unwrap_or_else(|_| dir_slug.clone());
-        if seen.contains(&key) {
+        // 这一档按**记账键**去重(见上面两套集合的说明):它问的是"这台电脑上有没有
+        // 本体",而 canonical 上同一个键只有一个位置。
+        if seen_keys.contains(&key) {
             continue; // 已经在上面两档里出现过(本地有记账或有本体)
         }
         let identity = config.identities.get(&entry.registry_id);
@@ -504,7 +552,7 @@ pub fn build(
         if relation != ownership::Relation::Shared {
             continue;
         }
-        seen.insert(key);
+        seen_keys.insert(key);
         rows.push(InstalledRow {
             dir_slug: dir_slug.clone(),
             commit_sha: String::new(),
@@ -535,16 +583,40 @@ pub fn build(
     Ok(rows)
 }
 
+/// 一个路径的**字面**叶子名(不清洗)。这是用户在访达里看到的名字,
+/// 也是 Claude Code 实际用来调用这个技能的名字(官方文档:调用名来自目录名)。
+fn leaf_of(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// 把一个清洗名下的实体目录按**字面目录名**再分一层(R20)。
+///
+/// `converge::scan_all` 按清洗名分组是为了让 `locate` 查得到(缺陷 ③),但
+/// 「几份实体算不算同一行」是另一个问题:`Weekly Report` 与 `weekly-report`
+/// 清洗后同名,调用名却不同——**它们是两个技能**,合并成一行就会让用户在两个
+/// 不同的技能之间二选一、落选那份进废纸篓。
+fn by_literal_name(paths: &[PathBuf]) -> BTreeMap<String, Vec<PathBuf>> {
+    let mut out: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    for p in paths {
+        out.entry(leaf_of(p)).or_default().push(p.clone());
+    }
+    out
+}
+
+/// 某个清洗名下、字面名等于 `literal` 的那些实体目录。
+fn literal_group(all: &BTreeMap<String, Vec<PathBuf>>, key: &str, literal: &str) -> Vec<PathBuf> {
+    all.get(key)
+        .map(|paths| paths.iter().filter(|p| leaf_of(p) == literal).cloned().collect())
+        .unwrap_or_default()
+}
+
 /// 内容分歧的那几份版本(空 = 没有分歧)。
 ///
 /// 算不出来(本体读不了)时**返回空而不是往上抛**:一个技能目录的权限问题
 /// 不该让整页 500。这一档的代价只是那一行暂时不提示"有两个版本",
 /// 而写盘时 `converge` 的 `Differs` 仍会兜住,不会静默覆盖。
-fn versions_for(body: &Path, candidates: Option<&[PathBuf]>) -> Vec<converge::Version> {
-    let Some(candidates) = candidates else {
-        return Vec::new();
-    };
-    match converge::versions_of(body, candidates) {
+fn versions_for(body: &Path, candidates: Vec<PathBuf>) -> Vec<converge::Version> {
+    match converge::versions_of(body, &candidates) {
         Ok(v) => v,
         Err(err) => {
             tracing::warn!(body = %body.display(), error = %err.message, "算不出版本分歧,这一行按无分歧处理");
@@ -569,34 +641,38 @@ fn unmanaged_row(
     library: &ownership::LibraryAttribution,
     lock_entries: &HashMap<String, skill_lock::UpstreamEntry>,
     tool_targets: &[installer::LinkTarget],
+    grouped: &BTreeMap<PathBuf, Vec<String>>,
     key: &str,
-    paths: &[PathBuf],
+    literal: &str,
+    group: &[PathBuf],
 ) -> InstalledRow {
     // `locate` 是"本体住在哪"的唯一权威判定,这里只消费它,不另写一套选法。
     // 解析不了(目录名清洗后塌成 `unnamed-skill`,即纯中文目录名)时**降级成
     // 一行而不是丢掉**:技能就在用户磁盘上,让它凭空消失是这个项目明令不可接受的
     // 失败模式。降级行天然是惰性的——没有账就没有移除入口,`tools` 为空就没有勾,
     // 而 `share_blocked` 会诚实地告诉他文件夹名不合标准(A-5「显示 + 说明 + 出口」)。
+    //
+    // 🔴 **只接受落在本字面组里的那个答案**(R20):`locate` 按清洗名找,而清洗后
+    // 撞名的另一个字面目录是**另一个技能**——它的本体不能当成这一行的本体。
+    // 落不进本组时(账上那份属于另一个字面组、或账上的本体已经不在磁盘上),
+    // 退回本组里排序第一的那份:它就是这一行**实际存在**的东西。
     let located = converge::locate(installer, registry, env, state, key);
     let body = match &located {
-        Ok(converge::Located::Body { body, .. }) if body.is_dir() => body.clone(),
-        Ok(converge::Located::Differs(versions)) if !versions.is_empty() => {
-            PathBuf::from(&versions[0].path)
-        }
-        // 账上记的本体已经不在磁盘上(第 1 源已经据此跳过了那一行),
-        // 或者本体路径解析不了:以磁盘上**实际存在**的那一份为准。
-        _ => paths[0].clone(),
+        Ok(converge::Located::Body { body, .. }) if body.is_dir() && group.contains(body) => body.clone(),
+        Ok(converge::Located::Differs(versions)) => versions
+            .iter()
+            .map(|v| PathBuf::from(&v.path))
+            .find(|p| group.contains(p))
+            .unwrap_or_else(|| group[0].clone()),
+        _ => group[0].clone(),
     };
     if let Err(err) = &located {
         tracing::warn!(key = %key, error = %err.message, "本体位置解析不了,按降级行摆出");
     }
 
-    // 展示用的标识取**磁盘上的字面目录名**:它既是用户在访达里看到的那个名字,
-    // 也是技能库索引的建键口径(库里的目录名同样不清洗)。
-    let dir_slug = body
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| key.to_string());
+    // 展示用的标识就是这一行的**字面目录名**:它既是用户在访达里看到的那个名字、
+    // 也是 Claude Code 的调用名,还是技能库索引的建键口径(库里的目录名同样不清洗)。
+    let dir_slug = literal.to_string();
 
     let relation = match library.get(&dir_slug).or_else(|| library.get(key)) {
         Some(entry) => {
@@ -614,7 +690,7 @@ fn unmanaged_row(
     // `link_targets`/`link_health` 都要一个 `SkillHome`;拿不到就只能不摆工具勾
     // (降级行的形状)。这里用 `key` 而不是 `dir_slug`:前者已是记账键口径。
     let home = installer.home(key, Some(&body)).ok();
-    let tools = home.as_ref().map(|h| tools_of(tool_targets, h, &[])).unwrap_or_default();
+    let tools = home.as_ref().map(|h| tools_of(tool_targets, grouped, h, &[])).unwrap_or_default();
 
     InstalledRow {
         dir_slug,
@@ -635,7 +711,7 @@ fn unmanaged_row(
         links: Vec::new(),
         local_hash: fsops::dir_content_hash(&body).unwrap_or_default(),
         tools,
-        versions: versions_for(&body, Some(paths)),
+        versions: versions_for(&body, group.to_vec()),
         share_blocked: skills::validate_skill_dir(&body).err(),
         body: body.to_string_lossy().into_owned(),
     }

@@ -60,6 +60,11 @@ struct Ctx {
     registry: AgentRegistry,
     store: Store,
     builtin: registry::BuiltinSource,
+    /// 🔴 **绝不用默认的 `SYSTEM_TRASH`**(修复轮 1 I-2):`build` 眼下只读,
+    /// 但不注入沙盒的话,"扫描之后废纸篓里什么都没有"这半断言**根本写不出来**
+    /// ——而那正是"发现是只读的"这条承诺里最容易破、也最贵的一半。
+    /// 与 `tests/converge_flow.rs` 同一姿势。
+    sandbox: skillsync_lib::core::fsops::SandboxTrash,
 }
 
 impl Ctx {
@@ -84,6 +89,7 @@ fn ctx() -> Ctx {
         repo: Some(("skills", "skills")),
         branch: "main",
     };
+    let sandbox = skillsync_lib::core::fsops::SandboxTrash::new(home.join(".test-trash"));
     Ctx {
         _tmp: tmp,
         home,
@@ -91,6 +97,7 @@ fn ctx() -> Ctx {
         registry: AgentRegistry::builtin(),
         store,
         builtin,
+        sandbox,
     }
 }
 
@@ -161,7 +168,7 @@ fn lock_entry_git(url: &str) -> LockEntry {
 }
 
 fn build(ctx: &Ctx, config: &Config, state: &State) -> Vec<my_skills::InstalledRow> {
-    let installer = Installer::new(&ctx.registry, &ctx.env);
+    let installer = Installer::new(&ctx.registry, &ctx.env).with_trasher(&ctx.sandbox);
     my_skills::build(&installer, &ctx.registry, &ctx.env, &ctx.store, &ctx.builtin, config, state)
         .unwrap()
 }
@@ -446,6 +453,9 @@ fn differing_copies_merge_into_one_row_with_versions_and_nothing_is_written() {
     let before = snapshot(&ctx.home);
     let rows = build(&ctx, &Config::default(), &State::default());
     assert_eq!(snapshot(&ctx.home), before, "扫描与构建绝不写盘:目录内容必须一字不变");
+    // I-2:另一半——**废纸篓里也必须什么都没有**。没有沙盒 trasher 的话这句写不出来。
+    assert!(ctx.sandbox.trashed().is_empty(), "发现是只读的:一个字节都不该进废纸篓");
+    assert!(!ctx.home.join(".test-trash").exists(), "废纸篓目录本身都不该被建出来");
 
     assert_eq!(rows.iter().filter(|r| r.dir_slug == "s").count(), 1, "一个技能只占一行");
     let r = row(&rows, "s");
@@ -616,12 +626,15 @@ fn an_adopted_account_without_a_source_is_not_reported_as_removed() {
     );
 }
 
-/// `tools` 的成员口径:**一个勾存在,当且仅当执行它的那把尺子真的会对它动手**。
+/// `tools` 的成员口径(修复轮 1 R19 之后):**建链会碰到的 + 本体所在的那个**。
 ///
-/// 两类必须缺席,各有独立理由(不是同一条规则查两遍):
-/// - universal agent(cursor/codex/cline/zed/warp…):落在 canonical 就能读到,
-///   `link_targets` 按设计跳过它们,摆出来就是**永远点不亮的死勾**;
-/// - canonical 自身:永不作为建链目标,否则"取消关联"等于删本体。
+/// 这条现场里本体住 `~/.claude/skills/`(claude-code,非 universal),所以并集的
+/// 第二半没有引入任何额外 agent——正好把第一半单独钉住:
+/// - universal agent(cursor/codex/cline/zed/warp…)不该出现:`link_targets` 按设计
+///   跳过它们,勾了什么也不会发生,摆出来就是**永远点不亮的死勾**;
+/// - canonical 自身也不该出现:它永不作为建链目标,否则"取消关联"等于删本体。
+///
+/// 本体**恰好住在** universal 工具目录里的那一档,由下面那条测试单独钉。
 #[test]
 fn tools_only_lists_agents_that_linking_would_actually_touch() {
     let ctx = ctx();
@@ -767,4 +780,147 @@ fn one_skill_never_takes_two_rows_when_the_directory_name_is_not_lowercase() {
     let r = &rows[0];
     assert_eq!(r.dir_slug, "Weekly-Report");
     assert!(!r.content_hash.is_empty(), "留下的那一行必须是有账的那一行(能移除、能更新)");
+}
+
+/// 🔴 R19(修复轮 1,审查者探针实测):**本体所在的那个工具必须出现在勾里**,
+/// 哪怕它是 universal、`link_targets` 从不碰它。
+///
+/// 现场:本体住 `~/.cursor/skills/s`。修之前那一行 56 个勾全是 `Off`、
+/// **cursor 根本不在勾里、没有任何 `Body`——而 cursor 此刻正读着它**。
+/// 产品模型承诺「各个工具里,每个工具一个勾」,本体所在的那个恰恰是最该看见的。
+/// `Body` 这一档按既定语义恒勾且不可取消,所以并进来不引入任何死动作。
+#[test]
+fn the_tool_that_hosts_the_body_is_always_shown_even_if_it_is_universal() {
+    let ctx = ctx();
+    let body = skill_dir(&ctx.home, ".cursor/skills/s", "v1");
+
+    let rows = build(&ctx, &Config::default(), &State::default());
+    let r = row(&rows, "s");
+    assert_eq!(r.body, body.to_string_lossy());
+    assert_eq!(
+        tool_state(r, "cursor"),
+        Some(my_skills::ToolState::Body),
+        "本体就住在 cursor 的技能目录里,它此刻正读着这个技能"
+    );
+    // 并集的第一半照旧:建链会碰到的仍然在,别的 universal 仍然不在
+    assert_eq!(tool_state(r, "claude-code"), Some(my_skills::ToolState::Off));
+    assert_eq!(tool_state(r, "codex"), None, "codex 也是 universal,但本体不在它那儿");
+    assert!(r.tools.iter().any(|t| t.state == my_skills::ToolState::Body), "必须有且只有本体那一档是 Body");
+    assert_eq!(r.tools.iter().filter(|t| t.state == my_skills::ToolState::Body).count(), 1);
+}
+
+/// 🔴 R20(修复轮 1,审查者探针实测):**清洗后撞名、字面名不同的两个文件夹是
+/// 两个技能,各占一行**。
+///
+/// Claude Code 按**字面目录名**调用技能,所以 `Weekly Report` 与 `weekly-report`
+/// 的调用名不同 = 两个不同的东西。合并成一行的后果是:app 弹一次"留哪个"、
+/// 落选那份进废纸篓——**让用户在两个不同的技能之间二选一**。设计原文那一行写得
+/// 很清楚:「不同 + 异名 → 这是两个东西」。
+///
+/// ⚠️ fixture 里两个字面名必须**真的不同**(空格 vs 连字符),否则这条规则的
+/// 两个概念取了同值,改坏了照样绿(本项目记录的空转模式 ③)。
+#[test]
+fn folders_that_only_collide_after_sanitizing_stay_two_separate_rows() {
+    let ctx = ctx();
+    let spaced = skill_dir_named(&ctx.home, ".claude/skills/Weekly Report", "Weekly Report");
+    let dashed = skill_dir(&ctx.home, ".trae/skills/weekly-report", "另一个技能");
+
+    // 前提:两者清洗后确实同名(否则这条测试测的根本不是撞名)
+    assert_eq!(
+        skillsync_lib::core::skills::sanitize_name("Weekly Report"),
+        skillsync_lib::core::skills::sanitize_name("weekly-report"),
+        "fixture 前提:两个字面名清洗后必须撞在一起"
+    );
+
+    let before = snapshot(&ctx.home);
+    let rows = build(&ctx, &Config::default(), &State::default());
+    assert_eq!(snapshot(&ctx.home), before, "只读:一个字节都不该动");
+    assert!(ctx.sandbox.trashed().is_empty(), "更不该有东西进废纸篓");
+
+    assert_eq!(rows.len(), 2, "两个不同的技能,两行:{:?}", rows.iter().map(|r| &r.dir_slug).collect::<Vec<_>>());
+    let a = row(&rows, "Weekly Report");
+    let b = row(&rows, "weekly-report");
+    assert_eq!(a.body, spaced.to_string_lossy(), "各自的本体是各自那个文件夹");
+    assert_eq!(b.body, dashed.to_string_lossy());
+    assert!(
+        a.versions.is_empty() && b.versions.is_empty(),
+        "它们不是同一个技能的两个副本,绝不能弹「留哪个」让用户销毁其中一个"
+    );
+    // 字面名可辨:界面要能把冲突说清楚(话术交任务 7,A-3 已拍板由用户在本地改名)
+    assert_eq!(a.dir_slug, "Weekly Report");
+    assert_eq!(b.dir_slug, "weekly-report");
+}
+
+/// R20 的对照组:**字面名相同**的两份(同一个技能在两处)仍然合并成一行。
+/// 没有它,把合并判据整个删掉也照样绿——那条规则就是空转的。
+#[test]
+fn the_same_literal_name_in_two_places_is_still_one_row() {
+    let ctx = ctx();
+    skill_dir(&ctx.home, ".claude/skills/weekly-report", "v1");
+    skill_dir(&ctx.home, ".trae/skills/weekly-report", "v2");
+
+    let rows = build(&ctx, &Config::default(), &State::default());
+    assert_eq!(rows.len(), 1, "同一个字面名 = 同一个技能的两个副本,只占一行");
+    assert_eq!(rows[0].versions.len(), 2, "内容不同,摆出来让用户拍板留哪份");
+}
+
+/// `InstalledSkillView`(IPC DTO 本身)的键完整集合守卫。
+///
+/// `InstalledRow` 那条守卫钉的是 core 的形状,但**真正发给前端的是这个类型**
+/// ——`From` 实现漏搬一个字段、或 DTO 上少写一个 `pub`,core 侧那条测试一个字
+/// 都不会红(修复轮 1 Minor)。
+#[test]
+fn installed_skill_view_serializes_with_the_same_camel_case_keys() {
+    let ctx = ctx();
+    skill_dir(&ctx.home, ".claude/skills/s", "v1");
+    let rows = build(&ctx, &Config::default(), &State::default());
+    let row = rows.into_iter().find(|r| r.dir_slug == "s").unwrap();
+
+    let core_keys = {
+        let v = serde_json::to_value(&row).unwrap();
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    };
+    let view = skillsync_lib::commands::InstalledSkillView::from(row);
+    let value = serde_json::to_value(&view).unwrap();
+    let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(keys, core_keys, "DTO 与 core 行的键必须逐个对应,From 漏搬一个就在这里红");
+    assert_eq!(keys.len(), 21);
+}
+
+/// R20 的第二半:**有账那一行的 `versions` 也只跟同字面名的实体比**。
+///
+/// 上面那条只覆盖了"两边都没账"的形状(第 2/3 源),`literal_group` 这条路
+/// 根本没走到——账上那份的版本比对是另一段代码,漏了它的话:作者的
+/// `Weekly Report` 一装上账,旁边那个**完全不同的** `weekly-report` 就会被摆进
+/// 「留哪个」的选项里,选错一次就把它送进废纸篓。
+#[test]
+fn an_accounted_row_only_compares_versions_within_its_own_literal_name() {
+    let ctx = ctx();
+    let body = skill_dir_named(&ctx.home, ".claude/skills/Weekly Report", "Weekly Report");
+    skill_dir(&ctx.home, ".trae/skills/weekly-report", "另一个完全不同的技能");
+
+    let mut state = State::default();
+    // 记账名是清洗后的;本体是那个带空格的字面目录
+    let mut rec = installed_record(
+        "weekly-report",
+        "skills/Weekly-Report",
+        &skillsync_lib::core::fsops::dir_content_hash(&body).unwrap(),
+    );
+    rec.body = Some(body.to_string_lossy().into_owned());
+    state.installed.push(rec);
+    ctx.store.save_state(&state).unwrap();
+
+    let rows = build(&ctx, &Config::default(), &state);
+    assert_eq!(rows.len(), 2, "两个不同的技能:{:?}", rows.iter().map(|r| &r.dir_slug).collect::<Vec<_>>());
+
+    let accounted = rows.iter().find(|r| !r.content_hash.is_empty()).unwrap();
+    assert_eq!(accounted.body, body.to_string_lossy());
+    assert!(
+        accounted.versions.is_empty(),
+        "旁边那个 weekly-report 是另一个技能,绝不能摆进「留哪个」的选项里"
+    );
+    assert!(rows.iter().any(|r| r.dir_slug == "weekly-report" && r.content_hash.is_empty()));
 }
