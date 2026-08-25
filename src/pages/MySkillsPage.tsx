@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 
-import { CreateSkill } from "@/components/CreateSkill";
+import { CreateSkillButton, CreateSkillPanel } from "@/components/CreateSkill";
 import { ProjectSections } from "@/components/ProjectSections";
 import { SkillIcon } from "@/components/SkillIcon";
 import { ToolChecks } from "@/components/ToolChecks";
@@ -116,7 +116,11 @@ export function MySkillsPage() {
             {t("mine.emptyCta")}
           </button>
           {/* 空态也要有「新建技能」:一个技能都没有的人,恰恰最可能是想自己写一个 */}
-          <CreateSkill />
+          <CreateSkillButton />
+        </div>
+        {/* 展开态是整卡宽度,必须摆在那条 flex 行**外面**(见 CreateSkill 模块头) */}
+        <div className="mt-2.5">
+          <CreateSkillPanel />
         </div>
       </div>
     );
@@ -126,8 +130,10 @@ export function MySkillsPage() {
     <div>
       <div className="flex items-center gap-3.5 py-2.5 text-[12.5px] text-text-2">
         <span>{t("mine.count", { count: list.length })}</span>
-        <CreateSkill />
+        <CreateSkillButton />
       </div>
+      {/* 展开态是整卡宽度,必须摆在那条 flex 行**外面**(见 CreateSkill 模块头) */}
+      <CreateSkillPanel />
       {/* 🔴 勾选的部分失败必须有渲染点:收集了不摆出来,就等于把"报错中断"换成了
           "静默撒谎"——用户看到勾变了、以为成了,那个工具里其实什么都没发生。 */}
       {toolFailures && (
@@ -135,12 +141,35 @@ export function MySkillsPage() {
           <p className="text-[12px] font-medium text-[#c0392b] dark:text-[#e0705f]">
             {t("mine.toolsPartialFailed", { count: toolFailures.length })}
           </p>
-          <ul className="mt-1 flex flex-col gap-0.5">
+          <ul className="mt-1 flex flex-col gap-1">
             {toolFailures.map((f, i) => (
               <li key={`${f.agent ?? "-"}-${i}`} className="text-[11.5px] text-text-2">
-                {f.agent
-                  ? `${agentNames.get(f.agent) ?? f.agent}${t("punct.labelSeparator")}${f.message}`
-                  : f.message}
+                {/* 🔴 `differs` 与真正的失败说**不同的话**:它不是"没做成",
+                    是"停下来问你"——那个位置上已经有一份内容不同的东西,
+                    core 按铁律 7 绝不覆盖。再给一个「打开文件夹」让用户去看看
+                    那是什么;没有这个出口的话,他点几次勾都只会看到勾弹回去。 */}
+                {f.kind === "differs" ? (
+                  <>
+                    <span>
+                      {t("mine.toolOccupied", {
+                        tool: f.agent ? (agentNames.get(f.agent) ?? f.agent) : t("mine.toolCanonical"),
+                      })}
+                    </span>
+                    {f.existing && (
+                      <button
+                        type="button"
+                        onClick={() => void skillReveal({ path: f.existing! }).catch(() => {})}
+                        className="ml-1.5 underline decoration-dotted underline-offset-2 hover:text-text"
+                      >
+                        {t("mine.openFolder")}
+                      </button>
+                    )}
+                  </>
+                ) : f.agent ? (
+                  `${agentNames.get(f.agent) ?? f.agent}${t("punct.labelSeparator")}${f.message}`
+                ) : (
+                  f.message
+                )}
               </li>
             ))}
           </ul>
@@ -260,10 +289,21 @@ const STATE_LABEL: Record<SharedState, MessageKey> = {
  * |---|---|
  * | `versions` | 「选择保留哪一份」——**其余动作一概不渲染** |
  * | `draft` | 「分享」(打开确认屏) |
- * | `notHere` / `remoteAhead` / `both` | 「取回」 |
- * | `localAhead` | 「分享更新」 |
+ * | `notHere` / `remoteAhead` / `both` | 「取回」(**仅「我分享的」**) |
+ * | `localAhead` | 「分享更新」(**仅「我分享的」**) |
  * | `differs` | **两个都摆**:「改用库里的版本」与「分享更新」 |
  * | `synced` | 无 |
+ *
+ * ⚠️ **上表说的是「我分享的」那一区**。「我安装的」(`relation === "installed"`)
+ * 走另一套动作,因为那些技能不是我分享的、「分享更新」对它们没有意义:
+ *
+ * | 条件 | 动作 |
+ * |---|---|
+ * | `remoteAhead` **或** `both` | 「更新」 |
+ * | `localModified` 且来源还在 | 「分享改动」(把改动推回来源) |
+ *
+ * 🔴 `both` 在两区**都要有出口**:漏掉「我安装的」那一半,状态文案写着
+ * 「库里有新版」、角标照样计数,而页面上一个能点的更新入口都没有。
  *
  * 🔴 **`versions` 那一档必须把其余动作全部收起来**:磁盘上有几份内容不同的实体时,
  * 「取回」「分享更新」这些动作的主语是不确定的(拿哪一份去比?去推?),
@@ -314,7 +354,14 @@ function Row({
   // 「我安装的」那一区讲的是"库里有没有新版",不是"我和库里谁新"——
   // 那一区的技能不是我分享的,「分享更新」对它没有意义。
   const isInstalled = skill.relation === "installed";
-  const showUpdate = isInstalled && state === "remoteAhead";
+  // 🔴 **`both` 必须和 `remoteAhead` 一样摆「更新」**(R29,修复轮 2 修的真回归)。
+  // 只判 `remoteAhead` 的话,「我安装的」技能在 `both`(本地改过 + 库里也有新版)
+  // 这一档**一个更新入口都没有**:取回按钮有 `!isInstalled` 闸、更新按钮判不到,
+  // 于是状态文案写着「库里有新版」、侧边栏角标照样在计数,而页面上点不到任何东西
+  // ——正是 CLAUDE.md 记着的「角标说 3、点进去只有 1」那个缺陷。
+  // 本地也改过时不必在这里分流:`skill_install` 的预检会返回"需要拍板",
+  // 自然落进全局挂载的 `ConflictDialog` 走三选。
+  const showUpdate = isInstalled && (state === "remoteAhead" || state === "both");
   const showShareChanges =
     isInstalled && skill.localModified && !skill.sourceRemoved && !skill.libraryRemoved;
 

@@ -32,6 +32,8 @@ import {
   skillShareChanges,
   type AppError,
   type InstalledSkillView,
+  type Converged,
+  type RustResult,
   type SetAgentsOutcome,
   type ShareMode,
   type SkillVersion,
@@ -44,10 +46,23 @@ import { useStoreIndex } from "@/store/store-index";
 
 export type RemovePhase = "idle" | "confirming" | "busy";
 
-/** 一次「勾选哪些工具」里没能做成的事。`agent` 为 null = 不属于任何一个工具的那一档。 */
+/**
+ * 一次「勾选哪些工具」里没能如愿的事。`agent` 为 null = 不属于任何一个工具的那一档。
+ *
+ * `kind` 分两种,**界面必须说不同的话**:
+ * - `failed`:真的失败了(`Err`)——"没做成,原因是……";
+ * - `differs`:core **停下来问你**(`Ok(Differs)`)——那个位置上已经有一份内容
+ *   不同的东西,core 按铁律 7 绝不覆盖。它不是错误,但**更不能不说**:见下。
+ */
 export interface ToolFailure {
   agent: string | null;
   message: string;
+  kind: "failed" | "differs";
+}
+
+/** 位置被一份内容不同的东西占着时,core 给的 `existing` 路径(界面据此摆出口)。 */
+export interface ToolBlocked extends ToolFailure {
+  existing?: string;
 }
 
 /** 「留哪一份」待拍板。`after` 记着拍完板本来要做什么,拍完接着做,不让用户再点一次。 */
@@ -86,7 +101,7 @@ interface MySkillsState {
    * 🔴 收集了不摆出来,就等于把"报错中断"换成了"静默撒谎":用户看到勾变了、
    * 以为成了,实际那个工具里什么都没发生。所以这个字段一定要有渲染点。
    */
-  toolFailures: ToolFailure[] | null;
+  toolFailures: ToolBlocked[] | null;
 
   /** 「有几个版本,留哪一份」待拍板;null = 没有。 */
   versionChoice: VersionChoice | null;
@@ -175,26 +190,43 @@ export function visibleTools(tools: ToolView[], installed: Set<string> | null): 
 }
 
 /**
- * 从一次 `skill_set_agents` 的结果里把**没做成的事**抠出来。
+ * 从一次 `skill_set_agents` 的结果里把**没能如愿的事**抠出来。
  *
- * 三个来源缺一不可,少收一个就是一类失败会被静默吞掉:
+ * 四个来源缺一不可,少收一个就是一类结果会被静默吞掉:
  * - `results` 里的 `Err`:某个工具没配上;
+ * - `results` 里的 `Ok(Differs)`:见下,**这一档最险**;
  * - `unlinkFailed`:某个位置没能停用掉(用户以为取消了,那个工具其实还读得到);
- * - `canonical` 的 `Err`:统一目录那一处没收敛成功。
+ * - `canonical` 的 `Err` / `Ok(Differs)`:统一目录那一处。
  *
- * `Ok({kind:"differs"})` **不算失败**:那说明那个位置上有一份内容不同的东西,
- * core 按设计没有动它(绝不静默覆盖)。它会如实回显在下一轮 `tools` 的状态上,
- * 不需要在这里再报一次。
+ * # 🔴 `Ok(Differs)` 必须收,不能靠"下一轮 tools 会回显"
+ *
+ * 修复轮 2 之前这里把 `Differs` 排除在外,理由是"core 按设计没动它,下一轮
+ * `tools` 会如实回显那个位置的状态"。**顺着这一跳查进 core,那个理由是错的**:
+ * `converge::merge_link_record` 对 `Differs` **直接 return、不写任何记录**,
+ * 于是 `my_skills::tools_of` 算出来是 `Off` —— 用户看到的是**勾自己弹了回去,
+ * 零错误、零提示**。他再点一次,还是一样。**那是一条永久死路。**
+ *
+ * 所以 `Differs` 进清单,但 `kind` 与真正的 `Err` 分开:它不是"没做成",
+ * 是"**停下来问你**"——那个位置上已经有一份内容不同的东西,core 绝不覆盖
+ * (铁律 7)。界面据此说不同的话,并摆一个「打开文件夹」让用户去看看那是什么。
  */
-export function collectToolFailures(outcome: SetAgentsOutcome): ToolFailure[] {
+export function collectToolFailures(outcome: SetAgentsOutcome): ToolBlocked[] {
   if (outcome.outcome !== "done") return [];
-  const out: ToolFailure[] = [];
-  if ("Err" in outcome.canonical) out.push({ agent: null, message: outcome.canonical.Err.message });
+  const out: ToolBlocked[] = [];
+  const classify = (agent: string | null, r: RustResult<Converged>): ToolBlocked | null => {
+    if ("Err" in r) return { agent, message: r.Err.message, kind: "failed" };
+    if (r.Ok.kind === "differs")
+      return { agent, message: r.Ok.existing, kind: "differs", existing: r.Ok.existing };
+    return null;
+  };
+  const canonical = classify(null, outcome.canonical);
+  if (canonical) out.push(canonical);
   for (const [agent, result] of outcome.results) {
-    if ("Err" in result) out.push({ agent, message: result.Err.message });
+    const hit = classify(agent, result);
+    if (hit) out.push(hit);
   }
   for (const [agent, error] of outcome.unlinkFailed) {
-    out.push({ agent, message: error.message });
+    out.push({ agent, message: error.message, kind: "failed" });
   }
   return out;
 }

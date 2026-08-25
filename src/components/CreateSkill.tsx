@@ -28,21 +28,33 @@ import { createFormComplete, useCreate } from "@/store/create";
  * ——`skill_set_agents` 已经让本地技能可以直接在这一页勾选启用到任何工具,
  * 不必先绕一圈分享再取回。
  */
-export function CreateSkill() {
-  const { phase, form, error, createdPath, open, close, setForm, submit, reveal } = useCreate();
+/**
+ * ⚠️ **入口与展开态是两个组件,刻意拆开**:入口是一颗 24px 的按钮,要和「N 个技能」
+ * 那行文字并排坐在同一条 `flex items-center` 里;而展开态是一张 `w-full` 的整卡。
+ * 用一个组件同时充当两者的话,卡片会被塞进那条 flex 行里跟计数文字挤在一起
+ * ——**jsdom 没有布局,这种错测不出来**,只能靠结构上把它变成不可能。
+ * 调用方因此把 {@link CreateSkillPanel} 摆在那条行的**下面**,而不是里面。
+ */
+export function CreateSkillButton() {
+  const { phase, open } = useCreate();
+  if (phase !== "closed") return null;
+  return (
+    <button
+      type="button"
+      onClick={open}
+      className="flex h-7 items-center gap-1.5 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+    >
+      <Icon icon={Plus} className="size-3.5" />
+      {t("create.action")}
+    </button>
+  );
+}
 
-  if (phase === "closed") {
-    return (
-      <button
-        type="button"
-        onClick={open}
-        className="flex h-7 items-center gap-1.5 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
-      >
-        <Icon icon={Plus} className="size-3.5" />
-        {t("create.action")}
-      </button>
-    );
-  }
+/** 展开态(表单 / 完成页)。整卡宽度,由调用方摆在入口那一行的下面。 */
+export function CreateSkillPanel() {
+  const { phase, form, error, createdPath, close, setForm, submit, reveal } = useCreate();
+
+  if (phase === "closed") return null;
 
   if (phase === "done") {
     return (

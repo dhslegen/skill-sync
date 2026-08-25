@@ -450,6 +450,59 @@ fn tool_dir_bodies_appear_with_body_path_tools_and_no_baseline() {
     assert_eq!(r.share_blocked, None, "名字与描述都合标准,可以分享");
 }
 
+/// R27:**无记账但库里有同名条目的行,必须带上来源坐标**。
+///
+/// 🔴 这一档的坐标只有一个来源——库里那条索引条目。丢掉它的后果不在 core 里,
+/// 而在前端:`lib/ownership.ts` 的第 4 档(无安装基线)靠 `localEqualsRemote`
+/// 分 `synced` / `differs`,而那个函数开头有一道**坐标闸**(防止拿另一个库的
+/// 索引去比)。坐标是空串就必然不等 → 恒返回 `null` → **`synced` 那个出口在
+/// 真实数据上永远走不到**,每一个内容其实逐字节一致的无记账技能都会显示
+/// 「本地和库里不一样」。那正是 v6 二期的旗舰场景(在 `~/.claude/skills/` 下
+/// 开发、经 git 直推进库),对它说假话是这个项目最忌讳的失败模式。
+///
+/// 另外两个受害者同根:`pull` 与 `confirmShare` 都按这三个字段定位去处,
+/// 空串会让它们缺省打到**内建源主库**。
+#[test]
+fn a_row_without_an_account_still_carries_the_library_coordinates() {
+    let ctx = ctx();
+    skill_dir(&ctx.home, ".claude/skills/s", "v1");
+    write_index_cache(&ctx, vec![indexed_skill("s", Some("赵文浩"))]);
+    let mut config = Config::default();
+    config.identities.insert(registry::BUILTIN_REGISTRY_ID.into(), me());
+
+    let rows = build(&ctx, &config, &State::default());
+    let r = row(&rows, "s");
+
+    assert_eq!(r.relation, Relation::Shared, "库里记的分享者是我");
+    assert_eq!(r.content_hash, "", "仍然没有安装基线——坐标与基线是两回事");
+    assert_eq!(r.registry_id, registry::BUILTIN_REGISTRY_ID, "来源 registry 必须填");
+    assert_eq!(r.source_owner, "skills", "来源 owner 必须填");
+    assert_eq!(r.source_repo, "skills", "来源 repo 必须填");
+}
+
+/// 上一条的对照组:**库里没有同名条目时坐标保持空串**。
+///
+/// 那种行 `relation` 恒为 `Draft`(库里没有它),前端在第 2 档就短路了,
+/// 根本走不到用坐标的第 4 档——填一个猜出来的坐标反而会让 `pull`/`confirmShare`
+/// 把它推向一个与它毫无关系的库。
+#[test]
+fn a_draft_that_is_not_in_the_library_gets_no_coordinates() {
+    let ctx = ctx();
+    skill_dir(&ctx.home, ".claude/skills/s", "v1");
+    // 索引缓存里是**别的**技能:库存在,但没有这一个
+    write_index_cache(&ctx, vec![indexed_skill("other", Some("赵文浩"))]);
+    let mut config = Config::default();
+    config.identities.insert(registry::BUILTIN_REGISTRY_ID.into(), me());
+
+    let rows = build(&ctx, &config, &State::default());
+    let r = row(&rows, "s");
+
+    assert_eq!(r.relation, Relation::Draft, "库里没有它 = 草稿");
+    assert_eq!(r.registry_id, "", "草稿没有来源,不许猜一个出来");
+    assert_eq!(r.source_owner, "");
+    assert_eq!(r.source_repo, "");
+}
+
 /// 第 3 源:同名实体在两处、内容不同——**只占一行**,分歧摆进 `versions`
 /// (含本体自己,否则用户没法选"就留我现在这份")。
 ///

@@ -6,6 +6,7 @@ import { MySkillsPage } from "./MySkillsPage";
 import type { InstalledSkillView, SkillVersion } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
+import { useCreate } from "@/store/create";
 import { useMySkills } from "@/store/my-skills";
 import { useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
@@ -127,6 +128,14 @@ function reset() {
   useStoreIndex.setState({ index: null });
   useUi.setState({ page: "mine" });
   useShare.setState({ targetRepo: null, preview: "unknown" });
+  // 「新建技能」的 store 是模块级的,不重置的话上一条用例留下的 done/form 档
+  // 会让下一条找不到入口按钮(两个组件互斥)。
+  useCreate.setState({
+    phase: "closed",
+    form: { dirSlug: "", displayName: "", description: "" },
+    error: null,
+    createdPath: null,
+  });
 }
 
 /** 只取技能行区域,避开「装在项目里的」那一区与页头。 */
@@ -362,6 +371,40 @@ describe("「我安装的」区块", () => {
     });
   });
 
+  it("🔴 both(本地改过 + 库里也有新版)必须有更新入口 —— 角标在算它,页面就得点得到", async () => {
+    // 这是修复轮 2 修的**真回归**:`showUpdate` 原先只判 `remoteAhead`,
+    // 而取回按钮又有 `!isInstalled` 闸 —— 「我安装的」技能落到 `both` 时
+    // 一个更新入口都没有,状态文案却写着「库里有新版」、侧边栏角标照样计数。
+    // 正是 CLAUDE.md 记着的「角标说 3、点进去只有 1」。
+    //
+    // ⚠️ **fixture 必须让 localModified 与"远端更新"同时为真** —— 我上一轮的
+    // fixture 让这两个变量从未同时成立(空转模式 ③:两个概念取同值),
+    // 所以这一整档从没被构造过。
+    seedIpc([view({ relation: "installed", localModified: true })], {
+      skill_install: { outcome: "installed", report: { dirName: "weekly-report", canonicalDir: "/c", links: [] }, localKept: false, lock: "written" },
+    });
+    seedIndex("sha256:remote-newer");
+    render(<MySkillsPage />);
+
+    // 先确认这一行确实落在 both 档(否则下面断言的是另一档,等于空转)
+    await screen.findByText("库里有新版,本地也有改动");
+    const update = screen.getByRole("button", { name: "更新" });
+
+    await userEvent.click(update);
+    await vi.waitFor(() =>
+      expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_install")).toBe(true),
+    );
+  });
+
+  it("both 档同时保留「分享改动」 —— 两条路各自成立,不互相排斥", async () => {
+    seedIpc([view({ relation: "installed", localModified: true })]);
+    seedIndex("sha256:remote-newer");
+    render(<MySkillsPage />);
+    await screen.findByText("库里有新版,本地也有改动");
+    expect(screen.getByRole("button", { name: "更新" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "分享改动" })).toBeInTheDocument();
+  });
+
   it("版本一致时没有更新按钮 —— 不能引诱用户做无意义的重装", async () => {
     seedIpc([view()]);
     seedIndex("sha256:mine");
@@ -475,18 +518,70 @@ describe("勾选工具的失败必须看得见", () => {
     seedIndex();
     useMySkills.setState({
       toolFailures: [
-        { agent: "claude-code", message: "那个位置已有同名文件夹" },
-        { agent: null, message: "统一目录没能收敛" },
+        { agent: "claude-code", message: "那个位置已有同名文件夹", kind: "failed" },
+        { agent: null, message: "统一目录没能收敛", kind: "failed" },
       ],
       agentNames: new Map([["claude-code", "Claude Code"]]),
     });
     render(<MySkillsPage />);
 
-    await screen.findByText(/有 2 处没能完成/);
+    await screen.findByText(/有 2 处需要你看一下/);
     // agent 名要换成展示名,不许把内部标识漏给用户
     expect(screen.getByText(/Claude Code：那个位置已有同名文件夹/)).toBeInTheDocument();
     expect(screen.getByText("统一目录没能收敛")).toBeInTheDocument();
     expect(screen.queryByText(/claude-code：/)).toBeNull();
+  });
+
+  it("🔴 位置被占(differs)说的是另一句话,并给「打开文件夹」这条出口", async () => {
+    // core 对 Differs 不写记录 → tools_of 算出 Off → 勾自己弹回去、零提示。
+    // 不摆这条说明的话,用户点几次都只会看到勾弹回,那是永久死路。
+    seedIpc([view()]);
+    seedIndex();
+    useMySkills.setState({
+      toolFailures: [
+        {
+          agent: "trae",
+          message: "/h/.trae/skills/weekly-report",
+          kind: "differs",
+          existing: "/h/.trae/skills/weekly-report",
+        },
+      ],
+      agentNames: new Map([["trae", "Trae"]]),
+    });
+    render(<MySkillsPage />);
+
+    await screen.findByText(/Trae 那个位置上已经有一份内容不同的技能,没有覆盖它。/);
+    // 出口必须真的能点,且带的是那个位置的路径
+    await userEvent.click(screen.getAllByRole("button", { name: "打开文件夹" })[0]);
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_reveal");
+    expect(call?.[1].args).toEqual({ path: "/h/.trae/skills/weekly-report" });
+  });
+
+  it("differs 与真正的失败在界面上说的不是同一句话", async () => {
+    seedIpc([view()]);
+    seedIndex();
+    useMySkills.setState({
+      toolFailures: [
+        { agent: "trae", message: "trae 没配上", kind: "failed" },
+      ],
+      agentNames: new Map([["trae", "Trae"]]),
+    });
+    render(<MySkillsPage />);
+
+    await screen.findByText(/Trae：trae 没配上/);
+    expect(screen.queryByText(/已经有一份内容不同的技能/)).toBeNull();
+  });
+
+  it("统一目录那一档没有 agent 名,用一句人话顶上,不留空", async () => {
+    seedIpc([view()]);
+    seedIndex();
+    useMySkills.setState({
+      toolFailures: [
+        { agent: null, message: "/h/.agents/skills/w", kind: "differs", existing: "/h/.agents/skills/w" },
+      ],
+    });
+    render(<MySkillsPage />);
+    await screen.findByText(/统一技能目录 那个位置上已经有一份内容不同的技能/);
   });
 
   it("没有失败时不摆那个框", async () => {
@@ -494,7 +589,7 @@ describe("勾选工具的失败必须看得见", () => {
     seedIndex();
     render(<MySkillsPage />);
     await screen.findByText("周报生成");
-    expect(screen.queryByText(/没能完成/)).toBeNull();
+    expect(screen.queryByText(/需要你看一下/)).toBeNull();
   });
 });
 
@@ -558,19 +653,70 @@ describe("其余既有承诺", () => {
     expect(container.textContent).not.toContain("来源 ");
   });
 
-  it("「新建技能」入口在这一页 —— 它原本长在已撤销的分享页里", async () => {
+  it("🔴 「新建技能」真的点得开、填得完、提交得出去 —— 不是只断言它渲染了", async () => {
     // R23:搬家之前 `skill_create` 这条 IPC 没有任何界面到得了,等于功能还在、门没了。
+    // ⚠️ 只断言 `toBeInTheDocument` 正是本项目吃过亏的写法(「加了按钮就要有测试
+    // 真的点过它」)——所以这条从点开一路走到 invoke。
+    seedIpc([view()], {
+      skill_create: { dirSlug: "my-notes", path: "/h/.agents/skills/my-notes" },
+    });
+    seedIndex();
+    render(<MySkillsPage />);
+    await screen.findByText("周报生成");
+
+    await userEvent.click(screen.getByRole("button", { name: "新建技能" }));
+
+    // 展开态出来了,而且入口按钮让位(两个组件互斥,不会同时在场)
+    await screen.findByText("新建一个技能");
+    expect(screen.queryByRole("button", { name: "新建技能" })).toBeNull();
+
+    // 三项齐备之前提交按钮是禁用的 —— 不让用户点一个必然失败的按钮
+    const create = screen.getByRole("button", { name: "创建" });
+    expect(create).toBeDisabled();
+
+    const boxes = screen.getAllByRole("textbox");
+    await userEvent.type(boxes[0], "我的笔记");
+    await userEvent.type(boxes[1], "记点东西");
+    await userEvent.type(boxes[2], "my-notes");
+    expect(create).toBeEnabled();
+
+    await userEvent.click(create);
+
+    await vi.waitFor(() => {
+      const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_create");
+      expect(call?.[1].args).toEqual({
+        dirSlug: "my-notes",
+        displayName: "我的笔记",
+        description: "记点东西",
+      });
+    });
+    // 完成页给出真实落点,并且刷新了这一页(新技能要立刻看得见)
+    await screen.findByText("/h/.agents/skills/my-notes");
+  });
+
+  it("文件夹名不合规时不放行 —— 与 core 同一把尺子", async () => {
     seedIpc([view()]);
     seedIndex();
     render(<MySkillsPage />);
     await screen.findByText("周报生成");
-    expect(screen.getByRole("button", { name: "新建技能" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "新建技能" }));
+    await screen.findByText("新建一个技能");
+
+    const boxes = screen.getAllByRole("textbox");
+    await userEvent.type(boxes[0], "我的笔记");
+    await userEvent.type(boxes[1], "记点东西");
+    // core 会把 `a--b` 静默清洗成 `a-b`:填的和落盘的不是一个东西,所以不放行
+    await userEvent.type(boxes[2], "a--b");
+
+    expect(screen.getByRole("button", { name: "创建" })).toBeDisabled();
+    expect(invoke).not.toHaveBeenCalledWith("skill_create", expect.anything());
   });
 
-  it("空态也有「新建技能」:一个技能都没有的人最可能想自己写一个", async () => {
+  it("空态也有「新建技能」,同样点得开", async () => {
     render(<MySkillsPage />);
     await screen.findByText("还没有获取任何技能。");
-    expect(screen.getByRole("button", { name: "新建技能" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "新建技能" }));
+    await screen.findByText("新建一个技能");
   });
 
   it("勾组挂在每一行上,按 agents_detected 的显示名渲染", async () => {

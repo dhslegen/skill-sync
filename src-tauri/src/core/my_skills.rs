@@ -681,7 +681,25 @@ fn unmanaged_row(
     // 也是 Claude Code 的调用名,还是技能库索引的建键口径(库里的目录名同样不清洗)。
     let dir_slug = literal.to_string();
 
-    let relation = match library.get(&dir_slug).or_else(|| library.get(key)) {
+    // 🔴 **库里那条条目要留下来,不能只用它算 `relation` 就扔掉**(R27)。
+    // 它带着这个技能的来源坐标(registry_id / owner / repo),而这一档**没有
+    // `state.installed` 记账**,坐标只有这一个来源。
+    //
+    // 丢掉它的后果是前端第 4 档(无安装基线)彻底失效:`lib/ownership.ts` 的
+    // `localEqualsRemote` 开头有一道坐标闸(防止拿另一个库的索引去比),坐标是
+    // 空串就必然不等 → 恒返回 `null` → `synced` 那个出口**在真实数据上永远走不到**,
+    // 每一个内容其实逐字节一致的无记账技能都会显示「本地和库里不一样」。
+    // 那正是 v6 二期的旗舰场景(在 `~/.claude/skills/` 下开发、经 git 直推进库),
+    // 对它说假话是这个项目最忌讳的失败模式。
+    //
+    // 第二、三个受害者同根:`pull` 与 `confirmShare` 都按这三个字段定位去处,
+    // 空串会让它们缺省打到**内建源主库**——取回一个同名但完全不同的技能,
+    // 或把改动推到错误的库里。
+    //
+    // 库里**没有**同名条目时保持空串是对的:那种行 `relation` 恒为 `Draft`
+    // (库里没有它),前端在第 2 档就短路了,根本走不到第 4 档。
+    let library_entry = library.get(&dir_slug).or_else(|| library.get(key));
+    let relation = match library_entry {
         Some(entry) => {
             let me = config.identities.get(&entry.registry_id);
             ownership::relation(me, entry.author.as_deref(), true, true)
@@ -707,9 +725,11 @@ fn unmanaged_row(
         installed_at: String::new(),
         updated_at: String::new(),
         local_modified: false,
-        source_owner: String::new(),
-        source_repo: String::new(),
-        registry_id: String::new(),
+        // R27:库里有同名条目才填得出坐标(见上面 `library_entry` 的说明);
+        // 没有条目的行是 `Draft`,前端在第 2 档就短路,空串不会被用到。
+        source_owner: library_entry.map(|e| e.owner.clone()).unwrap_or_default(),
+        source_repo: library_entry.map(|e| e.repo.clone()).unwrap_or_default(),
+        registry_id: library_entry.map(|e| e.registry_id.clone()).unwrap_or_default(),
         source_removed: false,
         library_removed: false,
         relation,

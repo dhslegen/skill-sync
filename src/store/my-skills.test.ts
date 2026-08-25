@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { hasUpdate, sections, updateCount, useMySkills } from "./my-skills";
+import { hasUpdate, localEqualsRemote, sections, updateCount, useMySkills } from "./my-skills";
 import { useInstall } from "@/store/install";
 import { useShare } from "@/store/share";
 import type { InstalledSkillView } from "@/lib/ipc";
@@ -173,6 +173,78 @@ describe("移除流程", () => {
   });
 });
 
+describe("localEqualsRemote:第 4 档唯一的判据", () => {
+  beforeEach(reset);
+
+  // ⚠️ 这个函数此前**一条测试都没走过**(本任务链路上第七次撞见"那条路根本没人测")。
+  // 它是六态机第 4 档(无安装基线)分 synced / differs 的唯一依据,判错的后果是
+  // 对着两份逐字节相同的技能说「本地和库里不一样」,或者反过来。
+  const index = (remoteHash: string, over: Record<string, unknown> = {}) => ({
+    registryId: "company",
+    owner: "skills",
+    repo: "skills",
+    skills: [{ dirSlug: "weekly-report", contentHash: remoteHash }],
+    ...over,
+  });
+
+  it("两方指纹相同 → true", () => {
+    expect(localEqualsRemote(view({ localHash: "h1" }), index("h1"))).toBe(true);
+  });
+
+  it("两方指纹不同 → false", () => {
+    expect(localEqualsRemote(view({ localHash: "h1" }), index("h2"))).toBe(false);
+  });
+
+  it("没有索引 → null(不知道就说不知道)", () => {
+    expect(localEqualsRemote(view({ localHash: "h1" }), null)).toBeNull();
+  });
+
+  it("🔴 本地指纹为空 → null,绝不让空串相等冒充「已同步」", () => {
+    // `"" === ""` 会把"两边都读不出来"判成"已同步",那是编的。
+    expect(localEqualsRemote(view({ localHash: "" }), index(""))).toBeNull();
+    expect(localEqualsRemote(view({ localHash: "" }), index("h1"))).toBeNull();
+  });
+
+  it("库里没有这个技能(远端指纹取不到) → null", () => {
+    expect(
+      localEqualsRemote(view({ localHash: "h1" }), index("h1", { skills: [] })),
+    ).toBeNull();
+  });
+
+  // ---- 坐标闸:三个字段各一条,防止"少判一个也照样绿" ----
+
+  it("registryId 不同 → null(拿另一个源的索引比出来的结论不算数)", () => {
+    expect(
+      localEqualsRemote(view({ localHash: "h1", registryId: "custom-1" }), index("h1")),
+    ).toBeNull();
+  });
+
+  it("owner 不同 → null", () => {
+    expect(
+      localEqualsRemote(view({ localHash: "h1", sourceOwner: "design" }), index("h1")),
+    ).toBeNull();
+  });
+
+  it("repo 不同 → null(一源多仓:同源两库的同名技能是两个东西)", () => {
+    expect(
+      localEqualsRemote(view({ localHash: "h1", sourceRepo: "design-skills" }), index("h1")),
+    ).toBeNull();
+  });
+
+  it("🔴 坐标为空串时同样落 null —— R27 之前 core 就是这么填的", () => {
+    // 这正是修复轮 2 在 core 侧修掉的那条:无记账行的三个坐标是空串,
+    // 于是坐标闸必然不等、`synced` 出口永远走不到。这条测试钉住**前端这一侧的
+    // 判定是对的**(空坐标就是不知道),core 那一侧由
+    // `installed_list.rs::a_row_without_an_account_still_carries_the_library_coordinates` 钉住。
+    expect(
+      localEqualsRemote(
+        view({ localHash: "h1", registryId: "", sourceOwner: "", sourceRepo: "" }),
+        index("h1"),
+      ),
+    ).toBeNull();
+  });
+});
+
 describe("勾选哪些工具(skill_set_agents)", () => {
   beforeEach(reset);
 
@@ -207,9 +279,9 @@ describe("勾选哪些工具(skill_set_agents)", () => {
     });
     const failures = useMySkills.getState().toolFailures;
     expect(failures).toEqual([
-      { agent: null, message: "统一目录没能收敛" },
-      { agent: "trae", message: "trae 没配上" },
-      { agent: "zed", message: "zed 没能停用" },
+      { agent: null, message: "统一目录没能收敛", kind: "failed" },
+      { agent: "trae", message: "trae 没配上", kind: "failed" },
+      { agent: "zed", message: "zed 没能停用", kind: "failed" },
     ]);
   });
 
@@ -234,16 +306,22 @@ describe("勾选哪些工具(skill_set_agents)", () => {
     expect(useMySkills.getState().toolFailures).toBeNull();
   });
 
-  it("differs 不算失败:core 按设计没动那个位置,下一轮 tools 会如实回显", async () => {
+  it("🔴 Ok(Differs) 必须进清单,而且与真正的失败分开标记", async () => {
+    // 修复轮 2 修的问题:上一版把 Differs 排除在外,理由是"core 按设计没动它,
+    // 下一轮 tools 会回显"。**顺着这一跳查进 core,那个理由是错的**——
+    // `converge::merge_link_record` 对 Differs 直接 return 不写记录,
+    // `tools_of` 因此算出 `Off`,用户看到的是**勾自己弹了回去、零错误零提示**。
+    // 他再点一次还是一样,那是一条永久死路。
     useMySkills.setState({ list: [view()] });
     invoke.mockImplementation(async (cmd) => {
       if (cmd === "skill_set_agents")
         return {
           outcome: "done",
           homeBody: "/b",
-          canonical: { Ok: { kind: "differs", existing: "/h/.claude/skills/weekly-report" } },
+          canonical: { Ok: { kind: "differs", existing: "/h/.agents/skills/weekly-report" } },
           results: [
             ["trae", { Ok: { kind: "differs", existing: "/h/.trae/skills/weekly-report" } }],
+            ["cursor", { Err: { code: "FS_LINK_FAILED", message: "cursor 没配上" } }],
           ],
           unlinked: [],
           unlinkFailed: [],
@@ -252,7 +330,47 @@ describe("勾选哪些工具(skill_set_agents)", () => {
       return AGENTS;
     });
 
-    await useMySkills.getState().setAgents("weekly-report", ["trae"]);
+    await useMySkills.getState().setAgents("weekly-report", ["trae", "cursor"]);
+
+    expect(useMySkills.getState().toolFailures).toEqual([
+      {
+        agent: null,
+        message: "/h/.agents/skills/weekly-report",
+        kind: "differs",
+        existing: "/h/.agents/skills/weekly-report",
+      },
+      {
+        agent: "trae",
+        message: "/h/.trae/skills/weekly-report",
+        kind: "differs",
+        existing: "/h/.trae/skills/weekly-report",
+      },
+      // 真正的失败仍然是 failed,两者不能混成一档 —— 界面要说不同的话
+      { agent: "cursor", message: "cursor 没配上", kind: "failed" },
+    ]);
+  });
+
+  it("其余 Ok 档(linked/unchanged/sameLocation)不进清单", async () => {
+    // 上一条的对照组:只有 differs 才算"需要你看一下",别把成功也报上来。
+    useMySkills.setState({ list: [view()] });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_set_agents")
+        return {
+          outcome: "done",
+          homeBody: "/b",
+          canonical: { Ok: { kind: "sameLocation" } },
+          results: [
+            ["trae", { Ok: { kind: "linked", mode: "symlink" } }],
+            ["cursor", { Ok: { kind: "unchanged" } }],
+          ],
+          unlinked: [],
+          unlinkFailed: [],
+        };
+      if (cmd === "installed_list") return [view()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().setAgents("weekly-report", ["trae", "cursor"]);
     expect(useMySkills.getState().toolFailures).toBeNull();
   });
 
@@ -410,6 +528,41 @@ describe("分享确认屏(零编辑)", () => {
     });
     // 成功后确认屏要关掉,否则用户会对着同一屏再点一次
     expect(useMySkills.getState().shareTarget).toBeNull();
+  });
+
+  it("🔴 无记账但库里有它的行,分享更新要打回**它自己那个库**,不是内建主库", async () => {
+    // 第三个受害者(与 pull 打错库同根因):core 的 R27 修复之前,这种行的
+    // source_owner/source_repo/registry_id 是空串,confirmShare 会退到
+    // `targetRepo ?? undefined` → 缺省推到内建源主库,把改动推进一个
+    // 与这个技能毫无关系的库。core 补齐坐标之后这条路才走得对。
+    useMySkills.setState({
+      list: [
+        view({
+          relation: "shared",
+          contentHash: "", // 无安装基线 —— 正是 differs 那一档
+          registryId: "custom-1",
+          sourceOwner: "design",
+          sourceRepo: "design-skills",
+        }),
+      ],
+      shareTarget: { dirSlug: "weekly-report" },
+    });
+    // 确认屏上恰好选中的是**另一个**库:账上的坐标必须赢
+    useShare.setState({ targetRepo: "skills/skills" });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_share") return { outcome: "shared", mode: "pushed", url: null };
+      if (cmd === "installed_list") return [];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().confirmShare();
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share");
+    expect(call?.[1].args).toEqual({
+      dirSlug: "weekly-report",
+      registryId: "custom-1",
+      repo: "design/design-skills",
+    });
   });
 
   it("草稿没有来源坐标:落到确认屏上选中的那个库", async () => {
