@@ -29,7 +29,6 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   relation: "draft",
   localPresent: true,
   sourceLabel: null,
-  links: [],
   body: BODY,
   localHash: "sha256:local",
   tools: [],

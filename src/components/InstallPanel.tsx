@@ -517,12 +517,18 @@ function DoneFooter({
   );
 }
 
-/** 失败的一条关联:说明 + 就地重试。重试成功后这一行会从列表里消失。 */
+/**
+ * 没能启用的一处:说明 + 就地再来一次。成功后这一行会从列表里消失。
+ *
+ * 按钮说的是**用户要的结果**(在工具里启用),不是"重试"这个动作——上一版那颗
+ * 「重试」点下去可能弹出一个承诺"替换掉那个目录"的确认框,而新模型里内容不同的
+ * 位置一个字节都不覆盖,由 core 报「有几份不一样的」交给用户拍板。
+ */
 function FailedLinkRow({ dir, message }: { dir: string; message: string }) {
-  const retryLink = useInstall((s) => s.retryLink);
-  const retryingDir = useInstall((s) => s.retryingDir);
-  const retryError = useInstall((s) => s.retryError);
-  const busy = retryingDir === dir;
+  const enableInTools = useInstall((s) => s.enableInTools);
+  const enablingDir = useInstall((s) => s.enablingDir);
+  const enableError = useInstall((s) => s.enableError);
+  const busy = enablingDir === dir;
 
   return (
     <div className="mt-1.5">
@@ -534,14 +540,14 @@ function FailedLinkRow({ dir, message }: { dir: string; message: string }) {
         <button
           type="button"
           disabled={busy}
-          onClick={() => void retryLink(dir)}
+          onClick={() => void enableInTools(dir)}
           className="h-6 flex-none rounded-ctl border border-border px-2 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-60"
         >
-          {busy ? t("install.retrying") : t("install.retryLink")}
+          {busy ? t("install.enabling") : t("install.enableInTools")}
         </button>
       </div>
-      {!busy && retryError && (
-        <p className="mt-1 text-[11px] text-[#c0392b] dark:text-[#e0705f]">{retryError.message}</p>
+      {!busy && enableError && (
+        <p className="mt-1 text-[11px] text-[#c0392b] dark:text-[#e0705f]">{enableError.message}</p>
       )}
     </div>
   );

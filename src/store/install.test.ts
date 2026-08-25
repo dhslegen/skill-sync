@@ -43,24 +43,26 @@ function reset() {
     precheck: null,
     error: null,
     installed: new Map(),
-    retryingDir: null,
-    retryConfirmDir: null,
-    retryError: null,
+    enablingDir: null,
+    enableError: null,
   });
+  useMySkills.setState({ versionChoice: null, keepError: null });
   useMySkills.setState({ shareTarget: null, list: null });
   useUi.setState({ page: "store" });
 }
 
-/** 一次"claude-code 建成了、trae 那条被占位顶掉"的安装结果。 */
-const OCCUPIED_ERROR = {
-  code: "FS_LINK_OCCUPIED",
-  message: "该工具的技能目录下已有同名技能,请先确认是否覆盖",
+/** 一次"claude-code 成了、trae 那处没成"的安装结果。错误码取一个 core 真会发的
+ *  通用码:早先那个"位置被顶掉"的专用错误码连同"替换掉那个位置"那条路一起在
+ *  v6 二期撤销了,在 mock 里继续造它会让人以为那条路还在。 */
+const TOOL_DIR_ERROR = {
+  code: "FS_TASK",
+  message: "这个位置没能启用,请重试",
 };
 const partiallyFailed = (): InstallReport =>
   report({
     links: [
       { dir: "/home/u/.claude/skills", agents: ["claude-code"], result: { status: "linked", mode: "symlink" } },
-      { dir: "/home/u/.trae/skills", agents: ["trae"], result: { status: "failed", error: OCCUPIED_ERROR } },
+      { dir: "/home/u/.trae/skills", agents: ["trae"], result: { status: "failed", error: TOOL_DIR_ERROR } },
     ],
   });
 
@@ -134,6 +136,160 @@ describe("获取流程状态机", () => {
     expect(s.precheck).toEqual({ status: "locallyModified", installedSha: "aaa1111" });
     // 关键:不能自作主张再发一次带 resolution 的请求
     expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_install")).toHaveLength(1);
+  });
+
+  it("「这台电脑上已有一份不一样的」同样停在冲突态,让弹窗两选", async () => {
+    // 上一版这一档在 core 里叫 `Foreign`、在界面上被说成「不是本应用安装的」。
+    // 现在它是 `localDiffers`,照走同一条拍板通道——**不能被当成认不出的形状
+    // 落进错误态**,那样用户就没有"用库里的 / 保留本地的"这两条路可选了。
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "agents_detected") return AGENTS;
+      return {
+        outcome: "needsDecision",
+        precheck: { status: "localDiffers", existing: "/home/u/.claude/skills/weekly-report" },
+      } satisfies AcquireOutcome;
+    });
+
+    await useInstall.getState().begin("weekly-report");
+    await useInstall.getState().run();
+
+    const s = useInstall.getState();
+    expect(s.phase).toBe("conflict");
+    expect(s.precheck).toEqual({
+      status: "localDiffers",
+      existing: "/home/u/.claude/skills/weekly-report",
+    });
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_install")).toHaveLength(1);
+  });
+
+  it("「保留本地的」走 keepLocal:core 什么都没写,落 done 且不报「已启用」", async () => {
+    // core 对 `localDiffers` + keepLocal 走的是 `AcquireOutcome::Kept` 出口
+    // (磁盘/账/工具启用零变化),`remoteChanged` 恒为 true——"库里那一版与
+    // 本地这份不同"正是这一档的定义。
+    let calls = 0;
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "installed_list") return [];
+      calls += 1;
+      return calls === 1
+        ? { outcome: "needsDecision", precheck: { status: "localDiffers", existing: "/h/x" } }
+        : { outcome: "kept", remoteChanged: true };
+    });
+
+    await useInstall.getState().begin("weekly-report");
+    await useInstall.getState().run();
+    await useInstall.getState().run("keepLocal");
+
+    const s = useInstall.getState();
+    expect(s.phase).toBe("done");
+    expect(s.mineKept).toEqual({ remoteChanged: true });
+    // `report` 留空:这不是一次安装,`DoneFooter` 靠它认出该说哪句话
+    expect(s.report).toBeNull();
+  });
+
+  it("认不出的拍板形状 → 错误态,不是停在「安装中」", async () => {
+    // 契约对不上时**必须有落点**。停在 conflict 的话弹窗一个都不弹
+    // (`ConflictDialog` 只认那四档),而底部按 conflict 画成"安装中"
+    // ——用户既看不到原因,也没有出口。
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "agents_detected") return AGENTS;
+      // `alreadyHere` 在 core 里从不退回 needsDecision(它直接装完),
+      // 这里拿它当"形状对不上"的样本正合适。
+      return { outcome: "needsDecision", precheck: { status: "alreadyHere", body: "/h/x" } };
+    });
+
+    await useInstall.getState().begin("weekly-report");
+    await useInstall.getState().run();
+
+    const s = useInstall.getState();
+    expect(s.phase).toBe("error");
+    expect(s.error?.message).toContain("没认出");
+    expect(s.error?.detail).toBe("alreadyHere");
+    // 绝不自作主张重来一次(那等于替用户选了一种处置)
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_install")).toHaveLength(1);
+  });
+
+  describe("同名的有好几份:转去拍板,拍完自动重来一次", () => {
+    const VERSIONS = [
+      { path: "/h/.agents/skills/weekly-report", modifiedAt: "2026-08-01T00:00:00Z", files: 2, contentHash: "sha256:a" },
+      { path: "/h/.claude/skills/weekly-report", modifiedAt: "2026-08-20T00:00:00Z", files: 3, contentHash: "sha256:b" },
+    ];
+
+    /** 第一次 skill_install 报"有好几份",之后一律装成功。 */
+    function mockVersionChoiceThenOk() {
+      let calls = 0;
+      invoke.mockImplementation(async (cmd) => {
+        if (cmd === "agents_detected") return AGENTS;
+        if (cmd === "installed_list") return [];
+        if (cmd === "skill_keep_version")
+          return { body: VERSIONS[1].path, trashed: [VERSIONS[0].path], links: [], canonical: { Ok: { kind: "unchanged" } } };
+        if (cmd === "skill_install") {
+          calls += 1;
+          return calls === 1
+            ? { outcome: "needsDecision", precheck: { status: "needsVersionChoice", versions: VERSIONS } }
+            : { outcome: "installed", report: report(), localKept: false, lock: "written" };
+        }
+        return [];
+      });
+    }
+
+    it("打开拍板框、带上 after: \"install\",且不进冲突弹窗", async () => {
+      mockVersionChoiceThenOk();
+
+      await useInstall.getState().begin("weekly-report");
+      await useInstall.getState().run();
+
+      const choice = useMySkills.getState().versionChoice;
+      expect(choice?.dirSlug).toBe("weekly-report");
+      expect(choice?.after).toBe("install");
+      // 🔴 版本清单要取 precheck 带回来的那份:这条路的入口在商店页,
+      // `useMySkills.list` 通常还是 null,取那边就是一个零选项的空拍板框。
+      expect(choice?.versions).toEqual(VERSIONS);
+      // 冲突弹窗接不了这一档(`Resolution` 的两档回答不了"留哪一份")
+      expect(useInstall.getState().phase).not.toBe("conflict");
+      expect(useInstall.getState().precheck).toBeNull();
+    });
+
+    it("落回 idle 而不是卡在「安装中」,且留着重来一次要用的坐标", async () => {
+      mockVersionChoiceThenOk();
+
+      await useInstall.getState().begin("weekly-report", "company", "skills/skills");
+      await useInstall.getState().run();
+
+      const s = useInstall.getState();
+      expect(s.phase).toBe("idle");
+      expect(s.dirSlug).toBe("weekly-report");
+      expect(s.registryId).toBe("company");
+      expect(s.repo).toBe("skills/skills");
+      expect([...s.selected]).toEqual(["claude-code", "cursor"]);
+    });
+
+    it("拍完板自动重来一次安装(只重来一次)", async () => {
+      mockVersionChoiceThenOk();
+
+      await useInstall.getState().begin("weekly-report");
+      await useInstall.getState().run();
+      expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_install")).toHaveLength(1);
+
+      await useMySkills.getState().keepVersion("weekly-report", VERSIONS[1].path);
+
+      // 第二次 skill_install 就是那次自动重来;多于两次说明重来了不止一遍
+      expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_install")).toHaveLength(2);
+      expect(useInstall.getState().phase).toBe("done");
+      expect(useMySkills.getState().versionChoice).toBeNull();
+    });
+
+    it("用户关掉拍板框:不重来安装,也不留下任何「进行中」的假象", async () => {
+      mockVersionChoiceThenOk();
+
+      await useInstall.getState().begin("weekly-report");
+      await useInstall.getState().run();
+      useMySkills.getState().cancelVersionChoice();
+
+      expect(useMySkills.getState().versionChoice).toBeNull();
+      expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_install")).toHaveLength(1);
+      expect(useInstall.getState().phase).toBe("idle");
+    });
   });
 
   it("用户选了处置才带 resolution 重试", async () => {
@@ -514,7 +670,7 @@ describe("结果摘要", () => {
   });
 });
 
-describe("逐条重试建链(安装当时没建成的)", () => {
+describe("结果面板里逐条「在工具里启用」(安装当时没成的那些位置)", () => {
   beforeEach(() => {
     reset();
     useInstall.setState({
@@ -543,7 +699,7 @@ describe("逐条重试建链(安装当时没建成的)", () => {
       return [];
     });
 
-    await useInstall.getState().retryLink("/home/u/.trae/skills");
+    await useInstall.getState().enableInTools("/home/u/.trae/skills");
 
     const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_set_agents");
     expect(call?.[1].args).toEqual({
@@ -561,7 +717,7 @@ describe("逐条重试建链(安装当时没建成的)", () => {
       return [];
     });
 
-    await useInstall.getState().retryLink("/home/u/.trae/skills");
+    await useInstall.getState().enableInTools("/home/u/.trae/skills");
 
     const links = useInstall.getState().report?.links ?? [];
     expect(links).toHaveLength(2);
@@ -571,13 +727,13 @@ describe("逐条重试建链(安装当时没建成的)", () => {
   it("这一条上的 agent 失败了就仍算失败,错误摆出来", async () => {
     invoke.mockImplementation(async (cmd) => {
       if (cmd === "skill_set_agents")
-        return setAgentsDone([["trae", { Err: OCCUPIED_ERROR }]]);
+        return setAgentsDone([["trae", { Err: TOOL_DIR_ERROR }]]);
       return [];
     });
 
-    await useInstall.getState().retryLink("/home/u/.trae/skills");
+    await useInstall.getState().enableInTools("/home/u/.trae/skills");
 
-    expect(useInstall.getState().retryError?.code).toBe(OCCUPIED_ERROR.code);
+    expect(useInstall.getState().enableError?.code).toBe(TOOL_DIR_ERROR.code);
     expect(failedLinks(useInstall.getState().report)).toBe(1);
   });
 
@@ -588,14 +744,14 @@ describe("逐条重试建链(安装当时没建成的)", () => {
       if (cmd === "skill_set_agents")
         return setAgentsDone([
           ["trae", { Ok: { kind: "linked", mode: "symlink" } }],
-          ["claude-code", { Err: OCCUPIED_ERROR }],
+          ["claude-code", { Err: TOOL_DIR_ERROR }],
         ]);
       return [];
     });
 
-    await useInstall.getState().retryLink("/home/u/.trae/skills");
+    await useInstall.getState().enableInTools("/home/u/.trae/skills");
 
-    expect(useInstall.getState().retryError).toBeNull();
+    expect(useInstall.getState().enableError).toBeNull();
     expect(failedLinks(useInstall.getState().report)).toBe(0);
   });
 
@@ -608,26 +764,11 @@ describe("逐条重试建链(安装当时没建成的)", () => {
       return [];
     });
 
-    await useInstall.getState().retryLink("/home/u/.trae/skills");
+    await useInstall.getState().enableInTools("/home/u/.trae/skills");
 
-    expect(useInstall.getState().retryError?.code).toBe("FS_NEEDS_VERSION_CHOICE");
+    expect(useInstall.getState().enableError?.code).toBe("FS_NEEDS_VERSION_CHOICE");
     // 报告不该被改写成"成功了"
     expect(failedLinks(useInstall.getState().report)).toBe(1);
-  });
-
-  it("替换确认那条路已撤销:占用不再靠「替换掉那个目录」解决", async () => {
-    // 新模型里内容不同的位置由 core 报"有几个版本"交给用户拍板,绝不覆盖。
-    // 所以 `retryConfirmDir` 不该再被置上——它一旦被置上,`RetryLinkDialog`
-    // 就会弹出一个承诺"替换"的弹窗,而底层已经没有那条路了。
-    invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_set_agents")
-        return setAgentsDone([["trae", { Err: OCCUPIED_ERROR }]]);
-      return [];
-    });
-
-    await useInstall.getState().retryLink("/home/u/.trae/skills");
-
-    expect(useInstall.getState().retryConfirmDir).toBeNull();
   });
 });
 

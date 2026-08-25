@@ -13,6 +13,20 @@ import { useStoreIndex } from "@/store/store-index";
  * 默认落在「保留我的改动」——用户已拍板:不丢本地内容、以之后分享出去为归宿。
  * 按钮文案只承诺当下真会发生的事(保留),不写"分享上去":分享流程属后续任务,
  * 摆一个点了什么都不发生的按钮,和空状态撒谎是同一类问题。
+ *
+ * # 🔴 这里没有兜底分支(v6 二期任务 8)
+ *
+ * 上一版对认不出的 `precheck.status` 会落进一句「不是通过本应用安装的」——那正是
+ * 这一期起因里要消灭的那句话:用户在自己电脑上写的技能,被 app 说成外人。
+ * core 的 `Precheck::Foreign` 与前端类型里的那个变体现在都已删除。
+ *
+ * 现在四个分支各自正列(改过它 / 装自另一个库 / 这是我分享的 / 这台电脑上已有一份
+ * 不一样的),**认不出的形状根本到不了这里**:`install.ts::run` 的 `isDecidable`
+ * 只让这四档进 `conflict`,其余落进错误态、由 `ErrorFooter` 摆出重试与取消。
+ * 那份名单与这里的分支表是同一件事,**要改一起改**。
+ *
+ * 这个组件对没匹配上的形状返回 `null` **纯粹是 TS 的完整性要求,不是一道闸**
+ * ——真出现了那种形状,用户看到的是错误态,不是一个不弹的弹窗。
  */
 export function ConflictDialog() {
   const { phase, precheck, dirSlug, run, keepLocalAndShare, keepLocalAndShareMine, cancel } =
@@ -66,6 +80,13 @@ export function ConflictDialog() {
   // 分流规则见那个函数的注释(v6 任务分解裁定 #4,task-3-report 顾虑 1 记的
   // 真实缺口)。
   const mine = precheck.status === "mine" ? precheck : null;
+  // 这台电脑上已经有一份同名的、内容与库里不一样(v6 二期)。判据只有内容,
+  // **不问"这个文件夹是谁建的"**——磁盘上回答不了那个问题,而上一版正是靠猜它
+  // 说出了「不是通过本应用安装的」。两条路都无损:换成库里的那份,本地这份进
+  // 废纸篓(可找回);保留本地的,一个字节都不动。
+  const localDiffers = precheck.status === "localDiffers" ? precheck : null;
+  // 认不出的形状不该走到这里(见组件文档):`run()` 已经把它挡进错误态。
+  if (!modified && !otherLibrary && !mine && !localDiffers) return null;
 
   return (
     <div className="fixed inset-0 z-70 grid place-items-center bg-[rgba(15,14,12,.35)] backdrop-blur-[2px]">
@@ -87,7 +108,7 @@ export function ConflictDialog() {
                   mine.remoteChanged
                   ? t("conflict.mineTitle", { name })
                   : t("conflict.mineTitleLocalOnly", { name })
-                : t("conflict.foreignTitle")}
+                : t("conflict.localDiffersTitle", { name })}
         </h2>
         <p className="mt-1.5 text-[12.5px] leading-[1.6] text-text-2">
           {modified
@@ -101,9 +122,9 @@ export function ConflictDialog() {
                 ? mine.remoteChanged
                   ? t("conflict.mineBody")
                   : t("conflict.mineBodyLocalOnly")
-                : precheck.status === "foreign" && precheck.origin.kind === "npxSkills"
-                  ? t("conflict.foreignBodyNpx", { name, source: precheck.origin.source })
-                  : t("conflict.foreignBodyUnknown", { name })}
+                : // 把**位置**说出来:这一档的全部信息量就在"你那份在哪儿"。
+                  // 不说的话,用户面对"已有一份不同的"根本不知道说的是哪个文件夹。
+                  t("conflict.localDiffersBody", { path: localDiffers?.existing ?? "" })}
         </p>
 
         <div className="mt-4 flex flex-col gap-2">
@@ -160,23 +181,37 @@ export function ConflictDialog() {
               />
             </>
           ) : (
-            // 外来目录没有"你的改动"可保留,所以只有替换与取消两条路,
-            // 且默认落在取消——绝不静默替换用户从别处装的东西。
-            <Choice
-              label={t("conflict.foreignReplace")}
-              hint={t("conflict.foreignHint")}
-              danger
-              onClick={() => void run("overwrite")}
-            />
+            // 这台电脑上已有一份不一样的:两条路都无损,所以**不做二次确认**
+            // (与 `RemoveDialog` 撤掉双确认同一个理由:可逆比追问管用)。
+            // 默认焦点在「保留本地的」——那一条一个字节都不动。
+            <>
+              <Choice
+                ref={keepRef}
+                primary
+                label={t("conflict.localDiffersKeepLocal")}
+                hint={t("conflict.localDiffersKeepLocalHint")}
+                onClick={() => void run("keepLocal")}
+              />
+              <Choice
+                label={t("conflict.localDiffersUseRemote")}
+                // 「移到废纸篓,可以找回」是**真话**:core 的 `Installer::install`
+                // 走 `fsops::trash_tree` 把旧本体送进系统废纸篓。
+                // 别照抄旧那句「原有内容无法找回」——在今天它是假话。
+                hint={t("conflict.localDiffersUseRemoteHint")}
+                danger
+                onClick={() => void run("overwrite")}
+              />
+            </>
           )}
         </div>
 
         <div className="mt-4 flex justify-end">
           <button
-            // mine 档默认焦点在「以本地为准」上(裁定 #2),不能落到这颗取消按钮
-            // ——否则它会在 keepRef 已经挂到 mine 的主按钮之后又抢一遍,
-            // 回车就变成了取消而不是"以本地为准"。
-            ref={modified || mine ? undefined : keepRef}
+            // mine 档默认焦点在「以本地为准」上(裁定 #2),localDiffers 档在
+            // 「保留本地的」上——两者都不能落到这颗取消按钮:否则它会在 keepRef
+            // 已经挂到那颗主按钮之后又抢一遍,回车就变成了取消。
+            // 只有"没有无损选项"的那两档(改过本体的覆盖、同名异库的替换)才落这里。
+            ref={modified || mine || localDiffers ? undefined : keepRef}
             type="button"
             onClick={cancel}
             className="h-7 rounded-ctl border border-border px-3 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"

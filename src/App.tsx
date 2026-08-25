@@ -8,7 +8,6 @@ import { RemoveDialog } from "@/components/RemoveDialog";
 import { ShareConfirm } from "@/components/ShareConfirm";
 import { VersionChooser } from "@/components/VersionChooser";
 import { ShareConflictDialog } from "@/components/ShareConflictDialog";
-import { RetryLinkDialog } from "@/components/RetryLinkDialog";
 import { Sidebar } from "@/components/Sidebar";
 import { Toolbar } from "@/components/Toolbar";
 import { Wizard } from "@/components/Wizard";
@@ -105,7 +104,6 @@ export default function App() {
       <ShareConfirm />
       <VersionChooser />
       <ShareConflictDialog />
-      <RetryLinkDialog />
       <Wizard />
     </div>
   );

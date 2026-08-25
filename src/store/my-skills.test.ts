@@ -25,7 +25,6 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   relation: "installed",
   localPresent: true,
   sourceLabel: "skills/skills",
-  links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
   body: "/h/.agents/skills/weekly-report",
   localHash: "sha256:mine",
   tools: [],

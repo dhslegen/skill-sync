@@ -67,11 +67,16 @@ export type ToolBlocked =
   | { kind: "failed"; agent: string | null; message: string }
   | { kind: "differs"; agent: string | null; existing: string };
 
-/** 「留哪一份」待拍板。`after` 记着拍完板本来要做什么,拍完接着做,不让用户再点一次。 */
+/**
+ * 「留哪一份」待拍板。`after` 记着拍完板本来要做什么,拍完接着做,不让用户再点一次。
+ *
+ * `"install"` 那一档由**获取流程**置上(`store/install.ts::run` 收到
+ * `Precheck.needsVersionChoice` 时),拍完板回到那条路重来一次安装。
+ */
 export interface VersionChoice {
   dirSlug: string;
   versions: SkillVersion[];
-  after?: "share" | "agents";
+  after?: "share" | "agents" | "install";
   /** `after === "agents"` 时,拍完板要接着落地的那组勾。 */
   agents?: string[];
 }
@@ -307,6 +312,11 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
         // 🔴 **口径统一:用这一页 `list` 上的 `versions`,不用 outcome 里的那份**。
         // 两者不对称——后者含内容相同的重复品,前者已经剔掉了。混用会让同一个技能
         // 在"点勾弹出来"和"页面上直接显示"两条路上看到不一样的份数。
+        //
+        // ⚠️ **这条只对这一页成立,别推广**:获取流程那条路
+        // (`store/install.ts::openVersionChoice`)刻意用 precheck 带回来的那份
+        // ——它的入口在商店页,`list` 通常还是 null,照抄这里就是一个零选项的
+        // 空拍板框。两处注释互相指着对方,别当成疏漏"统一"掉。
         const versions = get().list?.find((s) => s.dirSlug === dirSlug)?.versions ?? [];
         set({ versionChoice: { dirSlug, versions, after: "agents", agents } });
         return;
@@ -335,6 +345,11 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
         await get().setAgents(dirSlug, pending.agents);
       } else if (pending?.after === "share") {
         get().beginShare(dirSlug);
+      } else if (pending?.after === "install") {
+        // 获取流程被"有好几份不一样的"顶回来过一次。分歧已经收敛,重来一次即可
+        // ——`run()` 用的 dirSlug/勾选/来源坐标都还在 install store 里留着
+        // (那条路刻意只把 phase 落回 idle,没有 `cancel()` 清掉它们)。
+        await useInstall.getState().run();
       }
     } catch (raw) {
       set({ keepError: toAppError(raw) });

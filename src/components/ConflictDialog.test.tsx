@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConflictDialog } from "./ConflictDialog";
 import { useInstall } from "@/store/install";
 import { useStoreIndex } from "@/store/store-index";
+import type { Precheck } from "@/lib/ipc";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
@@ -86,17 +87,6 @@ describe("冲突对话框", () => {
     expect(run).toHaveBeenCalledWith("overwrite");
   });
 
-  it("外来目录:没有「保留改动」这一档,默认焦点在取消上", () => {
-    // 别人装的目录里没有"你的改动"可留,只有替换与取消两条路,
-    // 且绝不能默认落在替换上 —— 那是在替用户决定删掉他从别处装的东西。
-    conflict({ status: "foreign", origin: { kind: "unknown" } });
-    render(<ConflictDialog />);
-
-    expect(screen.queryByRole("button", { name: /保留我的改动/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /替换它/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "取消" })).toHaveFocus();
-  });
-
   it("说的是技能的展示名,不是内部目录名", () => {
     // 用户认得的是"周报生成";弹给他一个 weekly-report,就是把机器用的标识摆到脸上
     useStoreIndex.setState({
@@ -117,12 +107,6 @@ describe("冲突对话框", () => {
     conflict({ status: "locallyModified", installedSha: "aaa1111" });
     render(<ConflictDialog />);
     expect(screen.getByText(/「weekly-report」/)).toBeInTheDocument();
-  });
-
-  it("认得出来源的外来目录会把来源说出来", () => {
-    conflict({ status: "foreign", origin: { kind: "npxSkills", source: "acme/skills" } });
-    render(<ConflictDialog />);
-    expect(screen.getByText(/acme\/skills/)).toBeInTheDocument();
   });
 
   it("同名异库:说清它现在从哪来,只给替换与取消,默认焦点在取消", () => {
@@ -213,6 +197,100 @@ describe("冲突对话框", () => {
       await userEvent.click(screen.getByRole("button", { name: /以库为准,丢弃本地改动/ }));
       // 这一下是新技能的第一次点击,只该武装,不该直接调 run
       expect(run).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("这台电脑上已有一份不一样的(v6 二期取代「外来目录」那一档)", () => {
+    const differs = { status: "localDiffers", existing: "/home/u/.claude/skills/weekly-report" };
+
+    it("说的是「已有一份不同的」,绝不说「不是本应用安装的」", () => {
+      // 🔴 这是这一期的起因:用户在自己电脑上写的技能,被 app 说成外人。
+      // 上一版对认不出的形状会落进那句话的兜底分支,现在这一档有自己的说法。
+      conflict(differs);
+      render(<ConflictDialog />);
+
+      expect(screen.getByText("这台电脑上已有一份不同的「weekly-report」")).toBeInTheDocument();
+      expect(screen.queryByText(/不是本应用安装的|不是这个应用安装的|不是通过本应用安装的/)).not.toBeInTheDocument();
+    });
+
+    it("把那份东西在哪说出来 —— 不然用户不知道说的是哪个文件夹", () => {
+      conflict(differs);
+      render(<ConflictDialog />);
+      expect(screen.getByText(/\/home\/u\/\.claude\/skills\/weekly-report/)).toBeInTheDocument();
+    });
+
+    it("两个按钮,默认焦点在「保留本地的」上 —— 回车不动用户的文件", () => {
+      conflict(differs);
+      render(<ConflictDialog />);
+
+      expect(screen.getByRole("button", { name: /保留本地的/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /用库里的/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /保留本地的/ })).toHaveFocus();
+      expect(screen.getByRole("button", { name: "取消" })).not.toHaveFocus();
+    });
+
+    it("「用库里的」说的是「移到废纸篓,可以找回」,不是「无法找回」", () => {
+      // core 的 `Installer::install` 把旧本体送进系统废纸篓(`fsops::trash_tree`),
+      // 所以照抄旧那句「原有内容无法找回」在今天是**假话**。
+      conflict(differs);
+      render(<ConflictDialog />);
+
+      expect(screen.getByText(/移到废纸篓/)).toBeInTheDocument();
+      expect(screen.getByText(/可以.*找回/)).toBeInTheDocument();
+      expect(screen.queryByText(/无法找回/)).not.toBeInTheDocument();
+    });
+
+    it("点「保留本地的」→ run(\"keepLocal\");点「用库里的」→ run(\"overwrite\")", async () => {
+      const run = vi.fn();
+      conflict(differs);
+      useInstall.setState({ run });
+      render(<ConflictDialog />);
+
+      await userEvent.click(screen.getByRole("button", { name: /保留本地的/ }));
+      expect(run).toHaveBeenCalledWith("keepLocal");
+
+      // 两条路都无损,所以**没有二次确认**(与 `RemoveDialog` 撤掉双确认同一个
+      // 理由:可逆比追问管用)。这里正面钉住"第一下就生效"。
+      await userEvent.click(screen.getByRole("button", { name: /用库里的/ }));
+      expect(run).toHaveBeenCalledWith("overwrite");
+    });
+
+    it("「内容与库里相同」那一档根本不该弹这个窗", () => {
+      // core 的 `acquire::acquire` 里 `needs_decision` 不含 `AlreadyHere`,
+      // 它直接走 `link_only` 装完(记账 + 启用,本体一个字节不写)。真要是哪天
+      // 有人让它退回 needsDecision,用户该看到的是错误态(见 install.test.ts
+      // 的"认不出的拍板形状"一条),而不是一个不弹的弹窗或一句假话。
+      conflict({ status: "alreadyHere", body: "/home/u/.claude/skills/weekly-report" });
+      render(<ConflictDialog />);
+
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    });
+
+    it("Precheck 的档位集合就是这八个 —— 加一档必须先来这里过一眼", () => {
+      // ⚠️ 这条真正的检查由 `pnpm build:web`(tsc)执行,**vitest 本身不做类型检查**。
+      //
+      // 它挡的是这一期最核心的一次回退:把撤销掉的那个"这不是本应用装的"档
+      // 加回 `Precheck`。加回来之后,弹窗的兜底分支就又有理由说那句假话了。
+      // 判据写成**双向的集合相等**(既不许多、也不许少),而不是点名某个字面量
+      // ——点名只挡得住一个,集合相等挡得住任何一次悄悄扩档。
+      const KNOWN = [
+        "fresh",
+        "alreadyHere",
+        "localDiffers",
+        "needsVersionChoice",
+        "managed",
+        "locallyModified",
+        "otherLibrary",
+        "mine",
+      ] as const;
+      type Unlisted = Exclude<Precheck["status"], (typeof KNOWN)[number]>;
+      type Ghost = Exclude<(typeof KNOWN)[number], Precheck["status"]>;
+      const noUnlisted: [Unlisted] extends [never] ? true : false = true;
+      const noGhost: [Ghost] extends [never] ? true : false = true;
+      expect(noUnlisted && noGhost).toBe(true);
+      // 顺带把"八个"钉成真话,并让 KNOWN 在运行时也有读者(eslint 要求)
+      expect(KNOWN).toHaveLength(8);
+      expect(new Set(KNOWN).size).toBe(KNOWN.length);
     });
   });
 

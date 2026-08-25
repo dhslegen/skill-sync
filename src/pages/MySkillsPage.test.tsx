@@ -34,7 +34,6 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   relation: "installed",
   localPresent: true,
   sourceLabel: "skills/skills",
-  links: [],
   body: BODY,
   localHash: "sha256:mine",
   tools: [{ agent: "claude-code", state: "linked" }],
@@ -260,6 +259,27 @@ describe("八个状态各自的主动作", () => {
     await vi.waitFor(() =>
       expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_install")).toBe(true),
     );
+  });
+
+  it("🔴 「取回」失败必须在这一页看得见 —— 不能转一下就没了下文", async () => {
+    // 这两个按钮走的都是 `useInstall.beginUpdate`,失败只写进 `useInstall.error`,
+    // 而它唯一的渲染点是 `InstallPanel` 的错误档——从这一页点进去时那个面板
+    // 根本不在场。修之前用户看到的是:转了一下、不转了、什么都没变、没有一个字。
+    const list = [shared({ localPresent: false, body: "", agents: [] })];
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return list;
+      if (cmd === "agents_detected") return AGENT_LIST;
+      if (cmd === "skill_install")
+        throw { code: "NET_TIMEOUT", message: "连不上公司技能库,请确认已接入内网" };
+      return null;
+    });
+    seedIndex();
+    render(<MySkillsPage />);
+    await screen.findByText("不在这台电脑");
+
+    await userEvent.click(screen.getByRole("button", { name: "取回" }));
+
+    expect(await screen.findByText(/连不上公司技能库/)).toBeInTheDocument();
   });
 
   it("remoteAhead(我分享的):主动作是「取回」", async () => {

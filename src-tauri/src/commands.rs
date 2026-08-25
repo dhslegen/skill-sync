@@ -2934,6 +2934,53 @@ pub async fn project_skill_remove(
 mod tests {
     use super::*;
 
+    /// 🔴 **断言的是键的完整集合,不是"某个键存在"**(本项目记着的空转模式 ②)。
+    ///
+    /// `ProjectInstallOutcome` 的线上 JSON 形状此前**唯一的覆盖是
+    /// `tests/serde_shape_guard.rs` 那道结构性守卫**,而那道守卫自己的文档写明
+    /// 它挡不住"字段名本来就是单个单词"的遗漏(`key` 正是这种)——它只在有人
+    /// 加带下划线的字段时才说话。这条补的就是那半边:枚举以后加字段、改 tag、
+    /// 或者 `rename_all_fields` 被人拿掉,当场变红。
+    ///
+    /// `linked_agents` 是那批下划线字段里眼下唯一的一个,顺带正面钉住它的驼峰名
+    /// ——`ipc.ts` 读的是 `linkedAgents`,两边对不上就是又一发哑弹。
+    #[test]
+    fn project_install_outcome_serializes_every_field_in_camel_case() {
+        fn keys(v: &serde_json::Value) -> Vec<String> {
+            let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+            k.sort();
+            k
+        }
+
+        let installed = serde_json::to_value(ProjectInstallOutcome::Installed {
+            key: "weekly-report".into(),
+            linked_agents: vec!["claude-code".into()],
+        })
+        .unwrap();
+        assert_eq!(
+            keys(&installed),
+            vec![
+                "key".to_string(),
+                "linkedAgents".to_string(),
+                "status".to_string()
+            ]
+        );
+        assert_eq!(installed["status"], "installed");
+        assert_eq!(installed["key"], "weekly-report");
+        assert_eq!(installed["linkedAgents"][0], "claude-code");
+
+        let already =
+            serde_json::to_value(ProjectInstallOutcome::AlreadyInstalled { key: "x".into() })
+                .unwrap();
+        assert_eq!(keys(&already), vec!["key".to_string(), "status".to_string()]);
+        assert_eq!(already["status"], "alreadyInstalled");
+
+        let needs =
+            serde_json::to_value(ProjectInstallOutcome::NeedsDecision { key: "x".into() }).unwrap();
+        assert_eq!(keys(&needs), vec!["key".to_string(), "status".to_string()]);
+        assert_eq!(needs["status"], "needsDecision");
+    }
+
         /// `skillPath` → 仓库目录名的推导。
     ///
     /// 🔴 这是那批 `frontmatter name ≠ 仓库目录名` 的技能(广场实测 47 个里 8 个,

@@ -342,31 +342,29 @@ export type Precheck =
   | { status: "needsVersionChoice"; versions: SkillVersion[] }
   | { status: "managed"; installedSha: string; upToDate: boolean }
   | { status: "locallyModified"; installedSha: string }
-  /**
-   * ⚠️ **core 侧的 `Precheck::Foreign` 已于 v6 二期删除,后端不会再发出这一档。**
-   * 「这个位置上的技能不是本应用装的」正是这一期要消灭的那句话——用户自己在
-   * 工具目录下开发的技能被当成了外人。取代它的是 `alreadyHere` / `localDiffers`
-   * / `needsVersionChoice` 三档(按内容比对,而不是按"这是谁建的"猜)。
-   *
-   * 这个变体留着只是为了让 `ConflictDialog`(任务 8 的文件)编译得过,
-   * **任务 8 重写那个弹窗时连同 {@link ForeignOrigin} 一起删掉**。
-   */
-  | { status: "foreign"; origin: ForeignOrigin }
   /** 同名技能已装自另一个技能库(M4 一源多仓):不是更新,是替换。 */
   | { status: "otherLibrary"; installedSha: string; sourceOwner: string; sourceRepo: string }
   /**
    * 技能库里记的分享者就是当前登录的这个人(v6 任务 3)。
    *
-   * 取代了作者在自己技能上会看到的 `foreign`/`locallyModified`/`managed{upToDate:false}`
-   * 三种说法——它们讲的是"这东西是怎么来的",而作者要的是"我这边和库里哪边新"。
-   * `localChanged`:本地本体与账上基线不符;`remoteChanged`:库里这一版与账上基线不符。
-   *
-   * **完整的三选一变体是任务 5 的范围**——本任务只保证类型存在、且不会落进
-   * `foreign` 分支显示那句「不是本应用安装的」假话(见 `ConflictDialog`)。
+   * 取代了作者在自己技能上会看到的「这不是本应用装的」/`locallyModified`/
+   * `managed{upToDate:false}` 三种说法——它们讲的是"这东西是怎么来的",而作者
+   * 要的是"我这边和库里哪边新"。`localChanged`:本地本体与账上基线不符;
+   * `remoteChanged`:库里这一版与账上基线不符。
    */
   | { status: "mine"; localChanged: boolean; remoteChanged: boolean };
 
-export type ForeignOrigin = { kind: "npxSkills"; source: string } | { kind: "unknown" };
+/**
+ * 🔴 **这里刻意没有"外来目录"那一档**(v6 二期任务 8 删除,连同 `ForeignOrigin`)。
+ *
+ * core 侧的 `Precheck::Foreign` 已随本期撤销:「这个位置上的技能不是本应用装的」
+ * 正是这一期要消灭的那句话——用户在 `~/.claude/skills/` 下自己写的技能被当成了
+ * 外人。取代它的是 `alreadyHere` / `localDiffers` / `needsVersionChoice` 三档
+ * ——**按内容比对,而不是按"这个文件夹是谁建的"猜**(磁盘上根本回答不了后者)。
+ *
+ * 类型里留着它就等于给 `ConflictDialog` 的兜底分支一个继续存在的理由,
+ * 而那个分支说的就是那句假话。别再加回来。
+ */
 
 /** 冲突处置。只有两档:分享流程属后续任务,现在没有可推的通道,
  *  所以"把本地改动分享上去"当下的落地就是"保留本地改动"。 */
@@ -403,14 +401,6 @@ export type AcquireOutcome =
    */
   | { outcome: "kept"; remoteChanged: boolean }
   | { outcome: "installed"; report: InstallReport; localKept: boolean; lock: string };
-
-export type LinkHealth = "healthy" | "broken" | "redirected" | "occupied" | "missing";
-
-export interface LinkHealthReport {
-  dir: string;
-  mode: string;
-  health: LinkHealth;
-}
 
 export interface InstalledSkillView {
   dirSlug: string;
@@ -456,13 +446,12 @@ export interface InstalledSkillView {
    * 从未分享过的草稿本就没有来源)。判据见 core `ownership::source_label`。
    */
   sourceLabel: string | null;
-  /**
-   * ⚠️ **过渡字段**:各关联目录的健康态。v6 二期起界面不再展示它——「N 处关联
-   * 异常」这类说法整体撤销,同一件事现在由 {@link tools} 的每个勾如实回显
-   * (`missing` = 那个位置上的东西已经不是我们放的了,再点一次勾即自愈)。
-   * core 仍在填,留着是因为 `store/install.ts` 的重试链路还读它(任务 8 收尾)。
-   */
-  links: LinkHealthReport[];
+  // 🔴 这里曾有一个 `links`(各位置的健康态,连同 `LinkHealth`/`LinkHealthReport`
+  // 两个类型),v6 二期任务 8
+  // 删除:「N 处异常」那类说法整体撤销,同一件事现在由 {@link tools} 的每个勾
+  // 如实回显(`missing` = 那个位置上的东西已经不是我们放的了,再点一次勾即自愈)。
+  // 删之前查过前端零读者。**core 那侧仍在填这个字段**——多出来的 JSON 键会被
+  // 忽略,不影响任何行为;要不要一并从 core 摘掉是独立议题,不在本任务范围。
   /**
    * 本体现在住在哪(绝对路径);只在库里、本地没有本体时是空串。
    *
@@ -537,9 +526,13 @@ export interface UninstallReport {
   canonicalRemoved: boolean;
 }
 
-export type RemoveOutcome =
-  | { outcome: "needsDecision" }
-  | { outcome: "removed"; report: UninstallReport; lock: string };
+/**
+ * 移除的结论。**只剩一档**(v6 二期):改过本体的二次确认已撤销——铁律 7 改由
+ * "本体进系统废纸篓、可逆"落实,`core::remove::RemoveOutcome` 那侧同样只剩
+ * `Removed`。声明成单成员联合而不是接口,是为了与 core 那侧"保持枚举形状"的
+ * 取舍一致:将来若真有第二档(比如"本体在别的电脑上"),两侧都不必换形状。
+ */
+export type RemoveOutcome = { outcome: "removed"; report: UninstallReport; lock: string };
 
 /** 订阅一次安装的进度。契约 3.3:长任务走 `progress://{taskId}` 事件。 */
 /**
@@ -572,7 +565,11 @@ export const skillInstall = (args: {
   repo?: string;
 }) => call<AcquireOutcome>("skill_install", { args });
 
-export const skillRemove = (args: { dirSlug: string; force?: boolean }) =>
+/**
+ * 移除一个技能。**没有 `force`**(v6 二期):`SkillRemoveArgs` 那侧只剩 `dir_slug`,
+ * 带一个 core 已经不认的字段过去,只会让读代码的人以为那道闸还在。
+ */
+export const skillRemove = (args: { dirSlug: string }) =>
   call<RemoveOutcome>("skill_remove", { args });
 
 export type BatchItem = { dirSlug: string } & (
@@ -653,13 +650,6 @@ export interface KeepReport {
  */
 export const skillKeepVersion = (args: { dirSlug: string; keepPath: string }) =>
   call<KeepReport>("skill_keep_version", { args });
-
-/**
- * ⚠️ 这个类型在前端**已经没有读者**:`ShareOutcome` 只剩 `shared` 一档,
- * `taken` 那一档在 core 里变成了 `REPO_NAME_TAKEN` 错误。留着只为文档对照
- * (`core::share::SharePrecheck`),重写界面那一轮可以连同删掉。
- */
-export type SharePrecheck = { status: "fresh" } | { status: "mine" } | { status: "taken" };
 
 export type ShareMode = "pushed" | "reviewRequested";
 

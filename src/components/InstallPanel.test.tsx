@@ -340,8 +340,11 @@ describe("装完之后的出口", () => {
   }
 
   it("装完仍能看到「装到项目…」,不必关掉详情面板重开", async () => {
-    seedDone();
+    // ⚠️ **先 render 再 seed**(2026-08-26 修:这两条原先反着写,于是挂载时的
+    // 收尾 effect 把 done 整个清掉,测的其实是 `IdleFooter`——把 `DoneFooter`
+    // 里的 `InstallScopeMenu` 整个删掉,两条照样全绿。注入实测复现过)。
     render(<InstallPanel dirSlug="weekly-report" />);
+    act(() => seedDone());
 
     // 结果文案照常
     expect(screen.getByText(/已启用/)).toBeTruthy();
@@ -359,13 +362,106 @@ describe("装完之后的出口", () => {
       if (cmd === "project_list") return groups;
       return null;
     });
-    seedDone();
     render(<InstallPanel dirSlug="weekly-report" />);
+    act(() => seedDone());
 
     await userEvent.click(screen.getByRole("button", { name: "装到项目…" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: /^我的项目/ }));
 
     await screen.findByRole("button", { name: "装到这里" });
+  });
+});
+
+describe("没能启用的那些位置:就地「在工具里启用」", () => {
+  // ⚠️ 这一块以前**一条测试都没有**:那颗按钮从 M1 起就没被任何测试点过。
+  // v6 二期任务 8 把它从「重试」(可能弹出一个承诺"替换那个位置"的确认框)
+  // 换成「在工具里启用」→ `skill_set_agents`,顺手把这个空档补上。
+  // ⚠️ 与本文件既有的 `seedDone` 同一条纪律:**先 render 再 seed**。
+  // 面板挂载时的收尾 effect 会把终态(done/error)整个清掉,"挂载时就是 done"
+  // 是构造不出来的状态——那样测的是 `IdleFooter`,不是结果面板。
+  function seedPartlyFailed() {
+    useInstall.setState({
+      phase: "done",
+      dirSlug: "weekly-report",
+      selected: new Set(["claude-code", "trae"]),
+      agents: [
+        { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, isUniversal: false, needsLink: true },
+        { name: "trae", displayName: "Trae", installed: true, disabled: false, isUniversal: false, needsLink: true },
+      ],
+      report: {
+        dirName: "weekly-report",
+        canonicalDir: "/h/.agents/skills/weekly-report",
+        links: [
+          { dir: "/h/.claude/skills", agents: ["claude-code"], result: { status: "linked", mode: "symlink" } },
+          { dir: "/h/.trae/skills", agents: ["trae"], result: { status: "failed", error: { code: "FS_TASK", message: "这个位置没能启用" } } },
+        ],
+      } as never,
+      enablingDir: null,
+      enableError: null,
+      localKept: false,
+      shareResult: null,
+    });
+  }
+
+  it("按钮说的是「在工具里启用」,没有承诺替换的那颗「重试」", () => {
+    render(<InstallPanel dirSlug="weekly-report" />);
+    act(() => seedPartlyFailed());
+
+    expect(screen.getByRole("button", { name: "在工具里启用" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "替换" })).toBeNull();
+  });
+
+  it("点它真的发 skill_set_agents,而且带的是完整的期望名单", async () => {
+    // 🔴 `skill_set_agents` 收的是**完整期望态**:只传这一处那几个,core 会把
+    // 其余位置停用掉——补一处等于关掉别处,那是数据损失。
+    const setAgentsDone = {
+      outcome: "done",
+      homeBody: "/h/.agents/skills/weekly-report",
+      canonical: { Ok: { kind: "unchanged" } },
+      results: [["trae", { Ok: { kind: "linked", mode: "symlink" } }]],
+      unlinked: [],
+      unlinkFailed: [],
+    };
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "skill_set_agents") return setAgentsDone;
+      if (cmd === "installed_list") return [];
+      if (cmd === "project_list") return [];
+      return null;
+    });
+    render(<InstallPanel dirSlug="weekly-report" />);
+    act(() => seedPartlyFailed());
+
+    await userEvent.click(screen.getByRole("button", { name: "在工具里启用" }));
+
+    await waitFor(() => {
+      const call = invoke.mock.calls.find(([c]) => c === "skill_set_agents");
+      expect(call?.[1].args).toEqual({
+        dirSlug: "weekly-report",
+        agents: ["claude-code", "trae"],
+      });
+    });
+    // 成功之后这一行整个消失(它是"没能启用"清单里的一条)
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "在工具里启用" })).toBeNull();
+    });
+  });
+
+  it("没成就把原因摆出来,不装作已经成了", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "skill_set_agents") return { outcome: "needsVersionChoice", versions: [] };
+      if (cmd === "project_list") return [];
+      return null;
+    });
+    render(<InstallPanel dirSlug="weekly-report" />);
+    act(() => seedPartlyFailed());
+
+    await userEvent.click(screen.getByRole("button", { name: "在工具里启用" }));
+
+    expect(await screen.findByText(/几份内容不同的文件夹/)).toBeTruthy();
+    // 那一行仍然算"没能启用",按钮还在
+    expect(screen.getByRole("button", { name: "在工具里启用" })).toBeTruthy();
   });
 });
 

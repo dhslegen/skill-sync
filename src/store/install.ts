@@ -7,8 +7,11 @@
 //                                   ↓
 //                                 error
 //
-// 冲突那一档是整条流程的重点:core 在发现"用户改过本体 / 目录是别人的"时**不动磁盘**
-// 就返回,前端拿到结论再带着 resolution 重试一次。
+// 冲突那一档是整条流程的重点:core 在发现"用户改过它 / 这台电脑上已有一份不一样的 /
+// 同名的有好几份"时**不动磁盘**就返回,前端拿到结论再带着 resolution 重来一次。
+//
+// 「同名的有好几份」不进 conflict 而是转去 `VersionChooser`——`Resolution` 的两档
+// (保留本地 / 用库里的)回答不了"留哪一份";拍完板由 `keepVersion` 自动重来。
 import { create } from "zustand";
 
 import { t } from "@/i18n";
@@ -29,6 +32,7 @@ import {
   type Precheck,
   type Resolution,
   type ShareMode,
+  type SkillVersion,
 } from "@/lib/ipc";
 import { useRegistries } from "@/store/registries";
 // 🔴 与 `my-skills.ts` 的循环导入(它反过来 `import { useInstall } from "@/store/install"`
@@ -73,10 +77,17 @@ interface InstallState {
   /** 本次保留了用户的本地改动。 */
   localKept: boolean;
   /**
-   * 「我分享的」+ 以本地为准(v6)走完 `AcquireOutcome::Kept` 的结果:core 什么都
-   * 没写(不是一次真的安装),`remoteChanged` 原样带出——`keepLocalAndShareMine`
-   * 靠它决定分享要不要带 `forceReview`。`null` = 这次「done」不是走的这条路,
-   * `DoneFooter` 据此不显示「已启用/已安装」这类对这一档是假话的完成文案。
+   * 走完 `AcquireOutcome::Kept` 的结果:core 什么都没写(不是一次真的安装),
+   * `remoteChanged` 原样带出——`keepLocalAndShareMine` 靠它决定分享要不要带
+   * `forceReview`。`null` = 这次「done」不是走的这条路,`DoneFooter` 据此不显示
+   * 「已启用/已安装」这类对这一档是假话的完成文案。
+   *
+   * ⚠️ **名字里的 "mine" 只是它的第一个来路**:v6 二期起 `localDiffers` +
+   * 「保留本地的」同样落进这个字段(core 那侧是同一个 `Kept` 出口,
+   * `remoteChanged` 恒为 true——"库里那一版与本地这份不同"就是这一档的定义)。
+   * 两档共用它是对的:它表达的是"core 一个字节都没写",不是"这是我分享的"。
+   * 但**只有 `mine` 那一档会去调 `keepLocalAndShareMine`**——`localDiffers`
+   * 走的是 `run("keepLocal")`,到 done 就结束,不接分享。
    */
   mineKept: { remoteChanged: boolean } | null;
   /** 「保留并分享」的分享结果。null = 没走这条路。 */
@@ -121,15 +132,17 @@ interface InstallState {
   keepLocalAndShareMine: () => Promise<void>;
   cancel: () => void;
 
-  /** 正在重试的目录(结果面板逐条重试)。 */
-  retryingDir: string | null;
-  /** 需要用户确认替换的占位目录;null = 没有待确认的。 */
-  retryConfirmDir: string | null;
-  retryError: AppError | null;
-  /** 结果面板里逐条重试:补关联到当时没建成的工具。占位一律先问过再动。 */
-  retryLink: (dir: string) => Promise<void>;
-  confirmRetry: () => Promise<void>;
-  cancelRetry: () => void;
+  /** 正在收敛的那个位置(结果面板里逐条「在工具里启用」)。 */
+  enablingDir: string | null;
+  enableError: AppError | null;
+  /**
+   * 结果面板里那些没成的位置:再让这个技能在各个工具里启用一次。
+   *
+   * ⚠️ **没有"替换掉那个位置上的目录"这条路**(v6 二期任务 8 删掉了
+   * `retryLink`/`confirmRetry`/`cancelRetry` 与 `RetryLinkDialog`):新模型里
+   * 内容不同的位置由 core 报「有几份不一样的」交给用户拍板,一个字节都不覆盖。
+   */
+  enableInTools: (dir: string) => Promise<void>;
 }
 
 function toAppError(raw: unknown): AppError {
@@ -154,6 +167,44 @@ let taskSeq = 0;
 function goToSharePage(dirSlug: string) {
   useUi.getState().setPage("mine");
   useMySkills.getState().beginShare(dirSlug);
+}
+
+/**
+ * `ConflictDialog` 能替用户拍板的那几档——**这份名单就是那个弹窗的分支表**,
+ * 两边必须一起改。
+ *
+ * 刻意逐项列出而不是"排除掉已知的几档":core 将来加一个新的 `Precheck` 变体时,
+ * 排除法会把它静默放进弹窗、落到某个说不着的分支上;正列法则让它落进
+ * {@link InstallState.run} 里那条"契约对不上"的错误出口,至少有人看得见。
+ *
+ * 🔴 **这里没有"外来目录"那一档**(v6 二期):「这不是本应用装的」正是本期要消灭
+ * 的那句话,core 的 `Precheck::Foreign` 与前端类型里的那个变体都已删除。
+ */
+function isDecidable(p: Precheck): boolean {
+  return (
+    p.status === "locallyModified" ||
+    p.status === "otherLibrary" ||
+    p.status === "mine" ||
+    p.status === "localDiffers"
+  );
+}
+
+/**
+ * 把「留哪一份」交给「我的技能」页那个拍板框(全局挂载的 `VersionChooser`)。
+ *
+ * 🔴 **版本清单取 precheck 带回来的那份,不取 `useMySkills.list` 上的**
+ * ——与 `my-skills.ts::setAgents` 里"口径统一:用这一页 list 上的 versions"
+ * 那条**刻意不同**,两处注释互相指着对方,别当成疏漏去"统一"掉:
+ * 那条路的入口在「我的技能」页,`list` 必然已加载;而获取流程的入口在商店页,
+ * `list` 通常是 null,照抄过来就是一个**零选项的空拍板框**。
+ * precheck 的这份就是 core `converge::locate` 的候选集,也正是
+ * `skill_keep_version` 校验 `keepPath` 用的那一份,选任何一项都合法。
+ */
+function openVersionChoice(dirSlug: string, versions: SkillVersion[]) {
+  useMySkills.setState({
+    versionChoice: { dirSlug, versions, after: "install" },
+    keepError: null,
+  });
 }
 
 export const useInstall = create<InstallState>((set, get) => ({
@@ -328,8 +379,29 @@ export const useInstall = create<InstallState>((set, get) => ({
         repo: get().repo ?? undefined,
       });
       if (result.outcome === "needsDecision") {
-        // core 没动磁盘,等用户拍板
-        set({ phase: "conflict", precheck: result.precheck });
+        // core 没动磁盘,等用户拍板。**拍板去哪一屏由这一档的形状决定**:
+        const p = result.precheck;
+        if (p.status === "needsVersionChoice") {
+          // 「留哪一份」不是 `Resolution` 的两档能回答的问题(保留本地 / 用远端
+          // 覆盖都答不出"留哪一份"),core 因此无视 resolution 恒退回这一档。
+          // 转去 `VersionChooser`,拍完板由 `keepVersion` 自动重来一次安装。
+          openVersionChoice(dirSlug, p.versions);
+          // 🔴 落 idle 而不是 running/conflict:磁盘零写入,这一刻**没有任何
+          // 事情在进行**。停在 running 的话用户关掉拍板框就永远看着「正在安装…」;
+          // 停在 conflict 更糟——`ConflictDialog` 的 `open` 要求 precheck 非空,
+          // 这里没有可摆的弹窗,底部却按 conflict 画成"安装中",一样是死局。
+          // dirSlug/selected/registryId/repo 全部留着:拍完板要凭它们重来一次。
+          set({ phase: "idle", stage: null, precheck: null });
+          return;
+        }
+        if (!isDecidable(p)) {
+          // 走到这里就是 core 与前端的契约对不上(core 目前只对下面四档退回
+          // needsDecision)。**必须有落点**:静默停在 conflict 会让底部永远画成
+          // "安装中"而弹窗一个都不弹,用户既看不到原因也没有出口。
+          set({ phase: "error", error: { code: "IPC_UNKNOWN_DECISION", message: t("install.undecidable"), detail: p.status } });
+          return;
+        }
+        set({ phase: "conflict", precheck: p });
         return;
       }
       if (result.outcome === "kept") {
@@ -442,45 +514,26 @@ export const useInstall = create<InstallState>((set, get) => ({
       localKept: false,
       mineKept: null,
       shareResult: null,
-      retryingDir: null,
-      retryConfirmDir: null,
-      retryError: null,
+      enablingDir: null,
+      enableError: null,
     }),
 
-  retryingDir: null,
-  retryConfirmDir: null,
-  retryError: null,
+  enablingDir: null,
+  enableError: null,
 
-  retryLink: async (dir) => {
-    // ⚠️ **v6 二期任务 7 被迫改的一处**(`skill_link_agents` 已在任务 4 删除)。
-    // 改走 `skill_set_agents`:它收的是**这个技能期望启用的完整工具名单**
-    // (`selected`),不是单个目录——新模型里"重试这一处"就是"把整组勾再收敛一次",
-    // core 对已经对的位置是幂等的。
-    //
-    // `retryConfirmDir`(撞上实体目录时的替换确认)**不再会被置上**:新模型不靠
-    // "替换掉那个目录"解决占用,内容不同的位置由 core 报"有几个版本"交给用户拍板,
-    // 绝不覆盖。`RetryLinkDialog` 因此不再有渲染时机——整条重试链路的去留归任务 8。
-    await runRetry(dir, set, get);
+  enableInTools: async (dir) => {
+    await runEnable(dir, set, get);
   },
-
-  confirmRetry: async () => {
-    const dir = get().retryConfirmDir;
-    if (!dir) return;
-    set({ retryConfirmDir: null });
-    await runRetry(dir, set, get);
-  },
-
-  cancelRetry: () => set({ retryConfirmDir: null, retryError: null }),
 }));
 
 /**
- * 重试:把这个技能期望启用的整组工具再收敛一次。
+ * 让这个技能在它期望的整组工具里启用一次(结果面板里那些没成的位置)。
  *
- * `dir` 只用来定位"这一处服务哪些 agent"(用于把结果并回结果面板那一行)与
- * 显示忙碌态;真正发出去的是 `selected` 那份完整名单——`skill_set_agents` 的
- * 契约就是完整期望态,只传这一处的 agents 会把其余位置**停用掉**。
+ * `dir` 只用来定位"这一处服务哪些工具"(把结果并回结果面板那一行)与显示忙碌态;
+ * 真正发出去的是 `selected` 那份**完整期望名单**——`skill_set_agents` 的契约就是
+ * 完整期望态,只传这一处的那几个会把其余位置**停用掉**。
  */
-async function runRetry(
+async function runEnable(
   dir: string,
   set: (partial: Partial<InstallState>) => void,
   get: () => InstallState,
@@ -489,13 +542,13 @@ async function runRetry(
   const entry = report?.links.find((l) => l.dir === dir);
   if (!dirSlug || !entry) return;
 
-  set({ retryingDir: dir, retryError: null });
+  set({ enablingDir: dir, enableError: null });
   try {
     const outcome = await skillSetAgents({ dirSlug, agents: [...selected] });
     if (outcome.outcome === "needsVersionChoice") {
-      // 这一处有几份内容不同的实体,不是"重试就能好"的事。结果面板没有拍板界面
-      // (那在「我的技能」页),这里如实报出来,不装作重试成功了。
-      set({ retryError: { code: "FS_NEEDS_VERSION_CHOICE", message: t("install.retryVersions") } });
+      // 这一处有几份内容不同的实体,不是"再启用一次就能好"的事。结果面板没有
+      // 拍板界面(那在「我的技能」页),这里如实报出来,不装作已经成了。
+      set({ enableError: { code: "FS_NEEDS_VERSION_CHOICE", message: t("install.enableVersions") } });
       return;
     }
     // 只把这条目录上那些 agent 的结局并回去:其余目录的结局是上一次安装的事实,
@@ -522,12 +575,12 @@ async function runRetry(
         },
       });
     }
-    if (failed && "Err" in failed[1]) set({ retryError: failed[1].Err });
+    if (failed && "Err" in failed[1]) set({ enableError: failed[1].Err });
     await get().refreshInstalled();
   } catch (raw) {
-    set({ retryError: toAppError(raw) });
+    set({ enableError: toAppError(raw) });
   } finally {
-    set({ retryingDir: null });
+    set({ enablingDir: null });
   }
 }
 

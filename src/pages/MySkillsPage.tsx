@@ -63,6 +63,17 @@ export function MySkillsPage() {
   // 渲染点在 InstallPanel 的装完那一屏,从这一页点进去时那个面板根本不在场:
   // 弹窗一消失就什么都没有,**分享失败也静默**。这里接到本页既有的提示位上。
   const installShareResult = useInstall((s) => s.shareResult);
+  // 🔴 **「取回 / 更新」失败此前在这一页是完全静默的**(v6 二期任务 8 补):
+  // 两个按钮走的都是 `useInstall.beginUpdate`,失败只写进 `useInstall.error`,
+  // 而它唯一的渲染点是 `InstallPanel` 的 `ErrorFooter`——从这一页点进去时那个
+  // 面板根本不在场。用户看到的是:转了一下、不转了、什么都没变、没有一个字。
+  // 与上面 `installShareResult` 是**同一处病根的另一个字段**(那一处已修)。
+  //
+  // 文案刻意是中性的「这次没能完成」而不是「没能取回」:同一份 `useInstall.error`
+  // 也可能来自商店页那次获取(用户没关掉错误就切了过来),写死一个动词就会
+  // 在那种情形下说假话。真正的原因由后面那句 core 的 message 说清楚。
+  const installError = useInstall((s) => s.error);
+  const installPhaseIsError = installPhase === "error";
   const setPage = useUi((s) => s.setPage);
   // 🔴 「打开文件夹」的失败必须有落点(R30)。`skill_reveal` 的守卫是
   // 「必须是目录、且目录下有 SKILL.md」,而 `differs` 给的 `existing` **两条都不保证**
@@ -237,6 +248,13 @@ export function MySkillsPage() {
           {shareDone.mode === "pushed"
             ? t("mine.shareChangesDone")
             : t("mine.shareChangesReview")}
+        </p>
+      )}
+      {installPhaseIsError && installError && activeSlug && (
+        <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+          {t("mine.pullFailed", { name: nameOf(activeSlug) })}
+          {t("punct.labelSeparator")}
+          {installError.message}
         </p>
       )}
       {installShareResult &&
