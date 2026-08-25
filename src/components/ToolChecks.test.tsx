@@ -106,6 +106,28 @@ describe("勾选与取消", () => {
     expect(call?.[1].args.agents).toContain("claude-code");
   });
 
+  it("🔴 提交名单从全量 tools 派生,不是从收窄后的 shown —— 藏起来的已启用工具不能被静默停用", async () => {
+    // 收窄(R21)只该管显示。渗进提交就是数据损失:zed 已启用但没被
+    // `agents_detected` 认出来(用户后来卸了它 / 探测只认出一部分),
+    // 用户点的是**别的**勾,core 却会按"不在名单里"把 zed 那个位置解掉。
+    draw(
+      [
+        { agent: "claude-code", state: "linked" },
+        { agent: "zed", state: "linked" },
+        { agent: "trae", state: "off" },
+      ],
+      new Set(["claude-code", "trae"]), // zed 没被认出来 → 不显示
+    );
+    expect(screen.queryByText("Zed")).toBeNull();
+
+    await userEvent.click(box("Trae"));
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_set_agents");
+    expect(new Set(call?.[1].args.agents)).toEqual(
+      new Set(["claude-code", "zed", "trae"]),
+    );
+  });
+
   it("missing 显示成没启用:再点一次就是自愈,不需要第二个「修复」入口", async () => {
     draw([{ agent: "claude-code", state: "missing" }]);
 

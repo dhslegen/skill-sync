@@ -43,8 +43,14 @@ export function ToolChecks({
   const enabled = (tool: ToolView) => tool.state !== "off" && tool.state !== "missing";
 
   const toggle = (tool: ToolView) => {
-    // 不变量 2 与 3:带上当前所有已启用的(含恒亮的 body),再翻转这一个。
-    const next = new Set(shown.filter(enabled).map((x) => x.agent));
+    // 不变量 2、3 与 4:带上当前所有已启用的(含恒亮的 body),再翻转这一个。
+    //
+    // 🔴 **从 `tools`(全量)派生,不是从 `shown`(收窄后)**:R21 的收窄只该管
+    // **显示**,渗进**提交**就是数据损失。某个工具已启用(有活链接或副本)却没被
+    // `agents_detected` 认出来时(用户后来卸了它、或探测只认出一部分),它不在
+    // `shown` 里 —— 用户点任何**别的**勾,完整期望名单里就漏了它,而按契约
+    // 「不在名单里的位置会被停用」,core 会去解掉一个用户从没碰过的位置。
+    const next = new Set(tools.filter(enabled).map((x) => x.agent));
     if (next.has(tool.agent)) next.delete(tool.agent);
     else next.add(tool.agent);
     void setAgents(dirSlug, [...next]);
