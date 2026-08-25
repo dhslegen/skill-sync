@@ -104,12 +104,15 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
     let env = TmpEnv { home: home.clone() };
     let store = Store::new(home.join(".skillsync"));
     let registry = AgentRegistry::builtin();
+    // 显式注入沙盒废纸篓:`share()` 内部的 `ensure_canonical_link` 有删除路径,
+    // 默认实现是这台机器真实的系统废纸篓。
+    let trash = skillsync_lib::core::fsops::SandboxTrash::new(home.join("..").join("share-live-trash"));
 
     // 幂等:每轮用独立目录名,避免上一轮跑剩的内容影响判定
     let stamp = format!("{:x}", std::process::id());
     let name = format!("share-live-{stamp}");
     let dir = home.join(".agents").join("skills").join(&name);
-    write_skill(&dir, "分享实测", "live 测试用");
+    write_skill(&dir, &name, "live 测试用");
 
     // ① Fresh:远端没有 → 直推(admin 可写且 main 未保护)
     let state = store.load_state().unwrap().value;
@@ -124,28 +127,25 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
         &registry,
         &env,
         &store,
+        &trash,
         share::ShareRequest {
             registry_id: "fixture",
             repo: &repo,
-            source_path: &dir,
-            share_name: &name,
-            display_name: None,
-            description: None,
-            origin: "local",
-            overwrite: false,
+            dir_slug: &name,
         },
         NOW,
     )
     .await
     .expect("Fresh 分享失败");
-    let ShareOutcome::Shared { mode, .. } = outcome else {
-        panic!("Fresh 不该要求拍板")
-    };
+    let ShareOutcome::Shared { mode, .. } = outcome;
     assert_eq!(mode, ShareMode::Pushed);
 
     // ② Mine:再推同名 → 认出是自己的,直接更新
-    std::fs::write(dir.join("SKILL.md"), "---\nname: 分享实测\ndescription: 改了\n---\n新正文\n")
-        .unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: 改了\n---\n新正文\n"),
+    )
+    .unwrap();
     let state = store.load_state().unwrap().value;
     assert_eq!(
         share::precheck(&share::ShareClient::Gitea(&admin), &repo, &state, &name, None, None)
@@ -158,15 +158,11 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
         &registry,
         &env,
         &store,
+        &trash,
         share::ShareRequest {
             registry_id: "fixture",
             repo: &repo,
-            source_path: &dir,
-            share_name: &name,
-            display_name: None,
-            description: None,
-            origin: "local",
-            overwrite: false,
+            dir_slug: &name,
         },
         NOW,
     )
@@ -185,29 +181,24 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
             .unwrap(),
         SharePrecheck::Taken
     );
-    let outcome = share::share(
+    // 「覆盖别人的技能」这条路已整体取消(v6 二期 A-3),所以 Taken 现在是一个
+    // 如实的错误,不是"等用户三选一"的拍板档。
+    let err = share::share(
         &share::ShareClient::Gitea(&admin),
         &registry,
         &env,
         &store,
+        &trash,
         share::ShareRequest {
             registry_id: "fixture",
             repo: &repo,
-            source_path: &dir,
-            share_name: &name,
-            display_name: None,
-            description: None,
-            origin: "local",
-            overwrite: false,
+            dir_slug: &name,
         },
         NOW,
     )
     .await
-    .expect("Taken 预检不该报错");
-    assert!(matches!(
-        outcome,
-        ShareOutcome::NeedsDecision { precheck: SharePrecheck::Taken }
-    ));
+    .expect_err("库里同名且不是我分享的,应当报错");
+    assert_eq!(err.code, "REPO_NAME_TAKEN");
 
     // ④ 竞态:预检后别人抢先改了同一文件 → 提交必须撞出 CONFLICT_STALE
     //    (拿过期的 blob sha 去 update,真实 Gitea 的 422 措辞在这里被验证)
@@ -297,36 +288,33 @@ async fn read_only_users_can_contribute_via_fork_for_real() {
     let env = TmpEnv { home: home.clone() };
     let store = Store::new(home.join(".skillsync"));
     let registry = AgentRegistry::builtin();
+    // 显式注入沙盒废纸篓:`share()` 内部的 `ensure_canonical_link` 有删除路径,
+    // 默认实现是这台机器真实的系统废纸篓。
+    let trash = skillsync_lib::core::fsops::SandboxTrash::new(home.join("..").join("share-live-trash"));
 
     // 分支名从 now 派生 → 用进程号扰动,让重复跑不会撞已存在的分支
     let now = format!("2026-07-31T10:00:{:02}.{:03}Z", std::process::id() % 60, std::process::id() % 1000);
     let name = format!("share-fork-{:x}", std::process::id());
     let dir = home.join(".agents").join("skills").join(&name);
-    write_skill(&dir, "只读用户的技能", "fork 链路实测");
+    write_skill(&dir, &name, "fork 链路实测");
 
     let outcome = share::share(
         &share::ShareClient::Gitea(&reader),
         &registry,
         &env,
         &store,
+        &trash,
         share::ShareRequest {
             registry_id: "fixture",
             repo: &repo,
-            source_path: &dir,
-            share_name: &name,
-            display_name: None,
-            description: None,
-            origin: "local",
-            overwrite: false,
+            dir_slug: &name,
         },
         &now,
     )
     .await
     .expect("只读用户的 fork 分享失败");
 
-    let ShareOutcome::Shared { mode, review_url, .. } = outcome else {
-        panic!("Fresh 不该要求拍板")
-    };
+    let ShareOutcome::Shared { mode, review_url, .. } = outcome;
     assert_eq!(mode, ShareMode::ReviewRequested, "只读用户只可能走评审");
     let url = review_url.expect("评审必须有链接");
     assert!(url.contains("/pulls/"), "评审链接不像话: {url}");

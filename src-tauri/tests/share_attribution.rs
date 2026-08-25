@@ -124,12 +124,10 @@ async fn claiming_writes_only_the_authors_file() {
     .await
     .unwrap();
 
-    let ShareOutcome::Shared { mode, commit_sha, adopted, share_name, .. } = outcome else {
-        panic!("登记作者不该要求拍板");
-    };
+    // `ShareOutcome` 现在只剩 `Shared` 一档,解构是不可反驳的
+    let ShareOutcome::Shared { mode, commit_sha, share_name, .. } = outcome;
     assert_eq!(mode, ShareMode::Pushed);
     assert_eq!(commit_sha, "newsha1");
-    assert!(!adopted, "这条路一个文件都不搬");
     assert_eq!(share_name, SLUG);
 
     let reqs = server.received_requests().await.unwrap();
@@ -223,9 +221,7 @@ async fn a_protected_branch_falls_back_to_review() {
     .await
     .unwrap();
 
-    let ShareOutcome::Shared { mode, commit_sha, review_url, .. } = outcome else {
-        panic!("应当提交成功");
-    };
+    let ShareOutcome::Shared { mode, commit_sha, review_url, .. } = outcome;
     assert_eq!(mode, ShareMode::ReviewRequested);
     assert_eq!(commit_sha, "branchsha");
     assert_eq!(review_url.as_deref(), Some("http://x/pulls/7"));
@@ -280,9 +276,7 @@ async fn a_read_only_user_claims_through_a_copy_and_takes_the_sha_from_it() {
     )
     .await
     .unwrap();
-    let ShareOutcome::Shared { mode, .. } = outcome else {
-        panic!("应当提交成功");
-    };
+    let ShareOutcome::Shared { mode, .. } = outcome;
     assert_eq!(mode, ShareMode::ReviewRequested);
 
     let reqs = server.received_requests().await.unwrap();

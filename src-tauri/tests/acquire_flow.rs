@@ -761,7 +761,7 @@ async fn recorded_agents_are_the_ones_the_skill_actually_works_for() {
 
 #[tokio::test]
 async fn a_failed_link_is_never_recorded_as_active() {
-    // Claude Code 的落点被一个实体目录占着 → 建链失败(OnOccupied::Fail)。
+    // Claude Code 的落点被一个实体目录占着 → 建链失败(`link_dir` 对占位一律失败)。
     // 失败的那个若被记成"已生效",界面会画成启用中,用户以为技能可用 —— 实际上读不到。
     let server = MockServer::start().await;
     mount(&server, "aaa1111", "weekly-report", "正文").await;

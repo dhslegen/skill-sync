@@ -505,15 +505,89 @@ export const skillInstallBatch = (args: {
   repo?: string;
 }) => call<BatchItem[]>("skill_install_batch", { args });
 
+/**
+ * ⚠️ **对应的后端命令 `skill_repair` 已于 v6 二期任务 4 删除。**
+ * 「修复关联」作为独立按钮的概念被取消:自愈落在 {@link skillSetAgents} 里
+ * ——用户再点一次同一个工具的勾就会重新收敛那个位置。留着这个包装只是为了让
+ * 还没重写的 `store/my-skills.ts` 编译得过;**调用它一定会失败**。
+ */
 export const skillRepair = (args: { dirSlug: string; replaceOccupied?: boolean }) =>
   call<InstallReport>("skill_repair", { args });
 
-/** 安装结果面板里逐条重试:把技能补关联到当时没建成的那个工具上。 */
+/**
+ * ⚠️ **对应的后端命令 `skill_link_agents` 已于 v6 二期任务 4 删除**,理由同上,
+ * 改用 {@link skillSetAgents}。留着只为让 `store/install.ts` 编译得过。
+ */
 export const skillLinkAgents = (args: {
   dirSlug: string;
   agentIds: string[];
   replaceOccupied?: boolean;
 }) => call<InstallReport>("skill_link_agents", { args });
+
+/**
+ * Rust 侧 `Result<T, E>` 的序列化形状。
+ *
+ * ⚠️ 键是**大写**的 `Ok`/`Err`:那是 serde 对 `Result` 的内建实现,
+ * `rename_all` / `rename_all_fields` 都管不到它。这是既定形状,不要"顺手改成小写"。
+ */
+export type RustResult<T> = { Ok: T } | { Err: AppError };
+
+/** 磁盘上一处「分歧版本」的快照,给「留哪一份」对话框用。 */
+export interface SkillVersion {
+  path: string;
+  /** RFC3339(UTC),取目录内文件里最新的 mtime。 */
+  modifiedAt: string;
+  files: number;
+  contentHash: string;
+}
+
+/** 一次收敛的结果(`core::converge::Converged`)。 */
+export type Converged =
+  | { kind: "linked"; mode: string }
+  | { kind: "unchanged" }
+  | { kind: "sameLocation" }
+  | { kind: "differs"; existing: string };
+
+/**
+ * 「勾选哪些工具」的结果。
+ *
+ * `results` / `unlinkFailed` 是**元组数组**(Rust 的 `(String, ...)` 序列化成
+ * JSON 数组),不是对象:`[agent 名, 结果]`。`Err` 表示"这个位置试过了但没成功",
+ * 不是"没处理它"——界面要如实摆出来,吞掉就是显示"已完成"而实际没配上。
+ */
+export type SetAgentsOutcome =
+  | { outcome: "needsVersionChoice"; versions: SkillVersion[] }
+  | {
+      outcome: "done";
+      homeBody: string;
+      canonical: RustResult<Converged>;
+      results: [string, RustResult<Converged>][];
+      unlinked: string[];
+      unlinkFailed: [string, AppError][];
+    };
+
+/** 「这个技能让哪些工具能用」——一组 checkbox 的落地(取代了旧的「修复关联」)。 */
+export const skillSetAgents = (args: { dirSlug: string; agents: string[] }) =>
+  call<SetAgentsOutcome>("skill_set_agents", { args });
+
+/** 「留哪一份」拍板的结果。`links` 同样是 `[路径, 结果]` 的元组数组。 */
+export interface KeepReport {
+  body: string;
+  /** 被丢弃、进了废纸篓的其余版本。 */
+  trashed: string[];
+  links: [string, RustResult<Converged>][];
+  canonical: RustResult<Converged>;
+}
+
+/**
+ * 「有几个不一样的版本,留哪一个」拍板落地:选中的那份原地留下当本体,
+ * 其余进废纸篓(可逆)、原位换成指向它的链接。
+ *
+ * `keepPath` 必须是 core 刚给出的候选之一,否则在动任何磁盘之前被
+ * `FS_BAD_VERSION_CHOICE` 拒掉。
+ */
+export const skillKeepVersion = (args: { dirSlug: string; keepPath: string }) =>
+  call<KeepReport>("skill_keep_version", { args });
 
 export type CandidateOrigin = { kind: "local" } | { kind: "npxSkills"; source: string };
 
@@ -534,16 +608,23 @@ export type SharePrecheck = { status: "fresh" } | { status: "mine" } | { status:
 
 export type ShareMode = "pushed" | "reviewRequested";
 
-export type ShareOutcome =
-  | { outcome: "needsDecision"; precheck: SharePrecheck }
-  | {
-      outcome: "shared";
-      mode: ShareMode;
-      commitSha: string;
-      reviewUrl: string | null;
-      adopted: boolean;
-      shareName: string;
-    };
+/**
+ * 分享的结果。**只剩 `shared` 一档**(v6 二期任务 6):库里同名且不是我分享的
+ * 不再是"等用户三选一"的拍板档,而是 `REPO_NAME_TAKEN` 这个错误——覆盖别人的
+ * 技能这条路整体取消,改名由用户在本地完成。
+ *
+ * ⚠️ `reviewUrl` 曾经是**收不到的**:core 那侧 `rename_all` 挂在枚举上只改
+ * variant 名、不改 struct variant 的字段名,发过来的是 `review_url`,
+ * 于是「查看审核」链接从来没渲染过。core 侧已补 `rename_all_fields` 并有
+ * 断言完整键集合的测试钉住。
+ */
+export type ShareOutcome = {
+  outcome: "shared";
+  mode: ShareMode;
+  commitSha: string;
+  reviewUrl: string | null;
+  shareName: string;
+};
 
 export interface Submitted {
   mode: ShareMode;
@@ -578,6 +659,12 @@ export const skillCreate = (args: {
   description: string;
 }) => call<CreateReport>("skill_create", { args });
 
+/**
+ * ⚠️ **对应的后端命令 `share_candidates` 已于 v6 二期任务 6 删除**(分享页整页撤掉,
+ * 首次分享的入口收进「我的技能」那一行)。这个包装还留着,只是因为
+ * `store/share.ts` 与它的几个调用方要等做界面的那一轮才重写;**调用它一定会失败**。
+ * 重写那一轮请连同 `ShareCandidate` 类型一起删掉。
+ */
 export const shareCandidates = () => call<ShareCandidate[]>("share_candidates");
 
 /**
@@ -600,15 +687,17 @@ export type SharePath =
 export const sharePreview = (args: { registryId?: string; repo?: string } = {}) =>
   call<SharePath>("share_preview", { args });
 
+/**
+ * 分享一个本机技能。**零编辑**:没有名称/描述/文件夹名可填,也没有 `overwrite`
+ * ——core 按 Agent Skills 开放标准全量校验,不合格直接 `FS_SKILL_INVALID`
+ * (`detail` 是 `ShareBlock` 的字面量,界面按它查文案表),改由用户在本地改好。
+ *
+ * 本体在哪也由 core 自己解析(`converge::locate`),前端不传路径。
+ */
 export const skillShare = (args: {
-  sourcePath: string;
-  shareName: string;
-  displayName?: string;
-  description?: string;
-  origin: string;
-  overwrite?: boolean;
+  dirSlug: string;
   registryId?: string;
-  /** 分享目标仓的寻址键,缺省 = 主仓;目标选择器进表单归 M4 任务 2。 */
+  /** 分享目标技能库的寻址键,缺省 = 该源主库。 */
   repo?: string;
 }) => call<ShareOutcome>("skill_share", { args });
 

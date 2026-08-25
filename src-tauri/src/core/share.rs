@@ -1,37 +1,56 @@
-//! 分享编排:候选扫描(排除法)→ 预检(同名三分支)→ 收编 → 提交(按权限矩阵)→ 记账。
+//! 分享编排:定位本体 → 标准校验 → 预检(同名两分支)→ 提交(按权限矩阵)→ 记账。
 //!
-//! 设计方案 2.5②:不判断"原创"——canonical 目录里 npx skills 装的、手写的、别的工具放的
-//! 混在一起,原创性无法可靠判定。改用**排除法**:凡不在本 app `state.installed` 里的,
-//! 都可以分享;来源只作标签展示(v6 任务 6 起改走 `ownership::source_label`
-//! 归一化,不再提示"是哪个工具装的")。
+//! # 分享就是分享——不改任何东西(v6 二期 A-1/A-2 拍板)
 //!
-//! # 假设(文档未覆盖,按开发纪律显式标注)
+//! 分享环节**零编辑**:名称、描述、文件夹名全部只读,frontmatter 补齐链路
+//! (`rewrite_frontmatter` 那一族)已整体删除。取而代之的是一道**闸**:
+//! 分享前按 Agent Skills 开放标准全量校验([`crate::core::skills::validate_skill_dir`]),
+//! 不合格**不让分享**,并把不合格的那一条(`ShareBlock`)如实带回界面
+//! ——界面照常显示这个技能、说清哪不合格、给「打开文件夹」的出口,
+//! 改名与改 frontmatter 由用户在本地自行完成(A-3:名字冲突划在边界之外)。
 //!
-//! - **本地目录一律不改名**:`share_name` 只决定远端路径与(收编时的)canonical 落点。
-//!   改名分享一个 npx skills 装的技能时,它本地的目录名、它在别的工具里的链接都不动
-//!   ——动了会破坏 npx skills 自己的记账,那不是我们的东西。
-//! - **中文名技能的分享策略**(CLAUDE.md 预告任务 11 要定):分享时必须提供
-//!   ASCII kebab-case 的 `share_name` 作为远端目录名(表单强制),frontmatter 的
-//!   `name` 保持中文显示名。这与"安装目录名取仓库目录名、展示名取 frontmatter"的
-//!   既有口径互为镜像,两个中文技能因此不会在远端撞进同一个目录。
-//! - **frontmatter 补齐会重建头部**:只在 SKILL.md 不合规时允许,重写后只保证
-//!   `name`/`description` 与正文;坏头部里残存的其他字段不保证保留。
+//! 直接后果是**「远端目录名」这个概念消失了**:标准要求 `name` 必须等于文件夹名,
+//! 校验过了就意味着「文件夹名 = frontmatter `name` = 库里的目录名」三者同一。
+//! 所以 [`ShareRequest`] 只剩三个字段,不再有 `share_name`/`display_name`/
+//! `description`/`origin`/`overwrite`。
+//!
+//! ⚠️ 本模块头曾经写着一整套「中文名技能分享策略」(表单强制起 ASCII 远端目录名、
+//! frontmatter `name` 保持中文显示名)。那套策略**本身就违反标准**(`name` 只能是
+//! ASCII 小写且必须等于目录名,中文 `name` 两条都犯),已于 2026-08-24 被用户推翻,
+//! v6 二期任务 6 落地删除。别照着它写新代码。
+//!
+//! # 本体永不搬家
+//!
+//! 旧模型里分享一个住在 agent 目录里的技能会先"收编":整份复制进 canonical、
+//! 原位换成链接。新模型下**本体住在它现在所在的地方,一个字节都不搬**
+//! ——分享读的就是本体目录,canonical 只保证有一条指向本体的链接
+//! ([`crate::core::converge::ensure_canonical_link`],幂等;canonical 上若有一份
+//! 同内容的实体副本,它会进废纸篓换成链接,可逆)。
+//!
+//! # 仍然成立的既有约定
+//!
+//! - **候选扫描用排除法**(设计方案 2.5②):不判断"原创"——canonical 目录里
+//!   npx skills 装的、手写的、别的工具放的混在一起,原创性无法可靠判定。
+//!   凡不在本 app `state.installed` 里(且那条账**确实有来源**)的都可以分享;
+//!   来源只作标签展示(走 `ownership::source_label` 归一化)。
 //! - **更新分享不删除远端多出的文件**:只做 create/update。远端有而本地没有的文件
 //!   多半是评审者补的(如 LICENSE),静默删除比留着危险得多。
 
 use serde::Serialize;
 
 use crate::core::agents::{AgentEnv, AgentRegistry};
-use crate::core::fsops::{self, OnOccupied};
+use crate::core::converge;
+use crate::core::fsops::{self, Trasher};
+use crate::core::installer::Installer;
 use crate::core::gitea::{ChangeFilesRequest, FileChange, GiteaClient, RepoRef, RepoSource};
 use crate::core::github::GithubClient;
 use crate::core::ownership::{self, Identity};
 use crate::core::skill_lock;
-use crate::core::skills::{parse_skill_md, sanitize_name};
+use crate::core::skills::{self, parse_skill_md, sanitize_name, ShareBlock};
 use crate::core::state::{self, SharedSkill, SkillSource, Store};
 use crate::error::AppError;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ============================================================ 候选扫描
 
@@ -63,7 +82,7 @@ pub struct ShareCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
 pub enum CandidateOrigin {
     /// 两处记账都查不到,视为本地创建。
     Local,
@@ -103,7 +122,19 @@ pub fn scan_candidates(
             .with_detail("home dir unavailable")
     })?;
 
-    let installed: Vec<&str> = state.installed.iter().map(|s| s.name.as_str()).collect();
+    // 🔴 **只排除"确实有来源"的记账**(v6 二期任务 6):判据是
+    // [`state::InstalledSkill::has_source`](全仓唯一判据,别在这里另写一遍)。
+    // 原先是无差别 `state.installed.iter().map(|s| s.name)`,于是**空来源账**
+    // ——用户在 `~/.claude/skills/` 下自己开发、只是点过一次工具勾(那一下由
+    // `converge::set_agents` 顺手建了一条 `adopted` 账,三个来源字段全是空占位)
+    // ——会被当成"库里装来的"整个排除掉,从候选里凭空消失。而"在 Claude Code 里
+    // 开发 skill、还想分享出去"正是 v6 二期的主线场景。
+    let installed: Vec<&str> = state
+        .installed
+        .iter()
+        .filter(|s| s.has_source())
+        .map(|s| s.name.as_str())
+        .collect();
     let mut out: Vec<ShareCandidate> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
 
@@ -168,7 +199,9 @@ fn candidate(
             Err(_) => (None, None, Some("SKILL.md 无法读取".to_string())),
         };
 
-    let shared = state.shared.iter().find(|s| s.local_path == path.to_string_lossy()).map(|s| {
+    // 路径一律按 `Path` 比,不按字符串比(项目铁律):`local_path` 是别处写下的
+    // 字符串,分隔符写法可能与这次扫描出来的不同——`remove::remove` 早就是这么比的。
+    let shared = state.shared.iter().find(|s| Path::new(&s.local_path) == path).map(|s| {
         SharedStatus {
             up_to_date: !s.content_hash.is_empty()
                 && fsops::dir_content_hash(path).map(|h| h == s.content_hash).unwrap_or(false),
@@ -340,21 +373,19 @@ pub async fn precheck(
 
 // ============================================================ 提交
 
+/// 分享一个技能需要知道的全部信息(v6 二期任务 6 起只剩三样)。
+///
+/// **没有 `share_name`/`display_name`/`description`/`origin`/`overwrite`**:
+/// 分享环节零编辑(模块头 A-1),而标准校验保证「文件夹名 = frontmatter `name`
+/// = 库里的目录名」三者同一,所以远端名不需要、也不允许由调用方另给一个。
 #[derive(Debug)]
 pub struct ShareRequest<'a> {
     pub registry_id: &'a str,
     pub repo: &'a RepoRef,
-    /// 候选的本地绝对路径(扫描结果里的 `path`)。
-    pub source_path: &'a Path,
-    /// 远端目录名。必须是 sanitize 的不动点(ASCII kebab),core 兜底校验。
-    pub share_name: &'a str,
-    /// 补齐表单的结果;None = SKILL.md 本来就合规,不动它。
-    pub display_name: Option<&'a str>,
-    pub description: Option<&'a str>,
-    /// 记账用的来源标签:`local` | `npx-skills`。
-    pub origin: &'a str,
-    /// Taken 时用户确认覆盖。
-    pub overwrite: bool,
+    /// 技能标识。core 自己经 [`converge::locate`] 解析出本体住在哪
+    /// ——**调用方不传路径**(旧的 `source_path` 让前端替 core 回答"本体在哪",
+    /// 而那正是 v6 二期要收进 core 的唯一判定)。
+    pub dir_slug: &'a str,
 }
 
 /// 提交走的路径。
@@ -367,117 +398,137 @@ pub enum ShareMode {
     ReviewRequested,
 }
 
+/// 分享的结果。**只剩 `Shared` 一档**:同名被别人占用不再是"等用户三选一"
+/// 的拍板档,而是一个如实的错误(`REPO_NAME_TAKEN`)——覆盖别人的技能这条路
+/// 已整体取消,改名由用户在本地完成(模块头 A-3)。
+///
+/// ⚠️ **序列化形状**:`rename_all` 挂在**枚举**上只改 variant 名,**不改 struct
+/// variant 里的字段名**——必须另加 `rename_all_fields`。这个坑本期已经踩过两次
+/// (获取链路发了很久蛇形键),这里的具体后果是 `review_url` 原样发成蛇形,而
+/// 界面读的是 `reviewUrl`:**分享走评审之后那条「查看审核」链接从来没渲染过**。
+/// 下面的 `share_outcome_serializes_every_field_in_camel_case` 正面钉住完整键集合。
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase", tag = "outcome")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "outcome")]
 pub enum ShareOutcome {
-    /// 同名冲突,等用户拍板(改名 / 查看 / 覆盖)。未动磁盘、未发提交。
-    NeedsDecision { precheck: SharePrecheck },
     Shared {
         mode: ShareMode,
         commit_sha: String,
         /// 评审链接(ReviewRequested 时有)。
         review_url: Option<String>,
-        /// 本次把技能从 agent 目录收编进了 canonical。
-        adopted: bool,
+        /// 库里这个技能的目录名(= 本体文件夹名 = frontmatter `name`,三者同一)。
         share_name: String,
     },
 }
 
-/// 分享一个候选技能。`now` 由调用方注入(派生评审分支名,便于测试)。
+/// 校验没过。`detail` 带 [`ShareBlock`] 的 camelCase 字面量,界面按它查文案表
+/// ——**不在 core 里拼那句中文**(core 返回枚举、不返回给用户看的句子)。
+///
+/// 字面量取自 `ShareBlock` 自己的 serde 形状(`serde_json::to_value`),
+/// **不手抄第二份名字映射**:抄一份就会漂,而漂了两边照样各自全绿。
+fn skill_invalid_err(block: ShareBlock) -> AppError {
+    let name = serde_json::to_value(block)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    AppError::new(
+        "FS_SKILL_INVALID",
+        "这个技能还不符合分享要求,请按提示改好后再分享",
+    )
+    .with_detail(name)
+}
+
+/// 分享一个本机技能。`now` 由调用方注入(派生评审分支名,便于测试)。
+///
+/// 主体顺序(每一步的先后都是判据,不是习惯):
+/// 1. [`converge::locate`] 解析本体——多份内容分歧时报 `FS_NEEDS_VERSION_CHOICE`,
+///    交给用户先在「留哪份」里拍板;一份都没有报 `FS_NOT_FOUND`;
+/// 2. [`skills::validate_skill_dir`] 标准校验。**必须在任何网络请求之前**
+///    ——不合格的技能连一次探测都不该发出去(测试正面断言"零请求");
+/// 3. [`precheck`] 同名判定:`Taken`(库里有同名、且不是我分享的)→ `REPO_NAME_TAKEN`;
+/// 4. [`converge::ensure_canonical_link`]:本体不搬,只保证 canonical 有一条
+///    指向它的链接(cursor/codex 与全部 universal 工具唯一的读取位置)。
+///    **返回 `Differs` 不算失败**:canonical 上那份实体内容与本体不同,是"两个版本"
+///    的问题,由「我的技能」页单独让用户拍板,不该顺手把一次分享整个拦掉;
+/// 5. 读本体目录 → 按权限矩阵提交;
+/// 6. 记账:`state.shared` 的 `local_path` 记**本体所在**,查找也按同一把钥匙
+///    (`Path` 比,不是字符串比)。
+///
+/// `trasher` 与 `acquire` 同款,由调用方注入:第 4 步的 `converge` 在 canonical
+/// 上遇到一份**同内容**的实体副本时会把它送进废纸篓再换成链接,默认实现是**真实
+/// 系统废纸篓**,测试必须注入 `SandboxTrash`。
 #[allow(clippy::too_many_arguments)]
 pub async fn share(
     client: &ShareClient<'_>,
     registry: &AgentRegistry,
     env: &dyn AgentEnv,
     store: &Store,
+    trasher: &dyn Trasher,
     req: ShareRequest<'_>,
     now: &str,
 ) -> Result<ShareOutcome, AppError> {
-    if !usable_share_name(req.share_name) {
-        return Err(AppError::new(
-            "FS_UNUSABLE_NAME",
-            "分享名称只能用英文小写字母、数字和短横线",
-        )
-        .with_detail(format!("share_name: {}", req.share_name)));
-    }
-    if !req.source_path.join("SKILL.md").is_file() {
-        return Err(AppError::new(
-            "FS_NOT_FOUND",
-            "本地技能目录已不存在,请刷新列表后再试",
-        )
-        .with_detail(format!("missing: {}", req.source_path.display())));
+    let installer = Installer::new(registry, env).with_trasher(trasher);
+    let loaded = store.load_state()?;
+
+    // ① 本体在哪
+    let body: PathBuf = match converge::locate(&installer, registry, env, &loaded.value, req.dir_slug)? {
+        converge::Located::Differs(versions) => {
+            return Err(AppError::new(
+                "FS_NEEDS_VERSION_CHOICE",
+                "这个技能在你电脑上有好几个不一样的版本,请先选定保留哪一份",
+            )
+            .with_detail(format!("{} versions for {}", versions.len(), req.dir_slug)))
+        }
+        converge::Located::None => return Err(missing_body_err(req.dir_slug)),
+        converge::Located::Body { body, .. } => body,
+    };
+    if !body.join("SKILL.md").is_file() {
+        return Err(missing_body_err(req.dir_slug));
     }
 
-    let loaded = store.load_state()?;
-    // 归属判定的两个入参都离线取:身份来自登录那一刻落盘的 `config.identities`,
-    // 作者来自**目标库自己**的索引缓存(与「我的技能」第一档同一把尺子)。
+    // ② 标准校验。**在任何网络请求之前**。
+    skills::validate_skill_dir(&body).map_err(skill_invalid_err)?;
+    // 校验刚刚证明了「文件夹名 = frontmatter name 且是合法的标准名」,所以库里的
+    // 目录名直接取本体的叶子名——没有第二个名字可选,也不需要再解析一次 SKILL.md。
+    let share_name = body
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| missing_body_err(req.dir_slug))?
+        .to_string();
+
+    // ③ 同名预检。归属判定的两个入参都离线取:身份来自登录那一刻落盘的
+    //    `config.identities`,作者来自**目标库自己**的索引缓存。
     let config = store.load_config()?.value;
     let me = config.identities.get(req.registry_id);
     let library_author =
-        crate::core::store::cached_author(store.dir(), req.registry_id, req.repo, req.share_name);
+        crate::core::store::cached_author(store.dir(), req.registry_id, req.repo, &share_name);
     let checked = precheck(
         client,
         req.repo,
         &loaded.value,
-        req.share_name,
+        &share_name,
         me,
         library_author.as_deref(),
     )
     .await?;
-    if checked == SharePrecheck::Taken && !req.overwrite {
-        return Ok(ShareOutcome::NeedsDecision { precheck: checked });
+    if checked == SharePrecheck::Taken {
+        return Err(AppError::new(
+            "REPO_NAME_TAKEN",
+            "技能库里已经有一个同名技能,请先在本地给你的技能换个文件夹名",
+        )
+        .with_detail(format!("taken: {share_name}")));
     }
 
-    // 收编:agent 目录里的实体技能迁入 canonical,原位换成链接(原名不动)。
-    // 顺序保证不丢数据:先整份复制,复制成功才动原位;链接建不成会降级复制,
-    // 最坏情况原位仍是一份完整副本。
-    let canonical = registry.canonical_global_dir(env).ok_or_else(|| {
-        AppError::new("FS_NO_HOME", "找不到你的用户目录").with_detail("home dir unavailable")
-    })?;
-    let in_canonical = req.source_path.starts_with(&canonical);
-    let (source_dir, adopted) = if in_canonical {
-        (req.source_path.to_path_buf(), false)
-    } else {
-        let target = canonical.join(req.share_name);
-        if target.exists() {
-            return Err(AppError::new(
-                "FS_OCCUPIED",
-                "技能目录下已有同名技能,请换一个分享名称",
-            )
-            .with_detail(format!("occupied: {}", target.display())));
-        }
-        fsops::copy_tree(req.source_path, &target)?;
-        fsops::link_dir(
-            &target,
-            req.source_path,
-            fsops::default_link_chain(),
-            OnOccupied::Replace,
-        )?;
-        (target, true)
-    };
+    // ④ 本体留在原地,canonical 只补一条指向它的链接。
+    let home = installer.home(req.dir_slug, Some(&body))?;
+    converge::ensure_canonical_link(&installer, &home)?;
 
-    // 补齐 frontmatter(只在表单给了值时)。写在读 payload 之前:推上去的就是补齐后的。
-    if req.display_name.is_some() || req.description.is_some() {
-        rewrite_frontmatter(&source_dir, req.display_name, req.description)?;
-    }
-
-    let prefix = format!("skills/{}/", req.share_name);
-    let files = payload_files(&source_dir, &prefix)?;
-    let title_name = req
-        .display_name
-        .map(str::to_string)
-        .or_else(|| {
-            std::fs::read_to_string(source_dir.join("SKILL.md"))
-                .ok()
-                .and_then(|raw| parse_skill_md(&raw).ok())
-                .map(|p| p.name)
-        })
-        .unwrap_or_else(|| req.share_name.to_string());
+    // ⑤ 提交
+    let prefix = format!("skills/{share_name}/");
+    let files = payload_files(&body, &prefix)?;
     let message = match checked {
-        SharePrecheck::Fresh => format!("新增技能:{title_name}"),
-        _ => format!("更新技能:{title_name}"),
+        SharePrecheck::Fresh => format!("新增技能:{share_name}"),
+        _ => format!("更新技能:{share_name}"),
     };
-
     let submitted = submit(
         client,
         req.repo,
@@ -486,79 +537,83 @@ pub async fn share(
         false,
         files,
         &message,
-        req.share_name,
+        &share_name,
         now,
     )
     .await?;
 
-    // 记账:content_hash 从**实际推的目录**算——"有未分享的改动"的判据就是它
+    // ⑥ 记账:content_hash 从**本体**算——"有未分享的改动"的判据就是它
     let mut next = loaded.value.clone();
     let entry = SharedSkill {
-        name: req.share_name.to_string(),
-        local_path: source_dir.to_string_lossy().into_owned(),
-        origin: req.origin.to_string(),
+        name: share_name.clone(),
+        local_path: body.to_string_lossy().into_owned(),
+        // 这个字段自 v6 二期起没有任何读者(来源标签统一走 `ownership::source_label`),
+        // 保留只为不动 state schema;与 `acquire::seed_shared_baseline` 写的是同一个值。
+        origin: "local".to_string(),
         target: SkillSource {
             registry_id: req.registry_id.to_string(),
             owner: req.repo.owner.clone(),
             repo: req.repo.repo.clone(),
-            path: format!("skills/{}", req.share_name),
+            path: format!("skills/{share_name}"),
             git_ref: req.repo.branch.clone(),
         },
         last_pushed_sha: submitted.commit_sha.clone(),
-        content_hash: fsops::dir_content_hash(&source_dir)?,
+        content_hash: fsops::dir_content_hash(&body)?,
     };
     let content_hash = entry.content_hash.clone();
-    match next.shared.iter().position(|s| s.name == req.share_name) {
+    // 🔴 **钥匙是本体路径,不是远端名**:CLAUDE.md 记着 `state.shared` 读写双键
+    // 不一致的既有隐患(写按远端名、读按本地路径)。远端名这个概念现在没了,
+    // 两侧统一成同一把钥匙,并且**按 `Path` 比**。
+    match next.shared.iter().position(|s| Path::new(&s.local_path) == body.as_path()) {
         Some(idx) => next.shared[idx] = entry,
         None => next.shared.push(entry),
     }
-    adopt_into_management(&mut next, &req, &source_dir, &submitted, content_hash, now);
+    record_pushed_skill(&mut next, &req, &home, &submitted, content_hash, now);
     store.save_state(&next)?;
 
     Ok(ShareOutcome::Shared {
         mode: submitted.mode,
         commit_sha: submitted.commit_sha,
         review_url: submitted.review_url,
-        adopted,
-        share_name: req.share_name.to_string(),
+        share_name,
     })
 }
 
-/// 分享的闭环(M6 任务 5):**直推进库**之后给这个技能补上 `state.installed` 记账。
+fn missing_body_err(dir_slug: &str) -> AppError {
+    AppError::new("FS_NOT_FOUND", "这个技能的内容已经不在了,请刷新后再试")
+        .with_detail(format!("no body for {dir_slug}"))
+}
+
+/// 分享的闭环(M6 任务 5 引入,v6 二期任务 6 按新模型重写):**直推进库**之后
+/// 给这个技能补上 `state.installed` 记账。
 ///
-/// ⚠️ **函数名里的「纳入管理」是 M6 的旧术语,v6 已撤销那套语义;这个函数本身
-/// 没有过时,只是它防的事情换了**(v6 终审订正,原文档写的"不这么做它永远停在
-/// 「其他工具装的 / 本地创建」那一档"已经不成立——归属现在由技能库的
-/// `authors.json` 判定,与本函数无关)。它现在真正防的是**没有记账基线**:
-/// 记账里的 `content_hash` 是「本地/远端谁更新」这套状态机的基线,没有它,
-/// 刚直推进库的技能会落进 `noBaseline` 档——「分享更新」只能绕回分享页重推一遍
-/// (`share_installed` 一进门就要求记账存在,必撞 `FS_NOT_INSTALLED`),
-/// 「修复关联」「移除」也一并没有。**按"归属已经不靠它了"的理由删掉这个函数,
-/// 后果是所有直推分享的技能永久停在 `noBaseline`。**
+/// 它防的是**没有记账基线**:记账里的 `content_hash` 是「本地/库里谁更新」这套
+/// 状态机的基线,没有它,刚直推进库的技能会落进 `noBaseline` 档——「分享更新」
+/// 只能绕回来重推一遍(`share_installed` 一进门就要求记账存在,必撞
+/// `FS_NOT_INSTALLED`),「移除」也一并没有。
 ///
-/// 补上记账之后它就是一个正常的库技能:有更新检查、改动走「分享改动」
-/// (那条路带远端变更检测,比再分享一次安全)。
+/// 三道闸(v6 二期从四道减到三道,少的那道是被推翻的,不是被忘掉的):
+/// 1. **只认直推**(`Pushed`)。走了提交审核的改动还在评审分支上,库里根本没有
+///    这个技能,记成已入库会让「更新」去找一个不存在的东西,用户还会以为已经生效;
+/// 2. **已有记账不覆盖**。回推改动走的是 [`share_installed`],不经过这里;
+///    真走到这里说明是另一条路,覆盖账本会把 commit_sha 等既有事实抹掉;
+/// 3. 记账键取 `home.dir_name`(= [`converge::record_key`]),`body` 只在本体
+///    **不住在 canonical** 时才记——与 `acquire::record` 同一个约定。本体就在
+///    canonical 时记成 `Some(canonical)` 是同一件事的第二种写法,是本项目吃过
+///    亏的"两个概念取同值"。
 ///
-/// 四道闸,少一道就会撒谎:
-/// 1. **只认直推**(`Pushed`)。走了提交审核的改动还在评审分支上,库里根本没有这个
-///    技能,记成已入库会让「更新」去找一个不存在的东西,用户还会以为已经生效;
-/// 2. **只认 canonical 里的技能**。agent 目录下的实体目录不是安装位置,
-///    记进去会让 `installer::canonical_dir` 指向一个空位;
-/// 3. **本地目录名必须与远端目录名相同**。中文名技能分享时会另起 ASCII 远端名
-///    (share.rs 模块头),两者不同时记账的键就对不上——更新会往另一个目录装,
-///    凭空多出一份;
-/// 4. **已有记账不覆盖**。回推改动走的是 `share_installed`,不经过这里;
-///    真走到这里说明是另一条路,覆盖账本会把 commit_sha 等既有事实抹掉。
+/// 🔴 **旧的第二道闸「只认 canonical 里的技能」已被新模型推翻**:本体现在完全
+/// 可以住在 `~/.claude/skills/`,那正是 v6 二期的主线场景;照搬那道闸会让"在
+/// Claude Code 里开发、分享出去"的技能永远建不起基线。
+/// 旧的第三道闸「本地目录名必须等于远端目录名」也没了——标准校验已经在上游
+/// 保证了这件事,再判一遍就是同一条规则查两遍(本项目记着的空转模式 ①)。
 ///
-/// `origin` 记 `claimed`:文件是用户自己的,本 app 只是记了账。
-/// ⚠️ 这句注释曾经写着"必须留着「移出管理」这条无损退路"——「移出管理」
-/// (`skill_unclaim`)已随 v6 撤销,`origin` 字段现在只读、不再驱动任何用户动作
-/// (见 `state::InstalledSkill::origin` 的文档),这里继续写它只是为了让
-/// `commit_sha.is_empty()` 之外还有一份显式来历,不是给退路用。
-fn adopt_into_management(
+/// `origin` 记 `claimed`:文件是用户自己的,本 app 只是记了账。这个字段现在只读,
+/// 不驱动任何用户动作,留着是为了在 `commit_sha` 之外还有一份显式来历。
+fn record_pushed_skill(
     next: &mut state::State,
     req: &ShareRequest,
-    source_dir: &Path,
+    home: &crate::core::installer::SkillHome,
     submitted: &Submitted,
     content_hash: String,
     now: &str,
@@ -566,30 +621,28 @@ fn adopt_into_management(
     if submitted.mode != ShareMode::Pushed {
         return;
     }
-    let Some(dir_name) = source_dir.file_name().and_then(|n| n.to_str()) else {
-        return;
-    };
-    if dir_name != req.share_name {
-        return;
-    }
-    if next.installed.iter().any(|s| s.name == dir_name) {
+    if next.installed.iter().any(|s| s.name == home.dir_name) {
         return;
     }
     next.installed.push(state::InstalledSkill {
-        name: dir_name.to_string(),
+        name: home.dir_name.clone(),
         source: SkillSource {
             registry_id: req.registry_id.to_string(),
             owner: req.repo.owner.clone(),
             repo: req.repo.repo.clone(),
-            path: format!("skills/{}", req.share_name),
+            path: format!("skills/{}", home.dir_name),
             git_ref: req.repo.branch.clone(),
         },
         commit_sha: submitted.commit_sha.clone(),
         // 基线取刚推上去的内容:不等就会立刻误报"有可用更新 / 有未分享的改动"
         content_hash,
         origin: Some(crate::core::acquire::ORIGIN_CLAIMED.to_string()),
-        // 直推进的是 canonical(分享候选只来自 share::scan_candidates 的 in_canonical 档)
-        body: None,
+        // 本体住在 canonical 时留空(约定同 `acquire::record`),否则如实记下它在哪
+        body: if home.body_is_canonical() {
+            None
+        } else {
+            Some(home.body.to_string_lossy().into_owned())
+        },
         // 关联没建过就如实留空——这里只记账,一个字节都不动磁盘
         agents: Vec::new(),
         links: Vec::new(),
@@ -640,8 +693,14 @@ pub async fn share_installed(
     force_review: bool,
     now: &str,
 ) -> Result<ShareInstalledOutcome, AppError> {
+    let installer = Installer::new(registry, env);
     let loaded = store.load_state()?;
-    let Some(idx) = loaded.value.installed.iter().position(|s| s.name == dir_slug) else {
+    // 🔴 查账键走 [`converge::record_key`],**不是调用方手上的 `dir_slug`**:
+    // 记账键是清洗后的目录名(会小写化),而 `dir_slug` 是技能库里的原始目录名
+    // ——`Weekly-Report` 这样的技能按 `dir_slug` 查必然查不到账,用户点「分享更新」
+    // 只会得到「这个技能不在已获取列表中」。理由的完整版在 `record_key` 的文档里。
+    let key = converge::record_key(&installer, dir_slug)?;
+    let Some(idx) = loaded.value.installed.iter().position(|s| s.name == key) else {
         return Err(AppError::new(
             "FS_NOT_INSTALLED",
             "这个技能不在已获取列表中,请刷新后再试",
@@ -657,10 +716,12 @@ pub async fn share_installed(
         branch: branch.to_string(),
     };
 
-    let canonical = registry.canonical_global_dir(env).ok_or_else(|| {
-        AppError::new("FS_NO_HOME", "找不到你的用户目录").with_detail("home dir unavailable")
-    })?;
-    let source_dir = canonical.join(dir_slug);
+    // 本体在哪由 [`converge::home_of`] 说了算,**不再假定它住在 canonical**
+    // (v6 二期):用户在 `~/.claude/skills/` 里开发的技能,拿 canonical 拼出来的
+    // 路径要么根本不存在、要么是一条链接——前者报"内容已不存在"(假话),
+    // 后者读出来的仍是本体,只是绕了一圈还多一处守卫看不见的本体解析点。
+    let home = converge::home_of(&installer, &loaded.value, dir_slug)?;
+    let source_dir = home.body.clone();
     if !source_dir.join("SKILL.md").is_file() {
         return Err(AppError::new(
             "FS_NOT_FOUND",
@@ -1140,8 +1201,8 @@ pub async fn claim_attribution(
 }
 
 /// 登记结果复用 [`ShareOutcome::Shared`]:界面上它与分享是同一类事(可能直接生效、
-/// 也可能等审核),没必要为它另造一个只差名字的枚举。`adopted` 恒 false
-/// ——这条路一个文件都不搬。
+/// 也可能等审核),没必要为它另造一个只差名字的枚举。这条路一个文件都不搬,
+/// 也不碰任何技能内容。
 fn claimed(
     mode: ShareMode,
     commit_sha: String,
@@ -1152,7 +1213,6 @@ fn claimed(
         mode,
         commit_sha,
         review_url,
-        adopted: false,
         share_name: dir_slug.to_string(),
     }
 }
@@ -1372,108 +1432,86 @@ fn payload_files(dir: &Path, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, App
     Ok(out)
 }
 
-/// 重建 SKILL.md 的 frontmatter(补齐表单的落点)。
-///
-/// 现有值能解析就作缺省,表单给的覆盖;正文原样保留。
-fn rewrite_frontmatter(
-    dir: &Path,
-    display_name: Option<&str>,
-    description: Option<&str>,
-) -> Result<(), AppError> {
-    let path = dir.join("SKILL.md");
-    let raw = std::fs::read_to_string(&path).map_err(|e| {
-        AppError::new("FS_READ_FAILED", "无法读取 SKILL.md,请重试").with_detail(e.to_string())
-    })?;
-
-    let (old_name, old_desc, body) = match parse_skill_md(&raw) {
-        Ok(p) => (Some(p.name), Some(p.description), p.body),
-        // 头部坏了(常见是只缺 description):能抢救的字段照样作缺省,
-        // 不然用户只补描述,原有的名字反而被判成"没填"。
-        Err(_) => (
-            salvage_field(&raw, "name"),
-            salvage_field(&raw, "description"),
-            strip_broken_frontmatter(&raw),
-        ),
-    };
-    let name = display_name
-        .map(str::to_string)
-        .or(old_name)
-        .unwrap_or_default();
-    let desc = description
-        .map(str::to_string)
-        .or(old_desc)
-        .unwrap_or_default();
-    if name.is_empty() || desc.is_empty() {
-        return Err(AppError::new(
-            "REPO_INCOMPLETE_SKILL",
-            "技能的名称与描述都需要填写",
-        )
-        .with_detail(format!("name={name:?} desc={desc:?}")));
-    }
-
-    let text = format!(
-        "---\nname: {}\ndescription: {}\n---\n{}",
-        yaml_scalar(&name),
-        yaml_scalar(&desc),
-        body
-    );
-    std::fs::write(&path, text).map_err(|e| {
-        AppError::new("FS_WRITE_FAILED", "无法写入 SKILL.md,请重试").with_detail(e.to_string())
-    })
-}
-
-/// 从(可能不完整的)frontmatter 块里按行抢救一个顶层标量字段。
-fn salvage_field(raw: &str, field: &str) -> Option<String> {
-    let mut lines = raw.lines();
-    if lines.next().map(str::trim) != Some("---") {
-        return None;
-    }
-    for line in lines {
-        if line.trim() == "---" {
-            break;
-        }
-        if let Some(rest) = line.strip_prefix(&format!("{field}:")) {
-            let v = rest.trim().trim_matches('"').trim_matches('\'').trim();
-            if !v.is_empty() {
-                return Some(v.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// 剥掉坏 frontmatter:文件以 `---` 开头就丢到下一个 `---` 为止,否则整个当正文。
-fn strip_broken_frontmatter(raw: &str) -> String {
-    let mut lines = raw.lines();
-    if lines.next().map(str::trim) != Some("---") {
-        return raw.to_string();
-    }
-    let rest: Vec<&str> = lines.collect();
-    match rest.iter().position(|l| l.trim() == "---") {
-        Some(end) => rest[end + 1..].join("\n"),
-        None => raw.to_string(),
-    }
-}
-
-/// YAML 标量:含特殊字符时加引号转义,避免用户输入撑坏头部。
-fn yaml_scalar(s: &str) -> String {
-    let needs_quote = s.is_empty()
-        || s.contains(':')
-        || s.contains('#')
-        || s.contains('"')
-        || s.contains('\'')
-        || s.starts_with(|c: char| c.is_whitespace() || "-?[]{}&*!|>%@`\"'".contains(c))
-        || s.ends_with(char::is_whitespace);
-    if needs_quote {
-        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-    } else {
-        s.to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{upsert_attribution, AttributionUpsert};
+    use super::{
+        skill_invalid_err, upsert_attribution, AttributionUpsert, CandidateOrigin, ShareMode,
+        ShareOutcome,
+    };
+    use crate::core::skills::ShareBlock;
+
+    fn keys(v: &serde_json::Value) -> Vec<String> {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    }
+
+    /// 🔴 **断言的是键的完整集合,不是"某个键存在"**(本项目记着的空转模式 ②)。
+    ///
+    /// 这条守的是一个真实存在过的哑弹:`rename_all` 挂在枚举上只改 variant 名,
+    /// `review_url` 因此原样发成蛇形,而 `SharePage` 读的是 `reviewUrl`
+    /// ——分享走评审之后那条「查看审核」链接**从来没渲染过**。
+    #[test]
+    fn share_outcome_serializes_every_field_in_camel_case() {
+        let v = serde_json::to_value(ShareOutcome::Shared {
+            mode: ShareMode::ReviewRequested,
+            commit_sha: "abc".into(),
+            review_url: Some("http://x/pulls/1".into()),
+            share_name: "weekly-report".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            keys(&v),
+            vec![
+                "commitSha".to_string(),
+                "mode".to_string(),
+                "outcome".to_string(),
+                "reviewUrl".to_string(),
+                "shareName".to_string(),
+            ]
+        );
+        assert_eq!(v["outcome"], "shared");
+        assert_eq!(v["mode"], "reviewRequested");
+        assert_eq!(v["reviewUrl"], "http://x/pulls/1");
+        assert_eq!(v["shareName"], "weekly-report");
+    }
+
+    /// 同一个坑的第二处:`CandidateOrigin::NpxSkills { source }` 眼下是单词字段,
+    /// 加不加 `rename_all_fields` 序列化结果都一样——**正因为看不出差别才要钉住**,
+    /// 将来往这个变体加一个带下划线的字段时,这条会当场变红。
+    #[test]
+    fn candidate_origin_serializes_every_field_in_camel_case() {
+        let v = serde_json::to_value(CandidateOrigin::NpxSkills { source: "acme/skills".into() })
+            .unwrap();
+        assert_eq!(keys(&v), vec!["kind".to_string(), "source".to_string()]);
+        assert_eq!(v["kind"], "npxSkills");
+        let local = serde_json::to_value(CandidateOrigin::Local).unwrap();
+        assert_eq!(keys(&local), vec!["kind".to_string()]);
+        assert_eq!(local["kind"], "local");
+    }
+
+    /// `FS_SKILL_INVALID` 的 `detail` 必须是 `ShareBlock` **自己的** serde 字面量
+    /// ——界面按它查文案表。手抄一份名字映射的话,改了枚举两边照样各自全绿。
+    #[test]
+    fn share_block_detail_uses_the_enums_own_serde_name() {
+        for (block, want) in [
+            (ShareBlock::NameMissing, "nameMissing"),
+            (ShareBlock::NameMismatch, "nameMismatch"),
+            (ShareBlock::NameFormat, "nameFormat"),
+            (ShareBlock::DirFormat, "dirFormat"),
+            (ShareBlock::DescriptionMissing, "descriptionMissing"),
+            (ShareBlock::DescriptionTooLong, "descriptionTooLong"),
+            (ShareBlock::SkillMdUnreadable, "skillMdUnreadable"),
+        ] {
+            let err = skill_invalid_err(block);
+            assert_eq!(err.code, "FS_SKILL_INVALID");
+            assert_eq!(
+                err.detail.as_deref(),
+                Some(want),
+                "{block:?} 的 detail 与它自己的 serde 名不一致"
+            );
+        }
+    }
 
     fn updated(r: AttributionUpsert) -> String {
         match r {

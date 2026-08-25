@@ -675,7 +675,7 @@ fn tools_only_lists_agents_that_linking_would_actually_touch() {
 /// ——**绝不因为账上写着就显示成已启用**,那是撒谎。
 #[test]
 fn tool_state_comes_from_disk_not_from_the_account() {
-    use skillsync_lib::core::fsops::{self, OnOccupied};
+    use skillsync_lib::core::fsops;
 
     let ctx = ctx();
     let body = skill_dir(&ctx.home, ".agents/skills/s", "v1");
@@ -683,7 +683,7 @@ fn tool_state_comes_from_disk_not_from_the_account() {
     // claude-code:真的建一条链接过去
     let claude_dir = ctx.home.join(".claude/skills");
     std::fs::create_dir_all(&claude_dir).unwrap();
-    fsops::link_dir(&body, &claude_dir.join("s"), fsops::default_link_chain(), OnOccupied::Fail).unwrap();
+    fsops::link_dir(&body, &claude_dir.join("s"), fsops::default_link_chain()).unwrap();
 
     // trae:账上记着,磁盘上什么都没有(建链失败 / 被别的工具删了)
     let trae_dir = ctx.home.join(".trae/skills");

@@ -29,7 +29,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::agents::AgentRegistry;
-use crate::core::fsops::{self, OnOccupied};
+use crate::core::fsops;
 use crate::core::installer::SkillPayload;
 use crate::core::project_lock::{self, LocalEntry};
 use crate::core::skills::{parse_skill_md, sanitize_name, SKILL_FILE};
@@ -339,8 +339,8 @@ pub fn install(
     let mut linked = Vec::new();
     for dir in link_dirs(project_root, agent_names)? {
         let link = dir.path.join(&key);
-        // OnOccupied::Fail:占位的可能是用户自己的技能,是否覆盖必须上层带确认结果决定。
-        match fsops::link_dir(&body, &link, fsops::default_link_chain(), OnOccupied::Fail) {
+        // 占位的可能是用户自己的技能,链接位置被实体目录占着时 `link_dir` 一律失败。
+        match fsops::link_dir(&body, &link, fsops::default_link_chain()) {
             // `SameLocation` 不算建链——那是"目标就是本体自己"的情形,一个链接都没建。
             // 把它计进名单会让界面说"已关联到 X",而 X 其实什么都没发生。
             Ok(fsops::LinkOutcome::SameLocation) => {}

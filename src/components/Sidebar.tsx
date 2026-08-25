@@ -1,4 +1,4 @@
-import { LayoutGrid, Check, Share2, Settings, LogIn } from "lucide-react";
+import { LayoutGrid, Check, Settings, LogIn } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
 import { UpdatePill } from "@/components/UpdatePill";
@@ -16,7 +16,6 @@ const NAV: { group: MessageKey; items: { id: PageId; label: MessageKey; icon: ty
     items: [
       { id: "store", label: "nav.store", icon: LayoutGrid },
       { id: "mine", label: "nav.mine", icon: Check },
-      { id: "share", label: "nav.share", icon: Share2 },
     ],
   },
   {

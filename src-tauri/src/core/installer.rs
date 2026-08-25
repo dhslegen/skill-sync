@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::core::agents::{AgentEnv, AgentRegistry};
-use crate::core::fsops::{self, LinkKind, LinkOutcome, LinkState, OnOccupied, Trasher};
+use crate::core::fsops::{self, LinkKind, LinkOutcome, LinkState, Trasher};
 use crate::core::skills::sanitize_name;
 use crate::error::AppError;
 
@@ -458,7 +458,7 @@ impl<'a> Installer<'a> {
                 .with_detail(e.to_string())
         })?;
 
-        let mut links = self.link_all(&home.body, &home.dir_name, targets, OnOccupied::Fail);
+        let mut links = self.link_all(&home.body, &home.dir_name, targets);
         if !home.body_is_canonical() {
             // canonical ← body 的那条:失败也照样进报告,不拦下整次安装。
             links.push(self.canonical_link(home));
@@ -476,7 +476,7 @@ impl<'a> Installer<'a> {
     /// 用于两种场景:①用户改过技能本体、选择保留改动,但仍要把它关联到新的 agent;
     /// ②修复断链。走 [`Self::install`] 会先替换掉本体(旧内容进废纸篓),那正是要避开的事。
     ///
-    /// 占位目录一律 [`OnOccupied::Fail`](v6 二期任务 4 起没有第二档了):该不该
+    /// 占位目录一律失败(v6 二期任务 4 起没有第二档了):该不该
     /// 替换由 [`crate::core::converge::converge`] 先比对内容再决定(同→进废纸篓
     /// 换链接,异→停下问用户),不再由调用方传一个裸的布尔开关。
     pub fn link_only(&self, home: &SkillHome, agent_names: &[String]) -> Result<InstallReport, AppError> {
@@ -488,7 +488,7 @@ impl<'a> Installer<'a> {
             .with_detail(format!("body absent: {}", home.body.display())));
         }
         let targets = self.link_targets_for(home, agent_names)?;
-        let mut links = self.link_all(&home.body, &home.dir_name, targets, OnOccupied::Fail);
+        let mut links = self.link_all(&home.body, &home.dir_name, targets);
         if !home.body_is_canonical() {
             links.push(self.canonical_link(home));
         }
@@ -504,13 +504,12 @@ impl<'a> Installer<'a> {
         target: &Path,
         dir_name: &str,
         targets: Vec<LinkTarget>,
-        on_occupied: OnOccupied,
     ) -> Vec<LinkReport> {
         targets
             .into_iter()
             .map(|t| {
                 let link = t.dir.join(dir_name);
-                let result = Self::link_outcome(fsops::link_dir(target, &link, &self.chain, on_occupied));
+                let result = Self::link_outcome(fsops::link_dir(target, &link, &self.chain));
                 LinkReport {
                     dir: t.dir.to_string_lossy().into_owned(),
                     agents: t.agents,
@@ -526,7 +525,6 @@ impl<'a> Installer<'a> {
             &home.body,
             &home.canonical,
             &self.chain,
-            OnOccupied::Fail,
         ));
         let dir = home
             .canonical

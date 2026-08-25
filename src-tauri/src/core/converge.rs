@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::core::agents::{AgentEnv, AgentRegistry};
-use crate::core::fsops::{self, LinkOutcome, LinkState, OnOccupied};
+use crate::core::fsops::{self, LinkOutcome, LinkState};
 use crate::core::installer::{Installer, SkillHome};
 use crate::core::skills::sanitize_name;
 use crate::core::state;
@@ -418,7 +418,7 @@ pub fn converge(installer: &Installer<'_>, target: &Path, body: &Path) -> Result
         }
         LinkState::Missing => {}
     }
-    match fsops::link_dir(body, target, installer.chain(), OnOccupied::Fail)? {
+    match fsops::link_dir(body, target, installer.chain())? {
         LinkOutcome::Created(k) | LinkOutcome::Unchanged(k) => Ok(Converged::Linked {
             mode: k.as_str().into(),
         }),
@@ -595,7 +595,7 @@ pub fn keep_version(
         }
         let label = path.to_string_lossy().into_owned();
         // 腾位置:实体目录进废纸篓,链接/断链直接摘。失败即收集并跳过这个位置
-        // ——位置还占着,再去 `link_dir` 只会撞上 `OnOccupied::Fail`,报一个
+        // ——位置还占着,再去 `link_dir` 只会撞上
         // 掩盖真实原因的第二个错。
         match fsops::link_state(path, keep) {
             LinkState::Real => match fsops::trash_tree(installer.trasher(), path) {
@@ -613,7 +613,7 @@ pub fn keep_version(
             }
             LinkState::Linked(_) | LinkState::SameLocation | LinkState::Missing => {}
         }
-        let outcome = match fsops::link_dir(keep, path, installer.chain(), OnOccupied::Fail) {
+        let outcome = match fsops::link_dir(keep, path, installer.chain()) {
             Ok(LinkOutcome::Created(k) | LinkOutcome::Unchanged(k)) => Ok(Converged::Linked {
                 mode: k.as_str().into(),
             }),

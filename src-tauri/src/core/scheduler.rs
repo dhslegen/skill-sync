@@ -36,8 +36,16 @@ pub const FIRST_CHECK_DELAY: Duration = Duration::from_secs(10);
 // ============================================================ 单轮检查
 
 /// 一轮检查的结果,供事件上报与通知文案使用。
+///
+/// ⚠️ **序列化形状**:`rename_all` 挂在**枚举**上只改 variant 名,**不改 struct
+/// variant 里的字段名**,必须另加 `rename_all_fields`(v6 二期任务 6 修)。
+/// 缺了它 `head_sha` 会原样发成蛇形键,而 `src/lib/ipc.ts` 里 `CheckReport`
+/// 声明的是 `headSha` —— 这条是**哑弹**(眼下没有读者真去取那个字段,所以
+/// 不是可见缺陷),但它与 `share::ShareOutcome::review_url` 是同一个坑的两处,
+/// 那一处的后果是"分享走评审之后的「查看审核」链接从来没渲染过"。
+/// 下面的 `check_report_serializes_every_field_in_camel_case` 正面钉住完整键集合。
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase", tag = "status")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "status")]
 pub enum CheckReport {
     /// 没装任何来自该库的技能,没发任何请求。
     NothingInstalled,
@@ -368,6 +376,50 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    /// 🔴 **断言的是键的完整集合,不是"某个键存在"**(本项目记着的空转模式 ②):
+    /// 只查 `headSha` 在不在,会放过"既发 headSha 又发 head_sha"这类形状,
+    /// 也放过将来新增一个漏了 camelCase 的字段。
+    #[test]
+    fn check_report_serializes_every_field_in_camel_case() {
+        let keys = |v: &serde_json::Value| {
+            let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+            k.sort();
+            k
+        };
+
+        let up = serde_json::to_value(CheckReport::UpToDate { head_sha: "s1".into() }).unwrap();
+        assert_eq!(keys(&up), vec!["headSha".to_string(), "status".to_string()]);
+        assert_eq!(up["status"], "upToDate");
+        assert_eq!(up["headSha"], "s1");
+
+        let checked = serde_json::to_value(CheckReport::Checked {
+            head_sha: "s2".into(),
+            updated: vec!["a".into()],
+            skipped: vec![SkippedSkill { dir_slug: "b".into(), reason: "r".into() }],
+            failed: vec![FailedSkill {
+                dir_slug: "c".into(),
+                error: AppError::new("NET_X", "网络不通"),
+            }],
+        })
+        .unwrap();
+        assert_eq!(
+            keys(&checked),
+            vec![
+                "failed".to_string(),
+                "headSha".to_string(),
+                "skipped".to_string(),
+                "status".to_string(),
+                "updated".to_string(),
+            ]
+        );
+        assert_eq!(checked["status"], "checked");
+        assert_eq!(checked["headSha"], "s2");
+
+        let nothing = serde_json::to_value(CheckReport::NothingInstalled).unwrap();
+        assert_eq!(keys(&nothing), vec!["status".to_string()]);
+        assert_eq!(nothing["status"], "nothingInstalled");
+    }
 
     fn counter_check(hits: Arc<AtomicUsize>) -> impl Fn() -> BoxFuture {
         move || {

@@ -42,6 +42,11 @@ struct Ctx {
     home: PathBuf,
     registry: AgentRegistry,
     store: Store,
+    /// 🔴 **必须显式注入**:`share()` 里的 `ensure_canonical_link` 会在 canonical
+    /// 上遇到一份同内容实体副本时把它送进废纸篓,而 `Installer` 的默认实现是
+    /// **这台机器真实的系统废纸篓**。落点刻意放在临时 HOME 之外的独立目录,
+    /// 免得它自己被当成一个技能目录扫进来。
+    trash: fsops::SandboxTrash,
 }
 
 fn ctx() -> (Ctx, TmpEnv) {
@@ -52,12 +57,14 @@ fn ctx() -> (Ctx, TmpEnv) {
         vars: HashMap::new(),
     };
     let store = Store::new(home.join(".skillsync"));
+    let trash = fsops::SandboxTrash::new(home.join("..").join("share-flow-trash"));
     (
         Ctx {
             _tmp: tmp,
             home,
             registry: AgentRegistry::builtin(),
             store,
+            trash,
         },
         env,
     )
@@ -133,6 +140,85 @@ fn skills_installed_by_this_app_are_excluded() {
 
     let found = share::scan_candidates(&c.registry, &env, &state, &Default::default(), &Default::default()).unwrap();
     assert!(found.is_empty(), "本 app 安装的不该出现在分享列表: {found:?}");
+}
+
+/// 🔴 **空来源账不该被排除**(v6 二期任务 6,欠账 6)。
+///
+/// 用户在 `~/.claude/skills/` 下开发一个技能,点过一次工具勾——`converge::set_agents`
+/// 会顺手给它建一条 `adopted` 账,三个来源字段全是空占位。排除法原先无差别按
+/// `state.installed` 的名字排除,于是这个技能**从分享候选里凭空消失**,
+/// 而"在 Claude Code 里开发 skill、还想分享出去"正是这一期的主线场景。
+///
+/// 与上一条 `skills_installed_by_this_app_are_excluded` 互为对照组:两条的磁盘
+/// 与记账形状**只差 `source` 三个字段有没有值**,判据只能是
+/// `InstalledSkill::has_source()`(全仓唯一判据),不是"账上有没有这个名字"。
+#[test]
+fn a_record_without_a_source_is_still_shareable() {
+    let (c, env) = ctx();
+    write_skill(&canonical(&c).join("weekly-report"), "周报", "d");
+    let mut state = state_of(&c);
+    state.installed.push(InstalledSkill {
+        name: "weekly-report".into(),
+        // 勾一次工具建出来的 `adopted` 账就是这个形状:三个坐标字段都是空串
+        source: SkillSource {
+            registry_id: String::new(),
+            owner: String::new(),
+            repo: String::new(),
+            path: String::new(),
+            git_ref: String::new(),
+        },
+        commit_sha: String::new(),
+        content_hash: "sha256:x".into(),
+        origin: Some("adopted".into()),
+        body: None,
+        agents: vec!["claude-code".into()],
+        links: vec![],
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    });
+
+    let found = share::scan_candidates(&c.registry, &env, &state, &Default::default(), &Default::default()).unwrap();
+    assert_eq!(
+        found.iter().map(|f| f.dir_name.as_str()).collect::<Vec<_>>(),
+        vec!["weekly-report"],
+        "没有来源的记账不代表它是从技能库装来的,不该把它挡在分享之外",
+    );
+}
+
+/// 🔴 **`state.shared` 的查找按 `Path` 比,不按字符串比**(项目铁律)。
+///
+/// fixture 刻意让两者**字符串不同、`Path` 相同**(尾随分隔符):按字符串比的实现
+/// 会判成"从没分享过",于是界面上一个已经分享过的技能永远显示成没分享过。
+/// 今天靠"两侧都出自 `canonical_global_dir`"才碰巧一致,那是巧合不是保证
+/// ——本体现在完全可以不在 canonical,`local_path` 由别处写下。
+#[test]
+fn the_shared_record_is_matched_by_path_not_by_string() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "my-notes", "d");
+    let mut state = state_of(&c);
+    let with_trailing_sep = format!("{}{}", dir.to_string_lossy(), std::path::MAIN_SEPARATOR);
+    assert_ne!(with_trailing_sep, dir.to_string_lossy(), "前提:两者字符串不同");
+    assert_eq!(Path::new(&with_trailing_sep), dir.as_path(), "前提:两者 Path 相同");
+    state.shared.push(SharedSkill {
+        name: "my-notes".into(),
+        local_path: with_trailing_sep,
+        origin: "local".into(),
+        target: SkillSource {
+            registry_id: "company".into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            path: "skills/my-notes".into(),
+            git_ref: "main".into(),
+        },
+        last_pushed_sha: "abc".into(),
+        content_hash: fsops::dir_content_hash(&dir).unwrap(),
+    });
+
+    let found = share::scan_candidates(&c.registry, &env, &state, &Default::default(), &Default::default()).unwrap();
+    let shared = found[0].shared.as_ref().expect("应当认出这个技能分享过");
+    assert!(shared.up_to_date);
+    assert_eq!(shared.share_name, "my-notes");
 }
 
 /// `ShareCandidate.relation` 直接断言(修复轮 1,`commands::share_candidates` 这条
@@ -455,16 +541,11 @@ fn write_index_cache_with_author(c: &Ctx, dir_slug: &str, author: &str) {
     index_store::save_cache(&path, &index).unwrap();
 }
 
-fn share_req<'a>(repo: &'a RepoRef, source: &'a Path, name: &'a str) -> share::ShareRequest<'a> {
+fn share_req<'a>(repo: &'a RepoRef, dir_slug: &'a str) -> share::ShareRequest<'a> {
     share::ShareRequest {
         registry_id: "company",
         repo,
-        source_path: source,
-        share_name: name,
-        display_name: None,
-        description: None,
-        origin: "local",
-        overwrite: false,
+        dir_slug,
     }
 }
 
@@ -472,7 +553,7 @@ fn share_req<'a>(repo: &'a RepoRef, source: &'a Path, name: &'a str) -> share::S
 async fn fresh_share_pushes_creates_and_records_the_books() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "记点东西");
+    write_skill(&dir, "my-notes", "记点东西");
     std::fs::write(dir.join("logo.png"), [0x89u8, 0x50]).unwrap();
 
     let server = MockServer::start().await;
@@ -482,16 +563,14 @@ async fn fresh_share_pushes_creates_and_records_the_books() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
         .unwrap();
 
-    let ShareOutcome::Shared { mode, commit_sha, adopted, .. } = outcome else {
-        panic!("Fresh 不该要求拍板");
-    };
+    // `ShareOutcome` 现在只剩 `Shared` 一档,解构是不可反驳的
+    let ShareOutcome::Shared { mode, commit_sha, .. } = outcome;
     assert_eq!(mode, ShareMode::Pushed);
     assert_eq!(commit_sha, "newsha1");
-    assert!(!adopted);
 
     // 请求体:全部 create、无 new_branch、二进制走 base64
     let reqs = server.received_requests().await.unwrap();
@@ -568,7 +647,7 @@ fn authors_change(body: &serde_json::Value) -> Option<(String, serde_json::Value
 async fn share_appends_sharer_as_contributor_in_the_same_commit() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "记点东西");
+    write_skill(&dir, "my-notes", "记点东西");
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
@@ -583,7 +662,7 @@ async fn share_appends_sharer_as_contributor_in_the_same_commit() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
         .unwrap();
 
@@ -605,7 +684,7 @@ async fn share_appends_sharer_as_contributor_in_the_same_commit() {
 async fn share_creates_authors_json_when_library_has_none() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "记点东西");
+    write_skill(&dir, "my-notes", "记点东西");
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
@@ -616,7 +695,7 @@ async fn share_creates_authors_json_when_library_has_none() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
         .unwrap();
 
@@ -635,7 +714,7 @@ async fn share_creates_authors_json_when_library_has_none() {
 async fn an_entry_recorded_under_the_login_name_recognizes_the_same_person() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "记点东西");
+    write_skill(&dir, "my-notes", "记点东西");
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
@@ -646,7 +725,7 @@ async fn an_entry_recorded_under_the_login_name_recognizes_the_same_person() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
         .unwrap();
 
@@ -669,7 +748,7 @@ async fn an_entry_recorded_under_the_login_name_recognizes_the_same_person() {
 async fn a_stale_attribution_entry_is_dropped_so_the_skill_still_lands() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "记点东西");
+    write_skill(&dir, "my-notes", "记点东西");
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
@@ -697,13 +776,11 @@ async fn a_stale_attribution_entry_is_dropped_so_the_skill_still_lands() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
         .expect("归因过期不该让整个分享失败");
 
-    let ShareOutcome::Shared { commit_sha, .. } = outcome else {
-        panic!("应当分享成功");
-    };
+    let ShareOutcome::Shared { commit_sha, .. } = outcome;
     assert_eq!(commit_sha, "newsha1");
 
     // 第二次提交(重试)里不带 authors.json,技能文件照旧
@@ -731,7 +808,7 @@ async fn a_stale_attribution_entry_is_dropped_so_the_skill_still_lands() {
 async fn attribution_on_the_fork_path_reads_the_fork_not_the_upstream() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "d");
+    write_skill(&dir, "my-notes", "d");
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
@@ -773,7 +850,7 @@ async fn attribution_on_the_fork_path_reads_the_fork_not_the_upstream() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
         .unwrap();
 
@@ -804,7 +881,7 @@ async fn attribution_on_the_fork_path_reads_the_fork_not_the_upstream() {
 async fn attribution_failure_never_blocks_the_share() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "记点东西");
+    write_skill(&dir, "my-notes", "记点东西");
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
@@ -813,7 +890,7 @@ async fn attribution_failure_never_blocks_the_share() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
         .unwrap();
     assert!(matches!(outcome, ShareOutcome::Shared { .. }));
@@ -824,14 +901,14 @@ async fn attribution_failure_never_blocks_the_share() {
     assert!(authors_change(&body).is_none(), "拿不到身份就不该动 authors.json");
 }
 
-/// 分享的闭环(M6 任务 5):直推进库之后,这个技能就该像库里其他技能一样被管起来
-/// ——否则它永远停在「其他工具装的 / 本地创建」那一档,界面一直劝你"分享到技能库",
-/// 而你已经分享过了。
+/// 分享的闭环(M6 任务 5):直推进库之后,这个技能要有一条**记账基线**
+/// ——没有它,刚分享出去的技能立刻落进 `noBaseline` 档,「分享更新」与「移除」
+/// 都摆不出来。
 #[tokio::test]
-async fn a_skill_pushed_straight_into_the_library_becomes_managed() {
+async fn a_skill_pushed_straight_into_the_library_gets_a_baseline_record() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "记点东西");
+    write_skill(&dir, "my-notes", "记点东西");
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
@@ -840,12 +917,12 @@ async fn a_skill_pushed_straight_into_the_library_becomes_managed() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
         .unwrap();
 
     let state = state_of(&c);
-    assert_eq!(state.installed.len(), 1, "直推成功后应自动纳入管理");
+    assert_eq!(state.installed.len(), 1, "直推成功后应自动建起记账基线");
     let s = &state.installed[0];
     assert_eq!(s.name, "my-notes");
     assert_eq!(
@@ -859,45 +936,10 @@ async fn a_skill_pushed_straight_into_the_library_becomes_managed() {
         fsops::dir_content_hash(&dir).unwrap(),
         "基线取刚推上去的内容——不等就会立刻误报「有可用更新」",
     );
-    // 文件是用户自己的,本 app 只记了账 → 必须允许「移出管理」(不然退路只剩会删文件的移除)
+    // 文件是用户自己的,本 app 只记了账——`origin` 现在只读,留一份显式来历
     assert_eq!(s.origin.as_deref(), Some("claimed"));
-}
-
-/// 中文名技能分享时会另起 ASCII 远端名(share.rs 模块头),本地目录名不改。
-/// 这时**不能**纳入管理:`state.installed[].name` 是 canonical 目录名,
-/// 记成远端名会让更新往另一个目录装,凭空多出一份;记成本地名又与库里的技能对不上。
-#[tokio::test]
-async fn a_skill_shared_under_a_different_remote_name_is_not_recorded() {
-    let (c, env) = ctx();
-    let dir = canonical(&c).join("周报生成器");
-    write_skill(&dir, "周报生成器", "汇总一周");
-
-    let server = MockServer::start().await;
-    mount_skill_exists(&server, "weekly-report", false).await;
-    mount_repo_info(&server, true).await;
-    mount_commit_ok(&server).await;
-    let client = GiteaClient::new(server.uri(), None).unwrap();
-    let repo = repo_ref();
-
-    let outcome = share::share(
-        &share::ShareClient::Gitea(&client),
-        &c.registry,
-        &env,
-        &c.store,
-        share_req(&repo, &dir, "weekly-report"),
-        NOW,
-    )
-    .await
-    .unwrap();
-
-    let ShareOutcome::Shared { mode, .. } = outcome else { panic!("应当分享成功") };
-    assert_eq!(mode, ShareMode::Pushed);
-    // 分享本身照常成功、shared 记账照常有;只是不纳入管理
-    assert_eq!(state_of(&c).shared.len(), 1);
-    assert!(
-        state_of(&c).installed.is_empty(),
-        "本地目录名与远端目录名不同,纳入管理的记账键就对不上",
-    );
+    // 本体就住在 canonical:`body` 留空,不写成同一件事的第二种写法
+    assert_eq!(s.body, None, "本体在 canonical 时 body 该留空");
 }
 
 /// 走了提交审核就**不能**记成已入库:改动还在评审分支上,库里根本没有这个技能。
@@ -906,7 +948,7 @@ async fn a_skill_shared_under_a_different_remote_name_is_not_recorded() {
 async fn a_skill_that_went_to_review_is_not_recorded_as_managed() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "记点东西");
+    write_skill(&dir, "my-notes", "记点东西");
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
@@ -931,23 +973,23 @@ async fn a_skill_that_went_to_review_is_not_recorded_as_managed() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
         .unwrap();
 
-    let ShareOutcome::Shared { mode, .. } = outcome else { panic!("应当分享成功") };
+    let ShareOutcome::Shared { mode, .. } = outcome;
     assert_eq!(mode, ShareMode::ReviewRequested);
     assert!(
         state_of(&c).installed.is_empty(),
-        "还没进库就纳入管理 = 对用户撒谎",
+        "还没进库就建基线 = 对用户撒谎",
     );
 }
 
 #[tokio::test]
-async fn taken_without_confirmation_sends_nothing() {
+async fn taken_by_someone_else_is_an_error_not_a_three_way_dialog() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "d");
+    write_skill(&dir, "my-notes", "d");
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", true).await;
@@ -956,17 +998,16 @@ async fn taken_without_confirmation_sends_nothing() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    let err = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
-        .unwrap();
+        .unwrap_err();
 
-    assert!(matches!(
-        outcome,
-        ShareOutcome::NeedsDecision { precheck: SharePrecheck::Taken }
-    ));
+    // 「覆盖别人的技能」这条路整体取消了,所以这不再是"等用户三选一"的拍板档,
+    // 而是一个如实的错误:改名由用户在本地完成(A-3)。
+    assert_eq!(err.code, "REPO_NAME_TAKEN");
     // 真正的守卫断言:一个提交都没发出去
     let reqs = server.received_requests().await.unwrap();
-    assert!(reqs.iter().all(|r| r.method.as_str() != "POST"), "未确认就发了提交");
+    assert!(reqs.iter().all(|r| r.method.as_str() != "POST"), "被占用还发了提交");
     assert!(state_of(&c).shared.is_empty(), "没分享成还记了账");
 }
 
@@ -984,7 +1025,7 @@ async fn taken_without_confirmation_sends_nothing() {
 async fn share_reads_identity_and_library_author_itself_so_the_author_is_never_a_stranger() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "d");
+    write_skill(&dir, "my-notes", "d");
 
     // 这台机器上的身份(登录那一刻落的盘)+ 目标库索引缓存里记的作者 = 同一个人。
     // 两者都由 share() 自己去取,测试只负责把它们放到真实位置上。
@@ -1026,7 +1067,8 @@ async fn share_reads_identity_and_library_author_itself_so_the_author_is_never_a
         &c.registry,
         &env,
         &c.store,
-        share_req(&repo, &dir, "my-notes"),
+        &c.trash,
+        share_req(&repo, "my-notes"),
         NOW,
     )
     .await
@@ -1041,14 +1083,39 @@ async fn share_reads_identity_and_library_author_itself_so_the_author_is_never_a
     let reqs = server.received_requests().await.unwrap();
     let posted: Vec<_> = reqs.iter().filter(|r| r.method.as_str() == "POST").collect();
     let body: serde_json::Value = serde_json::from_slice(&posted[0].body).unwrap();
-    assert_eq!(body["message"], "更新技能:我的笔记");
+    assert_eq!(body["message"], "更新技能:my-notes");
 }
 
+/// 「更新我分享的技能」这一档的请求体形状:远端已有 → 必须 `update` 且带旧 blob sha,
+/// 发 `create` 会被 Gitea 422 拒掉。
+///
+/// ⚠️ 它原先叫 `overwriting_a_taken_name_updates_with_remote_shas`,靠 `overwrite: true`
+/// 走到这条路;`overwrite` 这个字段已随「覆盖别人的技能」一起删掉,现在的前提换成
+/// **本机有一条分享记账**(= `SharePrecheck::Mine`)——被测的请求体形状一个字没变。
 #[tokio::test]
-async fn overwriting_a_taken_name_updates_with_remote_shas() {
+async fn updating_a_skill_i_shared_before_uses_remote_shas() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "d");
+    write_skill(&dir, "my-notes", "d");
+    let mut state = state_of(&c);
+    state.shared.push(SharedSkill {
+        name: "my-notes".into(),
+        // 尾随分隔符:与本体路径**字符串不同、`Path` 相同**。写记账时按 `Path`
+        // 找这一行才找得到;按字符串找会另推一条,同一个本地目录留下两条记账
+        // ——CLAUDE.md 记着的 `state.shared` 读写双键不一致就是这个形状。
+        local_path: format!("{}{}", dir.to_string_lossy(), std::path::MAIN_SEPARATOR),
+        origin: "local".into(),
+        target: SkillSource {
+            registry_id: "company".into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            path: "skills/my-notes".into(),
+            git_ref: "main".into(),
+        },
+        last_pushed_sha: "oldcommit".into(),
+        content_hash: String::new(),
+    });
+    c.store.save_state(&state).unwrap();
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", true).await;
@@ -1075,9 +1142,9 @@ async fn overwriting_a_taken_name_updates_with_remote_shas() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let mut req = share_req(&repo, &dir, "my-notes");
-    req.overwrite = true;
-    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, req, NOW).await.unwrap();
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
+        .await
+        .unwrap();
 
     let reqs = server.received_requests().await.unwrap();
     let posted: Vec<_> = reqs.iter().filter(|r| r.method.as_str() == "POST").collect();
@@ -1091,13 +1158,18 @@ async fn overwriting_a_taken_name_updates_with_remote_shas() {
     // 远端已有 → update 且带旧 blob sha;发 create 会被 Gitea 422 拒掉
     assert_eq!(skill_md["operation"], "update");
     assert_eq!(skill_md["sha"], "oldsha");
+
+    // 记账被**替换**而不是又推一条:同一个本地目录只该有一行
+    let state = state_of(&c);
+    assert_eq!(state.shared.len(), 1, "同一个本体留下了两条分享记账:{:?}", state.shared);
+    assert_eq!(state.shared[0].last_pushed_sha, "newsha1");
 }
 
 #[tokio::test]
 async fn protected_branch_falls_back_to_review_request() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "d");
+    write_skill(&dir, "my-notes", "d");
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
@@ -1122,11 +1194,11 @@ async fn protected_branch_falls_back_to_review_request() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
         .unwrap();
 
-    let ShareOutcome::Shared { mode, review_url, .. } = outcome else { panic!() };
+    let ShareOutcome::Shared { mode, review_url, .. } = outcome;
     assert_eq!(mode, ShareMode::ReviewRequested);
     assert_eq!(review_url.as_deref(), Some("http://x/pulls/7"));
 
@@ -1151,7 +1223,7 @@ async fn protected_branch_falls_back_to_review_request() {
 async fn read_only_users_go_through_a_fork() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "d");
+    write_skill(&dir, "my-notes", "d");
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
@@ -1180,11 +1252,11 @@ async fn read_only_users_go_through_a_fork() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
         .unwrap();
 
-    let ShareOutcome::Shared { mode, .. } = outcome else { panic!() };
+    let ShareOutcome::Shared { mode, .. } = outcome;
     assert_eq!(mode, ShareMode::ReviewRequested);
 
     let reqs = server.received_requests().await.unwrap();
@@ -1200,11 +1272,20 @@ async fn read_only_users_go_through_a_fork() {
     assert!(head.starts_with("zhang-san:skillsync/my-notes-"), "head: {head}");
 }
 
+/// 🔴 **本体永不搬家**(v6 二期任务 6,取代旧的 `sharing_from_an_agent_dir_adopts_it_into_canonical`)。
+///
+/// 用户在 `~/.claude/skills/` 下开发这个技能——那正是这一期的主线场景。分享之后:
+/// 本体**还在原地**(旧行为是整份复制进 canonical、原位换链接),canonical 上多出
+/// 一条**指向它**的链接,记账指向本体所在,提交只发一笔。
+///
+/// ⚠️ 断言用 `read_link_target` 而不是"canonical 下读得到 SKILL.md":后者对
+/// "复制了一份过去"同样成立——那正是这条测试要否掉的旧行为(注入验证:把
+/// `ensure_canonical_link` 换回 `copy_tree`,"本体留在原地"仍绿、这一条红)。
 #[tokio::test]
-async fn sharing_from_an_agent_dir_adopts_it_into_canonical() {
+async fn share_uploads_the_body_in_place_and_links_canonical_without_copying() {
     let (c, env) = ctx();
-    let orig = c.home.join(".claude").join("skills").join("hand-made");
-    write_skill(&orig, "手搓的", "d");
+    let body = c.home.join(".claude").join("skills").join("hand-made");
+    write_skill(&body, "hand-made", "d");
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "hand-made", false).await;
@@ -1213,27 +1294,73 @@ async fn sharing_from_an_agent_dir_adopts_it_into_canonical() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &orig, "hand-made"), NOW)
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "hand-made"), NOW)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, ShareOutcome::Shared { .. }));
+
+    assert!(body.join("SKILL.md").is_file(), "本体没留在原地");
+    assert_eq!(
+        fsops::read_link_target(&canonical(&c).join("hand-made")),
+        Some(fsops::normalize(&body)),
+        "canonical 上应该是一条指向本体的链接,不是一份副本",
+    );
+
+    // 记账指向本体所在,不是 canonical
+    let state = state_of(&c);
+    assert_eq!(Path::new(&state.shared[0].local_path), body.as_path(), "分享记账应指向本体");
+    // 只提交了一笔(skills/hand-made/ 那一笔;这里没 mock /user,不带 authors.json)
+    let posted = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .count();
+    assert_eq!(posted, 1);
+}
+
+/// 本体不在 canonical 时,`state.installed` 的 `body` 必须如实记下它在哪
+/// ——记 `None` 等于说"它住在 canonical",而 canonical 上只是一条链接:
+/// 之后每一次 `converge::home_of` 都会把那条链接当本体,移除时删的是链接、
+/// 本体留在原地成孤儿。
+///
+/// ⚠️ fixture 刻意让本体**不在** canonical:两者同处时 `body: None` 与
+/// `Some(canonical)` 序列化之外的行为完全一样,那样的用例证明不了任何事。
+#[tokio::test]
+async fn a_body_outside_canonical_is_recorded_by_its_real_location() {
+    let (c, env) = ctx();
+    let body = c.home.join(".claude").join("skills").join("hand-made");
+    write_skill(&body, "hand-made", "d");
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "hand-made", false).await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "hand-made"), NOW)
         .await
         .unwrap();
 
-    let ShareOutcome::Shared { adopted, .. } = outcome else { panic!() };
-    assert!(adopted);
-    // 本体进了 canonical
-    let body = canonical(&c).join("hand-made");
-    assert!(body.join("SKILL.md").is_file(), "本体没收编进 canonical");
-    // 原位仍能读到内容(链接或降级副本都行),agent 不受影响
-    assert!(orig.join("SKILL.md").is_file(), "原位置读不到技能了");
-    // 记账指向 canonical 里的那份
-    assert_eq!(state_of(&c).shared[0].local_path, body.to_string_lossy());
+    let state = state_of(&c);
+    assert_eq!(state.installed.len(), 1, "直推进库应当建起记账基线");
+    assert_eq!(
+        state.installed[0].body.as_deref().map(Path::new),
+        Some(body.as_path()),
+        "本体不在 canonical 时,账上必须记下它真正在哪",
+    );
 }
 
+/// 🔴 **分享环节零编辑**(A-1):`share()` 不许碰 SKILL.md 一个字节。
+/// 旧行为是"表单给了值就重建 frontmatter",那条链路已整体删除。
 #[tokio::test]
-async fn the_form_fixes_frontmatter_before_it_is_pushed() {
+async fn share_never_rewrites_skill_md() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("SKILL.md"), "---\nname: 我的笔记\n---\n正文还在\n").unwrap();
+    write_skill(&dir, "my-notes", "记点东西");
+    let before = std::fs::read(dir.join("SKILL.md")).unwrap();
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
@@ -1242,24 +1369,49 @@ async fn the_form_fixes_frontmatter_before_it_is_pushed() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let mut req = share_req(&repo, &dir, "my-notes");
-    req.description = Some("补上的描述");
-    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, req, NOW).await.unwrap();
+    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
+        .await
+        .unwrap();
 
-    // 本地文件已补齐
-    let local = std::fs::read_to_string(dir.join("SKILL.md")).unwrap();
-    assert!(local.contains("补上的描述"));
-    assert!(local.contains("正文还在"));
-    // 推上去的就是补齐后的内容
-    let reqs = server.received_requests().await.unwrap();
-    let posted: Vec<_> = reqs.iter().filter(|r| r.method.as_str() == "POST").collect();
-    let body: serde_json::Value = serde_json::from_slice(&posted[0].body).unwrap();
-    let content = body["files"][0]["content"].as_str().unwrap();
-    let decoded = String::from_utf8(
-        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content).unwrap(),
-    )
-    .unwrap();
-    assert!(decoded.contains("补上的描述"), "推的不是补齐后的内容: {decoded}");
+    assert_eq!(
+        std::fs::read(dir.join("SKILL.md")).unwrap(),
+        before,
+        "分享环节零编辑,SKILL.md 一个字节都不该变",
+    );
+}
+
+/// 🔴 **不合格的技能一次网络请求都不该发**(A-2 的闸摆在 `precheck` 之前)。
+///
+/// 样本取自真实数据:`~/.claude/skills/react-best-practices/` 的 frontmatter
+/// `name` 是 `vercel-react-best-practices`(Claude Code 放行、开放标准不认)。
+/// 守卫断言盯的是**请求条数**,不是返回的错误码——把校验挪到 `submit` 之后
+/// 时错误码照样对,只有请求条数会红(注入验证钉的就是这一条)。
+#[tokio::test]
+async fn share_refuses_non_conforming_skills_before_any_network_call() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("react-best-practices");
+    write_skill(&dir, "vercel-react-best-practices", "前端规范");
+
+    // 全部端点都挂上:真发了请求就一定拿得到 200,不会因为"没 mock"而失败,
+    // 这样这条测试红的时候一定是因为"发了请求",不是因为别的。
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "react-best-practices", false).await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    let err = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "react-best-practices"), NOW)
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code, "FS_SKILL_INVALID");
+    assert_eq!(err.detail.as_deref(), Some("nameMismatch"));
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        0,
+        "不合格的技能连一次探测都不该发出去",
+    );
 }
 
 #[tokio::test]
@@ -1267,7 +1419,7 @@ async fn a_race_at_submit_time_surfaces_as_conflict_stale() {
     // DoD:sha 竞态返回 CONFLICT_STALE,UI 拿它回到预检
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "我的笔记", "d");
+    write_skill(&dir, "my-notes", "d");
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
@@ -1282,7 +1434,7 @@ async fn a_race_at_submit_time_surfaces_as_conflict_stale() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let err = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "my-notes"), NOW)
+    let err = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
         .unwrap_err();
 
@@ -1290,8 +1442,43 @@ async fn a_race_at_submit_time_surfaces_as_conflict_stale() {
     assert!(state_of(&c).shared.is_empty(), "提交失败还记了账");
 }
 
+/// 大写文件夹名过不了标准的字符集这一条(只许 a-z / 0-9 / 连字符)。
+/// 报的是**文件夹名**这一档而不是 `name` 那一档:用户改文件夹名就能一次修好,
+/// 让他去改 frontmatter 反而会把「name == 文件夹名」也一起弄坏
+/// (判定顺序由 `fixtures/share-validation-samples.json` 钉住)。
+///
+/// ⚠️ fixture 刻意用**大写**目录名:全小写时"磁盘上的字面目录名"与"清洗后的
+/// 记账键"恰好同值,这条路上的两把尺子就分不出来了(`record_key` 会小写化,
+/// 校验必须拿**字面**叶子名判——拿清洗名判的话这一档永远判不出来)。
 #[tokio::test]
-async fn a_chinese_share_name_is_rejected_up_front() {
+async fn an_uppercase_folder_name_is_rejected_up_front() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("Weekly-Report");
+    write_skill(&dir, "Weekly-Report", "d");
+    let server = MockServer::start().await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    let err = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "Weekly-Report"), NOW)
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code, "FS_SKILL_INVALID");
+    assert_eq!(err.detail.as_deref(), Some("dirFormat"));
+    // 一个网络请求都不该发
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+/// 纯中文文件夹名连**记账键**都当不了(`sanitize_name` 把它整个折成
+/// `unnamed-skill`),所以它在更早的一层——本体定位——就被拦下,报的是
+/// `FS_UNUSABLE_NAME` 而不是 `FS_SKILL_INVALID`。
+///
+/// 这不是不一致:两句话给的是**同一条**建议(改用英文字母/数字/短横线),
+/// 而界面上这一行本来就摆着 `shareBlocked = dirFormat`、分享按钮是不可点的
+/// ——core 这一层只是backstop。**要紧的是它同样不发任何网络请求**,
+/// 这条测试盯的就是这个量。
+#[tokio::test]
+async fn a_folder_name_that_collapses_entirely_is_rejected_before_any_request() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("周报");
     write_skill(&dir, "周报", "d");
@@ -1299,12 +1486,11 @@ async fn a_chinese_share_name_is_rejected_up_front() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let err = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, share_req(&repo, &dir, "周报"), NOW)
+    let err = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "周报"), NOW)
         .await
         .unwrap_err();
 
     assert_eq!(err.code, "FS_UNUSABLE_NAME");
-    // 一个网络请求都不该发
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
@@ -1325,8 +1511,8 @@ fn zip_of_weekly(md: &str) -> Vec<u8> {
     buf
 }
 
-/// `write_skill(dir, "周报", "原版")` 落盘的同一份字节——远端与账上一致的场景用它。
-const WEEKLY_PRISTINE: &str = "---\nname: 周报\ndescription: 原版\n---\n正文\n";
+/// `write_skill(dir, "weekly-report", "原版")` 落盘的同一份字节——远端与账上一致的场景用它。
+const WEEKLY_PRISTINE: &str = "---\nname: weekly-report\ndescription: 原版\n---\n正文\n";
 
 async fn mount_archive(server: &MockServer, zip: Vec<u8>) {
     Mock::given(method("GET"))
@@ -1361,12 +1547,12 @@ fn install_record(c: &Ctx, dir: &Path) -> InstalledSkill {
 async fn pushing_local_changes_back_updates_the_books() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("weekly-report");
-    write_skill(&dir, "周报", "原版");
+    write_skill(&dir, "weekly-report", "原版");
     let mut state = state_of(&c);
     state.installed.push(install_record(&c, &dir));
     c.store.save_state(&state).unwrap();
     // 用户改本体 → contentHash 不符
-    std::fs::write(dir.join("SKILL.md"), "---\nname: 周报\ndescription: 我改过\n---\n").unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: weekly-report\ndescription: 我改过\n---\n").unwrap();
 
     let server = MockServer::start().await;
     mount_repo_info(&server, true).await;
@@ -1415,12 +1601,12 @@ async fn review_requested_changes_do_not_touch_the_install_books() {
     // 评审被拒后用户的改动就在界面上彻底隐形了。
     let (c, env) = ctx();
     let dir = canonical(&c).join("weekly-report");
-    write_skill(&dir, "周报", "原版");
+    write_skill(&dir, "weekly-report", "原版");
     let mut state = state_of(&c);
     state.installed.push(install_record(&c, &dir));
     c.store.save_state(&state).unwrap();
     let before = state_of(&c).installed[0].clone();
-    std::fs::write(dir.join("SKILL.md"), "---\nname: 周报\ndescription: 我改过\n---\n").unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: weekly-report\ndescription: 我改过\n---\n").unwrap();
 
     let server = MockServer::start().await;
     mount_repo_info(&server, true).await;
@@ -1472,6 +1658,118 @@ async fn review_requested_changes_do_not_touch_the_install_books() {
     assert_eq!(after.content_hash, before.content_hash, "评审未合入就清了「已改动」标记");
 }
 
+/// 🔴 **回推读的是本体,不是 canonical**(v6 二期任务 6)。
+///
+/// 用户在 `~/.claude/skills/` 下开发这个技能,canonical 上只有一条指向它的链接。
+/// 旧实现拿 `canonical.join(dir_slug)` 拼路径,那条路径在本体不住 canonical 时
+/// 要么根本不存在(于是对用户说「本地技能内容已不存在」——假话),要么是一条链接。
+///
+/// ⚠️ fixture 刻意**不建** canonical 那条链接:建了的话两条路读出来的内容一样,
+/// 这条测试就分不出实现走的是哪一条(本项目记着的"fixture 让两个概念取同值")。
+#[tokio::test]
+async fn pushing_changes_back_reads_the_body_not_canonical() {
+    let (c, env) = ctx();
+    let body = c.home.join(".claude").join("skills").join("weekly-report");
+    write_skill(&body, "weekly-report", "原版");
+    let mut state = state_of(&c);
+    let mut record = install_record(&c, &body);
+    record.body = Some(body.to_string_lossy().into_owned());
+    state.installed.push(record);
+    c.store.save_state(&state).unwrap();
+    assert!(
+        !canonical(&c).join("weekly-report").exists(),
+        "前提:canonical 上什么都没有,拿它拼出来的路径必然读不到内容",
+    );
+    std::fs::write(body.join("SKILL.md"), "---\nname: weekly-report\ndescription: 我改过\n---\n").unwrap();
+
+    let server = MockServer::start().await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/repos/skills/skills/branches/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "commit": { "id": "head1", "timestamp": "2026-07-31T08:00:00Z" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/api/v1/repos/skills/skills/git/trees/.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "tree": [ { "path": "skills/weekly-report/SKILL.md", "sha": "oldsha", "type": "blob" } ],
+            "truncated": false
+        })))
+        .mount(&server)
+        .await;
+    mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+        .await
+        .expect("本体就在 .claude/skills 里,不该报「内容已不存在」");
+
+    let share::ShareInstalledOutcome::Submitted(_) = outcome else {
+        panic!("远端与账上一致,应当直接提交");
+    };
+    // 推上去的是**本体**里那份改过的内容
+    let reqs = server.received_requests().await.unwrap();
+    let posted: Vec<_> = reqs.iter().filter(|r| r.method.as_str() == "POST").collect();
+    let json: serde_json::Value = serde_json::from_slice(&posted[0].body).unwrap();
+    let content = json["files"][0]["content"].as_str().unwrap();
+    let decoded = String::from_utf8(
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content).unwrap(),
+    )
+    .unwrap();
+    assert!(decoded.contains("我改过"), "推的不是本体里的内容:{decoded}");
+    // 记账基线跟着本体走
+    assert_eq!(
+        state_of(&c).installed[0].content_hash,
+        fsops::dir_content_hash(&body).unwrap()
+    );
+}
+
+/// 🔴 **查账用清洗后的记账键,不是技能库里的原始目录名**(欠账:`share.rs` 与
+/// `commands::installed_repo_key` 同一根轴)。
+///
+/// `Weekly-Report` 这样的库目录名装到本地会落成 `weekly-report`(记账键小写化),
+/// 而前端手上的 `dirSlug` 是库里的原始写法。按 `dir_slug` 查账必然落空,
+/// 用户点「分享更新」只会得到「这个技能不在已获取列表中」。
+#[tokio::test]
+async fn pushing_changes_back_looks_the_record_up_by_the_sanitized_key() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("weekly-report");
+    write_skill(&dir, "weekly-report", "原版");
+    let mut state = state_of(&c);
+    state.installed.push(install_record(&c, &dir));
+    c.store.save_state(&state).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: weekly-report\ndescription: 我改过\n---\n").unwrap();
+
+    let server = MockServer::start().await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/repos/skills/skills/branches/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "commit": { "id": "head1", "timestamp": "2026-07-31T08:00:00Z" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/api/v1/repos/skills/skills/git/trees/.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "tree": [], "truncated": false
+        })))
+        .mount(&server)
+        .await;
+    mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+
+    // 传的是**库里的原始目录名**(带大写),账上记的是清洗后的 `weekly-report`
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "Weekly-Report", "main", false, NOW)
+        .await
+        .expect("按记账键查账应当找得到这条记账");
+    assert!(matches!(outcome, share::ShareInstalledOutcome::Submitted(_)));
+}
+
 // ============================================================ 回推前的远端变更检测(M5 任务 1)
 //
 // 乐观锁(CONFLICT_STALE)只拦"拉 sha 与提交之间"的瞬间竞态;提交用的是**当前**
@@ -1482,16 +1780,16 @@ async fn review_requested_changes_do_not_touch_the_install_books() {
 async fn remote_changed_since_install_needs_decision_and_sends_nothing() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("weekly-report");
-    write_skill(&dir, "周报", "原版");
+    write_skill(&dir, "weekly-report", "原版");
     let mut state = state_of(&c);
     state.installed.push(install_record(&c, &dir));
     c.store.save_state(&state).unwrap();
     // 我本地改过
-    std::fs::write(dir.join("SKILL.md"), "---\nname: 周报\ndescription: 我改过\n---\n").unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: weekly-report\ndescription: 我改过\n---\n").unwrap();
 
     let server = MockServer::start().await;
     // 远端也被别人改过:内容既不是账上那版,也不是我本地这版
-    mount_archive(&server, zip_of_weekly("---\nname: 周报\ndescription: 别人的新版\n---\n正文\n")).await;
+    mount_archive(&server, zip_of_weekly("---\nname: weekly-report\ndescription: 别人的新版\n---\n正文\n")).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
     let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
@@ -1525,13 +1823,13 @@ async fn remote_changed_blocks_even_when_local_is_pristine() {
     // UI 上这个状态本就不显示「分享改动」按钮,core 侧保守方向仍是拦(假设:见分解文档)。
     let (c, env) = ctx();
     let dir = canonical(&c).join("weekly-report");
-    write_skill(&dir, "周报", "原版");
+    write_skill(&dir, "weekly-report", "原版");
     let mut state = state_of(&c);
     state.installed.push(install_record(&c, &dir));
     c.store.save_state(&state).unwrap();
 
     let server = MockServer::start().await;
-    mount_archive(&server, zip_of_weekly("---\nname: 周报\ndescription: 别人的新版\n---\n正文\n")).await;
+    mount_archive(&server, zip_of_weekly("---\nname: weekly-report\ndescription: 别人的新版\n---\n正文\n")).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
     let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
@@ -1550,7 +1848,7 @@ async fn empty_baseline_skips_detection_and_submits() {
     // 都不等,不跳过就会恒判冲突、回推永远走不通。宁可信提交时刻的乐观锁兜底。
     let (c, env) = ctx();
     let dir = canonical(&c).join("weekly-report");
-    write_skill(&dir, "周报", "原版");
+    write_skill(&dir, "weekly-report", "原版");
     let mut state = state_of(&c);
     let mut record = install_record(&c, &dir);
     record.content_hash = String::new();
@@ -1593,11 +1891,11 @@ async fn force_review_never_pushes_directly_even_with_permission() {
     // 用户拍板的是「走评审」,直推等于把别人的改动顶掉,恰恰是冲突档要防的事。
     let (c, env) = ctx();
     let dir = canonical(&c).join("weekly-report");
-    write_skill(&dir, "周报", "原版");
+    write_skill(&dir, "weekly-report", "原版");
     let mut state = state_of(&c);
     state.installed.push(install_record(&c, &dir));
     c.store.save_state(&state).unwrap();
-    std::fs::write(dir.join("SKILL.md"), "---\nname: 周报\ndescription: 我改过\n---\n").unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: weekly-report\ndescription: 我改过\n---\n").unwrap();
     let before = state_of(&c).installed[0].clone();
 
     let server = MockServer::start().await;

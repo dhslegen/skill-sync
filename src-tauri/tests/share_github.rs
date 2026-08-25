@@ -45,6 +45,9 @@ struct Ctx {
     home: PathBuf,
     registry: AgentRegistry,
     store: Store,
+    /// 显式注入沙盒废纸篓:`share()` 内部的 `ensure_canonical_link` 有删除路径,
+    /// 而 `Installer` 的默认实现是这台机器真实的系统废纸篓。
+    trash: skillsync_lib::core::fsops::SandboxTrash,
 }
 
 fn ctx() -> (Ctx, TmpEnv) {
@@ -55,12 +58,16 @@ fn ctx() -> (Ctx, TmpEnv) {
         vars: HashMap::new(),
     };
     let store = Store::new(home.join(".skillsync"));
+    let trash = skillsync_lib::core::fsops::SandboxTrash::new(
+        home.join("..").join("share-github-trash"),
+    );
     (
         Ctx {
             _tmp: tmp,
             home,
             registry: AgentRegistry::builtin(),
             store,
+            trash,
         },
         env,
     )
@@ -87,16 +94,11 @@ fn client(server: &MockServer) -> GithubClient {
     GithubClient::new(&server.uri(), Some("t0ken".into()), reqwest::Client::new())
 }
 
-fn share_req<'a>(repo: &'a RepoRef, dir: &'a Path, name: &'a str) -> share::ShareRequest<'a> {
+fn share_req<'a>(repo: &'a RepoRef, dir_slug: &'a str) -> share::ShareRequest<'a> {
     share::ShareRequest {
         registry_id: "gh-src",
         repo,
-        source_path: dir,
-        share_name: name,
-        display_name: None,
-        description: None,
-        origin: "local",
-        overwrite: false,
+        dir_slug,
     }
 }
 
@@ -151,7 +153,7 @@ fn gql_error(kind: &str, message: &str) -> ResponseTemplate {
 async fn push_and_unprotected_saves_directly() {
     let (c, env) = ctx();
     let dir = c.home.join(".agents/skills/my-notes");
-    write_skill(&dir, "我的笔记");
+    write_skill(&dir, "my-notes");
 
     let server = MockServer::start().await;
     mount_basics(&server, true, false).await;
@@ -173,20 +175,17 @@ async fn push_and_unprotected_saves_directly() {
         &c.registry,
         &env,
         &c.store,
-        share_req(&repo, &dir, "my-notes"),
+        &c.trash,
+        share_req(&repo, "my-notes"),
         NOW,
     )
     .await
     .unwrap();
 
-    match outcome {
-        ShareOutcome::Shared { mode, commit_sha, review_url, .. } => {
-            assert_eq!(mode, ShareMode::Pushed);
-            assert_eq!(commit_sha, "e0ecf23eea0efcc72f5cbb54a96150dfbe3efd36");
-            assert!(review_url.is_none());
-        }
-        other => panic!("expected Shared, got {other:?}"),
-    }
+    let ShareOutcome::Shared { mode, commit_sha, review_url, .. } = outcome;
+        assert_eq!(mode, ShareMode::Pushed);
+        assert_eq!(commit_sha, "e0ecf23eea0efcc72f5cbb54a96150dfbe3efd36");
+        assert!(review_url.is_none());
     // 记账落了 shared
     let state = c.store.load_state().unwrap().value;
     assert_eq!(state.shared.len(), 1);
@@ -197,7 +196,7 @@ async fn push_and_unprotected_saves_directly() {
 async fn push_but_protected_goes_review() {
     let (c, env) = ctx();
     let dir = c.home.join(".agents/skills/my-notes");
-    write_skill(&dir, "我的笔记");
+    write_skill(&dir, "my-notes");
 
     let server = MockServer::start().await;
     mount_basics(&server, true, true).await;
@@ -236,19 +235,16 @@ async fn push_but_protected_goes_review() {
         &c.registry,
         &env,
         &c.store,
-        share_req(&repo, &dir, "my-notes"),
+        &c.trash,
+        share_req(&repo, "my-notes"),
         NOW,
     )
     .await
     .unwrap();
 
-    match outcome {
-        ShareOutcome::Shared { mode, review_url, .. } => {
-            assert_eq!(mode, ShareMode::ReviewRequested);
-            assert_eq!(review_url.as_deref(), Some("https://github.example/team/skills/pull/1"));
-        }
-        other => panic!("expected Shared, got {other:?}"),
-    }
+    let ShareOutcome::Shared { mode, review_url, .. } = outcome;
+        assert_eq!(mode, ShareMode::ReviewRequested);
+        assert_eq!(review_url.as_deref(), Some("https://github.example/team/skills/pull/1"));
 }
 
 #[tokio::test]
@@ -257,7 +253,7 @@ async fn protection_violation_on_submit_degrades_to_review() {
     // 保护规则可能只拦部分人,错误类型才是最终真相
     let (c, env) = ctx();
     let dir = c.home.join(".agents/skills/my-notes");
-    write_skill(&dir, "我的笔记");
+    write_skill(&dir, "my-notes");
 
     let server = MockServer::start().await;
     mount_basics(&server, true, false).await;
@@ -299,23 +295,22 @@ async fn protection_violation_on_submit_degrades_to_review() {
         &c.registry,
         &env,
         &c.store,
-        share_req(&repo, &dir, "my-notes"),
+        &c.trash,
+        share_req(&repo, "my-notes"),
         NOW,
     )
     .await
     .unwrap();
 
-    match outcome {
-        ShareOutcome::Shared { mode, .. } => assert_eq!(mode, ShareMode::ReviewRequested),
-        other => panic!("expected Shared, got {other:?}"),
-    }
+    let ShareOutcome::Shared { mode, .. } = outcome;
+    assert_eq!(mode, ShareMode::ReviewRequested);
 }
 
 #[tokio::test]
 async fn no_push_forks_then_cross_repo_review() {
     let (c, env) = ctx();
     let dir = c.home.join(".agents/skills/my-notes");
-    write_skill(&dir, "我的笔记");
+    write_skill(&dir, "my-notes");
 
     let server = MockServer::start().await;
     mount_basics(&server, false, false).await;
@@ -379,19 +374,16 @@ async fn no_push_forks_then_cross_repo_review() {
         &c.registry,
         &env,
         &c.store,
-        share_req(&repo, &dir, "my-notes"),
+        &c.trash,
+        share_req(&repo, "my-notes"),
         NOW,
     )
     .await
     .unwrap();
 
-    match outcome {
-        ShareOutcome::Shared { mode, review_url, .. } => {
-            assert_eq!(mode, ShareMode::ReviewRequested);
-            assert_eq!(review_url.as_deref(), Some("https://github.example/team/skills/pull/7"));
-        }
-        other => panic!("expected Shared, got {other:?}"),
-    }
+    let ShareOutcome::Shared { mode, review_url, .. } = outcome;
+        assert_eq!(mode, ShareMode::ReviewRequested);
+        assert_eq!(review_url.as_deref(), Some("https://github.example/team/skills/pull/7"));
 }
 
 // ============================================================ 错误与预检
@@ -400,7 +392,7 @@ async fn no_push_forks_then_cross_repo_review() {
 async fn stale_head_becomes_human_readable_error() {
     let (c, env) = ctx();
     let dir = c.home.join(".agents/skills/my-notes");
-    write_skill(&dir, "我的笔记");
+    write_skill(&dir, "my-notes");
 
     let server = MockServer::start().await;
     mount_basics(&server, true, false).await;
@@ -420,7 +412,8 @@ async fn stale_head_becomes_human_readable_error() {
         &c.registry,
         &env,
         &c.store,
-        share_req(&repo, &dir, "my-notes"),
+        &c.trash,
+        share_req(&repo, "my-notes"),
         NOW,
     )
     .await

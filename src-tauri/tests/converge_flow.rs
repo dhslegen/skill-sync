@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use skillsync_lib::core::agents::{AgentEnv, AgentRegistry};
 use skillsync_lib::core::converge::{self, Converged, KeepReport, Located, SetAgentsOutcome};
-use skillsync_lib::core::fsops::{self, LinkKind, OnOccupied};
+use skillsync_lib::core::fsops::{self, LinkKind};
 use skillsync_lib::core::installer::Installer;
 use skillsync_lib::core::state::{self, State};
 
@@ -89,7 +89,7 @@ fn skill_md(v: &str) -> String {
 /// windows 走 junction),不直接调 `std::os::unix::fs::symlink`——这样测试不必
 /// `#[cfg(unix)]` 就能在 CI 的 Windows job 上跑。
 fn link(target: &Path, at: &Path) {
-    fsops::link_dir(target, at, fsops::default_link_chain(), OnOccupied::Fail).unwrap();
+    fsops::link_dir(target, at, fsops::default_link_chain()).unwrap();
 }
 
 fn state_with_body(name: &str, body: &Path) -> State {

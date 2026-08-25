@@ -17,7 +17,6 @@ import { useLocalRefresh } from "@/hooks/useLocalRefresh";
 import { call } from "@/lib/ipc";
 import { MySkillsPage } from "@/pages/MySkillsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
-import { SharePage } from "@/pages/SharePage";
 import { StorePage } from "@/pages/StorePage";
 import { useInstall } from "@/store/install";
 import { useMySkills } from "@/store/my-skills";
@@ -83,14 +82,17 @@ export default function App() {
         <Toolbar />
         <div className="flex-1 overflow-y-auto px-5 pb-8 pt-1">
           <div className="max-w-[980px]">
-            {page === "store" ? (
-              <StorePage />
-            ) : page === "mine" ? (
+            {/* v6 二期任务 6:分享页整页已撤掉(首次分享的入口收进「我的技能」
+                那一行)。`PageId` 里的 `"share"` 暂时留着——`store/install.ts` 与
+                `MySkillsPage` 还有几处跳转指着它,那几处的去处由做界面的那一轮
+                重新安排。**这里刻意不写成"其余都渲染设置页"**:那样点到一个已撤掉
+                的页会不声不响地显示设置页,比落回商店页更让人摸不着头脑。 */}
+            {page === "mine" ? (
               <MySkillsPage />
-            ) : page === "share" ? (
-              <SharePage />
-            ) : (
+            ) : page === "settings" ? (
               <SettingsPage />
+            ) : (
+              <StorePage />
             )}
           </div>
         </div>

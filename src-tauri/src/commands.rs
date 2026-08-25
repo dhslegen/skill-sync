@@ -1626,7 +1626,7 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
     tauri::async_runtime::spawn_blocking(|| {
         let store = app_store()?;
         let registry = AgentRegistry::builtin();
-        let installer = Installer::new(&registry, &SystemEnv);
+        let installer = app_installer(&registry);
         let state = store.load_state()?.value;
         let config = store.load_config()?.value;
         let builtin_src = registry::BuiltinSource::from_build();
@@ -1661,7 +1661,7 @@ pub struct LocalSkillArgs {
 fn resolve_local_skill_dir(args: &LocalSkillArgs) -> Result<std::path::PathBuf, AppError> {
     if let Some(slug) = args.dir_slug.as_deref() {
         let registry = AgentRegistry::builtin();
-        let installer = Installer::new(&registry, &SystemEnv);
+        let installer = app_installer(&registry);
         let state = app_store()?.load_state()?.value;
         return crate::core::converge::home_of(&installer, &state, slug).map(|h| h.body);
     }
@@ -1756,7 +1756,7 @@ pub async fn skill_create(args: SkillCreateArgs) -> Result<create::CreateReport,
     tauri::async_runtime::spawn_blocking(move || {
         let store = app_store()?;
         let registry = AgentRegistry::builtin();
-        let installer = Installer::new(&registry, &SystemEnv);
+        let installer = app_installer(&registry);
         create::create_skill(
             &installer,
             &store,
@@ -1773,45 +1773,28 @@ pub async fn skill_create(args: SkillCreateArgs) -> Result<create::CreateReport,
 
 // ============================================================ 分享
 
-#[tauri::command]
-pub async fn share_candidates() -> Result<Vec<share::ShareCandidate>, AppError> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let store = app_store()?;
-        let registry = AgentRegistry::builtin();
-        let state = store.load_state()?.value;
-        let config = store.load_config()?.value;
-        let builtin_src = registry::BuiltinSource::from_build();
-        let library = my_skills::library_attribution(&store, &builtin_src, &config);
-        share::scan_candidates(&registry, &SystemEnv, &state, &config.identities, &library)
-    })
-    .await
-    .map_err(|e| AppError::new("FS_TASK", "扫描本地技能失败,请重试").with_detail(e.to_string()))?
-}
+// v6 二期任务 6:`share_candidates` 这条 IPC 已删除,分享页整页一并撤掉。
+//
+// 首次分享的入口收进「我的技能」那一行(那一页本来就已经把四个来源汇成一张表,
+// 每个技能只占一行);再单摆一个"待分享候选"列表,等于让同一个技能在两页上
+// 各有一份身份。`share::scan_candidates` 眼下已经没有 src 侧调用方,是否连它一起
+// 删掉留给做界面的那一轮判断(它还带着 `dirNameUsable`/`problem` 这些旧表单字段)。
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillShareArgs {
     #[serde(default)]
     pub registry_id: Option<String>,
-    /// 分享目标仓的寻址键 `owner/repo`,缺省 = 该源主仓。
-    /// 目标仓选择器进分享表单归 M4 任务 2,通道先打通。
+    /// 分享目标技能库的寻址键 `owner/repo`,缺省 = 该源主库。
     #[serde(default)]
     pub repo: Option<String>,
-    /// 候选的本地绝对路径(share_candidates 返回的 `path`,原样带回)。
-    pub source_path: String,
-    /// 远端目录名(ASCII kebab,表单定)。
-    pub share_name: String,
-    #[serde(default)]
-    pub display_name: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
-    /// `local` | `npx-skills`。
-    pub origin: String,
-    /// 同名冲突时用户确认覆盖。
-    #[serde(default)]
-    pub overwrite: bool,
+    /// 技能标识。**没有 `sourcePath`**:本体在哪由 core 自己解析
+    /// (`converge::locate`),前端不替它回答这个问题。
+    pub dir_slug: String,
 }
 
+/// 分享一个本机技能。**零编辑**:名称、描述、文件夹名一律照原样推,
+/// 不合格的技能在 core 侧被 `FS_SKILL_INVALID` 拦在任何网络请求之前。
 #[tauri::command]
 pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
@@ -1824,15 +1807,11 @@ pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, Ap
         &registry,
         &SystemEnv,
         &store,
+        &crate::core::fsops::SYSTEM_TRASH,
         share::ShareRequest {
             registry_id,
             repo: &repo,
-            source_path: std::path::Path::new(&args.source_path),
-            share_name: &args.share_name,
-            display_name: args.display_name.as_deref(),
-            description: args.description.as_deref(),
-            origin: &args.origin,
-            overwrite: args.overwrite,
+            dir_slug: &args.dir_slug,
         },
         &now_iso8601(),
     )
@@ -1924,17 +1903,27 @@ pub struct ShareChangesArgs {
     pub force_review: bool,
 }
 
-/// 回推目标仓的寻址键,取**账上**的来源坐标(M4 任务 1)。
+/// 回推目标技能库的寻址键,取**账上**的来源坐标(M4 任务 1)。
 ///
-/// `share_installed` 的仓库 owner/repo 本来就取账上,但 **branch 由调用方给**
-/// ——按主仓给会把追加仓技能的改动推到主仓的默认分支上去。
-/// 账上找不到时返回 `None`(缺省落主仓),让 `share_installed` 给出既有的
+/// `share_installed` 的 owner/repo 本来就取账上,但 **branch 由调用方给**
+/// ——按主库给会把追加库技能的改动推到主库的默认分支上去。
+/// 账上找不到时返回 `None`(缺省落主库),让 `share_installed` 给出既有的
 /// `FS_NOT_INSTALLED`,而不是在这层多造一条错误码。
+///
+/// 🔴 **查账用 [`converge::record_key`],不是调用方手上的 `dir_slug`**
+/// (v6 二期任务 6):记账键是清洗后的目录名(会小写化),而前端手上的
+/// `dir_slug` 是**技能库里的原始目录名**——`Weekly-Report` 这样的技能按
+/// `dir_slug` 查必然落空,于是这里静默返回 `None`、寻址退回主库,而
+/// `share_installed` 里那一处(同一根轴)又会报「不在已获取列表中」。
+/// 两处必须用同一把钥匙,少一处就是"卡片说能分享、点了说没装过"。
 fn installed_repo_key(state: &state::State, dir_slug: &str) -> Option<String> {
+    let registry = AgentRegistry::builtin();
+    let installer = app_installer(&registry);
+    let key = converge::record_key(&installer, dir_slug).ok()?;
     state
         .installed
         .iter()
-        .find(|s| s.name == dir_slug)
+        .find(|s| s.name == key)
         .map(|s| registry::repo_key(&s.source.owner, &s.source.repo))
 }
 
@@ -1977,6 +1966,75 @@ pub async fn skill_share_changes(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkillSetAgentsArgs {
+    pub dir_slug: String,
+    /// 本次**目标集合**(不是增量):账上有而这里没有的会被摘掉关联。
+    /// 本体所在的那个工具永远保留,core 侧兜住(摘掉它等于删本体)。
+    pub agents: Vec<String>,
+}
+
+/// 「这个技能让哪些工具能用」——一组 checkbox 的落地。
+///
+/// 取代了旧的「修复关联」按钮:对**全体** `agents` 跑一次幂等的 `converge`,
+/// 已经正确的直接早退,断链/被改指/被实体顶掉的在这里自愈。所以用户看到某个勾
+/// 不对劲时,能做的动作就是再点一次同一个勾,不需要第二个按钮。
+#[tauri::command]
+pub async fn skill_set_agents(
+    args: SkillSetAgentsArgs,
+) -> Result<converge::SetAgentsOutcome, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app_store()?;
+        let registry = AgentRegistry::builtin();
+        let installer = app_installer(&registry);
+        converge::set_agents(
+            &installer,
+            &registry,
+            &SystemEnv,
+            &store,
+            &args.dir_slug,
+            &args.agents,
+            &now_iso8601(),
+        )
+    })
+    .await
+    .map_err(|e| AppError::new("FS_TASK", "设置可用工具失败,请重试").with_detail(e.to_string()))?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillKeepVersionArgs {
+    pub dir_slug: String,
+    /// 用户选定保留的那一份的绝对路径。**不可信输入**:core 侧校验它必须是
+    /// 本次候选之一,否则在动任何磁盘之前拒绝(`FS_BAD_VERSION_CHOICE`)。
+    pub keep_path: String,
+}
+
+/// 「有几个不一样的版本,留哪一个」拍板落地:选中的那份原地留下当本体,
+/// 其余进废纸篓(可逆)、原位换成指向它的链接。
+#[tauri::command]
+pub async fn skill_keep_version(
+    args: SkillKeepVersionArgs,
+) -> Result<converge::KeepReport, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app_store()?;
+        let registry = AgentRegistry::builtin();
+        let installer = app_installer(&registry);
+        converge::keep_version(
+            &installer,
+            &registry,
+            &SystemEnv,
+            &store,
+            &args.dir_slug,
+            std::path::Path::new(&args.keep_path),
+            &now_iso8601(),
+        )
+    })
+    .await
+    .map_err(|e| AppError::new("FS_TASK", "保留所选版本失败,请重试").with_detail(e.to_string()))?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillRemoveArgs {
     pub dir_slug: String,
 }
@@ -1986,7 +2044,7 @@ pub async fn skill_remove(args: SkillRemoveArgs) -> Result<remove::RemoveOutcome
     tauri::async_runtime::spawn_blocking(move || {
         let store = app_store()?;
         let registry = AgentRegistry::builtin();
-        let installer = Installer::new(&registry, &SystemEnv);
+        let installer = app_installer(&registry);
         remove::remove(&installer, &SystemEnv, &store, &args.dir_slug)
     })
     .await
@@ -2356,6 +2414,16 @@ pub async fn plaza_detail(args: PlazaDetailArgs) -> Result<Vec<SkillDetail>, App
 fn app_store() -> Result<state::Store, AppError> {
     state::Store::for_env(&SystemEnv)
         .ok_or_else(|| AppError::new("FS_NO_HOME", "找不到用户主目录,无法保存本地数据"))
+}
+
+/// 生产环境的 [`Installer`] —— **commands 里所有 `Installer::new` 都走这一个入口**。
+///
+/// [`Installer::new`] 的默认废纸篓已经是真实系统废纸篓([`fsops::SYSTEM_TRASH`]),
+/// 所以这个 helper 修的不是缺陷,是**统一**:把"生产用哪个废纸篓"收成一处,
+/// 将来换实现(比如加一层"删之前先记一笔")时不必逐个 command 找过去,
+/// 也不会漏掉一处退回默认行为。
+fn app_installer<'a>(registry: &'a AgentRegistry) -> Installer<'a> {
+    Installer::new(registry, &SystemEnv).with_trasher(&crate::core::fsops::SYSTEM_TRASH)
 }
 
 /// ISO-8601(UTC,毫秒),与 `.skill-lock.json` 里上游写的格式一致。
@@ -3045,6 +3113,8 @@ mod tests {
             installed: vec![
                 installed("weekly-report", "skills", "skills"),
                 installed("design-tokens", "design", "design-skills"),
+                // 记账键是**清洗后**的目录名(小写),库里的原始目录名带大写
+                installed("mixed-case", "team", "team-skills"),
             ],
             ..Default::default()
         };
@@ -3056,6 +3126,14 @@ mod tests {
         assert_eq!(
             installed_repo_key(&st, "weekly-report").as_deref(),
             Some("skills/skills")
+        );
+        // 🔴 前端手上的 `dirSlug` 是**技能库里的原始目录名**(可能带大写),
+        // 账上记的是清洗后的键。按 `dir_slug` 直接查会落空 → 静默退回主库,
+        // 而 `share_installed` 那一处(同一根轴)又会报「不在已获取列表中」。
+        assert_eq!(
+            installed_repo_key(&st, "Mixed-Case").as_deref(),
+            Some("team/team-skills"),
+            "查账必须走 converge::record_key,不是调用方手上的 dir_slug",
         );
         // 账上没有:留给 share_installed 报 FS_NOT_INSTALLED,不在这层另造错误
         assert_eq!(installed_repo_key(&st, "never-installed"), None);

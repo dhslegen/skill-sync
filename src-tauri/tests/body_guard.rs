@@ -64,27 +64,59 @@ fn strip_comments(source: &str) -> String {
     out
 }
 
+/// 受守卫的文件清单。两条规则(见下面两个测试)都对它们生效。
+const GUARDED: [&str; 8] = [
+    "core/acquire.rs",
+    "core/remove.rs",
+    "core/share.rs",
+    "core/scheduler.rs",
+    "core/my_skills.rs",
+    "core/create.rs",
+    "core/local_detail.rs",
+    "commands.rs",
+];
+
+fn guarded_code(f: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(f);
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("读不到 {}: {e}", path.display()));
+    strip_comments(&src)
+}
+
 #[test]
 fn body_path_is_resolved_in_exactly_one_layer() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let forbidden = [
-        "core/acquire.rs",
-        "core/remove.rs",
-        "core/share.rs",
-        "core/scheduler.rs",
-        "core/my_skills.rs",
-        "core/create.rs",
-        "core/local_detail.rs",
-        "commands.rs",
-    ];
-    for f in forbidden {
-        let path = root.join(f);
-        let src = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("读不到 {}: {e}", path.display()));
-        let code = strip_comments(&src);
+    for f in GUARDED {
         assert!(
-            !code.contains("canonical_dir("),
+            !guarded_code(f).contains("canonical_dir("),
             "{f} 不得自行解析本体路径,走 converge::home_of / installer.home"
         );
+    }
+}
+
+/// 第二种绕法:不叫 `canonical_dir`,而是先取 canonical **根目录**
+/// (`AgentRegistry::canonical_global_dir`)再 `.join(技能名)` 拼出本体路径。
+///
+/// v6 二期任务 6 之前 `core/share.rs` 里就有两处这种写法(收编那一段与
+/// `share_installed`),上一条守卫**一个字都看不见**——它只挡直呼
+/// `canonical_dir(` 那一种。新模型下本体完全可能住在 `~/.claude/skills/`,
+/// 拿 canonical 拼出来的路径要么根本不存在(于是对用户说"内容已不存在",假话)、
+/// 要么是一条链接(读出来仍是本体,只是绕一圈还多一处没人守的解析点)。
+///
+/// ⚠️ **刻意只禁 `.join(`,不禁 `canonical_global_dir(` 本身**:取 canonical
+/// **根目录**是合法且必要的——`share::scan_candidates` 要枚举它下面的实体目录、
+/// `commands::spawn_watcher` 要监听它、`project_pick` 的守卫要拿它做比对。
+/// 一刀切禁掉那个函数会把这些正当用法一起打红,守卫就只能被放宽或删掉。
+/// 残余豁免因此是:**这些文件仍可以取 canonical 根,但不许从它拼出某个技能的路径。**
+#[test]
+fn nobody_rebuilds_a_body_path_from_the_canonical_root() {
+    for f in GUARDED {
+        let code = guarded_code(f);
+        for line in code.lines() {
+            assert!(
+                !line.contains("canonical.join("),
+                "{f} 不得从 canonical 根拼出技能本体路径,走 converge::home_of:\n  {}",
+                line.trim()
+            );
+        }
     }
 }

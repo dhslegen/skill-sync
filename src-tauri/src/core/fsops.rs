@@ -63,22 +63,18 @@ pub enum LinkOutcome {
     SameLocation,
 }
 
-/// 链接位置已被**实体目录**占用时的处置方式。
-///
-/// 铁律 7:破坏性操作需前端确认结果作为参数传入,所以默认是 [`OnOccupied::Fail`],
-/// 由上层拿到用户确认后才传 [`OnOccupied::Replace`]。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OnOccupied {
-    Fail,
-    Replace,
-}
-
 /// 把 `target` 目录链接到 `link` 位置,按 `chain` 逐级降级。
+///
+/// 🔴 **链接位置被实体目录占着时一律失败,没有第二档**(v6 二期任务 6 删掉了
+/// `OnOccupied` 这个参数与它的 `Replace` 档):磁盘上分不清那个实体目录是我们
+/// 降级复制的副本还是用户自己放的东西,所以这一层不该有"直接删掉它"的能力。
+/// 该不该动它是 [`crate::core::converge::converge`] 的判断——它先比内容,
+/// 相同才把旧的送进**废纸篓**(可逆)再建链,不同就一个字节都不动、交给用户拍板。
+/// 留着 `Replace` 等于在铁律 7 的下面留一条能直接删用户文件的后门。
 pub fn link_dir(
     target: &Path,
     link: &Path,
     chain: &[LinkKind],
-    on_occupied: OnOccupied,
 ) -> Result<LinkOutcome, AppError> {
     let want = normalize(target);
 
@@ -100,15 +96,12 @@ pub fn link_dir(
         unlink(link)?;
     } else if std::fs::symlink_metadata(link).is_ok() {
         // 实体目录/文件占位:可能是用户自己写的技能,或上一次降级复制留下的副本。
-        // 两者在磁盘上无从区分,故是否清除必须由上层带着用户确认结果决定。
-        if on_occupied == OnOccupied::Fail {
-            return Err(AppError::new(
-                "FS_LINK_OCCUPIED",
-                "该工具的技能目录下已有同名技能,请先确认是否覆盖",
-            )
-            .with_detail(format!("occupied: {}", link.display())));
-        }
-        remove_occupant(link)?;
+        // 两者在磁盘上无从区分,所以这一层只负责如实报告"占着",不做任何清除。
+        return Err(AppError::new(
+            "FS_LINK_OCCUPIED",
+            "该工具的技能目录下已有同名技能,请先确认是否覆盖",
+        )
+        .with_detail(format!("occupied: {}", link.display())));
     }
 
     if let Some(parent) = link.parent() {
@@ -274,20 +267,6 @@ fn resolve_parent_symlinks(path: &Path) -> PathBuf {
         Ok(real) => real.join(base),
         Err(_) => normalized,
     }
-}
-
-/// 清除占位的实体目录/文件。仅在调用方明确确认后才会走到这里。
-fn remove_occupant(path: &Path) -> Result<(), AppError> {
-    let meta = std::fs::symlink_metadata(path).map_err(|e| link_failed(path, &e.to_string()))?;
-    let r = if meta.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
-    };
-    r.map_err(|e| {
-        AppError::new("FS_REPLACE_FAILED", "无法清理该工具目录下的同名技能,请重试")
-            .with_detail(format!("replace {}: {e}", path.display()))
-    })
 }
 
 fn create_link(kind: LinkKind, target: &Path, link: &Path) -> std::io::Result<()> {
@@ -748,7 +727,7 @@ mod tests {
         let target = skill_dir(tmp.path(), "canonical", "内容甲");
         let link = tmp.path().join("agent").join("周报");
 
-        let outcome = link_dir(&target, &link, default_link_chain(), OnOccupied::Fail).unwrap();
+        let outcome = link_dir(&target, &link, default_link_chain()).unwrap();
 
         // Windows 上必须落在 junction:C11 记录首台机器 symlink 成功疑为管理员提权造成的假阳性,
         // 而 CI runner 恰恰可能带着足以创建 symlink 的权限,从而复现同一个假阳性。
@@ -766,9 +745,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let target = skill_dir(tmp.path(), "canonical", "内容甲");
         let link = tmp.path().join("agent").join("周报");
-        link_dir(&target, &link, default_link_chain(), OnOccupied::Fail).unwrap();
+        link_dir(&target, &link, default_link_chain()).unwrap();
 
-        let again = link_dir(&target, &link, default_link_chain(), OnOccupied::Fail).unwrap();
+        let again = link_dir(&target, &link, default_link_chain()).unwrap();
 
         assert!(matches!(again, LinkOutcome::Unchanged(_)));
         assert_eq!(read_link_target(&link).unwrap(), target);
@@ -782,25 +761,13 @@ mod tests {
         let target = skill_dir(tmp.path(), "canonical", "团队版");
         let link = skill_dir(&tmp.path().join("agent"), "周报", "我自己写的");
 
-        let err = link_dir(&target, &link, default_link_chain(), OnOccupied::Fail).unwrap_err();
+        let err = link_dir(&target, &link, default_link_chain()).unwrap_err();
 
         assert_eq!(err.code, "FS_LINK_OCCUPIED");
         assert_eq!(
             fs::read_to_string(link.join("SKILL.md")).unwrap(),
             "我自己写的"
         );
-    }
-
-    #[test]
-    fn real_dir_at_link_path_is_replaced_only_when_caller_confirms() {
-        let tmp = tempfile::tempdir().unwrap();
-        let target = skill_dir(tmp.path(), "canonical", "团队版");
-        let link = skill_dir(&tmp.path().join("agent"), "周报", "我自己写的");
-
-        link_dir(&target, &link, default_link_chain(), OnOccupied::Replace).unwrap();
-
-        assert_eq!(read_link_target(&link).unwrap(), target);
-        assert_eq!(fs::read_to_string(link.join("SKILL.md")).unwrap(), "团队版");
     }
 
     #[test]
@@ -812,7 +779,7 @@ mod tests {
         // junction 在非 Windows 上必失败,是一条天然的"首选方式不可用"注入
         let chain = [LinkKind::Junction, LinkKind::Copy];
 
-        let outcome = link_dir(&target, &link, &chain, OnOccupied::Fail).unwrap();
+        let outcome = link_dir(&target, &link, &chain).unwrap();
 
         #[cfg(not(windows))]
         {
@@ -832,7 +799,7 @@ mod tests {
         let target = skill_dir(tmp.path(), "canonical", "内容甲");
         let link = tmp.path().join("agent").join("周报");
 
-        let err = link_dir(&target, &link, &[LinkKind::Junction], OnOccupied::Fail).unwrap_err();
+        let err = link_dir(&target, &link, &[LinkKind::Junction]).unwrap_err();
 
         assert_eq!(err.code, "FS_LINK_FAILED");
         assert!(!link.exists());
@@ -853,7 +820,7 @@ mod tests {
         let target = canonical_base.join("周报");
         let link = agent_base.join("周报");
 
-        let outcome = link_dir(&target, &link, default_link_chain(), OnOccupied::Fail).unwrap();
+        let outcome = link_dir(&target, &link, default_link_chain()).unwrap();
 
         assert_eq!(outcome, LinkOutcome::SameLocation);
         assert!(
@@ -876,7 +843,7 @@ mod tests {
         std::os::unix::fs::symlink(&canonical_base, &agent_base).unwrap();
         let link = agent_base.join("周报");
 
-        let outcome = link_dir(&target, &link, default_link_chain(), OnOccupied::Fail).unwrap();
+        let outcome = link_dir(&target, &link, default_link_chain()).unwrap();
 
         assert_eq!(outcome, LinkOutcome::SameLocation);
         assert_eq!(fs::read_to_string(target.join("SKILL.md")).unwrap(), "本体");
@@ -916,7 +883,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let body = skill_dir(tmp.path(), "real/s", "内容");
         let canonical = tmp.path().join("canonical").join("s");
-        link_dir(&body, &canonical, default_link_chain(), OnOccupied::Fail).unwrap();
+        link_dir(&body, &canonical, default_link_chain()).unwrap();
 
         assert!(
             same_physical_path(&body, &canonical),
@@ -935,7 +902,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let target = skill_dir(tmp.path(), "canonical", "本体");
         let link = tmp.path().join("agent").join("周报");
-        link_dir(&target, &link, default_link_chain(), OnOccupied::Fail).unwrap();
+        link_dir(&target, &link, default_link_chain()).unwrap();
 
         assert!(unlink_dir(&link).unwrap());
 
@@ -965,7 +932,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let target = skill_dir(tmp.path(), "canonical", "本体");
         let link = tmp.path().join("agent").join("周报");
-        link_dir(&target, &link, default_link_chain(), OnOccupied::Fail).unwrap();
+        link_dir(&target, &link, default_link_chain()).unwrap();
         fs::remove_dir_all(&target).unwrap();
 
         assert!(unlink_dir(&link).unwrap());
@@ -977,7 +944,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let target = skill_dir(tmp.path(), "canonical", "本体");
         let link = tmp.path().join("agent").join("周报");
-        link_dir(&target, &link, default_link_chain(), OnOccupied::Fail).unwrap();
+        link_dir(&target, &link, default_link_chain()).unwrap();
 
         reset_dir(&link).unwrap();
 
@@ -1001,7 +968,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let target = skill_dir(tmp.path(), "canonical", "本体");
         let link = tmp.path().join("agent").join("周报");
-        link_dir(&target, &link, default_link_chain(), OnOccupied::Fail).unwrap();
+        link_dir(&target, &link, default_link_chain()).unwrap();
 
         assert!(remove_tree(&link).unwrap());
 
@@ -1024,11 +991,11 @@ mod tests {
         );
 
         let ours = tmp.path().join("a").join("周报");
-        link_dir(&target, &ours, default_link_chain(), OnOccupied::Fail).unwrap();
+        link_dir(&target, &ours, default_link_chain()).unwrap();
         assert!(matches!(link_state(&ours, &target), LinkState::Linked(_)));
 
         let foreign = tmp.path().join("b").join("周报");
-        link_dir(&other, &foreign, default_link_chain(), OnOccupied::Fail).unwrap();
+        link_dir(&other, &foreign, default_link_chain()).unwrap();
         assert_eq!(
             link_state(&foreign, &target),
             LinkState::Foreign(normalize(&other))
@@ -1213,9 +1180,9 @@ mod tests {
         let old = skill_dir(tmp.path(), "旧", "旧内容");
         let new = skill_dir(tmp.path(), "新", "新内容");
         let link = tmp.path().join("agent").join("周报");
-        link_dir(&old, &link, default_link_chain(), OnOccupied::Fail).unwrap();
+        link_dir(&old, &link, default_link_chain()).unwrap();
 
-        link_dir(&new, &link, default_link_chain(), OnOccupied::Fail).unwrap();
+        link_dir(&new, &link, default_link_chain()).unwrap();
 
         assert_eq!(read_link_target(&link).unwrap(), new);
         assert_eq!(fs::read_to_string(link.join("SKILL.md")).unwrap(), "新内容");

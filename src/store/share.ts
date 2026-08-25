@@ -147,28 +147,21 @@ export const useShare = create<ShareState>((set, get) => ({
   cancel: () =>
     set({ phase: "idle", target: null, form: EMPTY_FORM, staleNotice: false, shareError: null }),
 
-  submit: async (overwrite = false) => {
-    const { target, form } = get();
+  // ⚠️ **过渡形态**(v6 二期任务 6):分享页整页已撤掉,这个 store 与它的表单状态
+  // 还留着,只因 `install.ts` / `MySkillsPage` / `create.ts` 还引着它,重写归做界面
+  // 的那一轮。这里只把调用改成新契约:**零编辑**(没有名称/描述可传)、
+  // 没有 `overwrite`(「覆盖别人的技能」整条路取消,库里同名会直接报
+  // `REPO_NAME_TAKEN`),本体在哪由 core 自己解析,所以只传 `dirSlug`。
+  submit: async () => {
+    const { target } = get();
     if (!target) return;
     set({ phase: "busy", shareError: null, staleNotice: false });
     try {
       const result = await skillShare({
-        sourcePath: target.path,
-        shareName: form.shareName,
-        // 与候选一致就不传:core 只在收到值时改写 SKILL.md
-        displayName: form.displayName !== (target.name ?? "") ? form.displayName : undefined,
-        description:
-          form.description !== (target.description ?? "") ? form.description : undefined,
-        origin: target.origin.kind === "npxSkills" ? "npx-skills" : "local",
-        overwrite,
+        dirSlug: target.dirName,
         // 目标库要带上:缺省会推到该源主库,选了别的库却推错地方
         ...(get().targetRepo ? { repo: get().targetRepo! } : {}),
       });
-      if (result.outcome === "needsDecision") {
-        // core 没发过任何提交,等用户拍板
-        set({ phase: "taken" });
-        return;
-      }
       set({ phase: "done", done: result });
       // 分享成功后要刷新的不止本页(2026-08-03 用户实测:分享完界面到处都是旧的)。
       // 候选列表:这个技能变成"已分享";商店索引:库里多了(或更新了)一个技能,

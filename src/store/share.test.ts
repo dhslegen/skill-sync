@@ -88,66 +88,36 @@ describe("分享流程状态机", () => {
     expect(useShare.getState().form.shareName).toBe("notes-zhang");
   });
 
-  it("首次提交不带 overwrite;表单值没改就不传,core 才不会动 SKILL.md", async () => {
+  it("提交只带 dirSlug —— 分享环节零编辑,没有名称/描述/覆盖可传", async () => {
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "skill_share") return SHARED_OK;
       if (cmd === "share_candidates") return [];
       return null;
     });
     useShare.getState().begin(candidate());
+    // 表单里改了字段也不该传出去:core 不再改写 SKILL.md
+    useShare.getState().setForm({ description: "补上的描述" });
     await useShare.getState().submit();
 
     const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share");
     const sent = call?.[1].args;
-    expect(sent.overwrite).toBe(false);
-    expect(sent.displayName).toBeUndefined();
-    expect(sent.description).toBeUndefined();
-    expect(sent.origin).toBe("local");
+    // 断言的是**键的完整集合**,不是"某个键不在":只查 overwrite 不在,
+    // 会放过"改叫别的名字照样把表单值发出去"这一档
+    expect(Object.keys(sent).sort()).toEqual(["dirSlug"]);
+    expect(sent.dirSlug).toBe("my-notes");
     expect(useShare.getState().phase).toBe("done");
   });
 
-  it("表单改过的字段才传给 core", async () => {
-    invoke.mockImplementation(async (cmd: string) =>
-      cmd === "skill_share" ? SHARED_OK : [],
-    );
-    useShare.getState().begin(candidate());
-    useShare.getState().setForm({ description: "补上的描述" });
-    await useShare.getState().submit();
-
-    const sent = invoke.mock.calls.find(([cmd]) => cmd === "skill_share")?.[1].args;
-    expect(sent.displayName).toBeUndefined();
-    expect(sent.description).toBe("补上的描述");
-  });
-
-  it("同名被占:停在三选弹窗,不自作主张覆盖", async () => {
-    invoke.mockImplementation(async (cmd: string) =>
-      cmd === "skill_share"
-        ? { outcome: "needsDecision", precheck: { status: "taken" } }
-        : [],
-    );
-    useShare.getState().begin(candidate());
-    await useShare.getState().submit();
-
-    expect(useShare.getState().phase).toBe("taken");
-    expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_share")).toHaveLength(1);
-  });
-
-  it("弹窗里选覆盖才带 overwrite 重试", async () => {
-    let calls = 0;
+  it("库里同名且不是我分享的 —— core 直接报错,不再有三选弹窗", async () => {
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd !== "skill_share") return [];
-      calls += 1;
-      return calls === 1
-        ? { outcome: "needsDecision", precheck: { status: "taken" } }
-        : SHARED_OK;
+      throw { code: "REPO_NAME_TAKEN", message: "技能库里已经有一个同名技能" };
     });
     useShare.getState().begin(candidate());
     await useShare.getState().submit();
-    await useShare.getState().submit(true);
 
-    const second = invoke.mock.calls.filter(([cmd]) => cmd === "skill_share")[1];
-    expect(second?.[1].args.overwrite).toBe(true);
-    expect(useShare.getState().phase).toBe("done");
+    expect(useShare.getState().phase).toBe("form");
+    expect(useShare.getState().shareError?.code).toBe("REPO_NAME_TAKEN");
   });
 
   it("提交瞬间被人抢先(CONFLICT_STALE)→ 回到表单并提示重新确认", async () => {

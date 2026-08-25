@@ -78,44 +78,37 @@ async fn share_fresh_then_update_against_real_github() {
     std::fs::create_dir_all(dir.join("scripts")).unwrap();
     std::fs::write(
         dir.join("SKILL.md"),
-        "---\nname: 联调样例\ndescription: 5b 端到端联调\n---\n\n第一版\n",
+        format!("---\nname: {share_name}\ndescription: 5b 端到端联调\n---\n\n第一版\n"),
     )
     .unwrap();
     std::fs::write(dir.join("scripts/run.sh"), "#!/bin/sh\necho hi\n").unwrap();
 
-    let req = |overwrite| share::ShareRequest {
+    let req = || share::ShareRequest {
         registry_id: "gh-live",
         repo: &repo,
-        source_path: &dir,
-        share_name: &share_name,
-        display_name: None,
-        description: None,
-        origin: "local",
-        overwrite,
+        dir_slug: &share_name,
     };
+    // 显式注入沙盒废纸篓,理由同 share_live.rs
+    let trash = skillsync_lib::core::fsops::SandboxTrash::new(tmp.path().join("gh-live-trash"));
 
     // 第一步:Fresh → main 未保护 → 直接保存
-    let outcome = share::share(&client, &registry, &env, &store, req(false), now)
+    let outcome = share::share(&client, &registry, &env, &store, &trash, req(), now)
         .await
         .expect("首次分享失败");
-    let ShareOutcome::Shared { mode, commit_sha, .. } = outcome else {
-        panic!("首次分享不应进入同名冲突");
-    };
+    let ShareOutcome::Shared { mode, commit_sha, .. } = outcome;
     assert_eq!(mode, ShareMode::Pushed);
     eprintln!("首次分享已保存:{commit_sha}");
 
     // 第二步:本地改一版 → Mine → 更新分享
     std::fs::write(
         dir.join("SKILL.md"),
-        "---\nname: 联调样例\ndescription: 5b 端到端联调\n---\n\n第二版\n",
+        format!("---\nname: {share_name}\ndescription: 5b 端到端联调\n---\n\n第二版\n"),
     )
     .unwrap();
-    let outcome = share::share(&client, &registry, &env, &store, req(false), now)
+    let outcome = share::share(&client, &registry, &env, &store, &trash, req(), now)
         .await
         .expect("更新分享失败");
-    let ShareOutcome::Shared { mode, commit_sha: second_sha, .. } = outcome else {
-        panic!("更新分享不应进入同名冲突(记账里是自己的)");
-    };
+    let ShareOutcome::Shared { mode, commit_sha: second_sha, .. } = outcome;
     assert_eq!(mode, ShareMode::Pushed);
     assert_ne!(second_sha, commit_sha);
     eprintln!("更新分享已保存:{second_sha}");
