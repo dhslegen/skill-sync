@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useShare, validShareName } from "./share";
 import { useMySkills } from "@/store/my-skills";
-import { useStoreIndex } from "@/store/store-index";
 import type { ShareCandidate } from "@/lib/ipc";
 
 const invoke = vi.fn();
@@ -201,18 +200,6 @@ describe("分享流程状态机", () => {
     await useShare.getState().submit();
 
     await vi.waitFor(() => expect(mySkillsLoad).toHaveBeenCalled());
-  });
-
-  it("「看看对方的版本」打开商店详情", () => {
-    const openDetail = vi.fn(async () => {});
-    useStoreIndex.setState({ openDetail });
-    useShare.getState().begin(candidate());
-    useShare.setState({ phase: "taken" });
-
-    useShare.getState().viewTheirs();
-
-    expect(openDetail).toHaveBeenCalledWith("my-notes");
-    expect(useShare.getState().phase).toBe("form");
   });
 
   it("扫描失败保留上次列表并报错", async () => {

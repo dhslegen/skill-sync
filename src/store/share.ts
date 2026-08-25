@@ -1,10 +1,12 @@
-// 分享页的状态:候选列表 + 分享流程。
+// ⚠️ **过渡形态**(v6 二期任务 6):分享页整页已撤掉,这个 store 与它的表单状态
+// 还留着,只因 `install.ts` / `MySkillsPage` / `create.ts` / `useLocalRefresh` 还引着它。
+// 重写归做界面的那一轮(任务 7/8)。
 //
-// 一次分享的走向:
-//   idle → form(表单:名称/描述/英文文件夹名) → busy → done
-//                                     ↑              ↓ core 报 needsDecision(同名被占)
-//                                     └── taken(三选:改名 / 查看对方 / 覆盖)
+// 一次分享现在的走向:
+//   idle → form → busy → done
 //
+// 「同名被占」那一屏(改名 / 查看对方 / 用我的覆盖)**已整体删除**:覆盖别人的技能
+// 这条路取消了,core 直接报 `REPO_NAME_TAKEN`,留在 form 档把错误摆出来。
 // CONFLICT_STALE(提交瞬间被人抢先)→ 回到表单并提示重新确认——设计方案 2.5② 的
 // 竞态处置:不盲目重试,让用户带着最新事实重新决定。
 import { create } from "zustand";
@@ -24,7 +26,9 @@ import { useInstall } from "@/store/install";
 import { useMySkills } from "@/store/my-skills";
 import { useStoreIndex } from "@/store/store-index";
 
-export type SharePhase = "idle" | "form" | "busy" | "taken" | "done";
+// v6 二期任务 6 修复轮 1:`taken` 档已删除。库里同名且不是我分享的现在是
+// `REPO_NAME_TAKEN` 这个错误(留在 form 档 + shareError),没有"三选一"那一屏了。
+export type SharePhase = "idle" | "form" | "busy" | "done";
 
 interface ShareForm {
   shareName: string;
@@ -61,8 +65,6 @@ interface ShareState {
   /** 表单确认。`overwrite` 只在从"被占用"弹窗选覆盖时为 true。 */
   submit: (overwrite?: boolean) => Promise<void>;
   /** 被占用弹窗:改名 → 回表单;查看 → 打开商店详情。 */
-  backToForm: () => void;
-  viewTheirs: () => void;
 }
 
 function toAppError(raw: unknown): AppError {
@@ -185,11 +187,4 @@ export const useShare = create<ShareState>((set, get) => ({
     }
   },
 
-  backToForm: () => set({ phase: "form" }),
-
-  viewTheirs: () => {
-    const name = get().form.shareName;
-    set({ phase: "form" });
-    useStoreIndex.getState().openDetail(name);
-  },
 }));

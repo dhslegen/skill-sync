@@ -8,7 +8,6 @@ import { RemoveDialog } from "@/components/RemoveDialog";
 import { RepairDialog } from "@/components/RepairDialog";
 import { ShareConflictDialog } from "@/components/ShareConflictDialog";
 import { RetryLinkDialog } from "@/components/RetryLinkDialog";
-import { ShareTakenDialog } from "@/components/ShareTakenDialog";
 import { Sidebar } from "@/components/Sidebar";
 import { Toolbar } from "@/components/Toolbar";
 import { Wizard } from "@/components/Wizard";
@@ -106,7 +105,6 @@ export default function App() {
       <RepairDialog />
       <ShareConflictDialog />
       <RetryLinkDialog />
-      <ShareTakenDialog />
       <Wizard />
     </div>
   );

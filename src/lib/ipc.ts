@@ -604,6 +604,11 @@ export interface ShareCandidate {
   dirNameUsable: boolean;
 }
 
+/**
+ * ⚠️ 这个类型在前端**已经没有读者**:`ShareOutcome` 只剩 `shared` 一档,
+ * `taken` 那一档在 core 里变成了 `REPO_NAME_TAKEN` 错误。留着只为文档对照
+ * (`core::share::SharePrecheck`),重写界面那一轮可以连同删掉。
+ */
 export type SharePrecheck = { status: "fresh" } | { status: "mine" } | { status: "taken" };
 
 export type ShareMode = "pushed" | "reviewRequested";

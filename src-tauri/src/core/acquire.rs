@@ -1176,8 +1176,20 @@ fn seed_shared_baseline(
         path: skill.path.clone(),
         git_ref: req.repo.branch.clone(),
     };
-    // 键与 `share::share` 写记账时用的是**同一把**(远端目录名),不新增第二种写法
-    // ——`state.shared` 的读写双键不一致是 CLAUDE.md 记着的既有隐患,别把它变成三键。
+    // ⚠️ **这里是 `state.shared` 的第三把钥匙,而且与另外两处不是同一把**
+    //   (v6 二期任务 6 修复轮 1 订正——原注释写着"与 `share::share` 用的是同一把",
+    //   那句话在任务 6 之后就不成立了):
+    //   - 本函数:按 **`name`**(= `report.dir_name` = 清洗后的记账键)定位;
+    //   - `share::share` 写记账 与 `share::candidate` 读状态:按 **`local_path`**
+    //     的 `Path` 值定位(任务 6 把那两处从"写按名字、读按路径"统一成了同一把)。
+    //
+    // **今天为什么不出事**:两侧写进去的 `local_path` 都是 `home.body`,而分享链路
+    // 有标准校验兜着(文件夹名 = frontmatter `name` = 库里的目录名,且必是合法
+    // 标准名),于是 `name` 与 `local_path` 指的恒是同一行。
+    // **什么时候会出事**:哪天这条基线开始服务于**没过标准校验**的技能
+    // (比如目录名带大写、清洗后与字面名不同),`name` 与 `local_path` 就会各指一行,
+    // 同一个本地目录留下两条记账——CLAUDE.md 记着的"读写双键不一致"隐患的翻版。
+    // 收成一把钥匙是下一轮的事,不在任务 6 的改动面里。
     let local_path = home.body.to_string_lossy().into_owned();
     match next.shared.iter().position(|s| s.name == report.dir_name) {
         Some(idx) => {
@@ -1313,7 +1325,7 @@ impl BindingSources<'_> {
 /// 不在它的列表里,说成"来源没了"会让用户去找一个根本没丢的东西
 /// (`commands::source_state` 早就踩过同一个坑)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
 pub enum SourceBinding {
     /// 绑得上:更新与「分享改动」都有去处。
     Bound {

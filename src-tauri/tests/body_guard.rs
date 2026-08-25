@@ -94,13 +94,33 @@ fn body_path_is_resolved_in_exactly_one_layer() {
 }
 
 /// 第二种绕法:不叫 `canonical_dir`,而是先取 canonical **根目录**
-/// (`AgentRegistry::canonical_global_dir`)再 `.join(技能名)` 拼出本体路径。
+/// (`AgentRegistry::canonical_global_dir`)再 `.join(技能名)` 拼出本体路径,
+/// 或者干脆把本体 `copy_tree` 一份过去。
 ///
-/// v6 二期任务 6 之前 `core/share.rs` 里就有两处这种写法(收编那一段与
-/// `share_installed`),上一条守卫**一个字都看不见**——它只挡直呼
-/// `canonical_dir(` 那一种。新模型下本体完全可能住在 `~/.claude/skills/`,
-/// 拿 canonical 拼出来的路径要么根本不存在(于是对用户说"内容已不存在",假话)、
-/// 要么是一条链接(读出来仍是本体,只是绕一圈还多一处没人守的解析点)。
+/// v6 二期任务 6 之前 `core/share.rs` 里就有这两种写法(收编那一段与
+/// `share_installed`),上一条守卫**一个字都看不见**——它只挡直呼 `canonical_dir(`。
+/// 新模型下本体完全可能住在 `~/.claude/skills/`,拿 canonical 拼出来的路径要么
+/// 根本不存在(于是对用户说"内容已不存在",假话)、要么是一条链接(读出来仍是
+/// 本体,只是绕一圈还多一处没人守的解析点)。
+///
+/// # 🔴 它是烟雾报警,不是防火墙(修复轮 1 订正,R25)
+///
+/// **这是文本匹配,挡不住变量改名,也挡不住把路径拼在一句表达式里。**
+/// 复审者实测:把 `ensure_canonical_link` 换成
+/// `canon_root.join(&home.dir_name)` + `copy_tree`——**正是"退回复制"这个坏实现**
+/// ——本文件两条守卫**全绿**。所以:
+///
+/// - **真正拦住"退回复制"的是行为侧那条断言**:`tests/share_flow.rs::
+///   share_uploads_the_body_in_place_and_links_canonical_without_copying` 里的
+///   `fsops::read_link_target(canonical/<name>) == Some(normalize(body))`。
+///   它比的是"canonical 上到底是不是一条指向本体的链接",复制过去一份就是 `None`,
+///   变量叫什么、路径怎么拼都逃不掉。**改动这条链路时,那条断言才是护栏。**
+/// - 本守卫的价值只在于**早一步**:形状最常见的那几种绕法在编辑时就报,
+///   而且报错里直接把源码那一行打出来,比读一条 `None != Some(...)` 快。
+///
+/// 下面的模式**刻意放宽到"名字里带 canon/root 的变量 + `.join(`"以及
+/// `share.rs` 里出现 `copy_tree`**(分享链路按定义不复制本体),但**不要**
+/// 因此以为它 airtight,也**不要**在文档里那么写——本项目为"注释说谎"打回过三次。
 ///
 /// ⚠️ **刻意只禁 `.join(`,不禁 `canonical_global_dir(` 本身**:取 canonical
 /// **根目录**是合法且必要的——`share::scan_candidates` 要枚举它下面的实体目录、
@@ -111,10 +131,31 @@ fn body_path_is_resolved_in_exactly_one_layer() {
 fn nobody_rebuilds_a_body_path_from_the_canonical_root() {
     for f in GUARDED {
         let code = guarded_code(f);
-        for line in code.lines() {
+        for (n, line) in code.lines().enumerate() {
+            // 形状一:名字里带 canon / root 的变量身上调 `.join(`
+            if let Some(at) = line.find(".join(") {
+                let head = &line[..at];
+                let ident: String = head
+                    .chars()
+                    .rev()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                let lowered = ident.to_ascii_lowercase();
+                assert!(
+                    !(lowered.contains("canon") || lowered.contains("root")),
+                    "{f}:{} 不得从 canonical 根拼出技能本体路径,走 converge::home_of:\n  {}",
+                    n + 1,
+                    line.trim()
+                );
+            }
+            // 形状二:分享链路按定义不复制本体(旧的「收编」就是 copy_tree + 换链接)
             assert!(
-                !line.contains("canonical.join("),
-                "{f} 不得从 canonical 根拼出技能本体路径,走 converge::home_of:\n  {}",
+                !(f == "core/share.rs" && line.contains("copy_tree")),
+                "{f}:{} 分享不复制本体——本体住原地,canonical 只放链接:\n  {}",
+                n + 1,
                 line.trim()
             );
         }

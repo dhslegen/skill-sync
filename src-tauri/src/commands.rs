@@ -2719,8 +2719,15 @@ pub struct ProjectInstallArgs {
 }
 
 /// 项目级安装的回报。`needsDecision` 时磁盘一个字节都没动过。
+///
+/// ⚠️ **`rename_all_fields` 不可省**(v6 二期任务 6 修复轮 1 补):`rename_all`
+/// 挂在枚举上只改 variant 名,`linked_agents` 会原样发成蛇形,而 `ipc.ts` 声明的是
+/// `linkedAgents`。这是哑弹(眼下没人取那个字段),但它是同一个坑在本仓的第三处
+/// ——前两处是 `share::ShareOutcome::review_url`(真缺陷:「查看审核」链接从来没
+/// 渲染过)与 `scheduler::CheckReport::head_sha`。结构性护栏见
+/// `tests/serde_shape_guard.rs`。
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase", tag = "status")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "status")]
 pub enum ProjectInstallOutcome {
     Installed { key: String, linked_agents: Vec<String> },
     AlreadyInstalled { key: String },
