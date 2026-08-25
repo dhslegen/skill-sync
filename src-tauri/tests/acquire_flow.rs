@@ -924,6 +924,69 @@ async fn mine_without_local_edits_pulls_and_seeds_shared_baseline() {
     assert_eq!(state.shared[0].content_hash, second, "基线必须对齐到刚取回的这一版");
 }
 
+/// 🔴 **存量记账里 `name != leaf(local_path)` 的那一行,必须被认出来、就地更新**
+/// (v6 二期任务 6 修复轮 2,R26)。
+///
+/// 这条不是假想:任务 6 之前 `share::share` 写 `state.shared` 用的是**远端名**
+/// (`git show 3af59e5:src-tauri/src/core/share.rs` 第 511 行),而当时那套
+/// (已被推翻的)中文名分享策略**明确允许远端名 ≠ 本地文件夹名** —— 所以用户
+/// 现在的 `state.json` 里就可能有这种行。
+///
+/// 按 `name` 找不到它 → push 出**第二条 `local_path` 相同**的记账;而
+/// `share::candidate` 读状态用的是 `find`(取第一条),从此一直读那条**旧的、
+/// `content_hash` 已过期的**行 → 界面永远显示"有未分享的改动"。
+///
+/// ⚠️ **fixture 刻意让 `name` 与 `local_path` 的叶子名不同**——两者同值时
+/// 按哪把钥匙找都命中同一行,这条用例就什么都证明不了。
+#[tokio::test]
+async fn a_legacy_row_whose_name_differs_from_its_path_is_updated_in_place() {
+    let server = MockServer::start().await;
+    mount_authored(&server, "aaa1111", "weekly-report", "第一版", ME_DISPLAY).await;
+    let (c, env) = ctx();
+    sign_in(&c);
+
+    // 存量:远端名 `zhoubao`、本地文件夹 `weekly-report`(中文名策略留下的形状),
+    // 基线是一个**过期**的假 hash —— 它正是"读到旧行"时会被界面拿去用的那个值。
+    let body = canonical(&c.home, "weekly-report");
+    let mut state = c.store.load_state().unwrap().value;
+    state.shared.push(skillsync_lib::core::state::SharedSkill {
+        name: "zhoubao".into(),
+        local_path: body.to_string_lossy().into_owned(),
+        origin: "local".into(),
+        target: skillsync_lib::core::state::SkillSource {
+            registry_id: REGISTRY.into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            path: "skills/zhoubao".into(),
+            git_ref: "main".into(),
+        },
+        last_pushed_sha: "oldcommit".into(),
+        content_hash: "sha256:stale".into(),
+    });
+    c.store.save_state(&state).unwrap();
+
+    run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+
+    let state = c.store.load_state().unwrap().value;
+    assert_eq!(
+        state.shared.len(),
+        1,
+        "同一个本体留下了两条分享记账,`candidate` 的 find 会一直读到旧的那条:{:?}",
+        state.shared
+    );
+    // 存活的必须是**那一行本身**(就地更新),不是新推的一条 —— `seed` 的
+    // Some 分支不动 `name`,所以 `name` 还是 `zhoubao` 就证明命中的是存量行
+    assert_eq!(state.shared[0].name, "zhoubao", "不该另起一行,应当就地更新存量那一行");
+    // 而基线必须换成**刚取回这一版**的真值:过期的假 hash 留着就等于界面永远
+    // 显示"有未分享的改动"
+    assert_eq!(
+        state.shared[0].content_hash,
+        fsops::dir_content_hash(&body).unwrap(),
+        "基线没有对齐到刚取回的这一版",
+    );
+    assert_eq!(state.shared[0].target.path, "skills/weekly-report", "来源坐标也要对齐");
+}
+
 /// 「两边都新」:磁盘零写入,等用户拍板。
 #[tokio::test]
 async fn mine_with_local_edits_writes_nothing_without_a_decision() {

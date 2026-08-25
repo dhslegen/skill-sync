@@ -16,9 +16,18 @@
 //! # 它挡得住什么、挡不住什么
 //!
 //! 挡得住:新增(或改名成)带下划线的字段、新加一个漏了属性的 Serialize 枚举。
-//! **挡不住**:字段名本来就是单个单词(`source`)时的遗漏——那种此刻序列化结果相同,
-//! 加不加属性看不出差别;这类只能靠各类型自己的"断言完整键集合"测试在**将来**
-//! 加字段时变红(`share.rs` 与 `scheduler.rs` 里各有一条)。
+//!
+//! **挡不住(逐条实测过,不是推测)**:
+//! 1. **字段名本来就是单个单词**(`source`)时的遗漏——那种此刻序列化结果相同,
+//!    加不加属性看不出差别;只能靠各类型自己的"断言完整键集合"测试在**将来**
+//!    加字段时变红(`share.rs` 与 `scheduler.rs` 里各有一条);
+//! 2. **只 `Deserialize` 的枚举整个不看**——判据是 `head.contains("Serialize")`。
+//!    今天不活(本仓的 IPC 入参是 struct 不是 enum),但**如果将来出现一个
+//!    `Deserialize` 的 tagged enum 作为 command 入参,这条守卫一个字都不会说**。
+//!    真要覆盖得连同"入参键名"这条另一半契约一起想清楚,不是把判据改宽就完事。
+//!
+//! 曾经还有第三条(**误报**:字段自带 `#[serde(rename = "…")]` 时被判违规),
+//! 修复轮 2 已修——见 [`snake_fields`] 里那道跳过,以及自保测试里对应的样本。
 //!
 //! 判据刻意**只看 `pub enum`**:非 pub 的枚举出不了 crate,不会成为 IPC 契约。
 
@@ -100,9 +109,17 @@ fn has(attrs: &str, key: &str) -> bool {
 }
 
 /// 从字段体里挑出"带下划线"的字段名(那些正是 camelCase 化之后会变形的)。
+///
+/// **自带 `#[serde(rename = "…")]` 的字段跳过**(修复轮 2 修的一处误报):
+/// 它已经把键名钉死了,`rename_all_fields` 对它没有意义,判它违规就是一次**假红**。
+/// ⚠️ 判据是"这一段里出现 `rename =`",粗但**方向安全**:宁可漏报一个真违规
+/// (那是烟雾报警的固有代价),也不制造假红——本项目吃过假红的亏。
 fn snake_fields(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     for part in body.split(',') {
+        if part.contains("rename =") || part.contains("rename=") {
+            continue;
+        }
         let Some((left, _)) = part.split_once(':') else { continue };
         let name = left.rsplit(|c: char| c.is_whitespace() || c == '#' || c == ']').next().unwrap_or("");
         let name = name.trim();
@@ -263,6 +280,27 @@ pub enum Sample {
     )
     .unwrap();
     assert!(scan(&good).is_empty(), "加了 rename_all_fields 仍被判违规");
+
+    // 字段自带 `#[serde(rename = "…")]`:键名已经钉死,判它违规就是假红
+    let field_rename = tmp.path().join("field_rename.rs");
+    std::fs::write(
+        &field_rename,
+        r#"
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum Sample {
+    Alpha {
+        #[serde(rename = "reviewUrl")]
+        review_url: String,
+    },
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        scan(&field_rename).is_empty(),
+        "字段自带 rename 时不该判违规(假红)"
+    );
 
     // per-variant 的 rename_all 同样算已覆盖(`ShareInstalledOutcome` 就是这个形状)
     let per_variant = tmp.path().join("per_variant.rs");

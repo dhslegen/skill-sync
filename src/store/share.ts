@@ -62,9 +62,8 @@ interface ShareState {
   begin: (candidate: ShareCandidate) => void;
   setForm: (patch: Partial<ShareForm>) => void;
   cancel: () => void;
-  /** 表单确认。`overwrite` 只在从"被占用"弹窗选覆盖时为 true。 */
-  submit: (overwrite?: boolean) => Promise<void>;
-  /** 被占用弹窗:改名 → 回表单;查看 → 打开商店详情。 */
+  /** 提交分享。**零参数**:名称/描述不可编辑,「覆盖别人的技能」那条路也已取消。 */
+  submit: () => Promise<void>;
 }
 
 function toAppError(raw: unknown): AppError {

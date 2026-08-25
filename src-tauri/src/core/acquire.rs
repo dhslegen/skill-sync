@@ -23,6 +23,8 @@
 //!   一次往返换取"装上的就是此刻远端的内容",比缓存 50 个技能的全部文件划算。
 //!   顺手用同一份压缩包刷新索引缓存,免得再下一次。
 
+use std::path::Path;
+
 use serde::Serialize;
 
 use crate::core::agents::{AgentEnv, AgentRegistry};
@@ -1176,22 +1178,33 @@ fn seed_shared_baseline(
         path: skill.path.clone(),
         git_ref: req.repo.branch.clone(),
     };
-    // ⚠️ **这里是 `state.shared` 的第三把钥匙,而且与另外两处不是同一把**
-    //   (v6 二期任务 6 修复轮 1 订正——原注释写着"与 `share::share` 用的是同一把",
-    //   那句话在任务 6 之后就不成立了):
-    //   - 本函数:按 **`name`**(= `report.dir_name` = 清洗后的记账键)定位;
-    //   - `share::share` 写记账 与 `share::candidate` 读状态:按 **`local_path`**
-    //     的 `Path` 值定位(任务 6 把那两处从"写按名字、读按路径"统一成了同一把)。
+    // 🔴 **`state.shared` 的钥匙只有一把:本体路径,按 `Path` 比**
+    //   (v6 二期任务 6 修复轮 2,R26)。三处现在完全一致:
+    //   - 本函数(取回时对齐内容基线);
+    //   - `share::share`(分享时写记账);
+    //   - `share::candidate`(读"分享过没有、改动过没有")。
     //
-    // **今天为什么不出事**:两侧写进去的 `local_path` 都是 `home.body`,而分享链路
-    // 有标准校验兜着(文件夹名 = frontmatter `name` = 库里的目录名,且必是合法
-    // 标准名),于是 `name` 与 `local_path` 指的恒是同一行。
-    // **什么时候会出事**:哪天这条基线开始服务于**没过标准校验**的技能
-    // (比如目录名带大写、清洗后与字面名不同),`name` 与 `local_path` 就会各指一行,
-    // 同一个本地目录留下两条记账——CLAUDE.md 记着的"读写双键不一致"隐患的翻版。
-    // 收成一把钥匙是下一轮的事,不在任务 6 的改动面里。
+    // ⚠️ **这里原先按 `name` 定位,那不只是"口径不齐",在存量数据上是个真缺陷**:
+    // 任务 6 之前 `share::share` 写记账用的是**远端名**,而当时那套(已被推翻的)
+    // 中文名分享策略**明确允许远端名 ≠ 本地文件夹名** —— 所以用户的 `state.json`
+    // 里**现在就可能存在** `name != leaf(local_path)` 的行。按 `name` 找不到它,
+    // 就会 push 出**第二条 `local_path` 相同**的记账;而 `share::candidate` 用的是
+    // `find`(取第一条),于是界面从此一直读那条**旧的、`content_hash` 已过期的**行,
+    // 永远显示"有未分享的改动"。这正是 CLAUDE.md 记着的"读写双键不一致"隐患
+    // 在存量数据里的翻版(护栏:`acquire_flow::
+    // a_legacy_row_whose_name_differs_from_its_path_is_updated_in_place`)。
+    //
+    // **为什么按 `local_path` 比按 `name` 更对(不只是"统一")**:`content_hash` 是
+    // 从**某个目录**算出来的指纹,它的身份就是那个目录。一条 `local_path` 指向别处的
+    // 记账说的是另一个目录的事,拿本目录的 hash 去覆盖它就是在替那个目录撒谎。
+    // 反过来,同名不同目录的两行各自成立,`name` 重复无害
+    // ——真正有害的是 `local_path` 重复,而按 `local_path` 定位从根上消灭它。
     let local_path = home.body.to_string_lossy().into_owned();
-    match next.shared.iter().position(|s| s.name == report.dir_name) {
+    match next
+        .shared
+        .iter()
+        .position(|s| Path::new(&s.local_path) == home.body.as_path())
+    {
         Some(idx) => {
             next.shared[idx].local_path = local_path;
             next.shared[idx].target = target;
