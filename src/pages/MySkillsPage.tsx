@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { CreateSkillButton, CreateSkillPanel } from "@/components/CreateSkill";
 import { ProjectSections } from "@/components/ProjectSections";
@@ -64,6 +64,23 @@ export function MySkillsPage() {
   // 弹窗一消失就什么都没有,**分享失败也静默**。这里接到本页既有的提示位上。
   const installShareResult = useInstall((s) => s.shareResult);
   const setPage = useUi((s) => s.setPage);
+  // 🔴 「打开文件夹」的失败必须有落点(R30)。`skill_reveal` 的守卫是
+  // 「必须是目录、且目录下有 SKILL.md」,而 `differs` 给的 `existing` **两条都不保证**
+  // ——占位物完全可能是一个普通文件、或一个不含 SKILL.md 的目录(`converge` 对
+  // `!target.is_dir()` 同样返回 `Differs`)。守卫会返 `FS_NOT_A_SKILL`,
+  // 而那正是这个项目有专门记忆的那一类:**前端全对却没反应**,零痕迹、最难排查。
+  // `ShareConfirm` 里的同款出口一直是把错误摆出来的,这里此前反而吞掉了。
+  const [revealError, setRevealError] = useState<string | null>(null);
+  const revealOrExplain = (path: string) => {
+    setRevealError(null);
+    void skillReveal({ path }).catch((e: unknown) =>
+      setRevealError(
+        typeof e === "object" && e && "message" in e
+          ? String((e as { message: unknown }).message)
+          : t("error.generic"),
+      ),
+    );
+  };
 
   useEffect(() => {
     void load();
@@ -139,7 +156,12 @@ export function MySkillsPage() {
       {toolFailures && (
         <div className="mb-2 rounded-card border border-[#c0392b]/40 px-2.5 py-2 dark:border-[#e0705f]/40">
           <p className="text-[12px] font-medium text-[#c0392b] dark:text-[#e0705f]">
-            {t("mine.toolsPartialFailed", { count: toolFailures.length })}
+            {/* 按内容分流:全是"停下来问你"时说「需要你看一下」,
+                只要有一条是真失败就得说「没能完成」——只读标题的人不该把
+                一屏真失败当成温和的提示。 */}
+            {toolFailures.some((f) => f.kind === "failed")
+              ? t("mine.toolsPartialFailed", { count: toolFailures.length })
+              : t("mine.toolsNeedLook", { count: toolFailures.length })}
           </p>
           <ul className="mt-1 flex flex-col gap-1">
             {toolFailures.map((f, i) => (
@@ -149,22 +171,27 @@ export function MySkillsPage() {
                     core 按铁律 7 绝不覆盖。再给一个「打开文件夹」让用户去看看
                     那是什么;没有这个出口的话,他点几次勾都只会看到勾弹回去。 */}
                 {f.kind === "differs" ? (
-                  <>
-                    <span>
-                      {t("mine.toolOccupied", {
-                        tool: f.agent ? (agentNames.get(f.agent) ?? f.agent) : t("mine.toolCanonical"),
-                      })}
-                    </span>
-                    {f.existing && (
-                      <button
-                        type="button"
-                        onClick={() => void skillReveal({ path: f.existing! }).catch(() => {})}
-                        className="ml-1.5 underline decoration-dotted underline-offset-2 hover:text-text"
-                      >
-                        {t("mine.openFolder")}
-                      </button>
-                    )}
-                  </>
+                  (() => {
+                    const tool = f.agent
+                      ? (agentNames.get(f.agent) ?? f.agent)
+                      : t("mine.toolCanonical");
+                    return (
+                      <>
+                        <span>{t("mine.toolOccupied", { tool })}</span>
+                        {/* 页面上可能同时有好几个「打开文件夹」(行内的、失败框里的),
+                            可访问名一样的话屏幕阅读器与真机扫视都分不出指向哪个位置
+                            ——所以这一个带上工具名。 */}
+                        <button
+                          type="button"
+                          aria-label={t("mine.openFolderOf", { tool })}
+                          onClick={() => revealOrExplain(f.existing)}
+                          className="ml-1.5 underline decoration-dotted underline-offset-2 hover:text-text"
+                        >
+                          {t("mine.openFolder")}
+                        </button>
+                      </>
+                    );
+                  })()
                 ) : f.agent ? (
                   `${agentNames.get(f.agent) ?? f.agent}${t("punct.labelSeparator")}${f.message}`
                 ) : (
@@ -181,6 +208,15 @@ export function MySkillsPage() {
             {t("mine.dismiss")}
           </button>
         </div>
+      )}
+      {/* 「打开文件夹」的失败摆在页面级,不挂在失败框里:行内与「有几个版本」那两档
+          的同款按钮也走 `revealOrExplain`,挂进失败框的话它们失败时又没有渲染点了。 */}
+      {revealError && (
+        <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+          {t("mine.openFolderFailed")}
+          {t("punct.labelSeparator")}
+          {revealError}
+        </p>
       )}
       {setAgentsError && (
         <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
@@ -257,6 +293,7 @@ export function MySkillsPage() {
                     )
                 }
                 onRemove={() => askRemove(skill.dirSlug)}
+                onReveal={revealOrExplain}
               />
             ))}
           </div>
@@ -333,6 +370,7 @@ function Row({
   onShare,
   onUpdate,
   onRemove,
+  onReveal,
 }: {
   skill: InstalledSkillView;
   name: string;
@@ -347,6 +385,8 @@ function Row({
   onShare: () => void;
   onUpdate: () => void;
   onRemove: () => void;
+  /** 「打开文件夹」。**失败要摆出来**,不能吞——见页面组件里 `revealOrExplain` 的说明。 */
+  onReveal: (path: string) => void;
 }) {
   const openVersions = useMySkills((s) => s.versionChoice);
   const setVersionChoice = useMySkills.setState;
@@ -503,7 +543,7 @@ function Row({
           {skill.body && (
             <button
               type="button"
-              onClick={() => void skillReveal({ path: skill.body }).catch(() => {})}
+              onClick={() => onReveal(skill.body)}
               className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
             >
               {t("mine.openFolder")}

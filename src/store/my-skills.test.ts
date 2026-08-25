@@ -279,9 +279,9 @@ describe("勾选哪些工具(skill_set_agents)", () => {
     });
     const failures = useMySkills.getState().toolFailures;
     expect(failures).toEqual([
-      { agent: null, message: "统一目录没能收敛", kind: "failed" },
-      { agent: "trae", message: "trae 没配上", kind: "failed" },
-      { agent: "zed", message: "zed 没能停用", kind: "failed" },
+      { kind: "failed", agent: null, message: "统一目录没能收敛" },
+      { kind: "failed", agent: "trae", message: "trae 没配上" },
+      { kind: "failed", agent: "zed", message: "zed 没能停用" },
     ]);
   });
 
@@ -333,20 +333,12 @@ describe("勾选哪些工具(skill_set_agents)", () => {
     await useMySkills.getState().setAgents("weekly-report", ["trae", "cursor"]);
 
     expect(useMySkills.getState().toolFailures).toEqual([
-      {
-        agent: null,
-        message: "/h/.agents/skills/weekly-report",
-        kind: "differs",
-        existing: "/h/.agents/skills/weekly-report",
-      },
-      {
-        agent: "trae",
-        message: "/h/.trae/skills/weekly-report",
-        kind: "differs",
-        existing: "/h/.trae/skills/weekly-report",
-      },
+      // 🔴 differs 那一档**没有 message 字段**(可辨联合):它携带的 `existing`
+      // 是原始文件系统路径,属于内部标识,不是拿来直接渲染给用户的。
+      { kind: "differs", agent: null, existing: "/h/.agents/skills/weekly-report" },
+      { kind: "differs", agent: "trae", existing: "/h/.trae/skills/weekly-report" },
       // 真正的失败仍然是 failed,两者不能混成一档 —— 界面要说不同的话
-      { agent: "cursor", message: "cursor 没配上", kind: "failed" },
+      { kind: "failed", agent: "cursor", message: "cursor 没配上" },
     ]);
   });
 

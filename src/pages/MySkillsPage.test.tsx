@@ -54,6 +54,7 @@ const AGENT_LIST = {
   agents: [
     { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
     { name: "cursor", displayName: "Cursor", installed: true, globalSkillsDir: "~/.agents/skills", isUniversal: true, needsLink: false, disabled: false },
+    { name: "trae", displayName: "Trae", installed: true, globalSkillsDir: "~/.trae/skills", isUniversal: false, needsLink: true, disabled: false },
   ],
   canonicalDir: "~/.agents/skills",
 };
@@ -518,14 +519,13 @@ describe("勾选工具的失败必须看得见", () => {
     seedIndex();
     useMySkills.setState({
       toolFailures: [
-        { agent: "claude-code", message: "那个位置已有同名文件夹", kind: "failed" },
-        { agent: null, message: "统一目录没能收敛", kind: "failed" },
+        { kind: "failed", agent: "claude-code", message: "那个位置已有同名文件夹" },
+        { kind: "failed", agent: null, message: "统一目录没能收敛" },
       ],
-      agentNames: new Map([["claude-code", "Claude Code"]]),
     });
     render(<MySkillsPage />);
 
-    await screen.findByText(/有 2 处需要你看一下/);
+    await screen.findByText(/有 2 处没能完成/);
     // agent 名要换成展示名,不许把内部标识漏给用户
     expect(screen.getByText(/Claude Code：那个位置已有同名文件夹/)).toBeInTheDocument();
     expect(screen.getByText("统一目录没能收敛")).toBeInTheDocument();
@@ -539,22 +539,103 @@ describe("勾选工具的失败必须看得见", () => {
     seedIndex();
     useMySkills.setState({
       toolFailures: [
-        {
-          agent: "trae",
-          message: "/h/.trae/skills/weekly-report",
-          kind: "differs",
-          existing: "/h/.trae/skills/weekly-report",
-        },
+        { kind: "differs", agent: "trae", existing: "/h/.trae/skills/weekly-report" },
       ],
-      agentNames: new Map([["trae", "Trae"]]),
     });
     render(<MySkillsPage />);
 
     await screen.findByText(/Trae 那个位置上已经有一份内容不同的技能,没有覆盖它。/);
     // 出口必须真的能点,且带的是那个位置的路径
-    await userEvent.click(screen.getAllByRole("button", { name: "打开文件夹" })[0]);
+    await userEvent.click(screen.getByRole("button", { name: "打开 Trae 那个位置的文件夹" }));
     const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_reveal");
     expect(call?.[1].args).toEqual({ path: "/h/.trae/skills/weekly-report" });
+  });
+
+  it("🔴 打开文件夹被守卫拒掉时必须说出来,绝不静默(R30)", async () => {
+    // `skill_reveal` 的守卫是「必须是目录、且目录下有 SKILL.md」,而 differs 给的
+    // `existing` **两条都不保证**——`converge` 对 `!target.is_dir()` 同样返回 Differs,
+    // 占位物完全可能是一个普通文件。守卫返 FS_NOT_A_SKILL,吞掉它的话用户点了
+    // **什么都不会发生、也没有任何提示**,正是这个项目专门记过的那一类
+    // 「前端全对却没反应」——零痕迹、最难排查。
+    seedIpc([view()], {
+      skill_reveal: null,
+    });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return [view()];
+      if (cmd === "agents_detected") return AGENT_LIST;
+      if (cmd === "skill_reveal")
+        throw { code: "FS_NOT_A_SKILL", message: "这个文件夹不是技能,或技能描述文件缺失" };
+      return null;
+    });
+    seedIndex();
+    useMySkills.setState({
+      toolFailures: [
+        { kind: "differs", agent: "trae", existing: "/h/.trae/skills/weekly-report" },
+      ],
+    });
+    render(<MySkillsPage />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "打开 Trae 那个位置的文件夹" }),
+    );
+
+    // 错误必须看得见,而且带上 core 给的原因
+    await screen.findByText(/打不开那个文件夹/);
+    expect(screen.getByText(/这个文件夹不是技能,或技能描述文件缺失/)).toBeInTheDocument();
+  });
+
+  it("行内的「打开文件夹」失败同样说得出来 —— 那两处按钮走同一条路", async () => {
+    // versions 档与普通行的按钮也走 `revealOrExplain`,所以错误的渲染点必须在
+    // 页面级、不能挂在勾选失败框里(挂进去的话这两处失败就又没有落点了)。
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return [view()];
+      if (cmd === "agents_detected") return AGENT_LIST;
+      if (cmd === "skill_reveal") throw { code: "FS_NOT_A_SKILL", message: "打不开" };
+      return null;
+    });
+    seedIndex();
+    render(<MySkillsPage />);
+    await screen.findByText("周报生成");
+
+    await userEvent.click(screen.getByRole("button", { name: "打开文件夹" }));
+    await screen.findByText(/打不开那个文件夹/);
+  });
+
+  it("失败框里的「打开文件夹」带工具名,与行内那个区分得开", async () => {
+    // 同名可访问标签会让屏幕阅读器与真机扫视都分不出指向哪个位置。
+    seedIpc([view()]);
+    seedIndex();
+    useMySkills.setState({
+      toolFailures: [
+        { kind: "differs", agent: "trae", existing: "/h/.trae/skills/weekly-report" },
+      ],
+    });
+    render(<MySkillsPage />);
+
+    await screen.findByRole("button", { name: "打开 Trae 那个位置的文件夹" });
+    // 行内那个仍然是朴素的「打开文件夹」,两者不同名
+    expect(screen.getByRole("button", { name: "打开文件夹" })).toBeInTheDocument();
+  });
+
+  it("全是 differs 时标题说「需要你看一下」,含真失败时说「没能完成」", async () => {
+    // 只读标题的人不该把一屏真失败当成温和的提示。
+    seedIpc([view()]);
+    seedIndex();
+    useMySkills.setState({
+      toolFailures: [{ kind: "differs", agent: "trae", existing: "/x" }],
+    });
+    const { unmount } = render(<MySkillsPage />);
+    await screen.findByText(/有 1 处需要你看一下/);
+    unmount();
+
+    useMySkills.setState({
+      toolFailures: [
+        { kind: "differs", agent: "trae", existing: "/x" },
+        { kind: "failed", agent: "cursor", message: "cursor 没配上" },
+      ],
+    });
+    render(<MySkillsPage />);
+    await screen.findByText(/有 2 处没能完成/);
   });
 
   it("differs 与真正的失败在界面上说的不是同一句话", async () => {
@@ -562,9 +643,8 @@ describe("勾选工具的失败必须看得见", () => {
     seedIndex();
     useMySkills.setState({
       toolFailures: [
-        { agent: "trae", message: "trae 没配上", kind: "failed" },
+        { kind: "failed", agent: "trae", message: "trae 没配上" },
       ],
-      agentNames: new Map([["trae", "Trae"]]),
     });
     render(<MySkillsPage />);
 
@@ -577,7 +657,7 @@ describe("勾选工具的失败必须看得见", () => {
     seedIndex();
     useMySkills.setState({
       toolFailures: [
-        { agent: null, message: "/h/.agents/skills/w", kind: "differs", existing: "/h/.agents/skills/w" },
+        { kind: "differs", agent: null, existing: "/h/.agents/skills/w" },
       ],
     });
     render(<MySkillsPage />);

@@ -49,21 +49,23 @@ export type RemovePhase = "idle" | "confirming" | "busy";
 /**
  * 一次「勾选哪些工具」里没能如愿的事。`agent` 为 null = 不属于任何一个工具的那一档。
  *
- * `kind` 分两种,**界面必须说不同的话**:
- * - `failed`:真的失败了(`Err`)——"没做成,原因是……";
- * - `differs`:core **停下来问你**(`Ok(Differs)`)——那个位置上已经有一份内容
- *   不同的东西,core 按铁律 7 绝不覆盖。它不是错误,但**更不能不说**:见下。
+ * **刻意写成可辨联合(discriminated union),不是"一个结构 + 一个 kind 标记"**:
+ * 两档携带的东西根本不同,而其中一档带的是**不能给用户看的内部值**。
+ *
+ * - `failed`:真的失败了(`Err`)——`message` 是 core 给的**用户可读中文**,照摆即可;
+ * - `differs`:core **停下来问你**(`Ok(Differs)`)——那个位置上已经有一份内容不同的
+ *   东西,core 按铁律 7 绝不覆盖。它携带的 `existing` 是一条**原始文件系统路径**,
+ *   属于内部标识,**不是用来直接渲染给用户的**(这个项目连撞过两次:安装结果里
+ *   露出内部目录名、冲突弹窗标题用了内部标识)。它只有两个正当用途:
+ *   拼「打开文件夹」的目标,以及在错误详情里做佐证。
+ *
+ * 🔴 写成联合之后,`differs` 那一档**根本没有 `message` 这个字段**——
+ * 将来谁想"顺手渲染 `message`",tsc 会当场拦下,而不是等到用户看见一条裸路径。
+ * 这比"约定不填"强:约定会被下一个人无声地打破。
  */
-export interface ToolFailure {
-  agent: string | null;
-  message: string;
-  kind: "failed" | "differs";
-}
-
-/** 位置被一份内容不同的东西占着时,core 给的 `existing` 路径(界面据此摆出口)。 */
-export interface ToolBlocked extends ToolFailure {
-  existing?: string;
-}
+export type ToolBlocked =
+  | { kind: "failed"; agent: string | null; message: string }
+  | { kind: "differs"; agent: string | null; existing: string };
 
 /** 「留哪一份」待拍板。`after` 记着拍完板本来要做什么,拍完接着做,不让用户再点一次。 */
 export interface VersionChoice {
@@ -214,9 +216,8 @@ export function collectToolFailures(outcome: SetAgentsOutcome): ToolBlocked[] {
   if (outcome.outcome !== "done") return [];
   const out: ToolBlocked[] = [];
   const classify = (agent: string | null, r: RustResult<Converged>): ToolBlocked | null => {
-    if ("Err" in r) return { agent, message: r.Err.message, kind: "failed" };
-    if (r.Ok.kind === "differs")
-      return { agent, message: r.Ok.existing, kind: "differs", existing: r.Ok.existing };
+    if ("Err" in r) return { kind: "failed", agent, message: r.Err.message };
+    if (r.Ok.kind === "differs") return { kind: "differs", agent, existing: r.Ok.existing };
     return null;
   };
   const canonical = classify(null, outcome.canonical);
@@ -226,7 +227,7 @@ export function collectToolFailures(outcome: SetAgentsOutcome): ToolBlocked[] {
     if (hit) out.push(hit);
   }
   for (const [agent, error] of outcome.unlinkFailed) {
-    out.push({ agent, message: error.message, kind: "failed" });
+    out.push({ kind: "failed", agent, message: error.message });
   }
   return out;
 }
