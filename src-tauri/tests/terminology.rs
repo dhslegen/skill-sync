@@ -269,6 +269,28 @@ fn error_messages_use_no_retired_feature_terms() {
 }
 
 #[test]
+fn error_messages_use_no_link_terminology() {
+    // 第三份独立禁词表(前端 `src/i18n/index.test.ts` 有同名同表的一条)。
+    // **不与上面两份合并**:git 术语那份出自 docs/terminology.md,「纳入管理」
+    // 那份是 v6 撤销认领语义的产物,这一份是 v6 二期撤销「本体/链接」实现模型
+    // 之后的产物——三者的存废理由各不相同。
+    //
+    // 用户可见的说法只有「一个技能,三个在哪」:这台电脑上 / 各个工具里 /
+    // 技能库里。「关联」「修复关联」「收编」「记账」「占位」全是实现细节的名字,
+    // 它们泄漏到错误信息里,用户就得先学会这套内部模型才看得懂出了什么事。
+    let banned = ["修复关联", "关联", "收编", "记账", "占位"];
+    for m in all_messages() {
+        for word in banned {
+            assert!(
+                !m.message.contains(word),
+                "用户可见的错误信息里出现实现术语「{word}」\n  {}",
+                place(&m)
+            );
+        }
+    }
+}
+
+#[test]
 fn error_messages_contain_no_emoji() {
     // 近似 \p{Extended_Pictographic} 的主要码位区间(std 没有 Unicode 属性查询,不为此引依赖)
     let is_emoji = |c: char| {

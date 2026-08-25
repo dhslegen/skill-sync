@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { refreshLocalFor, useLocalRefresh } from "./useLocalRefresh";
 import { useInstall } from "@/store/install";
 import { useMySkills } from "@/store/my-skills";
-import { useShare } from "@/store/share";
 import { useUi } from "@/store/ui";
 
 const invoke = vi.fn();
@@ -34,7 +33,6 @@ function reset() {
   invoke.mockReset();
   invoke.mockImplementation(async (cmd: string) => {
     if (cmd === "installed_list") return [];
-    if (cmd === "share_candidates") return [];
     if (cmd === "agents_detected") return { agents: [], canonicalDir: "" };
     return null;
   });
@@ -48,18 +46,11 @@ describe("按页刷新", () => {
   it("我的技能页刷列表", async () => {
     refreshLocalFor("mine");
     await vi.waitFor(() => expect(sent()).toContain("installed_list"));
-    expect(sent()).not.toContain("share_candidates");
-  });
-
-  it("分享页刷候选——那是改完 SKILL.md 后最该更新的一处", async () => {
-    refreshLocalFor("share");
-    await vi.waitFor(() => expect(sent()).toContain("share_candidates"));
   });
 
   it("商店页刷已装状态:技能可能在外部被删了,该显示「获取」而不是「已启用」", async () => {
     refreshLocalFor("store");
     await vi.waitFor(() => expect(sent()).toContain("installed_list"));
-    expect(sent()).not.toContain("share_candidates");
   });
 
   it("设置页不展示技能,一个请求都不该发", async () => {
@@ -69,18 +60,15 @@ describe("按页刷新", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("刷新只写列表,不动正在填的分享表单", async () => {
-    // 用户切到编辑器复制一段文字再切回来,表单被清空是不可接受的
-    useShare.setState({
-      phase: "form",
-      form: { shareName: "my-notes", displayName: "我的笔记", description: "写了一半" },
-    });
+  it("刷新只写列表,不动正在开着的分享确认屏", async () => {
+    // 用户切到编辑器看一眼再切回来,确认屏被关掉是不可接受的
+    // (分享页整页已撤,这条守的是取代它的那一屏)
+    useMySkills.setState({ shareTarget: { dirSlug: "my-notes" } });
 
-    refreshLocalFor("share");
-    await vi.waitFor(() => expect(sent()).toContain("share_candidates"));
+    refreshLocalFor("mine");
+    await vi.waitFor(() => expect(sent()).toContain("installed_list"));
 
-    expect(useShare.getState().phase).toBe("form");
-    expect(useShare.getState().form.description).toBe("写了一半");
+    expect(useMySkills.getState().shareTarget).toEqual({ dirSlug: "my-notes" });
   });
 });
 
@@ -109,7 +97,7 @@ describe("窗口焦点监听(级别 1)", () => {
     reset();
     focusCb = null;
     unlistenSpy.mockReset();
-    useUi.setState({ page: "share" });
+    useUi.setState({ page: "store" });
   });
 
   it("**重获**焦点才刷新——方向反了的话,切走时刷新、切回来还是旧的", async () => {
@@ -124,7 +112,7 @@ describe("窗口焦点监听(级别 1)", () => {
 
     // 重获焦点:这才是"改完切回来"的那一刻
     focusCb!({ payload: true });
-    await vi.waitFor(() => expect(sent()).toContain("share_candidates"));
+    await vi.waitFor(() => expect(sent()).toContain("installed_list"));
   });
 
   it("刷的是切回来时所在的那一页,不是注册监听时的那一页", async () => {
@@ -136,8 +124,10 @@ describe("窗口焦点监听(级别 1)", () => {
     invoke.mockClear();
     focusCb!({ payload: true });
 
-    await vi.waitFor(() => expect(sent()).toContain("installed_list"));
-    expect(sent()).not.toContain("share_candidates");
+    // 判别信号是 `agents_detected`:商店页那一档只刷已装状态(installed_list),
+    // 只有「我的技能」那一档会连 agent 显示名一起拉——拿 installed_list 断言的话
+    // 两页都发它,这条测试就分不出刷的到底是哪一页(空转)。
+    await vi.waitFor(() => expect(sent()).toContain("agents_detected"));
   });
 
   it("卸载时摘掉原生监听,不留野回调", async () => {
@@ -153,7 +143,7 @@ describe("文件监听(级别 3)", () => {
     reset();
     changedCb = null;
     eventUnlisten.mockReset();
-    useUi.setState({ page: "share" });
+    useUi.setState({ page: "store" });
   });
 
   it("core 报来变更就刷新当前页——窗口有焦点时改动也能立刻反映", async () => {
@@ -163,7 +153,7 @@ describe("文件监听(级别 3)", () => {
 
     changedCb!();
 
-    await vi.waitFor(() => expect(sent()).toContain("share_candidates"));
+    await vi.waitFor(() => expect(sent()).toContain("installed_list"));
   });
 
   it("刷的同样是此刻所在的那一页", async () => {
@@ -174,8 +164,8 @@ describe("文件监听(级别 3)", () => {
     invoke.mockClear();
     changedCb!();
 
-    await vi.waitFor(() => expect(sent()).toContain("installed_list"));
-    expect(sent()).not.toContain("share_candidates");
+    // 同上:用 agents_detected 才分得出是「我的技能」那一档(见上一条注释)
+    await vi.waitFor(() => expect(sent()).toContain("agents_detected"));
   });
 
   it("卸载时退订,不留野回调", async () => {

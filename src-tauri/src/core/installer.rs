@@ -307,7 +307,7 @@ impl<'a> Installer<'a> {
                 if sanitize_name(&dir_name_of(b)) != dir_name {
                     return Err(AppError::new(
                         "FS_BAD_BODY",
-                        "这个技能的记账已经损坏,请重新获取一次",
+                        "这个技能的安装信息已经损坏,请重新获取一次",
                     )
                     .with_detail(format!(
                         "recorded body {} does not match dir_name {dir_name}",

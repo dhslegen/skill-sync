@@ -1,9 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MySkillsPage } from "./MySkillsPage";
-import type { InstalledSkillView, ShareCandidate } from "@/lib/ipc";
+import type { InstalledSkillView, SkillVersion } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { useMySkills } from "@/store/my-skills";
@@ -14,6 +14,8 @@ import { useUi } from "@/store/ui";
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args: unknown) => invoke(cmd, args) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
+
+const BODY = "/h/.claude/skills/weekly-report";
 
 const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   dirSlug: "weekly-report",
@@ -31,8 +33,20 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   relation: "installed",
   localPresent: true,
   sourceLabel: "skills/skills",
-  links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
+  links: [],
+  body: BODY,
+  localHash: "sha256:mine",
+  tools: [{ agent: "claude-code", state: "linked" }],
+  versions: [],
+  shareBlocked: null,
   ...over,
+});
+
+const V = (path: string, hash: string): SkillVersion => ({
+  path,
+  modifiedAt: "2026-08-01T00:00:00.000Z",
+  files: 2,
+  contentHash: hash,
 });
 
 const AGENT_LIST = {
@@ -53,8 +67,7 @@ function seedIpc(list: InstalledSkillView[], extra: Record<string, unknown> = {}
   });
 }
 
-/** 远端这一版的内容指纹。与 view() 的 contentHash 一致 = 已是最新;
- *  不一致 = 有可用更新(判定按逐技能内容,不再看整库 sha)。 */
+/** 远端这一版的内容指纹。与 view() 的 contentHash 一致 = 已是最新。 */
 function seedIndex(remoteHash = "sha256:mine") {
   useStoreIndex.setState({
     index: {
@@ -86,21 +99,6 @@ function seedIndex(remoteHash = "sha256:mine") {
   });
 }
 
-function shareCandidate(over: Partial<ShareCandidate> = {}): ShareCandidate {
-  return {
-    dirName: "my-draft",
-    path: "/canonical/my-draft",
-    inCanonical: true,
-    origin: { kind: "local" },
-    name: "我的草稿",
-    description: null,
-    problem: null,
-    shared: null,
-    dirNameUsable: true,
-    ...over,
-  };
-}
-
 function reset() {
   invoke.mockReset();
   seedIpc([]);
@@ -109,12 +107,17 @@ function reset() {
     loadError: null,
     loading: false,
     agentNames: new Map(),
+    installedAgents: null,
     removePhase: "idle",
     removeTarget: null,
     removeError: null,
-    repairConfirmTarget: null,
-    repairBusy: null,
-    repairError: null,
+    setAgentsBusy: null,
+    setAgentsError: null,
+    toolFailures: null,
+    versionChoice: null,
+    keepBusy: false,
+    keepError: null,
+    shareTarget: null,
     shareBusy: null,
     shareDone: null,
     shareError: null,
@@ -123,614 +126,461 @@ function reset() {
   useInstall.setState({ phase: "idle", dirSlug: null, precheck: null, shareResult: null });
   useStoreIndex.setState({ index: null });
   useUi.setState({ page: "mine" });
-  useShare.setState({
-    candidates: null,
-    scanError: null,
-    scanning: false,
-    phase: "idle",
-    target: null,
-    form: { shareName: "", displayName: "", description: "" },
-    targetRepo: null,
-    preview: "unknown",
-    staleNotice: false,
-    shareError: null,
-    done: null,
-  });
+  useShare.setState({ targetRepo: null, preview: "unknown" });
 }
 
-describe("我的技能页", () => {
+/** 只取技能行区域,避开「装在项目里的」那一区与页头。 */
+const rows = () => screen.getAllByRole("button", { name: /周报生成|weekly-report|my-draft/ });
+
+describe("我的技能页 · 基础", () => {
   beforeEach(reset);
 
   it("空列表引导去商店;点按钮切页", async () => {
     render(<MySkillsPage />);
-
-    expect(await screen.findByText("还没有获取任何技能。")).toBeInTheDocument();
+    await screen.findByText("还没有获取任何技能。");
     await userEvent.click(screen.getByRole("button", { name: "去技能商店看看" }));
     expect(useUi.getState().page).toBe("store");
   });
 
   it("读取失败显示错误与重试,绝不显示空状态文案", async () => {
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "installed_list") throw { code: "FS_TASK", message: "读取已安装列表失败,请重试" };
-      return { agents: [], canonicalDir: "" };
-    });
+    invoke.mockRejectedValue({ code: "FS_TASK", message: "读取已安装列表失败,请重试" });
     render(<MySkillsPage />);
-
-    expect(await screen.findByText(/读取已安装列表失败/)).toBeInTheDocument();
-    expect(screen.queryByText("还没有获取任何技能。")).not.toBeInTheDocument();
+    await screen.findByText(/读取已安装列表失败/);
+    expect(screen.queryByText("还没有获取任何技能。")).toBeNull();
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
   });
 
-  it("行里是展示名与工具显示名,不是内部标识", async () => {
-    seedIndex();
+  it("行里是展示名,不是内部目录名", async () => {
     seedIpc([view()]);
+    seedIndex();
     render(<MySkillsPage />);
-
-    expect(await screen.findByText("周报生成")).toBeInTheDocument();
-    expect(screen.getByText(/Claude Code/)).toBeInTheDocument();
-    expect(screen.queryByText(/weekly-report/)).not.toBeInTheDocument();
-    // 来源用 owner/repo 说清楚
-    expect(screen.getByText(/skills\/skills/)).toBeInTheDocument();
+    await screen.findByText("周报生成");
+    expect(screen.queryByText("weekly-report")).toBeNull();
   });
 
   it("索引查不到时退回目录名,而不是留空", async () => {
     seedIpc([view()]);
     render(<MySkillsPage />);
-    expect(await screen.findByText("weekly-report")).toBeInTheDocument();
+    await screen.findByText("weekly-report");
   });
 
-  it("版本一致时没有更新按钮 —— 不能引诱用户做无意义的重装", async () => {
+  it("两分区固定顺序:我分享的 → 我安装的", async () => {
+    seedIpc([view({ relation: "installed" }), view({ dirSlug: "my-draft", relation: "draft" })]);
+    render(<MySkillsPage />);
+    await screen.findByText("我分享的");
+    const heads = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
+    expect(heads.slice(0, 2)).toEqual(["我分享的", "我安装的"]);
+  });
+
+  it("空分区不显示标题", async () => {
+    seedIpc([view({ relation: "installed" })]);
+    render(<MySkillsPage />);
+    await screen.findByText("我安装的");
+    expect(screen.queryByText("我分享的")).toBeNull();
+  });
+});
+
+describe("已撤销的说法不得再出现在界面上", () => {
+  beforeEach(reset);
+
+  it("「修复」按钮整个撤销 —— 它缺的不是实现,是概念错了", async () => {
+    // 那件事本身就是"在某某工具里启用它"这个勾。断链的位置现在显示成没启用,
+    // 再点一次即自愈,不需要第二个入口。
+    seedIpc([view({ tools: [{ agent: "claude-code", state: "missing" }] })]);
     seedIndex();
-    seedIpc([view()]);
     render(<MySkillsPage />);
-
     await screen.findByText("周报生成");
-    expect(screen.queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
+
+    expect(screen.queryByText("修复")).toBeNull();
+    expect(screen.queryByRole("button", { name: /修复/ })).toBeNull();
   });
 
-  it("来源已移除:亮出徽标,且更新与分享改动都不再提供", async () => {
-    // 索引有新版本、本体也有改动——正常情况下两个按钮都该在,
-    // 但来源没了,更新与回推都没有去处,摆出来就是引诱用户撞错误
-    seedIndex("sha256:newer");
-    seedIpc([view({ sourceRemoved: true, localModified: true })]);
-    render(<MySkillsPage />);
+  it("「关联」「纳入管理」「移出管理」「其他工具装的」都不出现在 DOM", async () => {
+    seedIpc([
+      view({ relation: "installed" }),
+      view({ dirSlug: "my-draft", relation: "draft", contentHash: "" }),
+    ]);
+    seedIndex();
+    const { container } = render(<MySkillsPage />);
+    await screen.findByText("我分享的");
 
-    await screen.findByText("周报生成");
-    expect(screen.getByText("来源已移除")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "分享改动" })).not.toBeInTheDocument();
+    for (const word of ["关联", "纳入管理", "移出管理", "其他工具装的", "记账", "占位"]) {
+      expect(container.textContent, `界面上出现了「${word}」`).not.toContain(word);
+    }
+  });
+});
+
+describe("八个状态各自的主动作", () => {
+  beforeEach(reset);
+
+  const shared = (over: Partial<InstalledSkillView> = {}) =>
+    view({ relation: "shared", ...over });
+
+  it("synced:不摆任何主动作", async () => {
+    seedIpc([shared()]);
+    seedIndex("sha256:mine");
+    render(<MySkillsPage />);
+    await screen.findByText("已同步");
+    for (const name of ["取回", "分享更新", "分享", "选择保留哪一份", "改用库里的版本"]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
   });
 
-  it("技能库不在列表里:说的是这句话,不是「来源已移除」(M4 任务 2)", async () => {
-    // 源好好的,只是这个技能库不在你的库列表里(M3 绑歪的存量条目,
-    // 或用户后来把库移除了)。去向与来源已移除相同,但**说法必须不同**
-    // ——说"来源已移除"是假话,而且会把用户引去查一个根本没问题的来源。
-    seedIndex("sha256:newer");
-    seedIpc([view({ libraryRemoved: true, localModified: true })]);
+  it("draft:主动作是「分享」,点了打开分享确认屏(而不是跳一个已撤销的页)", async () => {
+    seedIpc([shared({ dirSlug: "my-draft", relation: "draft" })], { share_preview: "unknown" });
     render(<MySkillsPage />);
+    await screen.findByText("尚未分享");
 
-    await screen.findByText("周报生成");
-    expect(screen.getByText("技能库不在列表中")).toBeInTheDocument();
-    expect(screen.queryByText("来源已移除")).not.toBeInTheDocument();
-    // 与来源已移除同样:更新与回推没有去处,不摆按钮引诱用户撞错误
-    expect(screen.queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "分享改动" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "分享" }));
+
+    expect(useMySkills.getState().shareTarget).toEqual({ dirSlug: "my-draft" });
+    // 一个字节都不该推出去——这一步只是打开确认屏
+    expect(invoke).not.toHaveBeenCalledWith("skill_share", expect.anything());
   });
 
-  it("库里有新版本时出现更新按钮;点击沿用记账的工具直接更新", async () => {
-    seedIndex("sha256:newer");
-    seedIpc([view({ agents: ["claude-code", "cursor"] })], {
-      skill_install: {
-        outcome: "installed",
-        report: { dirName: "weekly-report", canonicalDir: "/c", links: [] },
-        localKept: false,
-        lock: "written",
-      },
+  it("notHere:主动作是「取回」,真实点击后发出 skill_install", async () => {
+    seedIpc([shared({ localPresent: false, body: "", agents: [] })], {
+      skill_install: { outcome: "installed", report: { dirName: "weekly-report", canonicalDir: "/c", links: [] }, localKept: false, lock: "written" },
     });
+    seedIndex();
+    render(<MySkillsPage />);
+    await screen.findByText("不在这台电脑");
+
+    await userEvent.click(screen.getByRole("button", { name: "取回" }));
+    await vi.waitFor(() =>
+      expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_install")).toBe(true),
+    );
+  });
+
+  it("remoteAhead(我分享的):主动作是「取回」", async () => {
+    seedIpc([shared()]);
+    seedIndex("sha256:remote-newer");
+    render(<MySkillsPage />);
+    await screen.findByText("库里有新版");
+    expect(screen.getByRole("button", { name: "取回" })).toBeInTheDocument();
+  });
+
+  it("localAhead:主动作是「分享更新」,点击调用 skill_share_changes", async () => {
+    seedIpc([shared({ localModified: true })], {
+      skill_share_changes: { kind: "shared", mode: "pushed", url: null },
+    });
+    seedIndex("sha256:mine");
+    render(<MySkillsPage />);
+    await screen.findByText("有改动未分享");
+
+    await userEvent.click(screen.getByRole("button", { name: "分享更新" }));
+    await vi.waitFor(() =>
+      expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_share_changes")).toBe(true),
+    );
+  });
+
+  it("both:主动作是「取回」(冲突由 core 的预检交给弹窗拍板)", async () => {
+    seedIpc([shared({ localModified: true })]);
+    seedIndex("sha256:remote-newer");
+    render(<MySkillsPage />);
+    await screen.findByText("库里有新版,本地也有改动");
+    expect(screen.getByRole("button", { name: "取回" })).toBeInTheDocument();
+  });
+
+  it("differs:两个方向都摆,不替用户默认谁", async () => {
+    // 🔴 这一档没有安装基线,app **确实不知道**是本地改了还是库里更新了。
+    // 挑一个当主动作就是在猜,而两个方向猜错的代价都是覆盖掉一边的成果。
+    seedIpc([shared({ contentHash: "", localHash: "sha256:local-different" })]);
+    seedIndex("sha256:remote");
+    render(<MySkillsPage />);
+    await screen.findByText("本地和库里不一样");
+
+    expect(screen.getByRole("button", { name: "改用库里的版本" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "分享更新" })).toBeInTheDocument();
+  });
+
+  it("无基线但内容其实一样:说「已同步」,不摆那两个动作", async () => {
+    // differs 的对照组:两方指纹相同就是同步了,不该因为"没有安装记录"
+    // 就对用户说一句含糊的话、再摆两个他不需要的按钮。
+    seedIpc([shared({ contentHash: "", localHash: "sha256:same" })]);
+    seedIndex("sha256:same");
+    render(<MySkillsPage />);
+    await screen.findByText("已同步");
+    expect(screen.queryByRole("button", { name: "改用库里的版本" })).toBeNull();
+  });
+
+  it("versions:只摆「选择保留哪一份」与「打开文件夹」,其余动作一概不渲染", async () => {
+    // 🔴 磁盘上有几份内容不同的实体时,「取回」「分享更新」的主语是不确定的
+    // (拿哪一份去比?去推?)。摆出来就是让用户在没有确定答案的问题上做决定。
+    seedIpc([
+      shared({
+        localModified: true,
+        versions: [V("/h/.claude/skills/w", "a"), V("/h/.trae/skills/w", "b")],
+      }),
+    ]);
+    seedIndex("sha256:remote-newer");
+    render(<MySkillsPage />);
+    await screen.findByText("有几个版本");
+
+    expect(screen.getByRole("button", { name: "选择保留哪一份" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开文件夹" })).toBeInTheDocument();
+    for (const name of ["取回", "分享更新", "分享", "移除", "改用库里的版本", "更新"]) {
+      expect(screen.queryByRole("button", { name }), `versions 那一档不该摆「${name}」`).toBeNull();
+    }
+    // 勾组也不摆:还没决定留哪份,"启用哪一份"无从谈起
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  it("点「选择保留哪一份」把拍板交给 VersionChooser,磁盘未被碰过", async () => {
+    const versions = [V("/h/.claude/skills/w", "a"), V("/h/.trae/skills/w", "b")];
+    seedIpc([shared({ versions })]);
+    render(<MySkillsPage />);
+    await screen.findByText("有几个版本");
+
+    await userEvent.click(screen.getByRole("button", { name: "选择保留哪一份" }));
+
+    expect(useMySkills.getState().versionChoice?.versions).toEqual(versions);
+    expect(invoke).not.toHaveBeenCalledWith("skill_keep_version", expect.anything());
+  });
+});
+
+describe("「我安装的」区块", () => {
+  beforeEach(reset);
+
+  it("库里有新版时出现「更新」按钮;点击沿用账上的工具与来源坐标", async () => {
+    seedIpc([view({ agents: ["claude-code", "cursor"] })], {
+      skill_install: { outcome: "installed", report: { dirName: "weekly-report", canonicalDir: "/c", links: [] }, localKept: false, lock: "written" },
+    });
+    seedIndex("sha256:remote-newer");
     render(<MySkillsPage />);
 
     await userEvent.click(await screen.findByRole("button", { name: "更新" }));
 
-    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_install");
-    expect([...call![1].args.agentIds].sort()).toEqual(["claude-code", "cursor"]);
-  });
-
-  it("两分区固定顺序:我分享的 → 我安装的 → 装在项目里的", async () => {
-    seedIpc([
-      view({ dirSlug: "installed-one" }),
-      view({ dirSlug: "shared-one", relation: "shared" }),
-      view({ dirSlug: "draft-one", relation: "draft", agents: [], links: [], commitSha: "", contentHash: "" }),
-    ]);
-    render(<MySkillsPage />);
-
-    await screen.findByText("installed-one");
-    const headings = screen.getAllByRole("heading").map((h) => h.textContent);
-    // 「装在项目里的」(v5)恒在最后:它按项目分组、数据源也不同,
-    // 空的时候摆引导语而不是隐藏——否则用户不知道有这条路。
-    expect(headings).toEqual(["我分享的", "我安装的", "装在项目里的"]);
-  });
-
-  it("空分区不显示标题", async () => {
-    seedIpc([view()]);
-    render(<MySkillsPage />);
-
-    await screen.findByText("weekly-report");
-    const headings = screen.getAllByRole("heading").map((h) => h.textContent);
-    expect(headings).toEqual(["我安装的", "装在项目里的"]);
-  });
-
-  it("「纳入管理」「移出管理」「其他工具装的」三个字符串不再出现在 DOM(v6 撤销)", async () => {
-    seedIpc([
-      view({ dirSlug: "installed-one" }),
-      view({ dirSlug: "shared-one", relation: "shared" }),
-      view({ dirSlug: "draft-one", relation: "draft", agents: [], links: [], commitSha: "", contentHash: "" }),
-      view({ dirSlug: "not-here", relation: "shared", localPresent: false, agents: [], links: [], commitSha: "", contentHash: "", sourceLabel: null }),
-    ]);
-    render(<MySkillsPage />);
-
-    await screen.findByText("installed-one");
-    expect(screen.queryByText("纳入管理")).not.toBeInTheDocument();
-    expect(screen.queryByText("移出管理")).not.toBeInTheDocument();
-    expect(screen.queryByText("其他工具装的")).not.toBeInTheDocument();
-  });
-
-  it("改过的技能带「已改动」徽标", async () => {
-    seedIpc([view({ localModified: true })]);
-    render(<MySkillsPage />);
-    expect(await screen.findByText("已改动")).toBeInTheDocument();
-  });
-
-  it("关联异常按条数报,悬停给人话说明", async () => {
-    seedIpc([
-      view({
-        links: [
-          { dir: "/h/.claude/skills", mode: "symlink", health: "broken" },
-          { dir: "/h/.trae/skills", mode: "junction", health: "healthy" },
-        ],
-      }),
-    ]);
-    render(<MySkillsPage />);
-
-    const badge = await screen.findByText("1 处关联异常");
-    // title 里是给人读的解释,不是 broken 这种内部枚举值
-    expect(badge.getAttribute("title")).toContain("关联指向的内容已不存在");
-    expect(badge.getAttribute("title")).not.toContain("broken");
-  });
-
-  it("链接全部健康时没有异常徽标", async () => {
-    seedIpc([view()]);
-    render(<MySkillsPage />);
-    await screen.findByText("weekly-report");
-    expect(screen.queryByText(/关联异常/)).not.toBeInTheDocument();
-  });
-
-  it("有关联异常且本体在:给「修复」按钮", async () => {
-    seedIpc([
-      view({ links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "missing" }] }),
-    ]);
-    render(<MySkillsPage />);
-    expect(await screen.findByRole("button", { name: "修复" })).toBeInTheDocument();
-  });
-
-  it("链接健康时没有「修复」按钮", async () => {
-    seedIpc([view()]);
-    render(<MySkillsPage />);
-    await screen.findByText("weekly-report");
-    expect(screen.queryByRole("button", { name: "修复" })).not.toBeInTheDocument();
-  });
-
-  it("改过的技能给「分享改动」按钮;点击把改动推回来源", async () => {
-    seedIpc([view({ localModified: true })], {
-      skill_share_changes: { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null },
+    await vi.waitFor(() => {
+      const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_install");
+      expect(call?.[1].args).toMatchObject({
+        dirSlug: "weekly-report",
+        agentIds: ["claude-code", "cursor"],
+        registryId: "company",
+        repo: "skills/skills",
+      });
     });
+  });
+
+  it("版本一致时没有更新按钮 —— 不能引诱用户做无意义的重装", async () => {
+    seedIpc([view()]);
+    seedIndex("sha256:mine");
+    render(<MySkillsPage />);
+    await screen.findByText("周报生成");
+    expect(screen.queryByRole("button", { name: "更新" })).toBeNull();
+  });
+
+  it("来源已移除:亮出徽标,更新与分享改动都不再提供", async () => {
+    seedIpc([view({ sourceRemoved: true, localModified: true })]);
+    seedIndex("sha256:remote-newer");
+    render(<MySkillsPage />);
+    await screen.findByText("来源已移除");
+    expect(screen.queryByRole("button", { name: "更新" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "分享改动" })).toBeNull();
+  });
+
+  it("技能库不在列表里:说的是这句话,不是「来源已移除」(M4 任务 2)", async () => {
+    seedIpc([view({ libraryRemoved: true })]);
+    seedIndex("sha256:remote-newer");
+    render(<MySkillsPage />);
+    await screen.findByText("技能库不在列表中");
+    expect(screen.queryByText("来源已移除")).toBeNull();
+  });
+
+  it("改过的技能给「分享改动」;点击把改动推回来源", async () => {
+    seedIpc([view({ localModified: true })], {
+      skill_share_changes: { kind: "shared", mode: "pushed", url: null },
+    });
+    seedIndex("sha256:mine");
     render(<MySkillsPage />);
 
     await userEvent.click(await screen.findByRole("button", { name: "分享改动" }));
-
-    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
-    expect(call?.[1].args.dirSlug).toBe("weekly-report");
-    expect(await screen.findByText(/改动已分享/)).toBeInTheDocument();
-  });
-
-  it("分享改动撞上他人的新版:进冲突档等拍板,不当错误展示", async () => {
-    seedIpc([view({ localModified: true })], {
-      skill_share_changes: { kind: "remoteChanged", historyUrl: "http://g/skills/skills/commits/x" },
-    });
-    render(<MySkillsPage />);
-
-    await userEvent.click(await screen.findByRole("button", { name: "分享改动" }));
-
-    expect(useMySkills.getState().shareConflict).toEqual({
-      dirSlug: "weekly-report",
-      historyUrl: "http://g/skills/skills/commits/x",
-    });
-    expect(useMySkills.getState().shareError).toBeNull();
-    expect(screen.queryByText(/没能完成/)).not.toBeInTheDocument();
+    await vi.waitFor(() =>
+      expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_share_changes")).toBe(true),
+    );
   });
 
   it("没改过的技能没有「分享改动」按钮", async () => {
-    seedIpc([view()]);
+    seedIpc([view({ localModified: false })]);
+    seedIndex("sha256:mine");
+    render(<MySkillsPage />);
+    await screen.findByText("周报生成");
+    expect(screen.queryByRole("button", { name: "分享改动" })).toBeNull();
+  });
+});
+
+describe("打开文件夹:目标必须是本体所在,不是目录名", () => {
+  beforeEach(reset);
+
+  it("🔴 传 path(本体绝对路径),不传 dirSlug", async () => {
+    // 本体很可能根本不住在统一目录里(那正是 v6 二期的起因)。按 dirSlug 请求
+    // 会被 core 解析成统一目录下的同名目录——打开的是另一个地方,或者什么都打不开。
+    seedIpc([view({ body: "/h/.claude/skills/weekly-report", contentHash: "" })]);
     render(<MySkillsPage />);
     await screen.findByText("weekly-report");
-    expect(screen.queryByRole("button", { name: "分享改动" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "打开文件夹" }));
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_reveal");
+    expect(call?.[1].args).toEqual({ path: "/h/.claude/skills/weekly-report" });
+    expect(call?.[1].args).not.toHaveProperty("dirSlug");
   });
 
-  it("改动走了评审:提示审核中,「已改动」徽标不消失", async () => {
-    seedIpc([view({ localModified: true })], {
-      skill_share_changes: {
-        kind: "submitted",
-        mode: "reviewRequested",
-        commitSha: "new",
-        reviewUrl: "http://x/pulls/3",
-      },
-    });
+  it("本体不在这台电脑时不摆这个按钮 —— 没有可打开的目标", async () => {
+    seedIpc([view({ relation: "shared", localPresent: false, body: "" })]);
+    seedIndex();
     render(<MySkillsPage />);
-
-    await userEvent.click(await screen.findByRole("button", { name: "分享改动" }));
-
-    expect(await screen.findByText(/已提交审核/)).toBeInTheDocument();
-    expect(screen.getByText("已改动")).toBeInTheDocument();
+    await screen.findByText("不在这台电脑");
+    expect(screen.queryByRole("button", { name: "打开文件夹" })).toBeNull();
   });
+});
 
-  it("点移除进入确认流程,磁盘未被碰过", async () => {
+describe("移除", () => {
+  beforeEach(reset);
+
+  it("点移除只是进确认流程,磁盘未被碰过", async () => {
     seedIpc([view()]);
+    seedIndex();
     render(<MySkillsPage />);
 
     await userEvent.click(await screen.findByRole("button", { name: "移除" }));
 
     expect(useMySkills.getState().removePhase).toBe("confirming");
-    expect(useMySkills.getState().removeTarget).toBe("weekly-report");
     expect(invoke).not.toHaveBeenCalledWith("skill_remove", expect.anything());
   });
 
-  it("点行内名称区打开本地详情(按 dirSlug 请求)", async () => {
-    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+  it("本体不在这台电脑时不摆「移除」—— 没有可移的东西", async () => {
+    seedIpc([view({ relation: "shared", localPresent: false, body: "" })]);
+    seedIndex();
+    render(<MySkillsPage />);
+    await screen.findByText("不在这台电脑");
+    expect(screen.queryByRole("button", { name: "移除" })).toBeNull();
+  });
+
+  it("没有安装记录但本体在:照常摆「移除」(v6 二期起本体自己就是可移的东西)", async () => {
+    seedIpc([view({ relation: "shared", contentHash: "", localPresent: true })]);
+    seedIndex();
+    render(<MySkillsPage />);
+    await screen.findByText("周报生成");
+    expect(screen.getByRole("button", { name: "移除" })).toBeInTheDocument();
+  });
+});
+
+describe("勾选工具的失败必须看得见", () => {
+  beforeEach(reset);
+
+  it("core 报的部分失败逐条摆出来,不静默当成功", async () => {
+    // 🔴 收集了不摆出来 = 把"报错中断"换成"静默撒谎"。
+    seedIpc([view()]);
+    seedIndex();
+    useMySkills.setState({
+      toolFailures: [
+        { agent: "claude-code", message: "那个位置已有同名文件夹" },
+        { agent: null, message: "统一目录没能收敛" },
+      ],
+      agentNames: new Map([["claude-code", "Claude Code"]]),
+    });
+    render(<MySkillsPage />);
+
+    await screen.findByText(/有 2 处没能完成/);
+    // agent 名要换成展示名,不许把内部标识漏给用户
+    expect(screen.getByText(/Claude Code：那个位置已有同名文件夹/)).toBeInTheDocument();
+    expect(screen.getByText("统一目录没能收敛")).toBeInTheDocument();
+    expect(screen.queryByText(/claude-code：/)).toBeNull();
+  });
+
+  it("没有失败时不摆那个框", async () => {
+    seedIpc([view()]);
+    seedIndex();
+    render(<MySkillsPage />);
+    await screen.findByText("周报生成");
+    expect(screen.queryByText(/没能完成/)).toBeNull();
+  });
+});
+
+describe("其余既有承诺", () => {
+  beforeEach(reset);
+
+  it("点行内名称区打开本地详情,按本体路径请求", async () => {
+    const open = vi.fn();
+    useLocalDetail.setState({ open });
     seedIpc([view()]);
     seedIndex();
     render(<MySkillsPage />);
 
     await userEvent.click(await screen.findByRole("button", { name: /周报生成/ }));
-
-    expect(invoke).toHaveBeenCalledWith("skill_local_detail", {
-      args: { dirSlug: "weekly-report" },
-    });
+    expect(open).toHaveBeenCalledWith({ path: BODY });
   });
 
-  // 没有 `state.installed` 记账的一行:别的工具装的技能,canonical 里有本体,
-  // 但本 app 一个字都没记。判据是 `contentHash` 为空(记账基线)。
-  const noRecord = () =>
-    view({
-      relation: "installed",
-      commitSha: "",
-      contentHash: "",
-      agents: [],
-      links: [],
-      sourceOwner: "",
-      sourceRepo: "",
-      registryId: "",
-      updatedAt: "",
-      sourceLabel: "skills/skills",
-    });
-
-  it("没有记账的行不摆「移除」——点下去先吓人一句、然后必然报错", async () => {
-    // skill_remove 一进门就要求记账存在(FS_NOT_INSTALLED)。而它的确认文案是
-    // 「将从所有 AI 工具解除关联,并删除本地技能文件」——摆一个必然报错的
-    // 破坏性按钮,比不摆糟得多。
-    seedIpc([noRecord()]);
-    render(<MySkillsPage />);
-
-    await screen.findByText(/周报生成|weekly-report/);
-    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
-  });
-
-  it("有记账的行照常摆「移除」(上一条的对照组)", async () => {
+  it("右侧动作按钮不会顺带打开详情", async () => {
+    const open = vi.fn();
+    useLocalDetail.setState({ open });
     seedIpc([view()]);
+    seedIndex();
     render(<MySkillsPage />);
 
-    expect(await screen.findByRole("button", { name: "移除" })).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "移除" }));
+    expect(open).not.toHaveBeenCalled();
   });
 
-  it("内部字段的空值不许漏到界面上:没有「来自 /」,也没有「获取于 」", async () => {
-    // owner/repo 皆空会拼出「来自 /」;updatedAt 为空时 relativeTimeFromIso
-    // 返回空串,拼出「获取于 」。两句都是把内部字段的空值直接摆给用户看。
-    seedIpc([noRecord()]);
-    render(<MySkillsPage />);
-
-    await screen.findByText(/周报生成|weekly-report/);
-    expect(screen.queryByText(/来自\s*\/$/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/^获取于\s*$/)).not.toBeInTheDocument();
-    // 对照组:值在就照常摆(否则"一律不摆"也能让上面两条全绿)
-    expect(screen.getByText("未关联任何 AI 工具")).toBeInTheDocument();
-  });
-
-  it("有值时「来自」「获取于」照常展示(上一条的对照组)", async () => {
+  it("「以本地为准,分享更新」的失败要在这一页看得见 —— 绝不静默", async () => {
+    // 那条路的结果只写进 useInstall.shareResult,而它唯一的渲染点在
+    // InstallPanel 的装完那一屏——从这一页点进去时那个面板根本不在场。
     seedIpc([view()]);
-    render(<MySkillsPage />);
-
-    expect(await screen.findByText("来自 skills/skills")).toBeInTheDocument();
-    expect(screen.getByText(/^获取于 .+/)).toBeInTheDocument();
-  });
-
-  it("「以本地为准,分享更新」的结果要在这一页看得见 —— 失败尤其不能静默", async () => {
-    // 那条路走 useInstall 的 keepLocalAndShareMine,结果只写进 useInstall.shareResult,
-    // 而它此前唯一的渲染点在 InstallPanel 的装完那一屏——从这一页点进去时那个面板
-    // 根本不在场:冲突弹窗一消失就什么都没有。
-    seedIpc([view()]);
+    seedIndex();
     useInstall.setState({
-      shareResult: { error: { code: "NET_TIMEOUT", message: "连接公司技能库超时" } },
+      shareResult: { error: { code: "NET_TIMEOUT", message: "连不上公司技能库" } },
     });
     render(<MySkillsPage />);
-
-    expect(await screen.findByText(/分享改动没能完成/)).toBeInTheDocument();
-    expect(screen.getByText(/连接公司技能库超时/)).toBeInTheDocument();
+    await screen.findByText(/连不上公司技能库/);
   });
 
   it("「以本地为准,分享更新」成功时同样有回执", async () => {
     seedIpc([view()]);
-    useInstall.setState({ shareResult: { mode: "pushed" } });
-    render(<MySkillsPage />);
-
-    expect(await screen.findByText("改动已分享到公司技能库。")).toBeInTheDocument();
-  });
-
-  it("右侧动作按钮不会顺带打开详情", async () => {
-    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
-    seedIpc([view()]);
-    render(<MySkillsPage />);
-
-    await userEvent.click(await screen.findByRole("button", { name: "移除" }));
-
-    expect(invoke).not.toHaveBeenCalledWith("skill_local_detail", expect.anything());
-    expect(useLocalDetail.getState().target).toBeNull();
-  });
-});
-
-describe("「我分享的」区块 · 七状态机(v6 任务 4)", () => {
-  beforeEach(reset);
-
-  it("notHere:库里有、这台电脑没有本体 —— 摆「取回」,真实点击后 invoke 带 skill_install", async () => {
-    seedIpc(
-      [
-        view({
-          relation: "shared",
-          localPresent: false,
-          agents: [],
-          links: [],
-          commitSha: "",
-          contentHash: "",
-          sourceLabel: null,
-        }),
-      ],
-      {
-        skill_install: {
-          outcome: "installed",
-          report: { dirName: "weekly-report", canonicalDir: "/c", links: [] },
-          localKept: false,
-          lock: "written",
-        },
-      },
-    );
-    render(<MySkillsPage />);
-
-    await screen.findByText("我分享的");
-    expect(screen.getByText("不在这台电脑")).toBeInTheDocument();
-    // 这台电脑从没装过:没有实体记账,「移除」「修复」都不该出现
-    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: "取回" }));
-
-    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_install");
-    expect(call?.[1].args.dirSlug).toBe("weekly-report");
-    // notHere 时账上没有工具可沿用,退化为默认规则(已探测到、未禁用)
-    expect([...call![1].args.agentIds].sort()).toEqual(["claude-code", "cursor"]);
-  });
-
-  it("draft:尚未分享 —— 摆「分享」,点击跳分享页并预选那个候选", async () => {
-    seedIpc(
-      [
-        view({
-          dirSlug: "my-draft",
-          relation: "draft",
-          agents: [],
-          links: [],
-          commitSha: "",
-          contentHash: "",
-          sourceOwner: "",
-          sourceRepo: "",
-          registryId: "",
-          sourceLabel: null,
-        }),
-      ],
-      { share_candidates: [shareCandidate()], share_preview: "unknown" },
-    );
-    render(<MySkillsPage />);
-
-    await screen.findByText("尚未分享");
-    expect(screen.queryByRole("button", { name: "取回" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: "分享" }));
-
-    expect(useUi.getState().page).toBe("share");
-    await vi.waitFor(() => {
-      expect(useShare.getState().target?.dirName).toBe("my-draft");
-    });
-    expect(useShare.getState().phase).toBe("form");
-  });
-
-  it("remoteAhead:库里有新版、本地没改 —— 摆「取回」", async () => {
-    seedIndex("sha256:newer");
-    seedIpc([view({ relation: "shared" })]);
-    render(<MySkillsPage />);
-
-    await screen.findByText("库里有新版");
-    expect(screen.getByRole("button", { name: "取回" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "分享更新" })).not.toBeInTheDocument();
-  });
-
-  it("localAhead:本地改过、库里没变 —— 摆「分享更新」,点击调用 skill_share_changes", async () => {
-    seedIndex(); // 与 view() 的 contentHash 一致 = 库里没变
-    seedIpc([view({ relation: "shared", localModified: true })], {
-      skill_share_changes: { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null },
-    });
-    render(<MySkillsPage />);
-
-    await screen.findByText("有改动未分享");
-    expect(screen.queryByRole("button", { name: "取回" })).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: "分享更新" }));
-
-    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
-    expect(call?.[1].args.dirSlug).toBe("weekly-report");
-  });
-
-  it("localAhead + 来源已移除:不摆「分享更新」——回推没有去处,摆出来就是引诱用户撞错误", async () => {
-    // 与既有 Row 的「分享改动」同款闸门(localModified && !sourceRemoved &&
-    // !libraryRemoved)。这是七状态里唯一摆得出这个按钮、又可能撞上来源问题的一档
-    // ——remoteAhead/both 已经被 hasUpdate 的早退挡住,notHere 的这两个标志
-    // 在 core 侧恒为 false。
     seedIndex();
-    seedIpc([view({ relation: "shared", localModified: true, sourceRemoved: true })]);
+    useInstall.setState({ shareResult: { mode: "reviewRequested" } });
     render(<MySkillsPage />);
-
-    await screen.findByText("有改动未分享");
-    expect(screen.getByText("来源已移除")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "分享更新" })).not.toBeInTheDocument();
-  });
-
-  it("both:库里有新版 + 本地也有改动 —— 摆「取回」,core 返回 needsDecision 时进冲突态", async () => {
-    seedIndex("sha256:newer");
-    seedIpc([view({ relation: "shared", localModified: true })], {
-      skill_install: {
-        outcome: "needsDecision",
-        precheck: { status: "mine", localChanged: true, remoteChanged: true },
-      },
-    });
-    render(<MySkillsPage />);
-
-    await screen.findByText("库里有新版,本地也有改动");
-    await userEvent.click(screen.getByRole("button", { name: "取回" }));
-
-    await vi.waitFor(() => {
-      expect(useInstall.getState().phase).toBe("conflict");
-    });
-    expect(useInstall.getState().precheck).toEqual({
-      status: "mine",
-      localChanged: true,
-      remoteChanged: true,
-    });
-  });
-
-  it("synced:没有改动、库里也没有新版 —— 不摆任何主动作按钮", async () => {
-    seedIndex(); // 与 view() 的 contentHash 一致
-    seedIpc([view({ relation: "shared" })]);
-    render(<MySkillsPage />);
-
-    await screen.findByText("已同步");
-    expect(screen.queryByRole("button", { name: "取回" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "分享更新" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "分享" })).not.toBeInTheDocument();
-    // 有真实记账(commitSha 非空)的行仍然可以移除
-    expect(screen.getByRole("button", { name: "移除" })).toBeInTheDocument();
-  });
-
-  it("noBaseline:有本体、relation === shared,但没有 state.installed 记账 —— 不说「已同步」的假话,摆「分享更新」走分享页", async () => {
-    // 典型场景(用户明确点名):确实是第一作者,但直接经 git 推进库,没经过 app 装过。
-    // core 侧这一档 localModified 恒 false、contentHash 恒空,没有基线却说
-    // "已同步"或"有改动未分享"都是在编——这里断言的正是"不说假话 + 有出路"。
-    seedIpc(
-      [
-        view({
-          relation: "shared",
-          localModified: false,
-          agents: [],
-          links: [],
-          commitSha: "",
-          contentHash: "",
-          sourceLabel: null,
-        }),
-      ],
-      { share_candidates: [shareCandidate({ dirName: "weekly-report" })], share_preview: "unknown" },
-    );
-    render(<MySkillsPage />);
-
-    await screen.findByText("没有获取记录,无法判断是否一致");
-    expect(screen.queryByText("已同步")).not.toBeInTheDocument();
-    expect(screen.queryByText("有改动未分享")).not.toBeInTheDocument();
-    // 没有记账,谈不上「移除」「修复」
-    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "取回" })).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: "分享更新" }));
-
-    expect(useUi.getState().page).toBe("share");
-    await vi.waitFor(() => {
-      expect(useShare.getState().target?.dirName).toBe("weekly-report");
-    });
-  });
-
-  // 🔴 存量「认领」条目的形状:旧版认领写记账时 commitSha 留空、contentHash 有值。
-  // 记账真实存在,`skill_repair`/`skill_remove` 对它们完全有效——判据若按 commitSha,
-  // 这类行的「修复关联」「移除」会永久不摆,升级上来的用户想删都删不掉。
-  // (用户明确反对过的正是这个形状:把合法操作撤掉、做成死路。)
-  it("存量认领条目(commitSha 空、contentHash 有值)照常摆「移除」与「修复」", async () => {
-    seedIndex();
-    seedIpc([
-      view({
-        relation: "shared",
-        commitSha: "",
-        contentHash: "sha256:mine",
-        links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "broken" }],
-      }),
-    ]);
-    render(<MySkillsPage />);
-
-    expect(await screen.findByRole("button", { name: "移除" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "修复" })).toBeInTheDocument();
-  });
-
-  it("真的没有记账时(contentHash 也空)才撤掉这两个动作 —— 上一条的对照组", async () => {
-    seedIndex();
-    seedIpc([
-      view({
-        relation: "shared",
-        commitSha: "",
-        contentHash: "",
-        links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "broken" }],
-      }),
-    ]);
-    render(<MySkillsPage />);
-
-    await screen.findByText(/周报生成|weekly-report/);
-    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "修复" })).not.toBeInTheDocument();
+    await screen.findByText("改动已提交审核,审核通过后生效。");
   });
 
   it("有来源标签时展示「来源 owner/repo」", async () => {
-    seedIpc([view({ relation: "shared", sourceLabel: "vercel-labs/skills" })]);
+    seedIpc([view({ sourceLabel: "acme/skills" })]);
+    seedIndex();
     render(<MySkillsPage />);
-
-    expect(await screen.findByText("来源 vercel-labs/skills")).toBeInTheDocument();
+    await screen.findByText("来源 acme/skills");
   });
 
-  it("尚未分享/不在这台电脑的行同样能点开详情", async () => {
-    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
-    seedIpc([
-      view({
-        relation: "shared",
-        localPresent: false,
-        agents: [],
-        links: [],
-        commitSha: "",
-        contentHash: "",
-        sourceLabel: null,
-      }),
-    ]);
+  it("内部字段的空值不许漏到界面上:没有「获取于 」这种半截话", async () => {
+    seedIpc([view({ sourceLabel: null, updatedAt: "", contentHash: "" })]);
+    const { container } = render(<MySkillsPage />);
+    await screen.findByText("weekly-report");
+    expect(container.textContent).not.toContain("获取于 ");
+    expect(container.textContent).not.toContain("来源 ");
+  });
+
+  it("「新建技能」入口在这一页 —— 它原本长在已撤销的分享页里", async () => {
+    // R23:搬家之前 `skill_create` 这条 IPC 没有任何界面到得了,等于功能还在、门没了。
+    seedIpc([view()]);
+    seedIndex();
+    render(<MySkillsPage />);
+    await screen.findByText("周报生成");
+    expect(screen.getByRole("button", { name: "新建技能" })).toBeInTheDocument();
+  });
+
+  it("空态也有「新建技能」:一个技能都没有的人最可能想自己写一个", async () => {
+    render(<MySkillsPage />);
+    await screen.findByText("还没有获取任何技能。");
+    expect(screen.getByRole("button", { name: "新建技能" })).toBeInTheDocument();
+  });
+
+  it("勾组挂在每一行上,按 agents_detected 的显示名渲染", async () => {
+    seedIpc([view({ tools: [{ agent: "claude-code", state: "linked" }] })]);
+    seedIndex();
     render(<MySkillsPage />);
 
-    await userEvent.click(await screen.findByRole("button", { name: /weekly-report|周报生成/ }));
-
-    expect(invoke).toHaveBeenCalledWith("skill_local_detail", {
-      args: { dirSlug: "weekly-report" },
-    });
+    const box = await screen.findByRole("checkbox");
+    expect(box).toBeChecked();
+    expect(within(box.closest("label")!).getByText("Claude Code")).toBeInTheDocument();
+    expect(rows().length).toBeGreaterThan(0);
   });
 });

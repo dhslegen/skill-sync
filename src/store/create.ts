@@ -10,7 +10,7 @@ import { create } from "zustand";
 import { t } from "@/i18n";
 import { isAppError, skillCreate, skillReveal, type AppError } from "@/lib/ipc";
 import { validSlug } from "@/lib/slug";
-import { useShare } from "@/store/share";
+import { useMySkills } from "@/store/my-skills";
 
 export type CreatePhase = "closed" | "form" | "busy" | "done";
 
@@ -74,8 +74,10 @@ export const useCreate = create<CreateState>((set, get) => ({
         description: form.description,
       });
       set({ phase: "done", createdPath: report.path });
-      // 新技能立刻成为分享候选,列表要跟上——不刷新的话用户看不到自己刚建的东西
-      await useShare.getState().load();
+      // 新技能立刻出现在「我的技能」的「我分享的 · 尚未分享」里,列表要跟上
+      // ——不刷新的话用户看不到自己刚建的东西。
+      // (分享候选那条路已随分享页一并撤销,新建的技能靠 core 的目录扫描出现。)
+      await useMySkills.getState().load();
     } catch (raw) {
       // 留在表单档:撞名与名字不合规都是改一改就能重来的,不该把已填内容丢掉
       set({ phase: "form", error: toAppError(raw) });

@@ -57,6 +57,24 @@ describe("i18n", () => {
     }
   });
 
+  it("文案不得出现实现术语(v6 二期:用户只看「一个技能,三个在哪」)", () => {
+    // 第三份独立禁词表,**刻意不与上面两份合并**:
+    // - git 术语那份出自 docs/terminology.md(对外术语约定);
+    // - 「纳入管理」那份是 v6 撤掉认领语义留下的;
+    // - 这一份是 v6 二期撤掉「本体/链接」实现模型之后的产物。
+    // 三份的存废理由各不相同,合并之后再想删其中一条就得连带论证另外两条。
+    //
+    // 「关联」是这批里影响面最大的一个:它把"技能在某个工具里能用"这件事
+    // 说成了一个实现细节(建了一条链接),而用户要的说法是「在 X 里启用」。
+    // 「修复关联」单列是因为它曾是一个按钮名——概念本身已撤销,不只是措辞问题。
+    const banned = ["修复关联", "关联", "收编", "记账", "占位"];
+    for (const [key, text] of texts) {
+      for (const word of banned) {
+        expect(text.includes(word), `${key}: ${text}`).toBe(false);
+      }
+    }
+  });
+
   it("文案不得含 emoji(UI 规范 §2:全站禁 emoji)", () => {
     const emoji = /\p{Extended_Pictographic}/u;
     for (const [key, text] of texts) {

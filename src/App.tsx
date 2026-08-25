@@ -5,7 +5,8 @@ import { ConflictDialog } from "@/components/ConflictDialog";
 import { DetailPanel } from "@/components/DetailPanel";
 import { ProjectDecisionDialog } from "@/components/ProjectDecisionDialog";
 import { RemoveDialog } from "@/components/RemoveDialog";
-import { RepairDialog } from "@/components/RepairDialog";
+import { ShareConfirm } from "@/components/ShareConfirm";
+import { VersionChooser } from "@/components/VersionChooser";
 import { ShareConflictDialog } from "@/components/ShareConflictDialog";
 import { RetryLinkDialog } from "@/components/RetryLinkDialog";
 import { Sidebar } from "@/components/Sidebar";
@@ -81,11 +82,10 @@ export default function App() {
         <Toolbar />
         <div className="flex-1 overflow-y-auto px-5 pb-8 pt-1">
           <div className="max-w-[980px]">
-            {/* v6 二期任务 6:分享页整页已撤掉(首次分享的入口收进「我的技能」
-                那一行)。`PageId` 里的 `"share"` 暂时留着——`store/install.ts` 与
-                `MySkillsPage` 还有几处跳转指着它,那几处的去处由做界面的那一轮
-                重新安排。**这里刻意不写成"其余都渲染设置页"**:那样点到一个已撤掉
-                的页会不声不响地显示设置页,比落回商店页更让人摸不着头脑。 */}
+            {/* 「分享」页整页已撤销(v6 二期):首次分享的入口收进「我的技能」
+                那一行的确认屏(`ShareConfirm`),`PageId` 里的 `"share"` 也已删除,
+                所以这里不再有第四个分支——落回商店页的那条 else 现在只兜
+                `page === "store"` 一种情况。 */}
             {page === "mine" ? (
               <MySkillsPage />
             ) : page === "settings" ? (
@@ -102,7 +102,8 @@ export default function App() {
       <ConflictDialog />
       <RemoveDialog />
       <ProjectDecisionDialog />
-      <RepairDialog />
+      <ShareConfirm />
+      <VersionChooser />
       <ShareConflictDialog />
       <RetryLinkDialog />
       <Wizard />

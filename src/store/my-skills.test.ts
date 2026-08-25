@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { hasUpdate, sections, updateCount, useMySkills } from "./my-skills";
 import { useInstall } from "@/store/install";
+import { useShare } from "@/store/share";
 import type { InstalledSkillView } from "@/lib/ipc";
 
 const invoke = vi.fn();
@@ -25,6 +26,11 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   localPresent: true,
   sourceLabel: "skills/skills",
   links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "healthy" }],
+  body: "/h/.agents/skills/weekly-report",
+  localHash: "sha256:mine",
+  tools: [],
+  versions: [],
+  shareBlocked: null,
   ...over,
 });
 
@@ -37,12 +43,21 @@ function reset() {
     loadError: null,
     loading: false,
     agentNames: new Map(),
+    installedAgents: null,
     removePhase: "idle",
     removeTarget: null,
     removeError: null,
-    repairConfirmTarget: null,
-    repairBusy: null,
-    repairError: null,
+    setAgentsBusy: null,
+    setAgentsError: null,
+    toolFailures: null,
+    versionChoice: null,
+    keepBusy: false,
+    keepError: null,
+    shareTarget: null,
+    shareBusy: null,
+    shareDone: null,
+    shareError: null,
+    shareConflict: null,
   });
 }
 
@@ -87,42 +102,36 @@ describe("移除流程", () => {
     useMySkills.getState().askRemove("weekly-report");
     await useMySkills.getState().confirmRemove();
 
-    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_remove");
-    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", force: false });
+    const calls = invoke.mock.calls.filter(([cmd]) => cmd === "skill_remove");
+    // 🔴 **只发一次,而且不带 force**(v6 二期):core 的二次确认档已删除,
+    // 铁律 7 改由"本体进系统废纸篓、可逆"落实。带着一个 core 已经不认的字段
+    // 发过去,只会让人以为那道闸还在。
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[1].args).toEqual({ dirSlug: "weekly-report" });
     expect(useMySkills.getState().removePhase).toBe("idle");
   });
 
-  it("core 说要再确认 → 升级为第二重,不自作主张带 force 重试", async () => {
-    invoke.mockImplementation(async (cmd) =>
-      cmd === "skill_remove" ? { outcome: "needsDecision" } : AGENTS,
-    );
-
-    useMySkills.getState().askRemove("weekly-report");
-    await useMySkills.getState().confirmRemove();
-
-    expect(useMySkills.getState().removePhase).toBe("confirmingForce");
-    // 关键:只发过一次,没有替用户决定
-    expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_remove")).toHaveLength(1);
-  });
-
-  it("第二重确认才带 force", async () => {
-    let calls = 0;
+  it("改过本体的技能同样一步到位:不再有第二重确认", async () => {
+    // 上一版这里 core 会返回 needsDecision、界面升级成红色警示。那一档现在
+    // 在 core 里已经不存在(`RemoveOutcome` 只剩 `Removed`),所以界面上
+    // 也不该再有 `confirmingForce` 这个中间态——留着就是一条永远走不到的死路。
+    useMySkills.setState({ list: [view({ localModified: true })] });
     invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_remove")
+        return {
+          outcome: "removed",
+          report: { dirName: "weekly-report", unlinks: [], canonicalRemoved: true },
+          lock: "written",
+        };
       if (cmd === "installed_list") return [];
-      if (cmd !== "skill_remove") return AGENTS;
-      calls += 1;
-      return calls === 1
-        ? { outcome: "needsDecision" }
-        : { outcome: "removed", report: { dirName: "weekly-report", unlinks: [], canonicalRemoved: true }, lock: "written" };
+      return AGENTS;
     });
 
     useMySkills.getState().askRemove("weekly-report");
     await useMySkills.getState().confirmRemove();
-    await useMySkills.getState().confirmRemove();
 
-    const second = invoke.mock.calls.filter(([cmd]) => cmd === "skill_remove")[1];
-    expect(second?.[1].args.force).toBe(true);
     expect(useMySkills.getState().removePhase).toBe("idle");
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_remove")).toHaveLength(1);
   });
 
   it("移除成功后刷新列表与商店状态", async () => {
@@ -164,86 +173,279 @@ describe("移除流程", () => {
   });
 });
 
-describe("修复流程", () => {
+describe("勾选哪些工具(skill_set_agents)", () => {
   beforeEach(reset);
 
-  it("断链等链接形态直接修,不弹确认", async () => {
-    useMySkills.setState({
-      list: [view({ links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "broken" }] })],
-    });
+  it("发出去的是完整期望名单,core 报的失败逐条摆出来", async () => {
+    // 🔴 收集了不摆出来就是"静默撒谎":用户看到勾变了、以为成了,
+    // 那个工具里其实什么都没发生。这里正面断言三个来源都被收进 toolFailures。
+    useMySkills.setState({ list: [view()] });
     invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_repair") return { dirName: "weekly-report", canonicalDir: "/c", links: [] };
-      if (cmd === "installed_list") return [];
-      return AGENTS;
-    });
-
-    await useMySkills.getState().repair("weekly-report");
-
-    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_repair");
-    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", replaceOccupied: false });
-  });
-
-  it("位置被实体目录占用:先弹确认,不直接动手", async () => {
-    useMySkills.setState({
-      list: [view({ links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "occupied" }] })],
-    });
-
-    await useMySkills.getState().repair("weekly-report");
-
-    expect(useMySkills.getState().repairConfirmTarget).toBe("weekly-report");
-    expect(invoke).not.toHaveBeenCalledWith("skill_repair", expect.anything());
-  });
-
-  it("确认替换才带 replaceOccupied", async () => {
-    useMySkills.setState({ repairConfirmTarget: "weekly-report" });
-    invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_repair") return { dirName: "weekly-report", canonicalDir: "/c", links: [] };
-      if (cmd === "installed_list") return [];
-      return AGENTS;
-    });
-
-    await useMySkills.getState().confirmRepair();
-
-    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_repair");
-    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", replaceOccupied: true });
-    expect(useMySkills.getState().repairConfirmTarget).toBeNull();
-  });
-
-  it("取消替换什么都不发", async () => {
-    useMySkills.setState({ repairConfirmTarget: "weekly-report" });
-    useMySkills.getState().cancelRepair();
-    expect(useMySkills.getState().repairConfirmTarget).toBeNull();
-    expect(invoke).not.toHaveBeenCalledWith("skill_repair", expect.anything());
-  });
-
-  it("修复后刷新列表,健康徽标才会消失", async () => {
-    useMySkills.setState({
-      list: [view({ links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "missing" }] })],
-    });
-    invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_repair") return { dirName: "weekly-report", canonicalDir: "/c", links: [] };
+      if (cmd === "skill_set_agents")
+        return {
+          outcome: "done",
+          homeBody: "/h/.agents/skills/weekly-report",
+          // 序列化契约:Result 是**大写**键,元组是 JSON 数组
+          canonical: { Err: { code: "FS_LINK_FAILED", message: "统一目录没能收敛" } },
+          results: [
+            ["claude-code", { Ok: { kind: "linked", mode: "symlink" } }],
+            ["trae", { Err: { code: "FS_LINK_FAILED", message: "trae 没配上" } }],
+          ],
+          unlinked: ["cursor"],
+          unlinkFailed: [["zed", { code: "FS_UNLINK_FAILED", message: "zed 没能停用" }]],
+        };
       if (cmd === "installed_list") return [view()];
       return AGENTS;
     });
 
-    await useMySkills.getState().repair("weekly-report");
+    await useMySkills.getState().setAgents("weekly-report", ["claude-code", "trae"]);
 
-    expect(useMySkills.getState().list?.[0].links[0].health).toBe("healthy");
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_set_agents");
+    expect(call?.[1].args).toEqual({
+      dirSlug: "weekly-report",
+      agents: ["claude-code", "trae"],
+    });
+    const failures = useMySkills.getState().toolFailures;
+    expect(failures).toEqual([
+      { agent: null, message: "统一目录没能收敛" },
+      { agent: "trae", message: "trae 没配上" },
+      { agent: "zed", message: "zed 没能停用" },
+    ]);
   });
 
-  it("修复失败给可读错误", async () => {
-    useMySkills.setState({
-      list: [view({ links: [{ dir: "/h/.claude/skills", mode: "symlink", health: "missing" }] })],
-    });
+  it("全都成功时不摆失败条", async () => {
+    // 反向守卫:空数组要归一成 null,否则界面会摆一个"有 0 处没能完成"的框
+    useMySkills.setState({ list: [view()] });
     invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_repair") throw { code: "FS_TASK", message: "修复操作未能完成,请重试" };
+      if (cmd === "skill_set_agents")
+        return {
+          outcome: "done",
+          homeBody: "/b",
+          canonical: { Ok: { kind: "unchanged" } },
+          results: [["claude-code", { Ok: { kind: "linked", mode: "symlink" } }]],
+          unlinked: [],
+          unlinkFailed: [],
+        };
+      if (cmd === "installed_list") return [view()];
       return AGENTS;
     });
 
-    await useMySkills.getState().repair("weekly-report");
+    await useMySkills.getState().setAgents("weekly-report", ["claude-code"]);
+    expect(useMySkills.getState().toolFailures).toBeNull();
+  });
 
-    expect(useMySkills.getState().repairError?.message).toContain("未能完成");
-    expect(useMySkills.getState().repairBusy).toBeNull();
+  it("differs 不算失败:core 按设计没动那个位置,下一轮 tools 会如实回显", async () => {
+    useMySkills.setState({ list: [view()] });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_set_agents")
+        return {
+          outcome: "done",
+          homeBody: "/b",
+          canonical: { Ok: { kind: "differs", existing: "/h/.claude/skills/weekly-report" } },
+          results: [
+            ["trae", { Ok: { kind: "differs", existing: "/h/.trae/skills/weekly-report" } }],
+          ],
+          unlinked: [],
+          unlinkFailed: [],
+        };
+      if (cmd === "installed_list") return [view()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().setAgents("weekly-report", ["trae"]);
+    expect(useMySkills.getState().toolFailures).toBeNull();
+  });
+
+  it("core 说有几个版本:转去拍板,且 versions 取自本页 list 而不是 outcome", async () => {
+    // 🔴 两者口径不对称:outcome 里那份含内容相同的重复品,list 上这份已经剔掉了。
+    // 混用会让同一个技能在"点勾弹出来"和"页面上直接显示"两条路上看到不一样的份数。
+    const listVersions = [
+      { path: "/h/.claude/skills/w", modifiedAt: "2026-08-01T00:00:00Z", files: 2, contentHash: "a" },
+      { path: "/h/.trae/skills/w", modifiedAt: "2026-08-02T00:00:00Z", files: 3, contentHash: "b" },
+    ];
+    useMySkills.setState({ list: [view({ versions: listVersions })] });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_set_agents")
+        return {
+          outcome: "needsVersionChoice",
+          versions: [
+            ...listVersions,
+            // outcome 多出来的这一份是内容相同的重复品:不该出现在拍板界面上
+            { path: "/h/.cursor/skills/w", modifiedAt: "2026-08-03T00:00:00Z", files: 2, contentHash: "a" },
+          ],
+        };
+      return AGENTS;
+    });
+
+    await useMySkills.getState().setAgents("weekly-report", ["trae"]);
+
+    const choice = useMySkills.getState().versionChoice;
+    expect(choice?.dirSlug).toBe("weekly-report");
+    expect(choice?.versions).toEqual(listVersions);
+    expect(choice?.after).toBe("agents");
+    expect(choice?.agents).toEqual(["trae"]);
+  });
+
+  it("整条调用失败给可读错误,并把忙碌态放掉", async () => {
+    useMySkills.setState({ list: [view()] });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_set_agents")
+        throw { code: "FS_TASK", message: "操作未能完成,请重试" };
+      return AGENTS;
+    });
+
+    await useMySkills.getState().setAgents("weekly-report", ["trae"]);
+
+    expect(useMySkills.getState().setAgentsError?.message).toContain("未能完成");
+    expect(useMySkills.getState().setAgentsBusy).toBeNull();
+  });
+});
+
+describe("拍板留哪一份(skill_keep_version)", () => {
+  beforeEach(reset);
+
+  const choice = (over = {}) => ({
+    dirSlug: "weekly-report",
+    versions: [
+      { path: "/a", modifiedAt: "2026-08-01T00:00:00Z", files: 1, contentHash: "a" },
+      { path: "/b", modifiedAt: "2026-08-02T00:00:00Z", files: 1, contentHash: "b" },
+    ],
+    ...over,
+  });
+
+  it("把选中的那一份传给 core,拍完关掉弹窗并刷新", async () => {
+    useMySkills.setState({ versionChoice: choice(), list: [view()] });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_keep_version")
+        return { body: "/a", trashed: ["/b"], links: [], canonical: { Ok: { kind: "unchanged" } } };
+      if (cmd === "installed_list") return [view()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().keepVersion("weekly-report", "/a");
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_keep_version");
+    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", keepPath: "/a" });
+    expect(useMySkills.getState().versionChoice).toBeNull();
+  });
+
+  it("拍板前本来要做的事,拍完接着做——不让用户再点一次", async () => {
+    useMySkills.setState({
+      versionChoice: choice({ after: "agents", agents: ["trae"] }),
+      list: [view()],
+    });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_keep_version")
+        return { body: "/a", trashed: [], links: [], canonical: { Ok: { kind: "unchanged" } } };
+      if (cmd === "skill_set_agents")
+        return {
+          outcome: "done",
+          homeBody: "/a",
+          canonical: { Ok: { kind: "unchanged" } },
+          results: [],
+          unlinked: [],
+          unlinkFailed: [],
+        };
+      if (cmd === "installed_list") return [view()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().keepVersion("weekly-report", "/a");
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_set_agents");
+    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", agents: ["trae"] });
+  });
+
+  it("失败时弹窗留在原地可重试,不静默关掉", async () => {
+    useMySkills.setState({ versionChoice: choice(), list: [view()] });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_keep_version")
+        throw { code: "FS_BAD_VERSION_CHOICE", message: "这个位置不在候选里" };
+      return AGENTS;
+    });
+
+    await useMySkills.getState().keepVersion("weekly-report", "/x");
+
+    expect(useMySkills.getState().versionChoice).not.toBeNull();
+    expect(useMySkills.getState().keepError?.message).toContain("候选");
+    expect(useMySkills.getState().keepBusy).toBe(false);
+  });
+});
+
+describe("分享确认屏(零编辑)", () => {
+  beforeEach(reset);
+
+  it("beginShare 只记目标并探一次路径预告,一个字节都不推", async () => {
+    useMySkills.setState({ list: [view({ relation: "draft" })] });
+    invoke.mockImplementation(async () => "unknown");
+
+    useMySkills.getState().beginShare("weekly-report");
+
+    expect(useMySkills.getState().shareTarget).toEqual({ dirSlug: "weekly-report" });
+    expect(invoke).not.toHaveBeenCalledWith("skill_share", expect.anything());
+  });
+
+  it("确认时带账上的来源坐标——缺省会推到该源主库,追加库的技能就推错了地方", async () => {
+    useMySkills.setState({
+      list: [view({ relation: "shared", sourceOwner: "design", sourceRepo: "skills" })],
+      shareTarget: { dirSlug: "weekly-report" },
+    });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_share") return { outcome: "shared", mode: "pushed", url: null };
+      if (cmd === "installed_list") return [view()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().confirmShare();
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share");
+    expect(call?.[1].args).toEqual({
+      dirSlug: "weekly-report",
+      registryId: "company",
+      repo: "design/skills",
+    });
+    expect(useMySkills.getState().shareDone).toEqual({
+      dirSlug: "weekly-report",
+      mode: "pushed",
+    });
+    // 成功后确认屏要关掉,否则用户会对着同一屏再点一次
+    expect(useMySkills.getState().shareTarget).toBeNull();
+  });
+
+  it("草稿没有来源坐标:落到确认屏上选中的那个库", async () => {
+    useMySkills.setState({
+      list: [view({ relation: "draft", sourceOwner: "", sourceRepo: "", registryId: "" })],
+      shareTarget: { dirSlug: "weekly-report" },
+    });
+    useShare.setState({ targetRepo: "skills/skills" });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_share") return { outcome: "shared", mode: "reviewRequested", url: null };
+      if (cmd === "installed_list") return [];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().confirmShare();
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share");
+    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", repo: "skills/skills" });
+  });
+
+  it("失败时确认屏留着、错误可读——关掉就等于失败被静默吞掉", async () => {
+    useMySkills.setState({
+      list: [view({ relation: "draft" })],
+      shareTarget: { dirSlug: "weekly-report" },
+    });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_share")
+        throw { code: "REPO_NAME_TAKEN", message: "库里已经有同名技能了" };
+      return AGENTS;
+    });
+
+    await useMySkills.getState().confirmShare();
+
+    expect(useMySkills.getState().shareTarget).not.toBeNull();
+    expect(useMySkills.getState().shareError?.message).toContain("同名");
+    expect(useMySkills.getState().shareBusy).toBeNull();
   });
 });
 

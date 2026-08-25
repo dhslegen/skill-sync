@@ -6,7 +6,7 @@ import { usePlaza } from "@/store/plaza";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi, type PageId } from "@/store/ui";
 
-const PAGE_ORDER: PageId[] = ["store", "mine", "share", "settings"];
+const PAGE_ORDER: PageId[] = ["store", "mine", "settings"];
 
 /** `/` 聚焦搜索时,不能把用户正在输入的内容抢走。 */
 function isTypingTarget(target: EventTarget | null): boolean {

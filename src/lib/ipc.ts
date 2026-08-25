@@ -330,8 +330,27 @@ export type InstallStage =
 
 export type Precheck =
   | { status: "fresh" }
+  /**
+   * **无账**,本地已有一份实体,内容与库里这一版逐字节相同(v6 二期)。
+   * 装 = 记账 + 启用,本体一个字节都不写(它已经是对的了)。典型场景:
+   * 用户在 `~/.claude/skills/` 下开发技能、经 git 直推进库,换台电脑再取回。
+   */
+  | { status: "alreadyHere"; body: string }
+  /** **无账**,本地已有一份实体但内容不同(v6 二期):用库里的 / 保留本地,两选。 */
+  | { status: "localDiffers"; existing: string }
+  /** **无账**,同名技能在多处各有一份且内容有分歧(v6 二期):先拍板留哪一份。 */
+  | { status: "needsVersionChoice"; versions: SkillVersion[] }
   | { status: "managed"; installedSha: string; upToDate: boolean }
   | { status: "locallyModified"; installedSha: string }
+  /**
+   * ⚠️ **core 侧的 `Precheck::Foreign` 已于 v6 二期删除,后端不会再发出这一档。**
+   * 「这个位置上的技能不是本应用装的」正是这一期要消灭的那句话——用户自己在
+   * 工具目录下开发的技能被当成了外人。取代它的是 `alreadyHere` / `localDiffers`
+   * / `needsVersionChoice` 三档(按内容比对,而不是按"这是谁建的"猜)。
+   *
+   * 这个变体留着只是为了让 `ConflictDialog`(任务 8 的文件)编译得过,
+   * **任务 8 重写那个弹窗时连同 {@link ForeignOrigin} 一起删掉**。
+   */
   | { status: "foreign"; origin: ForeignOrigin }
   /** 同名技能已装自另一个技能库(M4 一源多仓):不是更新,是替换。 */
   | { status: "otherLibrary"; installedSha: string; sourceOwner: string; sourceRepo: string }
@@ -437,9 +456,74 @@ export interface InstalledSkillView {
    * 从未分享过的草稿本就没有来源)。判据见 core `ownership::source_label`。
    */
   sourceLabel: string | null;
-  /** 技能本体是否还在。false = 残缺,界面要正面说出来。 */
+  /**
+   * ⚠️ **过渡字段**:各关联目录的健康态。v6 二期起界面不再展示它——「N 处关联
+   * 异常」这类说法整体撤销,同一件事现在由 {@link tools} 的每个勾如实回显
+   * (`missing` = 那个位置上的东西已经不是我们放的了,再点一次勾即自愈)。
+   * core 仍在填,留着是因为 `store/install.ts` 的重试链路还读它(任务 8 收尾)。
+   */
   links: LinkHealthReport[];
+  /**
+   * 本体现在住在哪(绝对路径);只在库里、本地没有本体时是空串。
+   *
+   * **它是「本体永不搬动」这条承诺在界面上的落点**:用户要能看见"这个技能就在
+   * 我 `~/.claude/skills/` 下的那个文件夹里",而不是被告知一个他从没听说过的
+   * 统一目录路径。「打开文件夹」按钮的目标就是它——🔴 **传 `path: skill.body`,
+   * 不传 `dirSlug`**:后者会被 `skill_reveal` 解析成统一目录下的同名目录,
+   * 而本体很可能根本不在那里,打开的就是另一个地方(或者什么都打不开)。
+   */
+  body: string;
+  /**
+   * 本体此刻的**实时**内容指纹(读不出来留空)。
+   *
+   * 🔴 与 {@link contentHash} 是两样东西,别混:那个是**安装那一刻的基线**,
+   * 没有记录的行恒为空;这个是"本体现在长什么样"。前端要回答"本地与库里
+   * 一不一样"(无基线那一档的唯一问法)只能靠它。
+   */
+  localHash: string;
+  /** 各 AI 工具的启用态。**「每个工具一个勾」这组 checkbox 的唯一真相**,
+   *  不是 {@link agents}(那份是期望态,建链失败的目标也留在里面)。 */
+  tools: ToolView[];
+  /** 这个技能眼下有几份内容不同的实体(含本体自己)。长度 > 1 = 有分歧,
+   *  界面要让用户先拍板留哪份({@link skillKeepVersion})。 */
+  versions: SkillVersion[];
+  /** 分享前的标准校验没过的话,是哪一条。`null` = 可以分享。
+   *  本地没有本体的行恒 `null`(没什么可校验的)。 */
+  shareBlocked: ShareBlock | null;
 }
+
+/**
+ * 一个 AI 工具眼下能不能读到这个技能(`core::my_skills::ToolState`)。
+ *
+ * - `body` 本体就住在这个工具的目录里(用户在这里开发它)。**这个勾恒亮且
+ *   不可取消**——取消等于删本体;
+ * - `linked` 这个工具能读到本体;
+ * - `copy` 位置上是一份实体副本(Windows 无权建链时的降级形态);
+ * - `missing` 账上有这个位置,但那里的东西已经不是我们放的了(再点一次即自愈);
+ * - `off` 没有在这个工具里启用。
+ */
+export type ToolState = "body" | "linked" | "copy" | "missing" | "off";
+
+export interface ToolView {
+  agent: string;
+  state: ToolState;
+}
+
+/**
+ * 分享前的标准校验没过的原因(`core::skills::ShareBlock`)。
+ *
+ * 判据是 Agent Skills 开放标准 <https://agentskills.io/specification>,
+ * 口径契约在 `fixtures/share-validation-samples.json`(Rust 与前端共读那一份)。
+ * 界面按这个字面量查 `mine.shareBlocked.*` 的人话文案。
+ */
+export type ShareBlock =
+  | "nameMissing"
+  | "nameMismatch"
+  | "nameFormat"
+  | "dirFormat"
+  | "descriptionMissing"
+  | "descriptionTooLong"
+  | "skillMdUnreadable";
 
 export type UnlinkResult =
   | { status: "unlinked" }
@@ -506,25 +590,6 @@ export const skillInstallBatch = (args: {
 }) => call<BatchItem[]>("skill_install_batch", { args });
 
 /**
- * ⚠️ **对应的后端命令 `skill_repair` 已于 v6 二期任务 4 删除。**
- * 「修复关联」作为独立按钮的概念被取消:自愈落在 {@link skillSetAgents} 里
- * ——用户再点一次同一个工具的勾就会重新收敛那个位置。留着这个包装只是为了让
- * 还没重写的 `store/my-skills.ts` 编译得过;**调用它一定会失败**。
- */
-export const skillRepair = (args: { dirSlug: string; replaceOccupied?: boolean }) =>
-  call<InstallReport>("skill_repair", { args });
-
-/**
- * ⚠️ **对应的后端命令 `skill_link_agents` 已于 v6 二期任务 4 删除**,理由同上,
- * 改用 {@link skillSetAgents}。留着只为让 `store/install.ts` 编译得过。
- */
-export const skillLinkAgents = (args: {
-  dirSlug: string;
-  agentIds: string[];
-  replaceOccupied?: boolean;
-}) => call<InstallReport>("skill_link_agents", { args });
-
-/**
  * Rust 侧 `Result<T, E>` 的序列化形状。
  *
  * ⚠️ 键是**大写**的 `Ok`/`Err`:那是 serde 对 `Result` 的内建实现,
@@ -589,21 +654,6 @@ export interface KeepReport {
 export const skillKeepVersion = (args: { dirSlug: string; keepPath: string }) =>
   call<KeepReport>("skill_keep_version", { args });
 
-export type CandidateOrigin = { kind: "local" } | { kind: "npxSkills"; source: string };
-
-export interface ShareCandidate {
-  dirName: string;
-  path: string;
-  inCanonical: boolean;
-  origin: CandidateOrigin;
-  name: string | null;
-  description: string | null;
-  /** SKILL.md 不合规的原因(人话);有值 = 分享前要走补齐表单。 */
-  problem: string | null;
-  shared: { upToDate: boolean; shareName: string } | null;
-  dirNameUsable: boolean;
-}
-
 /**
  * ⚠️ 这个类型在前端**已经没有读者**:`ShareOutcome` 只剩 `shared` 一档,
  * `taken` 那一档在 core 里变成了 `REPO_NAME_TAKEN` 错误。留着只为文档对照
@@ -663,14 +713,6 @@ export const skillCreate = (args: {
   displayName: string;
   description: string;
 }) => call<CreateReport>("skill_create", { args });
-
-/**
- * ⚠️ **对应的后端命令 `share_candidates` 已于 v6 二期任务 6 删除**(分享页整页撤掉,
- * 首次分享的入口收进「我的技能」那一行)。这个包装还留着,只是因为
- * `store/share.ts` 与它的几个调用方要等做界面的那一轮才重写;**调用它一定会失败**。
- * 重写那一轮请连同 `ShareCandidate` 类型一起删掉。
- */
-export const shareCandidates = () => call<ShareCandidate[]>("share_candidates");
 
 /**
  * 分享会走哪条路的预告(M4 任务 2)。与 core 的 `share::SharePath` 一一对应。

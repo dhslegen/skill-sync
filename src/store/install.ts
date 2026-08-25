@@ -20,7 +20,7 @@ import {
   PLAZA_REGISTRY_ID,
   plazaEnsureRepo,
   skillInstall,
-  skillLinkAgents,
+  skillSetAgents,
   skillShareChanges,
   type AppError,
   type DetectedAgent,
@@ -31,13 +31,16 @@ import {
   type ShareMode,
 } from "@/lib/ipc";
 import { useRegistries } from "@/store/registries";
-// 🔴 与 `share.ts` 的循环导入(它反过来 `import { useInstall } from "@/store/install"`,
-// 见 `keepLocalAndShareMine` 需要在没有 `state.installed` 记账时跳转分享页):
+// 🔴 与 `my-skills.ts` 的循环导入(它反过来 `import { useInstall } from "@/store/install"`
+// ——`pull`/`confirmRemove`/`setAgents` 都要用到获取流程与已装清单;这一侧则要在
+// 没有安装基线时打开分享确认屏,见 `goToSharePage`)。
+// (v6 二期任务 7 之前这个环的另一端是 `share.ts`,分享的编排搬进 `my-skills.ts`
+// 之后环也跟着搬了家,**性质与约束完全相同**。)
 // 现在运行时没事、测试也全绿,前提是**这两个 store 只在函数体内使用,绝不在
-// 模块顶层解构**(`import { useShare } from ...` 之后直接 `const { load } = useShare`
+// 模块顶层解构**(`import { useMySkills } from ...` 之后直接 `const { load } = useMySkills`
 // 那种写法会在其中一侧的模块求值时读到还没初始化完的绑定)。不要重构去消掉这个环
 // (牵动一片),但往这两个文件里加新引用前,先确认新代码也遵守"只在函数体内用"这条。
-import { useShare } from "@/store/share";
+import { useMySkills } from "@/store/my-skills";
 import { useUi } from "@/store/ui";
 
 
@@ -139,17 +142,18 @@ function toAppError(raw: unknown): AppError {
 let taskSeq = 0;
 
 /**
- * 「我分享的」+ 以本地为准,但没有 `state.installed` 记账那一档(v6 任务 3
- * 顾虑 1):`share_installed` 走不通,改走分享页并预选这个候选——与
- * `MySkillsPage.goShare` 同一个套路(那边跳分享页给 `draft`/`noBaseline` 用,
- * 这里给冲突弹窗用,没有理由另写一份)。分享页自己的 `load()` 只刷新
- * candidates、不碰 phase/target,所以在跳转前把 `begin()` 定下来即可。
+ * 「我分享的」+ 以本地为准,但没有安装基线那一档(v6 任务 3 顾虑 1):
+ * `share_installed` 一进门就要求基线存在,走不通,改走「分享」确认屏。
+ *
+ * ⚠️ **这一处是 v6 二期任务 7 删掉 `PageId."share"` 时被迫改的**(分享页整页撤销)。
+ * 原先是"跳分享页 + 预选候选",现在分享是「我的技能」那一行上的一次确认,
+ * 所以改成打开确认屏 + 把页面切到「我的技能」(确认屏是全局挂载的模态,
+ * 但用户关掉它之后应当落在那个技能所在的页面上,而不是原地不动)。
+ * 这条编排的其余部分归任务 8。
  */
-async function goToSharePage(dirSlug: string) {
-  await useShare.getState().load();
-  const candidate = useShare.getState().candidates?.find((c) => c.dirName === dirSlug);
-  if (candidate) useShare.getState().begin(candidate);
-  useUi.getState().setPage("share");
+function goToSharePage(dirSlug: string) {
+  useUi.getState().setPage("mine");
+  useMySkills.getState().beginShare(dirSlug);
 }
 
 export const useInstall = create<InstallState>((set, get) => ({
@@ -415,11 +419,10 @@ export const useInstall = create<InstallState>((set, get) => ({
     } catch (raw) {
       const err = toAppError(raw);
       if (err.code === "FS_NOT_INSTALLED") {
-        // 没有 `state.installed` 记账:`share_installed` 一进门就要求记账存在,
-        // 走不通(v6 任务 3 顾虑 1 记的真问题,典型场景:自己写的技能直接推进了库、
-        // 或换电脑后重装 app)。改走分享页——它接受任意本地目录,同名三分支会
-        // 处理"远端已存在"。
-        await goToSharePage(dirSlug);
+        // 没有安装基线:`share_installed` 一进门就要求它存在,走不通(v6 任务 3
+        // 顾虑 1 记的真问题,典型场景:自己写的技能直接推进了库、或换电脑后重装 app)。
+        // 改走「分享」确认屏——它走的是 `skill_share`,不要求基线。
+        goToSharePage(dirSlug);
         return;
       }
       set({ shareResult: { error: err } });
@@ -449,64 +452,77 @@ export const useInstall = create<InstallState>((set, get) => ({
   retryError: null,
 
   retryLink: async (dir) => {
-    // 先按"不替换"试一次:断链/丢失这类形态直接就修好了,不该多问一句。
-    // 只有确实撞上实体目录占位(FS_LINK_OCCUPIED)才升级成确认弹窗——
-    // 那个目录可能是用户自己的技能,替换等于删他的文件(铁律 7)。
-    await runRetry(dir, false, set, get);
-    if (get().retryError?.code === "FS_LINK_OCCUPIED") {
-      set({ retryConfirmDir: dir, retryError: null });
-    }
+    // ⚠️ **v6 二期任务 7 被迫改的一处**(`skill_link_agents` 已在任务 4 删除)。
+    // 改走 `skill_set_agents`:它收的是**这个技能期望启用的完整工具名单**
+    // (`selected`),不是单个目录——新模型里"重试这一处"就是"把整组勾再收敛一次",
+    // core 对已经对的位置是幂等的。
+    //
+    // `retryConfirmDir`(撞上实体目录时的替换确认)**不再会被置上**:新模型不靠
+    // "替换掉那个目录"解决占用,内容不同的位置由 core 报"有几个版本"交给用户拍板,
+    // 绝不覆盖。`RetryLinkDialog` 因此不再有渲染时机——整条重试链路的去留归任务 8。
+    await runRetry(dir, set, get);
   },
 
   confirmRetry: async () => {
     const dir = get().retryConfirmDir;
     if (!dir) return;
     set({ retryConfirmDir: null });
-    await runRetry(dir, true, set, get);
+    await runRetry(dir, set, get);
   },
 
   cancelRetry: () => set({ retryConfirmDir: null, retryError: null }),
 }));
 
 /**
- * 重试一个目录的关联。
+ * 重试:把这个技能期望启用的整组工具再收敛一次。
  *
- * 目录 → agent 的映射取自本次的 report:core 的建链是**按目录**做的,一个目录可能
- * 服务多个 agent(6 个工具共用 canonical 是常态),所以重试要把这条目录上的
- * agents 整组带上,不能只挑一个。
+ * `dir` 只用来定位"这一处服务哪些 agent"(用于把结果并回结果面板那一行)与
+ * 显示忙碌态;真正发出去的是 `selected` 那份完整名单——`skill_set_agents` 的
+ * 契约就是完整期望态,只传这一处的 agents 会把其余位置**停用掉**。
  */
 async function runRetry(
   dir: string,
-  replaceOccupied: boolean,
   set: (partial: Partial<InstallState>) => void,
   get: () => InstallState,
 ) {
-  const { dirSlug, report } = get();
+  const { dirSlug, report, selected } = get();
   const entry = report?.links.find((l) => l.dir === dir);
   if (!dirSlug || !entry) return;
 
   set({ retryingDir: dir, retryError: null });
   try {
-    const next = await skillLinkAgents({
-      dirSlug,
-      agentIds: entry.agents,
-      replaceOccupied,
-    });
-    // 只把这条目录的结果并回去:其余目录的结局是上一次安装的事实,不该被这次覆盖
+    const outcome = await skillSetAgents({ dirSlug, agents: [...selected] });
+    if (outcome.outcome === "needsVersionChoice") {
+      // 这一处有几份内容不同的实体,不是"重试就能好"的事。结果面板没有拍板界面
+      // (那在「我的技能」页),这里如实报出来,不装作重试成功了。
+      set({ retryError: { code: "FS_NEEDS_VERSION_CHOICE", message: t("install.retryVersions") } });
+      return;
+    }
+    // 只把这条目录上那些 agent 的结局并回去:其余目录的结局是上一次安装的事实,
+    // 不该被这次覆盖。任一 agent 失败即这一行仍算失败。
+    const failed = outcome.results.find(
+      ([agent, r]) => entry.agents.includes(agent) && "Err" in r,
+    );
     const merged = get().report;
     if (merged) {
-      const updated = next.links.find((l) => l.dir === dir);
       set({
         report: {
           ...merged,
-          links: merged.links.map((l) => (l.dir === dir && updated ? updated : l)),
+          links: merged.links.map((l) =>
+            l.dir === dir
+              ? {
+                  ...l,
+                  result:
+                    failed && "Err" in failed[1]
+                      ? { status: "failed" as const, error: failed[1].Err }
+                      : { status: "linked" as const, mode: l.result.status === "linked" ? l.result.mode : "symlink" },
+                }
+              : l,
+          ),
         },
       });
     }
-    const failure = next.links.find((l) => l.dir === dir && l.result.status === "failed");
-    if (failure && failure.result.status === "failed") {
-      set({ retryError: failure.result.error });
-    }
+    if (failed && "Err" in failed[1]) set({ retryError: failed[1].Err });
     await get().refreshInstalled();
   } catch (raw) {
     set({ retryError: toAppError(raw) });

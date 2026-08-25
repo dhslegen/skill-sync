@@ -7,11 +7,17 @@ import { useStoreIndex } from "@/store/store-index";
 /**
  * 移除确认对话框(与 ConflictDialog 同一形态:必须打断的决策才用居中模态)。
  *
- * 双确认的落地:行内「移除」按钮是第一步,这个弹窗的确认是第二步;
- * 若 core 发现用户改过本体(force=false 时**不动磁盘**就返回),
- * 弹窗升级为第二重红色警示,那一次确认才带 force。
+ * # 只剩一步(v6 二期)
  *
- * 默认焦点始终在「取消」上——回车绝不等于删除。
+ * 上一版是双确认:core 发现用户改过本体就**不动磁盘**退回来,界面升级成第二重
+ * 红色警示,那一次才带 `force`。现在铁律 7「绝不静默删除用户文件」靠**可逆**落实
+ * ——本体进系统废纸篓,用户随时能捞回来。
+ *
+ * **确认框本身不是可逆性**:用户手滑点了"确定"东西照样没了;而进了废纸篓,
+ * 连"程序判断错了"这一档都兜得住。所以那道追问撤掉,这一屏只负责把
+ * "东西会去哪、怎么找回来"说清楚(`mine.removeBody`)。
+ *
+ * 默认焦点仍在「取消」上——回车绝不等于移除。
  */
 export function RemoveDialog() {
   const { removePhase, removeTarget, removeError, confirmRemove, cancelRemove } = useMySkills();
@@ -20,12 +26,11 @@ export function RemoveDialog() {
   );
   const cancelRef = useRef<HTMLButtonElement>(null);
   const open = removePhase !== "idle";
-  const forceStep = removePhase === "confirmingForce";
   const busy = removePhase === "busy";
 
   useEffect(() => {
     if (open) cancelRef.current?.focus();
-  }, [open, forceStep]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -51,10 +56,10 @@ export function RemoveDialog() {
         className="w-[420px] rounded-pop border border-border-strong bg-surface-1 p-5 shadow-[var(--shadow-pop)]"
       >
         <h2 id="remove-title" className="text-[14px] font-semibold">
-          {forceStep ? t("mine.removeForceTitle") : t("mine.removeTitle", { name })}
+          {t("mine.removeTitle", { name })}
         </h2>
         <p className="mt-1.5 text-[12.5px] leading-[1.6] text-text-2">
-          {forceStep ? t("mine.removeForceBody", { name }) : t("mine.removeBody")}
+          {t("mine.removeBody")}
         </p>
 
         {removeError && (
@@ -80,7 +85,7 @@ export function RemoveDialog() {
             onClick={() => void confirmRemove()}
             className="h-7 rounded-ctl border border-[#c0392b] px-3 text-[12px] font-medium text-[#c0392b] hover:bg-[#c0392b] hover:text-white disabled:opacity-50 dark:border-[#e0705f] dark:text-[#e0705f] dark:hover:bg-[#e0705f] dark:hover:text-[#1c1917]"
           >
-            {forceStep ? t("mine.removeForceConfirm") : t("mine.removeConfirm")}
+            {t("mine.removeConfirm")}
           </button>
         </div>
       </div>

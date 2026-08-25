@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { failedLinks, linkedAgents, useInstall } from "./install";
 import { useRegistries } from "./registries";
-import { useShare } from "./share";
+import { useMySkills } from "@/store/my-skills";
 import { useUi } from "./ui";
 import type { AcquireOutcome, InstallReport } from "@/lib/ipc";
 
@@ -47,7 +47,7 @@ function reset() {
     retryConfirmDir: null,
     retryError: null,
   });
-  useShare.setState({ candidates: null, phase: "idle", target: null });
+  useMySkills.setState({ shareTarget: null, list: null });
   useUi.setState({ page: "store" });
 }
 
@@ -327,23 +327,12 @@ describe("获取流程状态机", () => {
     });
 
     it("没有 state.installed 记账(FS_NOT_INSTALLED)→ 改走分享页并预选候选", async () => {
-      const candidate = {
-        dirName: "weekly-report",
-        path: "/home/u/.agents/skills/weekly-report",
-        inCanonical: true,
-        origin: { kind: "local" as const },
-        name: "周报生成",
-        description: null,
-        problem: null,
-        shared: null,
-        dirNameUsable: true,
-      };
       invoke.mockImplementation(async (cmd) => {
         if (cmd === "agents_detected") return AGENTS;
         if (cmd === "installed_list") return [];
-        if (cmd === "share_candidates") return [candidate];
+        if (cmd === "share_preview") return "unknown";
         if (cmd === "skill_share_changes")
-          throw { code: "FS_NOT_INSTALLED", message: "这个技能还没有安装记账" };
+          throw { code: "FS_NOT_INSTALLED", message: "这个技能还没有安装信息" };
         if (cmd === "skill_install")
           return { outcome: "kept", remoteChanged: true } satisfies AcquireOutcome;
         throw new Error(`unexpected ${cmd}`);
@@ -352,9 +341,10 @@ describe("获取流程状态机", () => {
       await useInstall.getState().begin("weekly-report");
       await useInstall.getState().keepLocalAndShareMine();
 
-      expect(useUi.getState().page).toBe("share");
-      expect(useShare.getState().target?.dirName).toBe("weekly-report");
-      // 分享页那条路走完:不该在 install 这边留下一个"分享失败"的假象
+      // 分享页整页已撤(v6 二期):这条路现在落在「我的技能」页 + 分享确认屏
+      expect(useUi.getState().page).toBe("mine");
+      expect(useMySkills.getState().shareTarget).toEqual({ dirSlug: "weekly-report" });
+      // 那条路走完:不该在 install 这边留下一个"分享失败"的假象
       expect(useInstall.getState().shareResult).toBeNull();
     });
 
@@ -534,35 +524,40 @@ describe("逐条重试建链(安装当时没建成的)", () => {
     });
   });
 
-  it("重试带上这条目录上的整组工具,先按不替换试", async () => {
+  /** `skill_set_agents` 的成功回复(结果按 agent 给,不按目录)。 */
+  const setAgentsDone = (results: [string, unknown][]) => ({
+    outcome: "done",
+    homeBody: "/home/u/.agents/skills/weekly-report",
+    canonical: { Ok: { kind: "unchanged" } },
+    results,
+    unlinked: [],
+    unlinkFailed: [],
+  });
+
+  it("重试发的是这个技能的完整期望名单,不是这一条目录上那几个", async () => {
+    // 🔴 `skill_set_agents` 收的是**完整期望态**:只传这一条目录上的 agents,
+    // core 会把其余位置全部**停用掉**——重试一处等于关掉别处,那是数据损失。
     invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_link_agents")
-        return report({
-          links: [{ dir: "/home/u/.trae/skills", agents: ["trae"], result: { status: "linked", mode: "symlink" } }],
-        });
+      if (cmd === "skill_set_agents")
+        return setAgentsDone([["trae", { Ok: { kind: "linked", mode: "symlink" } }]]);
       return [];
     });
 
     await useInstall.getState().retryLink("/home/u/.trae/skills");
 
-    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_link_agents");
-    // 建链按目录做,一个目录可能服务多个工具:整组带上,不能只挑一个
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_set_agents");
     expect(call?.[1].args).toEqual({
       dirSlug: "weekly-report",
-      agentIds: ["trae"],
-      replaceOccupied: false,
+      agents: [...useInstall.getState().selected],
     });
     // 成功的这条并回 report,列表里就不再显示它了
     expect(failedLinks(useInstall.getState().report)).toBe(0);
-    expect(useInstall.getState().retryConfirmDir).toBeNull();
   });
 
   it("只并回这一条,其余目录的结局不被覆盖", async () => {
     invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_link_agents")
-        return report({
-          links: [{ dir: "/home/u/.trae/skills", agents: ["trae"], result: { status: "linked", mode: "symlink" } }],
-        });
+      if (cmd === "skill_set_agents")
+        return setAgentsDone([["trae", { Ok: { kind: "linked", mode: "symlink" } }]]);
       return [];
     });
 
@@ -573,64 +568,66 @@ describe("逐条重试建链(安装当时没建成的)", () => {
     expect(links.find((l) => l.dir === "/home/u/.claude/skills")?.result.status).toBe("linked");
   });
 
-  it("撞上实体目录占位:升级成确认弹窗,不擅自替换", async () => {
+  it("这一条上的 agent 失败了就仍算失败,错误摆出来", async () => {
     invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_link_agents")
-        return report({
-          links: [{ dir: "/home/u/.trae/skills", agents: ["trae"], result: { status: "failed", error: OCCUPIED_ERROR } }],
-        });
+      if (cmd === "skill_set_agents")
+        return setAgentsDone([["trae", { Err: OCCUPIED_ERROR }]]);
       return [];
     });
 
     await useInstall.getState().retryLink("/home/u/.trae/skills");
 
-    expect(useInstall.getState().retryConfirmDir).toBe("/home/u/.trae/skills");
-    // 第一次一定是不替换:没问过就动用户的目录是铁律 7 的红线
-    const first = invoke.mock.calls.find(([cmd]) => cmd === "skill_link_agents");
-    expect(first?.[1].args.replaceOccupied).toBe(false);
+    expect(useInstall.getState().retryError?.code).toBe(OCCUPIED_ERROR.code);
+    expect(failedLinks(useInstall.getState().report)).toBe(1);
   });
 
-  it("确认后才带 replaceOccupied 再来一次", async () => {
+  it("别的目录上的 agent 失败不该算到这一条头上", async () => {
+    // 空转防线:若实现忘了按 `entry.agents` 过滤,这条会把 claude-code 的失败
+    // 算成 trae 那一行的失败,而 trae 其实成功了。
     invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_link_agents")
-        return report({
-          links: [{ dir: "/home/u/.trae/skills", agents: ["trae"], result: { status: "failed", error: OCCUPIED_ERROR } }],
-        });
+      if (cmd === "skill_set_agents")
+        return setAgentsDone([
+          ["trae", { Ok: { kind: "linked", mode: "symlink" } }],
+          ["claude-code", { Err: OCCUPIED_ERROR }],
+        ]);
       return [];
     });
+
     await useInstall.getState().retryLink("/home/u/.trae/skills");
-    invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_link_agents")
-        return report({
-          links: [{ dir: "/home/u/.trae/skills", agents: ["trae"], result: { status: "linked", mode: "symlink" } }],
-        });
-      return [];
-    });
 
-    await useInstall.getState().confirmRetry();
-
-    const calls = invoke.mock.calls.filter(([cmd]) => cmd === "skill_link_agents");
-    expect(calls[calls.length - 1]?.[1].args.replaceOccupied).toBe(true);
-    expect(useInstall.getState().retryConfirmDir).toBeNull();
+    expect(useInstall.getState().retryError).toBeNull();
     expect(failedLinks(useInstall.getState().report)).toBe(0);
   });
 
-  it("取消确认:不发第二次请求,原状保留", async () => {
+  it("core 说有几个版本:如实报出来,不装作重试成功了", async () => {
+    // 结果面板没有拍板界面(那在「我的技能」页),所以这里只能把话说清楚。
+    // 静默当成功的话,用户会以为配好了,而那个工具其实读不到。
     invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_link_agents")
-        return report({
-          links: [{ dir: "/home/u/.trae/skills", agents: ["trae"], result: { status: "failed", error: OCCUPIED_ERROR } }],
-        });
+      if (cmd === "skill_set_agents")
+        return { outcome: "needsVersionChoice", versions: [] };
       return [];
     });
-    await useInstall.getState().retryLink("/home/u/.trae/skills");
-    invoke.mockClear();
 
-    useInstall.getState().cancelRetry();
+    await useInstall.getState().retryLink("/home/u/.trae/skills");
+
+    expect(useInstall.getState().retryError?.code).toBe("FS_NEEDS_VERSION_CHOICE");
+    // 报告不该被改写成"成功了"
+    expect(failedLinks(useInstall.getState().report)).toBe(1);
+  });
+
+  it("替换确认那条路已撤销:占用不再靠「替换掉那个目录」解决", async () => {
+    // 新模型里内容不同的位置由 core 报"有几个版本"交给用户拍板,绝不覆盖。
+    // 所以 `retryConfirmDir` 不该再被置上——它一旦被置上,`RetryLinkDialog`
+    // 就会弹出一个承诺"替换"的弹窗,而底层已经没有那条路了。
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_set_agents")
+        return setAgentsDone([["trae", { Err: OCCUPIED_ERROR }]]);
+      return [];
+    });
+
+    await useInstall.getState().retryLink("/home/u/.trae/skills");
 
     expect(useInstall.getState().retryConfirmDir).toBeNull();
-    expect(invoke).not.toHaveBeenCalledWith("skill_link_agents", expect.anything());
-    expect(failedLinks(useInstall.getState().report)).toBe(1);
   });
 });
 

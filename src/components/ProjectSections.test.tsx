@@ -143,11 +143,11 @@ describe("项目分区", () => {
     expect(screen.queryByRole("button", { name: "在文件夹中显示" })).toBeNull();
   });
 
-  it("记账文件看不懂:只读提示,不列技能", async () => {
+  it("清单文件看不懂:只读提示,不列技能", async () => {
     seed([group({ readOnly: true, skills: [] })]);
     render(<ProjectSections />);
 
-    await screen.findByText("这个文件夹的记账文件本应用看不懂,只能查看");
+    await screen.findByText("这个文件夹的清单文件本应用看不懂,只能查看");
     expect(screen.queryByRole("button", { name: "更新" })).toBeNull();
   });
 

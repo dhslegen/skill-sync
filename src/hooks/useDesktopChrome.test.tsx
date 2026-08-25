@@ -31,10 +31,11 @@ describe("桌面快捷键", () => {
     expect(useUi.getState().paletteOpen).toBe(false);
   });
 
-  it("Cmd/Ctrl+1..4 切页", async () => {
+  it("Cmd/Ctrl+1..3 切页", async () => {
     render(<Harness />);
+    // 「分享」页整页已撤销(v6 二期),顺序变成 商店/我的技能/设置 三页
     await userEvent.keyboard("{Control>}3{/Control}");
-    expect(useUi.getState().page).toBe("share");
+    expect(useUi.getState().page).toBe("settings");
     await userEvent.keyboard("{Control>}1{/Control}");
     expect(useUi.getState().page).toBe("store");
   });

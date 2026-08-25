@@ -215,7 +215,7 @@ fn unlink(link: &Path) -> Result<(), AppError> {
         _ => return Ok(()),
     };
     r.map_err(|e| {
-        AppError::new("FS_UNLINK_FAILED", "无法解除技能与该工具的关联,请重试")
+        AppError::new("FS_UNLINK_FAILED", "无法在该工具里停用这个技能,请重试")
             .with_detail(format!("unlink {}: {e}", link.display()))
     })
 }
@@ -301,7 +301,7 @@ fn create_link(kind: LinkKind, target: &Path, link: &Path) -> std::io::Result<()
 }
 
 fn link_failed(link: &Path, detail: &str) -> AppError {
-    AppError::new("FS_LINK_FAILED", "无法把技能关联到该工具的目录,请重试")
+    AppError::new("FS_LINK_FAILED", "无法把这个技能启用到该工具,请重试")
         .with_detail(format!("link {}: {detail}", link.display()))
 }
 

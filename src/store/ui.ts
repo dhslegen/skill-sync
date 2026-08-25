@@ -1,7 +1,8 @@
 // 界面级瞬时状态:当前页、命令面板开关、以及 IME 组合输入标志。
 import { create } from "zustand";
 
-export type PageId = "store" | "mine" | "share" | "settings";
+// 「分享」页已于 v6 二期撤销:首次分享收进「我的技能」那一行的确认屏。
+export type PageId = "store" | "mine" | "settings";
 
 interface UiState {
   page: PageId;

@@ -19,7 +19,6 @@ import { useUi, type PageId } from "@/store/ui";
 const TITLES: Record<PageId, MessageKey> = {
   store: "nav.store",
   mine: "nav.mine",
-  share: "nav.share",
   settings: "nav.settings",
 };
 

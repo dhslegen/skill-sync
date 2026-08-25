@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createFormComplete, useCreate } from "./create";
-import { useShare } from "./share";
+import { useMySkills } from "@/store/my-skills";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args: unknown) => invoke(cmd, args) }));
@@ -13,7 +13,8 @@ function reset() {
   invoke.mockReset();
   invoke.mockImplementation(async (cmd: string) => {
     if (cmd === "skill_create") return { dirSlug: "weekly-report", path: "/home/u/.agents/skills/weekly-report" };
-    if (cmd === "share_candidates") return [];
+    if (cmd === "installed_list") return [];
+    if (cmd === "agents_detected") return { agents: [], canonicalDir: "" };
     return null;
   });
   useCreate.setState({
@@ -22,7 +23,7 @@ function reset() {
     error: null,
     createdPath: null,
   });
-  useShare.setState({ candidates: null });
+  useMySkills.setState({ list: null });
 }
 
 beforeEach(reset);
@@ -43,7 +44,7 @@ describe("表单完整性", () => {
 });
 
 describe("创建流程", () => {
-  it("成功后进完成档,带回路径,并刷新分享候选", async () => {
+  it("成功后进完成档,带回路径,并刷新「我的技能」", async () => {
     useCreate.setState({ phase: "form", form: FORM });
     await useCreate.getState().submit();
 
@@ -51,8 +52,9 @@ describe("创建流程", () => {
     expect(s.phase).toBe("done");
     expect(s.createdPath).toBe("/home/u/.agents/skills/weekly-report");
     expect(s.error).toBeNull();
-    // 不刷新的话用户看不到自己刚建的东西
-    expect(invoke.mock.calls.map((c) => c[0])).toContain("share_candidates");
+    // 不刷新的话用户看不到自己刚建的东西(分享候选那条路已随分享页一并撤销,
+    // 新建的技能现在靠 core 的目录扫描出现在「我的技能」里)
+    expect(invoke.mock.calls.map((c) => c[0])).toContain("installed_list");
   });
 
   it("传给 core 的是表单原值,不做前端加工", async () => {

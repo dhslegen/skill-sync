@@ -21,7 +21,6 @@ import { useEffect, useRef } from "react";
 import { listenLocalSkillsChanged } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useMySkills } from "@/store/my-skills";
-import { useShare } from "@/store/share";
 import { useUi, type PageId } from "@/store/ui";
 
 /** 按页刷新本地技能相关的状态。导出供 level 3 的文件监听复用。 */
@@ -29,9 +28,6 @@ export function refreshLocalFor(page: PageId): void {
   switch (page) {
     case "mine":
       void useMySkills.getState().load();
-      break;
-    case "share":
-      void useShare.getState().load();
       break;
     case "store":
       // 已装技能可能在外部被删掉了,回来该显示「获取」而不是「已启用」
