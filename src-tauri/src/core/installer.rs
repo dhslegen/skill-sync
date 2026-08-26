@@ -446,8 +446,11 @@ impl<'a> Installer<'a> {
         //
         // 🔴 失败(如 macOS Finder 自动化授权被拒)时必须清掉 staging 再返回错误
         // (审查修复轮 1 I-1,以硬约束为准,不是任务书那版裸 `?`):staging 带着完整的
-        // SKILL.md,`share::scan_candidates` 不跳过点开头的目录,残骸留着就会在分享列表里
-        // 冒出一个叫 `.<slug>.skillsync-new` 的幽灵技能。
+        // SKILL.md,而扫描本地技能的两条路(`share::scan_candidates` 与
+        // `converge::scan_all`)都不跳过点开头的目录,残骸留着就会冒出一个叫
+        // `.<slug>.skillsync-new` 的幽灵技能。
+        // ⚠️ 这里原先写的是"会在**分享列表**里冒出来"——分享页整页已在 v6 二期撤销,
+        // 今天它冒在**「我的技能」**上。理由没变,措辞跟着走。
         if let Err(e) = fsops::trash_tree(self.trasher, &home.body) {
             let _ = fsops::remove_tree(&staging);
             return Err(e);
@@ -644,11 +647,14 @@ impl<'a> Installer<'a> {
 /// **实体副本**——用户完全可能直接在这份副本上编辑过。`trash_tree` 对纯链接与
 /// [`fsops::remove_tree`] 语义相同(只摘链接,不进废纸篓),但对实体目录/文件会
 /// 送进废纸篓而不是直接删,铁律 7 在这条路上因此从"问过"升级成"可逆"。
+///
+/// ⚠️ **四句 `Skipped` 的文案写成内联的结构体字面量,不再走 `skip("…")` 闭包**
+/// (终审 I-1):它们自此会真的渲染到「我的技能」的失败框里,因而受
+/// `tests/terminology.rs::core_visible_reasons` 的禁词表管辖——而那个提取器按
+/// `UnlinkResult::Skipped {` 锚定字面量,写在闭包调用点上它一个字都抓不到。
+/// 收回闭包省下的几个字符,换来的是一道**看起来在守、实际空转**的守卫。
 fn unlink_one(link: &Path, target: &Path, mode: LinkKind, trasher: &dyn Trasher) -> UnlinkResult {
     let state = fsops::link_state(link, target);
-    let skip = |reason: &str| UnlinkResult::Skipped {
-        reason: reason.to_string(),
-    };
     let remove = || match fsops::trash_tree(trasher, link) {
         Ok(true) => UnlinkResult::Unlinked,
         Ok(false) => UnlinkResult::Missing,
@@ -657,13 +663,21 @@ fn unlink_one(link: &Path, target: &Path, mode: LinkKind, trasher: &dyn Trasher)
 
     match (mode, state) {
         (_, LinkState::Missing) => UnlinkResult::Missing,
-        // 降级复制:记账说这份副本是我们放的,且磁盘上确实还是个实体目录,才清理。
+        // 降级复制:账上说这份副本是我们放的,且磁盘上确实还是个实体目录,才清理。
         (LinkKind::Copy, LinkState::Real) => remove(),
-        (LinkKind::Copy, _) => skip("该位置已不是本应用放置的技能副本,未做改动"),
+        (LinkKind::Copy, _) => UnlinkResult::Skipped {
+            reason: "那个位置上已经不是本应用放的副本了,没有改动它".into(),
+        },
         (_, LinkState::Linked(_)) | (_, LinkState::Broken) => remove(),
-        (_, LinkState::Foreign(_)) => skip("该关联已被改指到别处,未做改动"),
-        (_, LinkState::Real) => skip("该位置是一个实体技能目录,未做改动"),
-        (_, LinkState::SameLocation) => skip("该目录与技能本体是同一处,无需解除"),
+        (_, LinkState::Foreign(_)) => UnlinkResult::Skipped {
+            reason: "那个位置现在指向别处,没有改动它".into(),
+        },
+        (_, LinkState::Real) => UnlinkResult::Skipped {
+            reason: "那个位置上是一个真实的技能文件夹,没有改动它".into(),
+        },
+        (_, LinkState::SameLocation) => UnlinkResult::Skipped {
+            reason: "那个位置就是这个技能本身所在,不需要改动".into(),
+        },
     }
 }
 
@@ -1000,8 +1014,10 @@ mod tests {
     fn a_failed_trash_of_the_old_body_leaves_no_staging_ghost() {
         // I-1(审查修复轮 1,以硬约束为准,不按任务书那版裸 `?`):trash_tree 失败
         // (比如 macOS Finder 自动化授权被拒)时,staging 残骸必须清掉——它带着完整的
-        // SKILL.md,`share::scan_candidates` 不跳过点开头的目录,留着就会在分享列表里
-        // 冒出一个叫 `.<slug>.skillsync-new` 的幽灵技能。
+        // SKILL.md,而扫描本地技能的两条路(`share::scan_candidates` 与
+        // `converge::scan_all`)都不跳过点开头的目录,留着就会在「我的技能」上
+        // 冒出一个叫 `.<slug>.skillsync-new` 的幽灵技能(分享页整页已撤,
+        // 这句话此前还写着"分享列表")。
         struct BrokenTrasher;
         impl Trasher for BrokenTrasher {
             fn trash(&self, _: &Path) -> Result<(), AppError> {

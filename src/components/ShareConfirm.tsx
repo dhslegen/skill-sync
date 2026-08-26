@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { t, type MessageKey } from "@/i18n";
-import { skillLocalDetail, skillReveal, type ShareBlock, type SharePath } from "@/lib/ipc";
+import { skillLocalDetail, skillReveal, type SharePath } from "@/lib/ipc";
+import { SHARE_BLOCK_LABEL } from "@/lib/share-block";
 import { useMySkills } from "@/store/my-skills";
 import { useShare } from "@/store/share";
 
@@ -26,16 +27,6 @@ import { useShare } from "@/store/share";
  * ——**用 `path` 不用 `dirSlug`**:本体很可能不住在统一目录里(那正是这一期的
  * 起因),按 `dirSlug` 解析会读到另一个地方,或者什么都读不到。
  */
-const BLOCK_LABEL: Record<ShareBlock, MessageKey> = {
-  nameMissing: "mine.shareBlocked.nameMissing",
-  nameMismatch: "mine.shareBlocked.nameMismatch",
-  nameFormat: "mine.shareBlocked.nameFormat",
-  dirFormat: "mine.shareBlocked.dirFormat",
-  descriptionMissing: "mine.shareBlocked.descriptionMissing",
-  descriptionTooLong: "mine.shareBlocked.descriptionTooLong",
-  skillMdUnreadable: "mine.shareBlocked.skillMdUnreadable",
-};
-
 /** `unknown` 不在表里:探不到就整条不显示,不假装知道(M4 任务 2 的既定取舍)。 */
 const PATH_LABEL: Record<Exclude<SharePath, "unknown">, MessageKey> = {
   directPush: "mine.sharePathDirect",
@@ -136,7 +127,7 @@ export function ShareConfirm() {
 
         {blocked && (
           <p className="mt-2.5 rounded-card border border-[#b8860b]/40 px-2.5 py-2 text-[12px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
-            {t(BLOCK_LABEL[blocked])}
+            {t(SHARE_BLOCK_LABEL[blocked])}
           </p>
         )}
 

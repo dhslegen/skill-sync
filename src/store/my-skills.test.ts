@@ -150,6 +150,84 @@ describe("移除流程", () => {
     expect(refreshInstalled).toHaveBeenCalled();
   });
 
+  // ── 终审 I-1:没删掉的东西要如实回报 ────────────────────────────────
+  //
+  // `installer.uninstall` 对解不掉的位置返回 `Failed`/`Skipped` 而**自身照常
+  // `Ok`**,`remove` 随后无条件清账。丢掉 `unlinks` 的后果:工具目录里留着一条
+  // 悬空链接,而账已清、本体已进废纸篓、那一行从这一页消失——app 里再没有任何
+  // 入口能驱动一次重试,用户还全程被告知"已移除"。
+  it("解链失败与跳过的位置逐条进 toolFailures,不随记账一起消失", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_remove")
+        return {
+          outcome: "removed",
+          report: {
+            dirName: "weekly-report",
+            unlinks: [
+              { dir: "/h/.agents/skills", result: { status: "unlinked" } },
+              { dir: "/h/.trae/skills", result: { status: "missing" } },
+              {
+                dir: "/h/.claude/skills",
+                result: { status: "failed", error: { code: "FS_UNLINK_FAILED", message: "无法在该工具里停用这个技能,请重试" } },
+              },
+              {
+                dir: "/h/.codex/skills",
+                result: { status: "skipped", reason: "那个位置现在指向别处,没有改动它" },
+              },
+            ],
+            canonicalRemoved: true,
+          },
+          lock: "written",
+        };
+      if (cmd === "installed_list") return [];
+      return AGENTS;
+    });
+
+    useMySkills.getState().askRemove("weekly-report");
+    await useMySkills.getState().confirmRemove();
+
+    // 只收 failed 与 skipped:unlinked / missing 都是如愿的结果,摆出来是噪音
+    expect(useMySkills.getState().toolFailures).toEqual([
+      {
+        kind: "location",
+        path: "/h/.claude/skills",
+        message: "无法在该工具里停用这个技能,请重试",
+      },
+      {
+        kind: "location",
+        path: "/h/.codex/skills",
+        message: "那个位置现在指向别处,没有改动它",
+      },
+    ]);
+  });
+
+  it("全部解干净时不摆失败框", async () => {
+    // 对照组:没有它,"永远摆一个空框"或"永远摆全部四条"都能过上一条
+    useMySkills.setState({ toolFailures: [{ kind: "failed", agent: null, message: "旧的" }] });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_remove")
+        return {
+          outcome: "removed",
+          report: {
+            dirName: "weekly-report",
+            unlinks: [
+              { dir: "/h/.agents/skills", result: { status: "unlinked" } },
+              { dir: "/h/.trae/skills", result: { status: "missing" } },
+            ],
+            canonicalRemoved: true,
+          },
+          lock: "written",
+        };
+      if (cmd === "installed_list") return [];
+      return AGENTS;
+    });
+
+    useMySkills.getState().askRemove("weekly-report");
+    await useMySkills.getState().confirmRemove();
+
+    expect(useMySkills.getState().toolFailures).toBeNull();
+  });
+
   it("移除失败:错误可读、弹窗留在原地可重试", async () => {
     invoke.mockImplementation(async (cmd) => {
       if (cmd === "skill_remove") throw { code: "FS_TASK", message: "移除操作未能完成,请重试" };
@@ -463,6 +541,115 @@ describe("拍板留哪一份(skill_keep_version)", () => {
 
     const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_set_agents");
     expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", agents: ["trae"] });
+  });
+
+  // ── 终审 C-1:core 收集的失败必须真的到达界面 ────────────────────────
+  //
+  // `keep_version` 的三类失败**不抛错**——core 把它们逐条收进 `KeepReport`、
+  // 函数照常返回 `Ok`。所以 `catch` 分支永远碰不到它们,只有取返回值这一条路。
+
+  it("落选版本进废纸篓失败时,那条失败到达 toolFailures(不是静默关掉弹窗)", async () => {
+    useMySkills.setState({ versionChoice: choice(), list: [view()] });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_keep_version")
+        return {
+          body: "/a",
+          trashed: [],
+          links: [["/b", { Err: { code: "FS_TRASH_FAILED", message: "移到废纸篓失败" } }]],
+          canonical: { Ok: { kind: "unchanged" } },
+        };
+      if (cmd === "installed_list") return [view()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().keepVersion("weekly-report", "/a");
+
+    const failures = useMySkills.getState().toolFailures;
+    // 断言的是"那条失败真的到了清单里",不是"某段文案渲染了"
+    expect(failures).toEqual([
+      { kind: "location", path: "/b", message: "移到废纸篓失败" },
+    ]);
+  });
+
+  it("canonical 那一处失败同样到达 toolFailures", async () => {
+    useMySkills.setState({ versionChoice: choice(), list: [view()] });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_keep_version")
+        return {
+          body: "/a",
+          trashed: ["/b"],
+          links: [],
+          canonical: { Err: { code: "FS_LINK_FAILED", message: "统一目录那一处没配上" } },
+        };
+      if (cmd === "installed_list") return [view()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().keepVersion("weekly-report", "/a");
+
+    expect(useMySkills.getState().toolFailures).toEqual([
+      { kind: "failed", agent: null, message: "统一目录那一处没配上" },
+    ]);
+  });
+
+  // 🔴 **这一条是 C-1 修复里最容易自伤的地方,必须单独测**:
+  // `after === "agents"` 是拍板最常见的入口(勾工具 → 顶回拍板 → 拍完接着落勾),
+  // 而 `setAgents` 开头就是 `toolFailures: null`——接着跑等于把刚摆出来的失败
+  // 自己清掉,C-1 在修它的代码里原样复现。
+  it("有失败就不走 after 链:失败留在界面上,后续动作不再触发", async () => {
+    useMySkills.setState({
+      versionChoice: choice({ after: "agents", agents: ["trae"] }),
+      list: [view()],
+    });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_keep_version")
+        return {
+          body: "/a",
+          trashed: [],
+          links: [["/b", { Err: { code: "FS_TRASH_FAILED", message: "移到废纸篓失败" } }]],
+          canonical: { Ok: { kind: "unchanged" } },
+        };
+      if (cmd === "installed_list") return [view()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().keepVersion("weekly-report", "/a");
+
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_set_agents")).toHaveLength(0);
+    expect(useMySkills.getState().toolFailures).toHaveLength(1);
+  });
+
+  it("全部成功时不摆失败框,after 链照常跑", async () => {
+    // 对照组:没有它,上一条测试用"永远不跑 after"的坏实现也能过
+    useMySkills.setState({
+      versionChoice: choice({ after: "agents", agents: ["trae"] }),
+      list: [view()],
+    });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_keep_version")
+        return {
+          body: "/a",
+          trashed: ["/b"],
+          links: [["/b", { Ok: { kind: "linked", mode: "symlink" } }]],
+          canonical: { Ok: { kind: "unchanged" } },
+        };
+      if (cmd === "skill_set_agents")
+        return {
+          outcome: "done",
+          homeBody: "/a",
+          canonical: { Ok: { kind: "unchanged" } },
+          results: [],
+          unlinked: [],
+          unlinkFailed: [],
+        };
+      if (cmd === "installed_list") return [view()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().keepVersion("weekly-report", "/a");
+
+    expect(useMySkills.getState().toolFailures).toBeNull();
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_set_agents")).toHaveLength(1);
   });
 
   it("失败时弹窗留在原地可重试,不静默关掉", async () => {

@@ -143,7 +143,7 @@ pub fn state_links_to_recorded(
             None => skipped.push(UnlinkReport {
                 dir: l.dir.clone(),
                 result: UnlinkResult::Skipped {
-                    reason: format!("记账中的关联方式「{}」无法识别,未做改动", l.mode),
+                    reason: format!("无法识别这个位置的启用方式「{}」,没有改动它", l.mode),
                 },
             }),
         }

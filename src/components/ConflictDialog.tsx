@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 import { t } from "@/i18n";
 import { useInstall } from "@/store/install";
@@ -38,19 +38,20 @@ export function ConflictDialog() {
   );
   const keepRef = useRef<HTMLButtonElement>(null);
   const open = phase === "conflict" && precheck !== null;
-  // 「以库为准,丢弃本地改动」的二次确认(铁律 7:绝不静默丢用户改动)。
-  // 换一个技能、或弹窗整个关掉时必须收回武装状态——不然上一个技能按出来的
-  // "已确认"会跟着下一次冲突一起生效,变成没点第二下就覆盖。
-  const [confirmingOverwrite, setConfirmingOverwrite] = useState(false);
+  // 🔴 **「以库为准」的二次确认已撤销**(终审 C-2)。它当初存在的唯一理由是
+  // "本地改动无法找回",而今天 `Installer::install` 走 `fsops::trash_tree`
+  // 把旧本体送进系统废纸篓——**可以找回**。同一条推理已经让 `RemoveDialog` 撤掉
+  // 双确认(理由写在下面 localDiffers 那一档:「可逆比追问管用」),移除删的同样
+  // 是整个本体、同样不是"无损",可逆一条就够了;这里再多问一遍就是两套尺子。
+  //
+  // 撤掉之后那句话搬到按钮的**常驻** hint 上:说明可逆比"武装之后才出现的追问"
+  // 更早到达用户——不敢点的人在点之前就该看见"能找回"。
+  // 另一道护栏没动:默认焦点仍在无损项(「以本地为准」)上,回车不会覆盖。
 
   useEffect(() => {
     // 焦点落在默认动作上:回车即"保留我的改动",不会误触覆盖
     if (open) keepRef.current?.focus();
   }, [open]);
-
-  useEffect(() => {
-    setConfirmingOverwrite(false);
-  }, [open, dirSlug]);
 
   useEffect(() => {
     if (!open) return;
@@ -168,16 +169,13 @@ export function ConflictDialog() {
                 label={t("conflict.mineKeep")}
                 onClick={() => void keepLocalAndShareMine()}
               />
-              {/* 「以库为准」二次确认(铁律 7):第一下只武装,不动磁盘;
-                  第二下才真的调 run("overwrite")。确认文案借这颗按钮的 hint
-                  位显示,不另开第三个按钮。 */}
+              {/* hint 常驻且是真话:旧本体进系统废纸篓,可以找回(见上面撤销
+                  二次确认的理由)。 */}
               <Choice
                 label={t("conflict.mineOverwrite")}
-                hint={confirmingOverwrite ? t("conflict.mineOverwriteConfirm") : undefined}
+                hint={t("conflict.mineOverwriteHint")}
                 danger
-                onClick={() =>
-                  confirmingOverwrite ? void run("overwrite") : setConfirmingOverwrite(true)
-                }
+                onClick={() => void run("overwrite")}
               />
             </>
           ) : (
@@ -234,8 +232,8 @@ function Choice({
 }: {
   ref?: React.Ref<HTMLButtonElement>;
   label: string;
-  /** 省略 = 不显示这一行(mine 档的两颗按钮没有独立的说明文案,标题/正文已经
-   *  把两条路说全了;确认武装时借这个位置显示 `conflict.mineOverwriteConfirm`)。 */
+  /** 省略 = 不显示这一行(mine 档的「以本地为准」没有独立说明,标题/正文已经
+   *  把两条路说全了)。 */
   hint?: string;
   onClick: () => void;
   primary?: boolean;

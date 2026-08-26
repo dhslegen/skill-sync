@@ -466,6 +466,8 @@ pub async fn share(
     req: ShareRequest<'_>,
     now: &str,
 ) -> Result<ShareOutcome, AppError> {
+    // 这一段里的写盘是本应用自己干的,期间的文件事件不上报(见 core/watcher.rs 模块头)
+    let _quiet = crate::core::watcher::app_write();
     let installer = Installer::new(registry, env).with_trasher(trasher);
     let loaded = store.load_state()?;
 
@@ -693,7 +695,11 @@ pub async fn share_installed(
     force_review: bool,
     now: &str,
 ) -> Result<ShareInstalledOutcome, AppError> {
-    let installer = Installer::new(registry, env);
+    // 显式 `.with_trasher(SYSTEM_TRASH)`:默认值本来就是它,这条路上的 installer
+    // 也只用于 `record_key`/`home_of`(两者都不碰废纸篓),所以今天零风险。
+    // 写出来只为一件事——**全仓其余生产入口都显式带,唯独这里是例外**,
+    // 而"唯一的例外"正是下一个人照抄时最容易抄错的形状(终审 M-1)。
+    let installer = Installer::new(registry, env).with_trasher(&fsops::SYSTEM_TRASH);
     let loaded = store.load_state()?;
     // 🔴 查账键走 [`converge::record_key`],**不是调用方手上的 `dir_slug`**:
     // 记账键是清洗后的目录名(会小写化),而 `dir_slug` 是技能库里的原始目录名
@@ -729,6 +735,16 @@ pub async fn share_installed(
         )
         .with_detail(format!("missing: {}", source_dir.display())));
     }
+    // 🔴 **标准校验,与 [`share`] 同一把尺子、同样排在任何网络请求之前**
+    // (终审 C-3)。A-2 是拍板不复议的硬规则:「分享前按 Agent Skills 标准全量
+    // 校验,不合格不让分享」——而这里是分享的**第二条通道**,此前一个字的校验
+    // 都没有,于是本期的旗舰场景整个漏了:用户在 `~/.claude/skills/x` 开发 →
+    // 分享(过闸)→ 继续迭代时把 frontmatter 的 `name` 改成中文 → 点「分享更新」
+    // → 一个 `name ≠ 文件夹名`、非 ASCII 的技能直推进公司技能库,全程零提示。
+    //
+    // **放在网络请求之前**不是顺手:不合格时磁盘与远端都必须零动作,而下面第一件
+    // 事就是 `download_archive`。`share()` 那侧有"请求条数 = 0"的硬断言,这侧同款。
+    skills::validate_skill_dir(&source_dir).map_err(skill_invalid_err)?;
 
     // 远端变更检测:账上 content_hash = 上次与远端对齐时的内容指纹(本地改动、
     // 走评审都不动它——现役不变量),远端当前指纹与它不等就是"别人改过"。

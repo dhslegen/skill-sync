@@ -389,7 +389,13 @@ async fn remote_conflict_detection_against_a_real_gitea() {
 
     // ① "获取时刻"的基线:远端 v1,本地同字节 v1,按本地 dir hash 记账
     //   (zip 指纹与 dir hash 的等式已有测试逐字节钉住,这里靠它)
-    let v1 = "---\nname: 冲突实测\ndescription: v1\n---\n正文\n";
+    // 🔴 frontmatter `name` 必须**等于文件夹名**(这里是 `conflict-live-<pid>`)。
+    // 终审 C-3 起 `share_installed` 也过 A-2 的标准校验闸,而这份 fixture 原先写的是
+    // `name: 冲突实测`——中文、且与文件夹名不同,两条都犯,回推会被闸拦下。
+    // **这不是为了迁就守卫改测试数据**:回推一个 `name ≠ 文件夹名` 的技能今天
+    // 本来就不该成功,fixture 那样写只是因为当初那条闸不存在。
+    let v1 = format!("---\nname: {name}\ndescription: v1\n---\n正文\n");
+    let v1 = v1.as_str();
     admin
         .change_files(
             &repo.owner,
@@ -428,8 +434,11 @@ async fn remote_conflict_detection_against_a_real_gitea() {
     store.save_state(&state).unwrap();
 
     // ② 我本地改成 v2
-    std::fs::write(dir.join("SKILL.md"), "---\nname: 冲突实测\ndescription: 我的 v2\n---\n正文\n")
-        .unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: 我的 v2\n---\n正文\n"),
+    )
+    .unwrap();
 
     // ③ B 抢先把远端推到 v3(更新要带 v1 的 blob sha)
     let head = admin.branch_head(&repo).await.unwrap();
@@ -451,7 +460,7 @@ async fn remote_conflict_detection_against_a_real_gitea() {
                 message: "更新技能:冲突实测".into(),
                 files: vec![FileChange::update(
                     format!("{remote_path}/SKILL.md"),
-                    "---\nname: 冲突实测\ndescription: 别人的 v3\n---\n正文\n".as_bytes(),
+                    format!("---\nname: {name}\ndescription: 别人的 v3\n---\n正文\n").as_bytes(),
                     sha,
                 )],
             },

@@ -1543,6 +1543,61 @@ fn install_record(c: &Ctx, dir: &Path) -> InstalledSkill {
     }
 }
 
+/// 🔴 **回推也要过 A-2 的标准校验闸,而且同样排在任何网络请求之前**(终审 C-3)。
+///
+/// A-2 拍板不复议:「分享前按 Agent Skills 标准全量校验,不合格不让分享」。
+/// 任务 6 把闸装在 `share()` 并做对了,而 `share_installed` ——**分享的第二条
+/// 通道**——一个字的校验都没有。旗舰场景因此整个漏了:用户在
+/// `~/.claude/skills/weekly-report` 开发 → 分享(过闸)→ 继续在 Claude Code 里
+/// 迭代时把 frontmatter 的 `name` 改成中文 → 点「分享更新」→ 一个
+/// `name ≠ 文件夹名`、非 ASCII 的技能直推进公司技能库,全程零提示。
+///
+/// 守卫盯的是**请求条数**,与 `share_refuses_non_conforming_skills_before_any_network_call`
+/// 同款:把校验挪到 `download_archive` 之后时错误码照样对,只有请求条数会红。
+#[tokio::test]
+async fn pushing_changes_back_refuses_non_conforming_skills_before_any_network_call() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("weekly-report");
+    write_skill(&dir, "weekly-report", "原版");
+    let mut state = state_of(&c);
+    state.installed.push(install_record(&c, &dir));
+    c.store.save_state(&state).unwrap();
+    // 用户在自己的编辑器里把 name 改成了中文:Claude Code 照样加载,
+    // 但开放标准两条都犯(不是 ASCII 小写、且不等于文件夹名)。
+    std::fs::write(dir.join("SKILL.md"), "---\nname: 周报生成\ndescription: 我改过\n---\n").unwrap();
+
+    // 全部端点都挂上:真发了请求一定拿得到 200,红的时候一定是因为"发了请求"。
+    let server = MockServer::start().await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/repos/skills/skills/branches/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "commit": { "id": "head1", "timestamp": "2026-07-31T08:00:00Z" }
+        })))
+        .mount(&server)
+        .await;
+    mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+
+    let err = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code, "FS_SKILL_INVALID");
+    assert_eq!(err.detail.as_deref(), Some("nameFormat"));
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        0,
+        "不合格的技能连一次探测都不该发出去",
+    );
+}
+
+/// 对照组:合格的改动照常推得上去。
+///
+/// 没有它,"`share_installed` 一进门无条件报 `FS_SKILL_INVALID`"这个坏实现
+/// 也能让上一条通过。这条由 `pushing_local_changes_back_updates_the_books` 承担
+/// ——它推的是一个 `name == 文件夹名` 的合格技能。
 #[tokio::test]
 async fn pushing_local_changes_back_updates_the_books() {
     let (c, env) = ctx();

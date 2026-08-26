@@ -277,9 +277,10 @@ fn all_messages() -> Vec<Extracted> {
 ///
 /// # 为什么要单开一条通道
 ///
-/// 用户可见文案一共有三条通道,这是第四条,而前三道守卫谁都扫不到它:
-/// 前端 `src/i18n/index.test.ts` 只扫 `zh-CN.json`;本文件其余测试只扒
-/// `AppError::new`;`RELEASE_NOTES.md` 那两条只读发版说明。而
+/// 用户可见文案有好几条通道,**别用序数指代它们**(数着数着就对不上,本项目
+/// 记过这条教训)。按名字列:i18n 资源(`src/i18n/index.test.ts` 扫 `zh-CN.json`)、
+/// `AppError::new`(本文件其余测试)、发版说明(`RELEASE_NOTES.md`)、
+/// `README.md`、以及**这一条**——core 拼好中文原样送上界面的字段。前几道谁都扫不到它:而
 /// `BatchOutcome::Skipped { reason }` 这类字段是 core 拼好一句中文、经 IPC
 /// 原样送到界面上渲染的(`components/Wizard.tsx` 就把它直接贴在结果行末尾)。
 ///
@@ -290,16 +291,27 @@ fn all_messages() -> Vec<Extracted> {
 ///   定时更新的跳过原因,**当前唯一真的被渲染出来的一条通道**;
 /// - `SkippedSkill { reason }`(`core/scheduler.rs` 的定时更新报告、
 ///   `core/skills.rs` 的技能发现跳过)——同一个字段名、同一种"人话原因",
-///   今天前端只读数量不读文本,纳进来是防它哪天被渲染。
+///   今天前端只读数量不读文本,纳进来是防它哪天被渲染;
+/// - `UnlinkResult::Skipped { reason }`(`core/installer.rs` / `core/remove.rs`)
+///   ——移除时"这个位置没能解除"的原因,自终审 I-1 起真的会渲染到
+///   「我的技能」的失败框里(见下)。
 ///
 /// **挡不住什么**(与 `body_guard` 同一个道理:它是烟雾报警,不是防火墙):
 /// - 间接产出的句子,例如 `reason: err.reason()`(`core/skills.rs:510`)——
 ///   文本在另一个函数里,锚定不到;
-/// - `UnlinkResult::Skipped { reason }`(`core/installer.rs` / `core/remove.rs`)
-///   **刻意不纳入**:那批字段今天没有任何渲染点(`UninstallReport.unlinks`
-///   在前端一处都没读),而它们的文案本来就是写给排查用的。
-///   哪天界面开始渲染它,把锚点加进来即可;
 /// - 变量、常量、`format!` 之外的拼接。
+///
+/// # `UnlinkResult::Skipped` 是**后加进来的**(终审 I-1),原委值得留着
+///
+/// 这段文档此前写着「那批字段今天没有任何渲染点……哪天界面开始渲染它,把锚点
+/// 加进来即可」。**那一天就是 I-1**:`store/my-skills.ts::confirmRemove` 从此把
+/// `UninstallReport.unlinks` 摆到界面上,承诺当场到期。加锚点的那一刻守卫立刻
+/// 变红(「关联」「记账」两个本期禁词各命中一处),这是免费的注入验证。
+///
+/// ⚠️ 加锚点连带要求 `core/installer.rs` 的写法配合:那四句原先走
+/// `skip("…")` 闭包,字符串在**调用点**而不是结构体字面量里,`extract_field_literals`
+/// 按锚点抓不到——加了锚点也仍是空转。现已改成内联的
+/// `UnlinkResult::Skipped { reason: "…".into() }`。**别"顺手"把它们收回闭包**。
 ///
 /// 真正兜底的是**逐条读一遍**加上下面这条自保断言:提取器一旦失灵,
 /// 条数会掉下去,而不是静默变成空转。
@@ -313,7 +325,7 @@ fn core_visible_reasons() -> Vec<Extracted> {
         out.extend(extract_field_literals(
             &file,
             &text,
-            &["BatchOutcome::Skipped {", "SkippedSkill {"],
+            &["BatchOutcome::Skipped {", "SkippedSkill {", "UnlinkResult::Skipped {"],
             "reason",
         ));
     }
@@ -450,7 +462,8 @@ fn error_messages_are_written_in_chinese() {
 #[test]
 fn core_visible_reasons_are_actually_extracted() {
     // 提取器的自保:锚点或写法一变,下面两条禁词测试会静默变成空转。
-    // 现役语料 12 条:acquire 8 + scheduler 3(含测试模块里的两条)+ skills 1。
+    // 现役语料:acquire 8 + scheduler 3(含测试模块里的两条)+ skills 1
+    // + installer/remove 的 UnlinkResult::Skipped 5 条(I-1 起纳入)。
     // 掉到个位数一定是提取器坏了。
     let found = core_visible_reasons();
     assert!(
@@ -498,6 +511,18 @@ fn core_visible_reasons_use_no_retired_or_implementation_terms() {
     }
 }
 
+/// 已撤销的功能术语 + 实现术语,合起来一份(v6 的「纳入管理」一批 +
+/// v6 二期的「关联/收编/记账/占位」一批)。
+///
+/// ⚠️ **只给"照抄两处以上"的守卫用**:上面 `AppError` 与 `core_visible_reasons`
+/// 那两条各自内联着自己的表,**刻意不共用**——它们的存废理由与这两处不同,
+/// 合并之后再想删其中一条就得连带论证另外几条。这个常量是给
+/// `README.md` / `RELEASE_NOTES.md` 两条文档守卫用的,那两处的判据完全一致。
+const RETIRED_AND_IMPLEMENTATION_TERMS: [&str; 8] = [
+    "纳入管理", "移出管理", "其他工具装的",
+    "修复关联", "关联", "收编", "记账", "占位",
+];
+
 // ============================================================ 发版说明(第三条通道)
 
 /// 版本段落的文本(标题主题句 + 正文)。**只取会上界面的部分**:文件开头的前言
@@ -535,6 +560,67 @@ fn release_notes_use_no_git_terminology_in_chinese() {
                  —— 这段文字会显示给用户,见 docs/terminology.md"
             );
         }
+    }
+}
+
+/// 发版说明同样要过**已撤销/实现术语**那份表(终审 I-2)。
+///
+/// 此前这个文件只受 git 术语守卫管辖,于是 0.5.0 段落里的两处「关联」
+/// 一直活着——而这份文件会**在设置页里渲染给用户**,还会被 `publish-release.sh`
+/// 同步到内网发布仓的首页。
+#[test]
+fn release_notes_use_no_retired_or_implementation_terms() {
+    for (version, text) in release_note_texts() {
+        for word in RETIRED_AND_IMPLEMENTATION_TERMS {
+            assert!(
+                !text.contains(word),
+                "发版说明 {version} 里出现已撤销/实现术语「{word}」\
+                 —— 这段文字会显示给用户(升级后的首屏卡片与设置页)"
+            );
+        }
+    }
+}
+
+// ============================================================ README(第五条通道)
+
+/// `README.md` 的全文。
+///
+/// 它是**用户可见文案的第五条通道**,而且此前一道守卫都没有:
+/// `publish-release.sh` 把它同步到内网发布仓,那是同事下载安装包时唯一会看到的
+/// 说明页。终审 I-2 在它里面抓到两处活的「关联」,其中一处是本分支新写的
+/// ——写在**解释新模型的那一段**里,与它旁边的「链接」一起,两个已经从产品层
+/// 撤掉的词同时出现。
+fn readme_text() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("README.md");
+    let text = std::fs::read_to_string(&path).expect("读不到 README.md");
+    assert!(
+        text.len() > 2000,
+        "README.md 只有 {} 字节 —— 要么文件挪了位置,要么被截断了;\
+         这条守卫的自保:读空时下面那条会静默变成空转",
+        text.len()
+    );
+    text
+}
+
+/// 🔴 **范围只有"已撤销/实现术语"这一份表,刻意不套 git 术语表。**
+///
+/// README 后半截是**给开发者看的**(本地联调、四道闸、发版流程),那里出现
+/// 「仓库」「提交」是准确的技术表述,不是给最终用户的文案。套上去只会红在一批
+/// 这次并不打算改、也不该改的存量文字上——而一条"红了就得去改无关文字"的守卫,
+/// 下一个人只会把它删掉。**声称的范围必须等于实际的范围**(本分支已因反例被
+/// 打回四次)。
+#[test]
+fn readme_uses_no_retired_or_implementation_terms() {
+    let text = readme_text();
+    for word in RETIRED_AND_IMPLEMENTATION_TERMS {
+        assert!(
+            !text.contains(word),
+            "README.md 里出现已撤销/实现术语「{word}」—— 它会被同步到内网发布仓,\
+             是同事下载安装包时唯一会看到的说明页"
+        );
     }
 }
 

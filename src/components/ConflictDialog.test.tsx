@@ -37,8 +37,15 @@ describe("冲突对话框", () => {
     expect(screen.getByRole("button", { name: /保留并分享我的改动/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /只保留,暂不分享/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /用团队库的版本覆盖/ })).toBeInTheDocument();
-    // 破坏性那一项必须写明"找不回来"
-    expect(screen.getByText(/无法找回/)).toBeInTheDocument();
+    // 🔴 破坏性那一项必须写明**后果与能不能挽回**,而且必须是真话(终审 C-2)。
+    // 这条断言此前查的是「无法找回」——**它把一句假话钉住了**:core 的
+    // `Installer::install` 走 `fsops::trash_tree`,旧本体进的是系统废纸篓。
+    // 说"找不回来"会让用户要么不敢点一个安全的动作,要么后悔时根本不去翻废纸篓
+    // ——本期最大的产品承诺(拿走用户数据的动作都可逆)在最需要它的那一屏上
+    // 被应用自己否认。
+    expect(screen.getByText(/替换掉/)).toBeInTheDocument();
+    expect(screen.getByText(/废纸篓,可以从那里找回/)).toBeInTheDocument();
+    expect(screen.queryByText(/无法找回/)).toBeNull();
   });
 
   it("默认焦点落在「保留并分享」上 —— 用户拍板的默认项,且回车不会误覆盖", () => {
@@ -126,6 +133,9 @@ describe("冲突对话框", () => {
     expect(screen.queryByText(/不是本应用安装的|不是这个应用安装的/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /替换/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "取消" })).toHaveFocus();
+    // 终审 C-2:替换掉的那一份进废纸篓,说「无法找回」是假话
+    expect(screen.getByText(/废纸篓,可以从那里找回/)).toBeInTheDocument();
+    expect(screen.queryByText(/无法找回/)).toBeNull();
   });
 
   describe("这是我分享的技能(v6 任务 5 的完整变体)", () => {
@@ -165,38 +175,32 @@ describe("冲突对话框", () => {
       expect(keepLocalAndShare).not.toHaveBeenCalled();
     });
 
-    it("点「以库为准」先出二次确认、不立即调 run;确认后才调 run(\"overwrite\")", async () => {
+    it("点「以库为准」第一下就生效 —— 二次确认已撤销(终审 C-2)", async () => {
+      // 🔴 它当初存在的唯一理由是"本地改动无法找回",而 `Installer::install`
+      // 走 `fsops::trash_tree`:旧本体进系统废纸篓,**可以找回**。同一条推理
+      // 已经让 `RemoveDialog` 撤掉双确认(移除删的同样是整个本体、同样不"无损")。
+      // 留着就是两套尺子。另一道护栏没动:默认焦点仍在无损项上,回车不会覆盖。
       const run = vi.fn();
       conflict({ status: "mine", localChanged: true, remoteChanged: true });
       useInstall.setState({ run });
       render(<ConflictDialog />);
 
-      const overwriteButton = screen.getByRole("button", { name: /以库为准,丢弃本地改动/ });
-      await userEvent.click(overwriteButton);
-      expect(run).not.toHaveBeenCalled();
-      expect(screen.getByText("本地改动将无法找回,确定?")).toBeInTheDocument();
-
-      await userEvent.click(overwriteButton);
+      await userEvent.click(screen.getByRole("button", { name: /以库为准,丢弃本地改动/ }));
       expect(run).toHaveBeenCalledWith("overwrite");
     });
 
-    it("换一个技能会收回二次确认的武装状态", async () => {
-      const run = vi.fn();
+    it("默认焦点落在无损那一项上 —— 撤了二次确认之后它是唯一的手滑护栏", () => {
       conflict({ status: "mine", localChanged: true, remoteChanged: true });
-      useInstall.setState({ run });
-      const { rerender } = render(<ConflictDialog />);
+      render(<ConflictDialog />);
+      expect(screen.getByRole("button", { name: /以本地为准,分享更新/ })).toHaveFocus();
+    });
 
-      await userEvent.click(screen.getByRole("button", { name: /以库为准,丢弃本地改动/ }));
-      expect(screen.getByText("本地改动将无法找回,确定?")).toBeInTheDocument();
-
-      // 换一个技能(dirSlug 变了),同样是 mine 冲突
-      useInstall.setState({ dirSlug: "another-skill" });
-      rerender(<ConflictDialog />);
-
-      expect(screen.queryByText("本地改动将无法找回,确定?")).not.toBeInTheDocument();
-      await userEvent.click(screen.getByRole("button", { name: /以库为准,丢弃本地改动/ }));
-      // 这一下是新技能的第一次点击,只该武装,不该直接调 run
-      expect(run).not.toHaveBeenCalled();
+    it("「以库为准」的说明常驻,而且说的是可逆(不是「无法找回」)", () => {
+      conflict({ status: "mine", localChanged: true, remoteChanged: true });
+      render(<ConflictDialog />);
+      // 常驻:不必先点一下"武装"才看得见。不敢点的人在**点之前**就该看见能找回。
+      expect(screen.getByText(/废纸篓,可以从那里找回/)).toBeInTheDocument();
+      expect(screen.queryByText(/无法找回/)).toBeNull();
     });
   });
 

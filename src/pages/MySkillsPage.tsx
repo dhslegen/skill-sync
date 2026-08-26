@@ -8,6 +8,7 @@ import { t, type MessageKey } from "@/i18n";
 import { relativeTimeFromIso } from "@/lib/format";
 import { skillReveal, type InstalledSkillView } from "@/lib/ipc";
 import { sharedState, type SharedState } from "@/lib/ownership";
+import { SHARE_BLOCK_LABEL } from "@/lib/share-block";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { hasUpdate, localEqualsRemote, sections, useMySkills } from "@/store/my-skills";
@@ -177,13 +178,19 @@ export function MySkillsPage() {
             {/* 按内容分流:全是"停下来问你"时说「需要你看一下」,
                 只要有一条是真失败就得说「没能完成」——只读标题的人不该把
                 一屏真失败当成温和的提示。 */}
-            {toolFailures.some((f) => f.kind === "failed")
+            {/* 判据是「有没有真的失败」,所以写成 `!== "differs"` 而不是列举失败档:
+                新增一档失败(终审 C-1/I-1 的 `location` 就是)时,列举式会**默认把
+                它算成温和提示**——那正是这一批修复要消灭的形状。 */}
+            {toolFailures.some((f) => f.kind !== "differs")
               ? t("mine.toolsPartialFailed", { count: toolFailures.length })
               : t("mine.toolsNeedLook", { count: toolFailures.length })}
           </p>
           <ul className="mt-1 flex flex-col gap-1">
             {toolFailures.map((f, i) => (
-              <li key={`${f.agent ?? "-"}-${i}`} className="text-[11.5px] text-text-2">
+              <li
+                key={`${f.kind === "location" ? f.path : (f.agent ?? "-")}-${i}`}
+                className="text-[11.5px] text-text-2"
+              >
                 {/* 🔴 `differs` 与真正的失败说**不同的话**:它不是"没做成",
                     是"停下来问你"——那个位置上已经有一份内容不同的东西,
                     core 按铁律 7 绝不覆盖。再给一个「打开文件夹」让用户去看看
@@ -210,6 +217,17 @@ export function MySkillsPage() {
                       </>
                     );
                   })()
+                ) : f.kind === "location" ? (
+                  /* 「留哪一份」与「移除」按**位置**报失败:没有工具名可说,那条
+                     路径就是全部信息量。等宽字体与 `VersionChooser` 摆版本路径
+                     同款——它要能被逐字符看清(UI 规范 §2)。 */
+                  <>
+                    <span className="break-all font-mono text-[11px]" title={f.path}>
+                      {f.path}
+                    </span>
+                    {t("punct.labelSeparator")}
+                    {f.message}
+                  </>
                 ) : f.agent ? (
                   `${agentNames.get(f.agent) ?? f.agent}${t("punct.labelSeparator")}${f.message}`
                 ) : (
@@ -436,6 +454,27 @@ function Row({
   const showUpdate = isInstalled && (state === "remoteAhead" || state === "both");
   const showShareChanges =
     isInstalled && skill.localModified && !skill.sourceRemoved && !skill.libraryRemoved;
+  // 🔴 **三颗分享按钮都要过这道闸**(终审 C-3)。A-2 是拍板不复议的硬规则:
+  // 「分享前按 Agent Skills 标准全量校验,不合格不让分享」。此前只有 `ShareConfirm`
+  // 读过 `shareBlocked`,而「分享更新」在有安装基线时**根本不经过那一屏**
+  // (`skill.contentHash ? shareUpdate() : beginShare()`)、「分享改动」也直接走
+  // `share_installed` —— 于是本期的旗舰场景整个漏了:在 Claude Code 里迭代时把
+  // frontmatter 改得不合标准,点一下就直推进公司技能库。
+  //
+  // 形状按 A-5 的既定三件套:**照常显示技能 + 按钮不可用 + 一句人话说清哪不合格**,
+  // 出路是行上本来就有的「打开文件夹」——用户自己改好就能分享,不给出路才是死路。
+  const shareBlocked = skill.shareBlocked;
+  const showShare = state === "draft";
+  const showShareUpdate =
+    (state === "localAhead" || state === "differs") &&
+    !skill.sourceRemoved &&
+    !skill.libraryRemoved &&
+    !isInstalled;
+  // 理由**只在这一行确实摆着分享按钮时**才说:没有分享入口的行(比如已同步的
+  // 已装技能)配上一句「分享前请补上 name」纯属噪音。摆了一颗点不动的按钮,
+  // 才欠用户一句"为什么点不动"。
+  const explainShareBlocked =
+    shareBlocked !== null && (showShare || showShareUpdate || showShareChanges);
 
   return (
     <div className="border-t border-border px-3.5 py-2.5 first:border-t-0">
@@ -503,11 +542,12 @@ function Row({
             </button>
           ) : (
             <>
-              {state === "draft" && (
+              {showShare && (
                 <button
                   type="button"
+                  disabled={shareBlocked !== null}
                   onClick={onShare}
-                  className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90"
+                  className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
                 >
                   {t("mine.share")}
                 </button>
@@ -535,13 +575,10 @@ function Row({
                   {pulling ? t("mine.pulling") : t("mine.useLibrary")}
                 </button>
               )}
-              {(state === "localAhead" || state === "differs") &&
-                !skill.sourceRemoved &&
-                !skill.libraryRemoved &&
-                !isInstalled && (
+              {showShareUpdate && (
                   <button
                     type="button"
-                    disabled={sharing}
+                    disabled={sharing || shareBlocked !== null}
                     onClick={onShareUpdate}
                     className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
                   >
@@ -551,7 +588,7 @@ function Row({
               {showShareChanges && (
                 <button
                   type="button"
-                  disabled={sharing}
+                  disabled={sharing || shareBlocked !== null}
                   onClick={onShareChanges}
                   className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50"
                 >
@@ -592,6 +629,14 @@ function Row({
           )}
         </div>
       </div>
+
+      {/* 「为什么分享按钮点不动」(A-5:显示 + 说明 + 出口)。出口是上面那颗
+          「打开文件夹」,不另摆第二个——同一行两个同名按钮反而分不清指向哪里。 */}
+      {explainShareBlocked && shareBlocked && (
+        <p className="mt-1.5 rounded-card border border-[#b8860b]/40 px-2.5 py-1.5 text-[11.5px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
+          {t(SHARE_BLOCK_LABEL[shareBlocked])}
+        </p>
+      )}
 
       {/* 「各个工具里」。versions 那一档不摆:还没决定留哪份,"启用哪一份"无从谈起。 */}
       {state !== "versions" && skill.localPresent && (

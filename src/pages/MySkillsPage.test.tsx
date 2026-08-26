@@ -509,6 +509,64 @@ describe("「我安装的」区块", () => {
   });
 });
 
+// ── 终审 C-3:不合格的技能一颗分享按钮都点不动 ──────────────────────────
+//
+// A-2 是拍板不复议的硬规则。此前只有 `ShareConfirm` 读过 `shareBlocked`,而
+// 「分享更新」在有安装基线时**根本不经过那一屏**、「分享改动」直接走
+// `share_installed` —— 本期旗舰场景整个漏了:在 Claude Code 里把 frontmatter
+// 的 `name` 改成中文,点一下就直推进公司技能库。
+describe("分享前的标准校验(A-2/A-5:显示 + 说明 + 出口)", () => {
+  beforeEach(reset);
+
+  it("「分享改动」在不合格时禁用,并说清哪不合格", async () => {
+    seedIpc([view({ localModified: true, shareBlocked: "nameMismatch" })]);
+    seedIndex("sha256:mine");
+    render(<MySkillsPage />);
+
+    expect(await screen.findByRole("button", { name: "分享改动" })).toBeDisabled();
+    expect(screen.getByText(/name 与文件夹名不一致/)).toBeInTheDocument();
+    // 出路是行上本来就有的「打开文件夹」——改好就能分享,不给出路才是死路
+    expect(screen.getByRole("button", { name: "打开文件夹" })).toBeEnabled();
+  });
+
+  it("「分享更新」在不合格时禁用 —— 它此前完全绕开确认屏", async () => {
+    seedIpc([
+      view({ relation: "shared", localModified: true, localHash: "sha256:local", shareBlocked: "nameFormat" }),
+    ]);
+    seedIndex("sha256:mine");
+    render(<MySkillsPage />);
+
+    expect(await screen.findByRole("button", { name: "分享更新" })).toBeDisabled();
+  });
+
+  it("「分享」(草稿)在不合格时禁用", async () => {
+    seedIpc([view({ relation: "draft", contentHash: "", shareBlocked: "descriptionMissing" })]);
+    render(<MySkillsPage />);
+
+    expect(await screen.findByRole("button", { name: "分享" })).toBeDisabled();
+    expect(screen.getByText(/补上 description/)).toBeInTheDocument();
+  });
+
+  it("合格时三颗按钮照常可点 —— 对照组", async () => {
+    // 没有它,"永远禁用"这个坏实现同样能过上面三条
+    seedIpc([view({ localModified: true, shareBlocked: null })]);
+    seedIndex("sha256:mine");
+    render(<MySkillsPage />);
+
+    expect(await screen.findByRole("button", { name: "分享改动" })).toBeEnabled();
+  });
+
+  it("这一行没有分享入口时不摆那句说明 —— 不制造噪音", async () => {
+    // 已同步的已装技能上一颗分享按钮都没有,配一句「分享前请补上 name」纯属噪音
+    seedIpc([view({ localModified: false, shareBlocked: "nameMissing" })]);
+    seedIndex("sha256:mine");
+    render(<MySkillsPage />);
+
+    await screen.findByText("周报生成");
+    expect(screen.queryByText(/分享前请在 SKILL.md 里补上 name/)).toBeNull();
+  });
+});
+
 describe("打开文件夹:目标必须是本体所在,不是目录名", () => {
   beforeEach(reset);
 
@@ -692,6 +750,24 @@ describe("勾选工具的失败必须看得见", () => {
     });
     render(<MySkillsPage />);
     await screen.findByText(/有 2 处没能完成/);
+  });
+
+  it("按位置报的失败:路径与原因都摆出来,标题算「没能完成」", async () => {
+    // 终审 C-1/I-1 的渲染面。**标题那一档单独钉住**:判据若写成列举失败档
+    // (`kind === "failed"`),这一档会被默认算成温和的「需要你看一下」——
+    // 而它恰恰是"落选版本没能进废纸篓"「某个位置没能解除」这类真失败。
+    seedIpc([view()]);
+    seedIndex();
+    useMySkills.setState({
+      toolFailures: [
+        { kind: "location", path: "/h/.trae/skills/weekly-report", message: "移到废纸篓失败" },
+      ],
+    });
+    render(<MySkillsPage />);
+
+    await screen.findByText(/有 1 处没能完成/);
+    expect(screen.getByText("/h/.trae/skills/weekly-report")).toBeInTheDocument();
+    expect(screen.getByText(/移到废纸篓失败/)).toBeInTheDocument();
   });
 
   it("differs 与真正的失败在界面上说的不是同一句话", async () => {

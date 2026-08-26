@@ -17,7 +17,10 @@
 //   确认框拦不住手滑,废纸篓连"程序判断错了"这一档都兜得住。
 // - **分享收进这一页**:分享页整页已撤,首次分享变成这一行上的一次确认
 //   (`beginShare` → `ShareConfirm` → `confirmShare`),**零编辑**——名称/描述/
-//   文件夹名全部只读,不合格的技能连按钮都不摆(判据是 core 给的 `shareBlocked`)。
+//   文件夹名全部只读。不合格的技能(判据是 core 给的 `shareBlocked`)**照常显示,
+//   但三颗分享按钮一律禁用**,行上摆一句人话说清哪不合格,出口是既有的
+//   「打开文件夹」(A-5)。⚠️ 这段话此前写的是"连按钮都不摆",而 `Row` 从头到尾
+//   没读过那个字段——**注释说谎的那个版本正是终审 C-3 的现场**,别把它抄回来。
 import { create } from "zustand";
 
 import { t } from "@/i18n";
@@ -33,11 +36,13 @@ import {
   type AppError,
   type InstalledSkillView,
   type Converged,
+  type KeepReport,
   type RustResult,
   type SetAgentsOutcome,
   type ShareMode,
   type SkillVersion,
   type ToolView,
+  type UninstallReport,
 } from "@/lib/ipc";
 import { remoteHashOf } from "@/lib/update";
 import { defaultSelectedAgents, useInstall } from "@/store/install";
@@ -58,6 +63,11 @@ export type RemovePhase = "idle" | "confirming" | "busy";
  *   属于内部标识,**不是用来直接渲染给用户的**(这个项目连撞过两次:安装结果里
  *   露出内部目录名、冲突弹窗标题用了内部标识)。它只有两个正当用途:
  *   拼「打开文件夹」的目标,以及在错误详情里做佐证。
+ * - `location`:**按位置报的失败**(「留哪一份」与「移除」两条路)。它与前两档的
+ *   差别在于**没有 agent 可说**:落选版本住在哪、解链失败的是哪个位置,core 给的
+ *   都是一条文件系统路径,而那条路径**就是这一条的全部信息量**——不摆它,用户
+ *   只会看到"有 1 处没能完成"却不知道是哪一处。这与 `VersionChooser` 用等宽字体
+ *   直接摆版本路径是同一个取舍:此处路径不是内部标识,是用户唯一能据以行动的东西。
  *
  * 🔴 写成联合之后,`differs` 那一档**根本没有 `message` 这个字段**——
  * 将来谁想"顺手渲染 `message`",tsc 会当场拦下,而不是等到用户看见一条裸路径。
@@ -65,7 +75,8 @@ export type RemovePhase = "idle" | "confirming" | "busy";
  */
 export type ToolBlocked =
   | { kind: "failed"; agent: string | null; message: string }
-  | { kind: "differs"; agent: string | null; existing: string };
+  | { kind: "differs"; agent: string | null; existing: string }
+  | { kind: "location"; path: string; message: string };
 
 /**
  * 「留哪一份」待拍板。`after` 记着拍完板本来要做什么,拍完接着做,不让用户再点一次。
@@ -237,6 +248,71 @@ export function collectToolFailures(outcome: SetAgentsOutcome): ToolBlocked[] {
   return out;
 }
 
+/**
+ * 从一次「留哪一份」的结果里把**没能如愿的事**抠出来(终审 C-1)。
+ *
+ * # 🔴 为什么这个函数必须存在
+ *
+ * `core::converge::keep_version` 花了三轮修复才从"遇错即中断"改成"失败一律收集
+ * 进返回值,**由界面如实回报**"——而界面那一半此前从来没做:`keepVersion` 把
+ * `KeepReport` 整个丢掉了,函数照常 resolve,`catch` 永不触发。
+ *
+ * 后果是一条**零反馈的死循环**:macOS 上废纸篓走 Finder 的自动化授权,被拒时
+ * `trash_tree` 返回 `Err`,落选版本原样留着 → 刷新后 `versions` 仍是 2 →
+ * 那一行又回到「有几个版本」→ 用户再点再失败,全程一个字都没有。
+ *
+ * # 三个出口的映射
+ *
+ * - `links` 的 `Err`(落选版本没能进废纸篓 / 没能摘链 / 没能建链)→ `location`:
+ *   它的 `String` 键是**版本目录的绝对路径**,不是 agent 名,没有工具名可说;
+ * - `links` 的 `Ok(differs)` —— 今天**不可达**(那个循环里只可能产出
+ *   `Linked`/`SameLocation`/`Err`),但类型允许,所以兜底也走 `location` 并带上
+ *   路径。**刻意不映到 `agent:null`**:那一档在界面上会被说成「统一技能目录」,
+ *   而这里说的根本是另一个位置——宁可少说一个词,不能说错一个位置;
+ * - `canonical` 的 `Err` / `Ok(differs)` → 与 `collectToolFailures` 完全同款
+ *   (`agent: null` 就是"统一技能目录那一处"),两处共用同一套渲染。
+ */
+export function collectKeepFailures(report: KeepReport): ToolBlocked[] {
+  const out: ToolBlocked[] = [];
+  for (const [path, result] of report.links) {
+    if ("Err" in result) {
+      out.push({ kind: "location", path, message: result.Err.message });
+    } else if (result.Ok.kind === "differs") {
+      out.push({ kind: "location", path, message: t("mine.locationOccupied") });
+    }
+  }
+  if ("Err" in report.canonical) {
+    out.push({ kind: "failed", agent: null, message: report.canonical.Err.message });
+  } else if (report.canonical.Ok.kind === "differs") {
+    out.push({ kind: "differs", agent: null, existing: report.canonical.Ok.existing });
+  }
+  return out;
+}
+
+/**
+ * 从一次移除的结果里把**没能解除的位置**抠出来(终审 I-1)。
+ *
+ * core 的注释写着「认不出 mode 的记账不猜着删,但也不能不吭声:并进报告让界面
+ * 逐条说明」,而 `installer.uninstall` 自身返回 `Ok`、`remove` 随后**无条件**清账
+ * ——界面此前把整份报告丢掉,于是:某个工具目录里留着一条悬空链接,而记账已删、
+ * 本体已进废纸篓、那一行从「我的技能」上消失,**app 里再没有任何入口能驱动重试**。
+ * v5 的项目级移除早就立过这条规矩:「没删掉的东西要如实回报」。
+ *
+ * 只收 `failed` 与 `skipped` 两档:`unlinked`(解除成功)与 `missing`(那里本来
+ * 就没有东西)都是如愿的结果,摆出来是噪音。
+ */
+export function collectRemoveFailures(report: UninstallReport): ToolBlocked[] {
+  const out: ToolBlocked[] = [];
+  for (const { dir, result } of report.unlinks) {
+    if (result.status === "failed") {
+      out.push({ kind: "location", path: dir, message: result.error.message });
+    } else if (result.status === "skipped") {
+      out.push({ kind: "location", path: dir, message: result.reason });
+    }
+  }
+  return out;
+}
+
 export const useMySkills = create<MySkillsState>((set, get) => ({
   list: null,
   loadError: null,
@@ -290,12 +366,22 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   confirmRemove: async () => {
     const { removeTarget } = get();
     if (!removeTarget) return;
-    set({ removePhase: "busy", removeError: null });
+    set({ removePhase: "busy", removeError: null, toolFailures: null });
     try {
       // core 的 RemoveOutcome 只剩「已移除」一档:改过本体的二次确认已撤销,
       // 本体进系统废纸篓所以可逆。这里不再有 needsDecision 分支。
-      await skillRemove({ dirSlug: removeTarget });
-      set({ removePhase: "idle", removeTarget: null });
+      const outcome = await skillRemove({ dirSlug: removeTarget });
+      // 🔴 **`unlinks` 必须摆出来**(终审 I-1):`installer.uninstall` 对解不掉的
+      // 位置返回 `Failed`/`Skipped` 而**自身照常 `Ok`**,`remove` 随后无条件清账。
+      // 丢掉它的后果是:某个工具目录里留着一条悬空链接,而账已清、本体已进废纸篓、
+      // 那一行从这一页消失——app 里再没有任何入口能驱动一次重试,用户还全程被
+      // 告知"已移除"。v5 的项目级移除早就立过这条:「没删掉的东西要如实回报」。
+      const failures = collectRemoveFailures(outcome.report);
+      set({
+        removePhase: "idle",
+        removeTarget: null,
+        toolFailures: failures.length > 0 ? failures : null,
+      });
       await get().load();
       // 商店卡片的"已启用"状态也要跟上
       await useInstall.getState().refreshInstalled();
@@ -333,13 +419,24 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   },
 
   keepVersion: async (dirSlug, keepPath) => {
-    set({ keepBusy: true, keepError: null });
+    set({ keepBusy: true, keepError: null, toolFailures: null });
     try {
-      await skillKeepVersion({ dirSlug, keepPath });
+      const report = await skillKeepVersion({ dirSlug, keepPath });
       const pending = get().versionChoice;
-      set({ versionChoice: null });
+      // 🔴 **`keep_version` 失败时照常 resolve**(core 把三类失败逐条收集进
+      // `KeepReport`,函数本身返回 `Ok`)——所以下面这行是这条路唯一的错误出口,
+      // `catch` 分支根本轮不到它。丢掉它就是终审 C-1 那条零反馈死循环。
+      const failures = collectKeepFailures(report);
+      set({ versionChoice: null, toolFailures: failures.length > 0 ? failures : null });
       await get().load();
       await useInstall.getState().refreshInstalled();
+      // 🔴 **有失败就到此为止,不走 `after` 链**。两条理由,任一条都足够:
+      // ① `after` 链的第一步 `setAgents` 开头就是 `toolFailures: null`,接着跑
+      //    等于**在修复 C-1 的代码里把 C-1 重演一遍**——刚摆出来的失败被自己人清掉;
+      // ② `after` 的前提是"分歧已经收敛",而失败恰恰意味着它没有:落选版本还在
+      //    原地,再跑一次 `setAgents`/`run()` 只会又被顶回「有几个版本」——
+      //    死循环换了个壳。
+      if (failures.length > 0) return;
       // 拍板前本来要做的事,拍完接着做——不让用户再点一次同一个按钮
       if (pending?.after === "agents" && pending.agents) {
         await get().setAgents(dirSlug, pending.agents);

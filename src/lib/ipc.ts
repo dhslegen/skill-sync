@@ -538,8 +538,15 @@ export type RemoveOutcome = { outcome: "removed"; report: UninstallReport; lock:
 /**
  * 订阅本地技能目录的变更(M4 任务 6c 级别 3)。
  *
- * 载荷为空——它只是"去重新扫描一下"的信号。core 侧已经滤掉了本应用自己写盘
- * 引发的事件(见 core/watcher.rs),所以收到它就意味着**外面**真的改了东西。
+ * 载荷为空——它只是"去重新扫描一下"的信号。core 侧滤掉了本应用自己写盘引发的
+ * 事件(见 core/watcher.rs),所以收到它**基本上**意味着外面真的改了东西。
+ *
+ * ⚠️ **"基本上"三个字是认真的**:过滤靠的是每个写盘编排函数自己持有
+ * `watcher::app_write()` 守卫,那是一份**人工维护的名单**,不是语言层面的保证。
+ * 终审 I-3 就抓到过三处漏持(`converge::set_agents` / `converge::keep_version` /
+ * `share::share`,而任务 5 同期把监听根从 1 个扩到 8 个),当时这句话是假话。
+ * 现在名单由 `tests/watcher_guard.rs` 钉着——**它守的是"已知的那几个别被摘掉",
+ * 守不住"新写的第七个忘了拿"**。加新的写盘编排时自己拿一个,并把它加进那份名单。
  */
 export function listenLocalSkillsChanged(onChanged: () => void): Promise<UnlistenFn> {
   return listen("local-skills://changed", () => onChanged());

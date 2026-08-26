@@ -77,7 +77,10 @@ export function useLocalRefresh(): void {
   }, []);
 
   // 级别 3:core 侧的文件监听。窗口有焦点时改动也能立刻反映
-  //(应用和编辑器并排放着的用法)。core 已经滤掉本应用自己写盘引发的事件。
+  //(应用和编辑器并排放着的用法)。core 滤掉了本应用自己写盘引发的事件
+  // ——但那份过滤名单是人工维护的,漏持守卫的写盘会让这一级在动作进行到一半时
+  // 替换整张列表(终审 I-3 的现场)。完整说明见 `lib/ipc.ts` 的
+  // `listenLocalSkillsChanged`。
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;

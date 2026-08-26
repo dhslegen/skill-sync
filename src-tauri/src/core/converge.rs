@@ -544,6 +544,8 @@ pub fn keep_version(
     keep: &Path,
     now: &str,
 ) -> Result<KeepReport, AppError> {
+    // 这一段里的写盘是本应用自己干的,期间的文件事件不上报(见 core/watcher.rs 模块头)
+    let _quiet = crate::core::watcher::app_write();
     let home = installer.home(dir_slug, None)?;
     let all = scan_all(registry, env)?;
     let candidates = all.get(&home.dir_name).cloned().unwrap_or_default();
@@ -829,6 +831,8 @@ pub fn set_agents(
     agents: &[String],
     now: &str,
 ) -> Result<SetAgentsOutcome, AppError> {
+    // 这一段里的写盘是本应用自己干的,期间的文件事件不上报(见 core/watcher.rs 模块头)
+    let _quiet = crate::core::watcher::app_write();
     let mut next = store.load_state()?.value;
 
     let located = locate(installer, registry, env, &next, dir_slug)?;
