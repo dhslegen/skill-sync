@@ -32,7 +32,7 @@ beforeEach(() => {
     groups: [], loading: false, error: null, installing: null,
     notice: null, decision: null, busyKey: null, confirm: null,
   });
-  useInstall.setState({ phase: "idle", dirSlug: null });
+  useInstall.setState({ phase: "idle", dirSlug: null, mineKept: null });
   useStoreIndex.setState({ activeRegistry: "company", activeRepo: "skills/skills" });
 });
 
@@ -369,6 +369,44 @@ describe("装完之后的出口", () => {
     await userEvent.click(await screen.findByRole("menuitem", { name: /^我的项目/ }));
 
     await screen.findByRole("button", { name: "装到这里" });
+  });
+});
+
+describe("「保留本地的」装完那一屏不能是死路", () => {
+  // core 对 `LocalDiffers + KeepLocal` 早退,一处工具启用都不改;`mine` 那一档
+  // 后面还有分享结果接着说,而这一档说完「已保留」就没有下文了 —— 不把出路
+  // 一起说了,用户在这一屏就无路可走(与 v5「装完那一屏零操作入口」同一形状)。
+  function seedKept(kind: "mine" | "localDiffers") {
+    useInstall.setState({
+      phase: "done",
+      dirSlug: "weekly-report",
+      agents: [],
+      report: null,
+      mineKept: { remoteChanged: true, kind },
+      localKept: false,
+      shareResult: null,
+    });
+  }
+
+  it("localDiffers 档:说清没改文件、没改启用状态,并指路到「我的技能」", () => {
+    render(<InstallPanel dirSlug="weekly-report" />);
+    act(() => seedKept("localDiffers"));
+
+    const text = document.body.textContent ?? "";
+    expect(text).toMatch(/没有改动任何文件/);
+    expect(text).toMatch(/没有改动工具的启用状态/);
+    expect(text).toMatch(/我的技能/);
+    // 绝不能说成一次安装
+    expect(text).not.toMatch(/已启用到|已安装到通用目录/);
+  });
+
+  it("mine 档仍是原来那句(它后面还有分享结果接着说),两档不混", () => {
+    render(<InstallPanel dirSlug="weekly-report" />);
+    act(() => seedKept("mine"));
+
+    const text = document.body.textContent ?? "";
+    expect(text).toMatch(/已保留你的本地内容,未做其他改动/);
+    expect(text).not.toMatch(/我的技能/);
   });
 });
 

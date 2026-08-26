@@ -88,8 +88,13 @@ interface InstallState {
    * 两档共用它是对的:它表达的是"core 一个字节都没写",不是"这是我分享的"。
    * 但**只有 `mine` 那一档会去调 `keepLocalAndShareMine`**——`localDiffers`
    * 走的是 `run("keepLocal")`,到 done 就结束,不接分享。
+   *
+   * 🔴 `kind` 因此是必要的:两档在装完那一屏上**要说的话不一样**。`mine` 那档
+   * 后面还有一段分享结果接着说,`localDiffers` 那档说完就没了——不告诉用户
+   * "想让某个工具用它得去哪儿",那一屏就是条死路(与 v5「装完那一屏零操作入口」
+   * 那次用户反馈同一个形状)。**别把两句文案合并回一句**。
    */
-  mineKept: { remoteChanged: boolean } | null;
+  mineKept: { remoteChanged: boolean; kind: "mine" | "localDiffers" } | null;
   /** 「保留并分享」的分享结果。null = 没走这条路。 */
   shareResult: { mode: ShareMode } | { error: AppError } | null;
   precheck: Precheck | null;
@@ -405,11 +410,21 @@ export const useInstall = create<InstallState>((set, get) => ({
         return;
       }
       if (result.outcome === "kept") {
-        // 「我分享的」+ 以本地为准:core 什么都没做(磁盘/记账/关联零变化)。
-        // 落 "done" 是为了让 `keepLocalAndShareMine` 能沿用既有的 phase 惯例继续
-        // 往下走分享,但 `report` 留空——`DoneFooter` 必须靠 `mineKept` 认出这一档,
-        // 不能显示"已启用/已安装"这类对它是假话的完成文案。
-        set({ phase: "done", mineKept: { remoteChanged: result.remoteChanged }, precheck: null });
+        // core 什么都没做(磁盘、账、各工具的启用状态零变化)。落 "done" 是为了让
+        // `keepLocalAndShareMine` 能沿用既有的 phase 惯例继续往下走分享,但
+        // `report` 留空——`DoneFooter` 必须靠 `mineKept` 认出这一档,不能显示
+        // "已启用/已安装"这类对它是假话的完成文案。
+        //
+        // 🔴 **`kind` 取自触发这次 keepLocal 的那一档**:`Kept` 只有两个来路
+        // (`Mine + KeepLocal` / `LocalDiffers + KeepLocal`),而 `precheck` 此刻
+        // 正是弹窗那一轮留下的那个,映射是精确的。读不到时落回 `"mine"`
+        // ——那一档的文案「未做其他改动」对两边都是真话,兜底不会说假话。
+        const kind = get().precheck?.status === "localDiffers" ? "localDiffers" : "mine";
+        set({
+          phase: "done",
+          mineKept: { remoteChanged: result.remoteChanged, kind },
+          precheck: null,
+        });
         return;
       }
       set({

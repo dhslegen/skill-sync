@@ -439,10 +439,15 @@ function DoneFooter({
           <Icon icon={Check} size={14} />
           {/* 🔴 `mineKept` 时 core 什么都没写——「已启用到…」「已安装到通用目录」
               这两句对这一档都是假话,必须换成"保留了本地内容"这句真话
-              (`AcquireOutcome::Kept`:磁盘/记账/关联零变化)。下面的分享结果
-              区块会接着说清"分享出去了没有"。 */}
+              (`AcquireOutcome::Kept`:磁盘、账、各工具的启用状态零变化)。 */}
           {mineKept
-            ? t("install.mineKept")
+            ? // 🔴 两档说的话不一样:`localDiffers` 那档 core 一处启用都没改
+              //(`acquire.rs` 对 `LocalDiffers + KeepLocal` 早退,排在 `link_only`
+              // 之前),说完「已保留」就没有下文了,必须把出路一起说了
+              //——否则这一屏是死路。`mine` 那档后面还有分享结果接着说。
+              mineKept.kind === "localDiffers"
+              ? t("install.localDiffersKept")
+              : t("install.mineKept")
             : agents.length > 0
               ? t("install.done", { agents: agents.join(t("punct.listSeparator")) })
               : t("install.doneCanonicalOnly")}

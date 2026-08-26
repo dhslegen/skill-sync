@@ -229,6 +229,33 @@ describe("冲突对话框", () => {
       expect(screen.getByRole("button", { name: "取消" })).not.toHaveFocus();
     });
 
+    it("🔴 「保留本地的」的说明不得承诺「会启用到工具」 —— core 那条路一处都不改", () => {
+      // 承诺侧的另一半(行为侧在 `install.test.ts`:`skill_set_agents` 发出 0 次)。
+      // 这句话曾经写着「只是把它在选中的 AI 工具里启用」,而 core 对
+      // `LocalDiffers + KeepLocal` 是早退、**排在 `link_only` 之前**,什么都不做
+      // ——用户读到承诺、得到零效果。**正面断言"说了不改"与"给了出路"**,
+      // 不用"断言某句话不存在"那种分不清"改了措辞"和"整段没了"的写法。
+      conflict(differs);
+      render(<ConflictDialog />);
+
+      const hint = screen.getByText(/不改动任何工具的启用状态/);
+      expect(hint).toBeInTheDocument();
+      // 出路:告诉他去哪儿才能让工具用上它(core 注释指的 `converge::set_agents`
+      // 那条路,界面上就是「我的技能」里的那组勾)
+      expect(hint.textContent).toMatch(/我的技能/);
+    });
+
+    it("正文不写死「公司技能库」 —— 广场技能不来自那儿", () => {
+      // 广场(GitHub)来源的技能同样会走到这一档,说"内容与公司技能库里的这一版
+      // 不一样"是错的库名。中性说法对两种来源都成立。
+      conflict(differs);
+      render(<ConflictDialog />);
+
+      const body = screen.getByRole("alertdialog").querySelectorAll("p")[0];
+      expect(body?.textContent).toMatch(/你正要获取的这一版/);
+      expect(body?.textContent).not.toMatch(/公司技能库|团队库/);
+    });
+
     it("「用库里的」说的是「移到废纸篓,可以找回」,不是「无法找回」", () => {
       // core 的 `Installer::install` 把旧本体送进系统废纸篓(`fsops::trash_tree`),
       // 所以照抄旧那句「原有内容无法找回」在今天是**假话**。

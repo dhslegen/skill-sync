@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -280,6 +280,42 @@ describe("八个状态各自的主动作", () => {
     await userEvent.click(screen.getByRole("button", { name: "取回" }));
 
     expect(await screen.findByText(/连不上公司技能库/)).toBeInTheDocument();
+  });
+
+  it("拍板框已经关掉之后再失败,错误也要有落点(M-2)", async () => {
+    // `keepError` 的唯一渲染点本来是 `VersionChooser`,而 `keepVersion` 在
+    // `set({ versionChoice: null })`(框就此关掉)**之后**还要走 load()/setAgents()/run()。
+    // 那三步今天都自己捕获,所以这是**把一条潜在的静默提前堵上**,不是修缺陷。
+    seedIpc([shared()]);
+    seedIndex();
+    render(<MySkillsPage />);
+    await screen.findByRole("button", { name: "移除" });
+
+    // 框已关(versionChoice = null),错误还在
+    act(() => {
+      useMySkills.setState({
+        versionChoice: null,
+        keepError: { code: "FS_TASK", message: "保留所选版本失败,请重试" },
+      });
+    });
+
+    expect(await screen.findByText(/保留所选版本失败/)).toBeInTheDocument();
+  });
+
+  it("拍板框还开着时不在页面上重复摆一遍(框自己会显示)", async () => {
+    seedIpc([shared()]);
+    seedIndex();
+    render(<MySkillsPage />);
+    await screen.findByRole("button", { name: "移除" });
+
+    act(() => {
+      useMySkills.setState({
+        versionChoice: { dirSlug: "weekly-report", versions: [] },
+        keepError: { code: "FS_TASK", message: "保留所选版本失败,请重试" },
+      });
+    });
+
+    expect(screen.queryByText(/保留所选版本失败/)).toBeNull();
   });
 
   it("remoteAhead(我分享的):主动作是「取回」", async () => {

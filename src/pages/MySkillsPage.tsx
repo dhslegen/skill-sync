@@ -74,6 +74,13 @@ export function MySkillsPage() {
   // 在那种情形下说假话。真正的原因由后面那句 core 的 message 说清楚。
   const installError = useInstall((s) => s.error);
   const installPhaseIsError = installPhase === "error";
+  // M-2:`keepError` 的**唯一**渲染点是 `VersionChooser`,而 `keepVersion` 在
+  // `set({ versionChoice: null })`(拍板框就此关掉)**之后**还要走 `load()` /
+  // `setAgents()` / `run()` 三步——那三步里任何一个改成会抛,错误就再也没人摆得出来。
+  // 当下不可达(三者都自己捕获),所以这不是修缺陷,是**把一条潜在的静默提前堵上**:
+  // 拍板框在场时它自己显示,不在场时落到这里。
+  const keepError = useMySkills((s) => s.keepError);
+  const versionChoiceOpen = useMySkills((s) => s.versionChoice !== null);
   const setPage = useUi((s) => s.setPage);
   // 🔴 「打开文件夹」的失败必须有落点(R30)。`skill_reveal` 的守卫是
   // 「必须是目录、且目录下有 SKILL.md」,而 `differs` 给的 `existing` **两条都不保证**
@@ -248,6 +255,13 @@ export function MySkillsPage() {
           {shareDone.mode === "pushed"
             ? t("mine.shareChangesDone")
             : t("mine.shareChangesReview")}
+        </p>
+      )}
+      {keepError && !versionChoiceOpen && (
+        <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+          {t("mine.keepFailed")}
+          {t("punct.labelSeparator")}
+          {keepError.message}
         </p>
       )}
       {installPhaseIsError && installError && activeSlug && (

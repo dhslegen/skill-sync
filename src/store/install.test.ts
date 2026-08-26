@@ -182,9 +182,48 @@ describe("获取流程状态机", () => {
 
     const s = useInstall.getState();
     expect(s.phase).toBe("done");
-    expect(s.mineKept).toEqual({ remoteChanged: true });
+    // kind 必须是 localDiffers:装完那一屏靠它挑文案,挑错了就会对这一档说
+    // 「未做其他改动」而**不给出路**(见 install.localDiffersKept)
+    expect(s.mineKept).toEqual({ remoteChanged: true, kind: "localDiffers" });
     // `report` 留空:这不是一次安装,`DoneFooter` 靠它认出该说哪句话
     expect(s.report).toBeNull();
+  });
+
+  it("🔴 「保留本地的」一处工具启用都不改 —— 断言的是行为,不是文案", async () => {
+    // # 这条测试是为了一个真发生过的缺陷
+    //
+    // 这颗按钮的说明曾经写着「只是把它在选中的 AI 工具里启用」——那是把
+    // `locallyModified + keepLocal`(那一档**确实**走 `link_only` 补建)的语义
+    // 抄给了 `localDiffers`。而 core 对 `LocalDiffers + KeepLocal` 是**早退**
+    // (`acquire.rs`:`return Ok(AcquireOutcome::Kept{..})`,**排在 `link_only` 之前**,
+    // 注释写明"不补建"),用户读到一句承诺、得到零效果——恰恰命中本期的动机场景
+    // (在 `~/.claude/skills` 下自己开发技能的人)。
+    //
+    // 🔴 **断言的是"一次都不发",不是"文案渲染了"**:一条只断言文案的测试
+    // 根本发现不了承诺与行为的背离——上一轮就是这么漏掉的。
+    // 承诺那一半在 `ConflictDialog.test.tsx` 里钉,两边注释互指。
+    let calls = 0;
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "installed_list") return [];
+      if (cmd === "skill_install") {
+        calls += 1;
+        return calls === 1
+          ? { outcome: "needsDecision", precheck: { status: "localDiffers", existing: "/h/x" } }
+          : { outcome: "kept", remoteChanged: true };
+      }
+      return null;
+    });
+
+    await useInstall.getState().begin("weekly-report");
+    await useInstall.getState().run();
+    await useInstall.getState().run("keepLocal");
+
+    // 行为:这条路一处工具启用都不改
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "skill_set_agents")).toHaveLength(0);
+    // 也没有任何"已启用到 X"可报——`report` 是那句文案的唯一数据源
+    expect(useInstall.getState().report).toBeNull();
+    expect(linkedAgents(useInstall.getState().report)).toEqual([]);
   });
 
   it("认不出的拍板形状 → 错误态,不是停在「安装中」", async () => {
@@ -400,7 +439,7 @@ describe("获取流程状态机", () => {
       });
       expect(useInstall.getState().shareResult).toEqual({ mode: "reviewRequested" });
       expect(useInstall.getState().phase).toBe("done");
-      expect(useInstall.getState().mineKept).toEqual({ remoteChanged: true });
+      expect(useInstall.getState().mineKept).toEqual({ remoteChanged: true, kind: "mine" });
     });
 
     it("remoteChanged 为假时,分享调用不带 forceReview(对照组,同样断言完整键集合)", async () => {
