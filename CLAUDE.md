@@ -84,10 +84,14 @@ src/
                  ChangelogCard(升级后的更新日志卡片)/InstalledScopes(详情页「已装到」)/
                  InstallScopeMenu(作用域下拉)/ProjectSections(我的技能·项目分区)/
                  ProjectDecisionDialog(项目级替换/本地改动拍板)/
-                 Markdown/Icon/SkillIcon/InstallPanel/Wizard + 五个弹窗:
-                 ConflictDialog(三选)/RemoveDialog(双确认)/RepairDialog(占位替换)/
-                 ShareTakenDialog(占用三选)/RetryLinkDialog(重试时的占位替换)
-  pages/         StorePage / MySkillsPage / SharePage / SettingsPage
+                 Markdown/Icon/SkillIcon/InstallPanel/Wizard +
+                 ToolChecks(每个 AI 工具一个勾,取代了旧的「修复」按钮)/
+                 VersionChooser(同名多份内容不同时的版本拍板)/
+                 ShareConfirm(分享确认屏,零输入框)/CreateSkill(新建技能)+ 三个弹窗:
+                 ConflictDialog(四档正列,无兜底分支)/RemoveDialog(单确认,进废纸篓)/
+                 ShareConflictDialog(回推时远端已变)
+  pages/         StorePage / MySkillsPage / SettingsPage(v6 二期删掉 SharePage:
+                 新建与分享都并进「我的技能」)
   hooks/         useDesktopChrome(快捷键 + 右键拦截)、
                  useLocalRefresh(本地技能变更的三级刷新:焦点/切页/文件监听)
 src-tauri/src/
@@ -97,15 +101,25 @@ src-tauri/src/
   core/gitea.rs      Gitea API client(分支/压缩包/多文件提交/提交审核/fork)+ is_same_origin
   core/auth.rs       OAuth PKCE 原语 + 回环回调 + 凭证存储抽象(按 registryId 存)
   core/session.rs    登录态编排(登录/查状态/退出)
-  core/installer.rs  canonical 落盘 + 按目录建链/解链编排(不碰 state)
+  core/installer.rs  **本体**落盘 + 按目录建链/解链编排(不碰 state);`SkillHome` 是
+                     "本体在哪"的唯一解析出口(v6 二期起本体不一定在 canonical)
   core/fsops.rs      链接原语:降级链、自指防护、链接健康态、安全复制/删除
   core/state.rs      config.json/state.json + schema 版本闸门 + 原子写 + ui/disabledAgents
   core/skill_lock.rs npx skills 的 .skill-lock.json(v3)双写,外部契约
   core/store.rs      商店索引:压缩包→技能发现→可离线复用的缓存 + 前端 DTO
   core/acquire.rs    获取编排:下载→预检(contentHash 守卫)→落盘→建链→记账+双写;
-                     repair_links / link_agents / acquire_batch(Uniform|FromAccount)
+                     acquire_batch(Uniform|FromAccount)。`repair_links`/`link_agents`
+                     已于 v6 二期删除(那件事现在是 converge::set_agents 那组勾)
+  core/converge.rs   本体与位置模型(v6 二期):scan_all/locate/choose_body(定位)、
+                     converge/ensure_canonical_link(收敛)、keep_version(版本拍板)、
+                     set_agents(勾)、record_key(查账键的唯一实现)
+  core/my_skills.rs  「我的技能」四源合一表(记账 / 扫描到的本地实体 / lock 条目 /
+                     只在库里的),每行带 tools/versions/share_blocked/body/local_hash
+  core/ownership.rs  relation(这是不是我分享的)+ source_label(来源展示归一化)
+  core/release_notes.rs  RELEASE_NOTES.md 解析(打进安装包,升级后首屏卡片用)
   core/remove.rs     移除编排:改过预检(NeedsDecision)→解链→删本体→清账+lock 移除
-  core/share.rs      分享编排:排除法扫描→预检三分支→收编→按权限矩阵提交→shared 记账;
+  core/share.rs      分享编排(v6 二期改成零编辑):定位本体→**标准校验**(排在任何
+                     网络请求之前)→同名预检→canonical 补链→按权限矩阵提交→记账;
                      share_installed(把已装技能的改动推回来源)
   core/scheduler.rs  定时更新检查:run_check(head 比对→FromAccount 批量)+ 可测的调度循环
                      + notification_copy(通知判定与文案)
@@ -213,8 +227,81 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
   注入脚本自身的判定也会骗人:删 match 分支的注入被**编译器**拦下,只 grep "FAILED" 会误判
   "没抓到"——判定要分三态(测试红/编译拦下/真没抓到),编译拦下的换成可编译的坏实现重验。
 - **注入脚本恢复现场必须用"先备份、后回拷",禁用 `git checkout <file>`**:
-  工作区带着未提交的修复时,checkout 会连修复一起抹掉(任务 9 收尾时真实发生过一次,
+  工作区带着未提交的修复时,checkout 会连修复一起抹掉(M1 任务 9 收尾时真实发生过一次,
   靠上下文里留存的完整代码才恢复回来)。
+  🔴 **两条补充(v6 二期实测,各踩过两次)**:①**备份要在「改完验完」那一刻取,不是动手之前**
+  ——动手前取的备份不含你这一轮的修复,回拷等于把自己刚写的东西(连同新加的 `use`)
+  一起抹掉;②**回拷之后必须重跑一次相关测试**,别默认"回到了干净状态",
+  用 `md5`/`diff` 对一遍更省事。
+
+- 🔴 **「注入变红了,但红的原因不是你以为的那个」——v6 二期复现了七次,是本项目现役
+  第一大陷阱**。七种形态:①注入打在**另一个表达式**上(判据真身是
+  `recorded.body.is_some()`,注入却改了 `recorded.is_some()`,于是那条错判活过了四轮修复
+  与两个审查者);②被**别的守卫**兜住(叶子名守卫先报了错,看起来红了、其实没走到被测的闸);
+  ③被**降级兜底**吞掉(`_ => paths[0]` 顺手把缺陷也兜住了);④**fixture 让两个概念取同值**
+  (`slug` 同时当落点名、记账名与 `source.path` 末段——三个概念一个值,拿它写测试等于什么都没测);
+  ⑤**那条路根本没有测试走过**(`literal_group` 只在"有账"时被调,而两条新测试都是无账现场);
+  ⑥**判定表没有鉴别力**(样本不够,改坏了照样只红一条,补样本后从红 1 变红 3);
+  ⑦**测试数据在渲染前就被清掉了**(`seedDone` 写在 `render` 之前,挂载 effect 立刻清空,
+  测的其实是另一个分支;把整个 `DoneFooter` 删掉 23 条全绿)。
+  **补法不是"再写一个用例",而是把断言挪到那一行真正控制的量上。** 给一段代码加新分支时,
+  只问"有没有测试走到它"**不够**,还要问"**它断言的是不是这条分支控制的那个量**"。
+  ✅ **正解是在注入前就做信号分离**:先把注入范围收窄到只可能影响自己那一条的形式,
+  确认**恰好 1 条红且红在自己那一行**;广义注入连带打红的几条要**逐条读完失败信息**
+  (别截断)确认它们与被测命题不同源。
+
+- 🔴 **「错误被写进某个状态,但没有渲染点」——v6 二期三次现身**:失败写进
+  `useInstall.error`,而它唯一的渲染点是**不在场的** `InstallPanel`;`.catch(() => {})`
+  把 core 守卫的拒绝整个吞掉,用户点了「打开文件夹」什么都不会发生。
+  **判据一句话:每加一个错误出口,问一句"它失败的时候,用户在哪看到"。**
+  jsdom 测得过是因为 mock 掉了 invoke,永远拿不到那个拒绝——这类只有真机点得出来。
+
+- **孤儿文案键守卫被死代码满足过**:它查的是 `used − defined = 0`,而**死代码也算 used**
+  ——挡得住"定义了没人用",挡不住"用它的那段永远执行不到"。`ShareTakenDialog` 因此
+  带着 8 条永远显示不出来的文案苟活了一整期,其中一句还与刚拍板取消的路径直接矛盾。
+
+- **"时绿时红"的测试证明不了什么,比失败更危险**:页面挂载即 `load()`,它会整体替换
+  某份数据,而测试靠 `setState` 手喂;`findByText` 异步重试,**可能在被冲掉之前匹配上**,
+  随后的查找却拿到没被替换的那一版。绿的那次什么都没证明。改成走真实路径。
+
+- **声称的范围大于实际**:有人报告"做过全文扫描",真实的失败方式是**正则要求字段声明在
+  行首**,而漏掉的那处写在一行里。两手都要:**把口径从人脑挪进代码**(写成守卫,
+  `tests/serde_shape_guard.rs` 就是这么来的)+ **给扫描器本身做自保测试**
+  (喂几段已知源码;没有它,扫描器失灵时主测试在全仓干净的情况下**恒绿**)。
+
+- **约定会被下一个人无声打破,类型不会**:把"这一档不该有这个字段"从注释升级成
+  **可辨联合**,`tsc` 当场指出两处测试 fixture 还在按旧形状塞值——正是"下一个人照旧
+  形状写"的现场演示。类型检查是唯一不会被遗忘的评审员。
+
+- **措辞要跟着语义走,不能只改行为**:删除改成移到废纸篓之后,「无法找回」变成了假话;
+  一档从"失败"变成"要你看一下"之后,汇总行的标题也得跟着分流。反过来也一样——
+  `LocalDiffers + KeepLocal` 那一档 core 刻意不补建关联,文案却抄了"会补"的那一档的话,
+  用户三秒后就会看到与之矛盾的结果行。
+
+- **文本守卫是烟雾报警,不是防火墙**:`tests/body_guard.rs` 挡不住变量改名与表达式
+  (审查者用 `PathBuf::push` + `std::fs::copy` + 中性变量名实测绕过了两条形状)。
+  文档必须**如实写明它挡不住什么**,并**交叉引用真正兜底的那条行为测试**
+  ——否则守卫本身就成了下一句谎话。同理适用于 `tests/terminology.rs` 新加的
+  「core 直出中文串」那一档(它锚定两个类型名,看不见 `err.reason()` 这种间接产出)。
+
+- **注释说谎在 v6 二期被打回四次**,其中一次长在被标注「唯一判据」的函数上
+  (写着"无目录分隔符返回 None",实测返回 `Some(整串)`,连带那句 `?` 是死代码)。
+  **改注释也要过实测**:协调者给的措辞被实现者用一次性 probe 对八种输入逐个新旧对照,
+  发现例子本身是错的——"抄了就是把一句新的假话写进同一个函数,而这个函数正是因为
+  假注释才被打回的"。
+
+- **`--all-targets` 又救了一次**:新加的守卫测试里的 `manual_pattern_char_comparison`
+  只有它查得到(不带它只查 lib,`tests/` 下一行都不过 clippy)。
+- **两条已知的、与被测代码无关的偶发假红**(撞上先看这条,别重新排查一遍):
+  ①`core::watcher::guard_is_reentrant_and_restores_on_drop` —— `APP_WRITING` 是**进程全局**的,
+  同一个二进制里其他持守卫的单测并发跑时会互相看见(单跑 `--lib` 连续 10 轮全绿);
+  ②`share_live::remote_conflict_detection_against_a_real_gitea` —— 撞的是本文件记着的
+  「并发直推 main」,残留的 `skills/conflict-live-*` 要从 fixture 库里删掉。
+  ③发版清单里的 `plaza_install_blob_live` 断言的是两次真实网络请求的耗时,**会偶发倒挂**,
+  重跑一次即可,连续多次才当回归;
+  ④`plaza_live::searches_skills_sh_for_a_real_keyword` 会偶发 **HTTP 500**
+  ——上游 skills.sh 自己的服务端错误(2026-08-26 实测撞到一次,立刻重跑 49 条正常返回)。
+  同款处置:重跑一次,连续多次才当上游真的变了。
 - **GitHub API 对无 User-Agent 的请求一律 403**:live 测试必须用
   `app_http_client_proxied()`,不能用裸 reqwest Client(2026-08-03 撞过,已修并注释)。
 - Rust 侧也有术语守卫(`tests/terminology.rs`):把所有 `AppError::new` 的 message 抠出来,
@@ -379,7 +466,39 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
   它就是这个项目的开发者文档。**别按全局规则把它加进 exclude 或重写历史**。
   仍然适用的部分:`docs/*`(除放行的两个)、`_*.md`、AI 流程产物一律不进版本控制。
 
-## 当前进度(2026-08-24,现役 **v0.5.0**;**v6「技能归属模型」六个任务已完成、尚未发版**)
+## 当前进度(2026-08-26,现役 **v0.5.0**;**v6 一期 + 二期全部完成、待发 0.6.0**)
+
+**v6 二期 = 本体与位置模型**(2026-08-24 拍板方向,2026-08-26 完成,设计在本地
+`docs/设计-v6二期-本体与位置模型.md`)。起因是用户的真实场景:「我在 Claude Code 的
+skill 目录下开发 skill,没有通过 app 分享、或者关系断了,我还想取回,并且还在
+Claude Code 中继续维护迭代」。查证后三处不优雅:**取回会删掉本地那份、名字对不上会变成
+两份、无记账的技能没有修复入口**。根因是同一个:**app 在问一个磁盘上回答不了的问题
+——"这个文件夹是谁建的"**;它真正需要知道的是"动它会不会丢东西",而后者用内容比对就能回答。
+新模型是「**本体只有一份、住在它现在所在的地方、永不搬动**,其余位置一律是指向本体的链接」;
+用户只看到「**一个技能,三个在哪**」:这台电脑上 / 各个工具里(每个工具一个勾)/ 技能库里。
+任务 1 排除系统元文件 + 索引缓存升 v4 + 废纸篓抽象 → 任务 2 `SkillHome` 本体解析层 +
+installer 改收 body + 文本守卫 → 任务 3 `converge` 原语(定位/收敛/版本拍板/勾)→
+任务 4 `precheck` 删 `Foreign` 增三档 + 获取/移除走 body 与废纸篓 → 任务 5「我的技能」
+四源汇一表 + 分享标准校验 + 多根监听 → 任务 6 分享零编辑 + 标准校验闸 + IPC 契约(删三新二)
+→ 任务 7 我的技能六态 + 勾组 + 版本拍板 + 分享确认屏 → 任务 8 获取流程接
+`localDiffers`/`versionChoice` + 移除单确认 → 任务 9(本任务)端到端作者闭环 +
+术语门第四条通道 + 承诺同步。
+详见「现役机制约束」的「本体与位置模型(v6 二期)」一节。
+**v6 一期与二期一起发 0.6.0**(用户拍板:两期是同一个问题,分开发会让用户先在错误的
+设计下用一遍),`RELEASE_NOTES.md` 的 0.6.0 段落已按两期重写。
+
+**v6 二期的终态与欠账(2026-08-26 实测,别照抄下一份文档)**:共 **22 个提交**
+(`1672766..` 本任务),Rust **856 = 853 passed + 3 ignored / 53 个 test binary**、
+前端 **705 / 48 files** 全绿(docker fixture 起着、`gitea_live` 与 `share_live` 真跑),
+clippy `--all-targets` / tsc / eslint 干净。
+- **发版前还欠三件**(都不在代码里):①本地**未推送**,所以**没有 CI 记录**——按项目
+  铁规,`gh run list` 逐 job 核过双平台之前不得写「CI 绿」,Windows job 的 `trash`
+  与 junction 路径尤其要看;②**真机视觉走查未做**——「我的技能」整页三轮重画过,
+  勾组、失败框、版本选择框、分享确认屏、新建技能入口全都只在 jsdom 里验过;
+  ③**整分支终审未做**(v6 一期的三条 Critical 全是跨任务接缝,二期重开的正是那一面)。
+- **六处措辞待用户过目**:`mine.toolOccupied` / `mine.openFolderOf` /
+  `mine.stateVersions`(不带数量)/ `mine.keepFailed` / `install.undecidable` /
+  `conflict.localDiffers*`;`ShareConfirm` 的路径预告在多库场景可能说错库名。
 
 **v6 = 「这是不是我分享的技能」取代四本来历账**(2026-08-24,设计在本地
 `docs/设计-v6-技能归属模型.md`)。起因是 `acquire::precheck` 原先五个分支一眼都没看过
@@ -560,15 +679,28 @@ tags 当时侥幸没出问题,是因为支持它的版本先到了用户机器�
 逐任务的产物与假设见 `git log`。远端 `origin` =
 github.com/dhslegen/skill-sync(2026-08-03 起转为**公开**——为免私有仓 Actions 计费,用户拍板)。
 
-- 本机:Rust **739** + 前端 **643** 测试通过(2026-08-24 v6 整分支终审修复第二轮收尾时串行实测,
-  五道闸全绿,clippy **--all-targets** / eslint / tsc 干净)。
-  ⚠️ **这个 Rust 数字是「docker 起着」的口径**:`gitea_live` 那两条真跑了
-  (docker 停着时它们报 502 假红,见「测试要求」);而受 `SKILLSYNC_PLAZA_LIVE`
-  门控的三条 `plaza_*_live` **是默认跳过的早退分支,照样计进这个数**——
+- 本机:Rust **856 = 853 passed + 3 ignored**(53 个 test binary)+ 前端 **705 / 48 files**
+  测试通过(2026-08-26 v6 二期任务 9 收尾时串行实测,五道闸全绿,
+  clippy **--all-targets** / eslint / tsc 干净)。
+  🔴 **测试计数的口径(2026-08-26 订正,此前几份报告都算错过)**:
+  - `cargo test --workspace --tests` **已经包含 lib 的那 400 多条**(日志里有
+    `Running unittests src/lib.rs`),**不要再与 `--lib` 相加**——那是重复计数,
+    v6 二期前几轮报告因此报出 1204/1205/1210 这种虚数;
+  - 数 `cargo test --workspace --tests -- --list` 的汇总行时,**必须同时匹配单数
+    `1 test,` 与复数 `N tests,`**。只匹配复数会漏掉十来个只有一条测试的二进制,
+    得出一个偏小且看起来很可信的数(复审第一遍就掉进去了);
+  - `cargo test --workspace`(不带 `--tests`)会多出一行 **Doc-tests 的 0 条**,
+    结果行数因此比二进制数多 1,别把它当成多了一个二进制。
+  ⚠️ **这个 Rust 数字是「docker 起着」的口径**:`gitea_live` 与 `share_live` 真跑了
+  (docker 停着时它们报 502 假红,见「测试要求」);而受 `SKILLSYNC_PLAZA_LIVE` /
+  `SKILLSYNC_TRASH_LIVE` 门控的四条 live **是默认跳过的早退分支,照样计进这个数**——
   **它们算"通过"什么都没证明**,发版前要手动跑,见「发版」一节。
+  那 **3 条 `ignored` 是三处 `#[ignore]`**(`agents.rs` / `auth_keyring.rs` /
+  `gitea_live.rs`),**不是** live 门控——门控文件里一个 `#[ignore]` 都没有。
   M9 收尾时是 Rust 542 + 前端 483,v0.3.13 发版时是 Rust 483 + 前端 411,
-  M11 追加任务收尾时是 Rust 720 + 前端 581,v6 任务 6 收尾时是 Rust 736 + 前端 634——
-  **这行数字每次任务收尾自己重跑,不要照抄上一版**。
+  M11 追加任务收尾时是 Rust 720 + 前端 581,v6 一期任务 6 收尾时是 Rust 736 + 前端 634——
+  ⚠️ **那几个旧数字是"相加过"的口径,与上面这个不可比**;
+  **这行数字每次任务收尾自己按上面的口径重跑,不要照抄上一版**。
   `pnpm dev` 启动冒烟通过(M10 任务 5 实测:默认档 INFO 3 行、DEBUG 0 行,
   `RUST_LOG=skillsync=debug` 档 debug 行确实打印——两档控制变量对照)
 - **双平台 CI**:M9 全部八笔提交(任务 1–5 七笔 + 任务 6 一笔)**逐笔** `gh run view`
@@ -668,6 +800,28 @@ v6 的契约变更(技能归属模型):**删除** `skill_claim`/`skill_unclaim` 
 `sourceLabel`(归一化后的来源展示,`ownership::source_label`)。**没有**新增
 事件与错误码。`config` 新增顶层字段 `identities`
 (`BTreeMap<registryId, Identity>`,登录时写入),不升 schemaVersion。
+
+v6 二期的契约变更(本体与位置模型):**删除** `share_candidates` / `skill_repair` /
+`skill_link_agents` 三条 IPC(分享页整页 + 「修复」按钮一并撤销);**新增**
+`skill_set_agents`(`{dirSlug, agents[]}` → `SetAgentsOutcome`,一次把"这个技能让哪些
+工具能用"收敛到位,**对 `wanted` 里每个目标都跑一次 `converge`、不是只跑差集**——
+断链自愈的落点只有这里)与 `skill_keep_version`(`{dirSlug, keep}` → `KeepReport`,
+同名多份内容不同时拍板留哪一份,落选的进废纸篓)。`skill_share` 的 `ShareRequest`
+**只剩 `{registryId?, repo?, dirSlug}`**(`sourcePath`/`shareName`/`displayName`/
+`description`/`origin`/`overwrite` 全删,分享零编辑);`ShareOutcome` 只剩 `Shared` 一档
+(`NeedsDecision` 删除,同名被别人占是 `REPO_NAME_TAKEN` 错误而不是拍板档)。
+`skill_remove` 只剩 `{dirSlug}`(`confirmedModified` 删除——移到废纸篓可逆,
+不需要第二道确认)。`InstalledSkillView` 在 v6 的基础上**新增** `body`(本体的绝对路径,
+第 4 源为空串)、`localHash`(本体此刻的实时指纹,与 `contentHash` 这个**安装基线**
+是两样东西)、`tools`(`ToolView[]`,checkbox 的唯一真相)、`versions`
+(`Version[]`,>1 时要拍板)、`shareBlocked`(`ShareBlock | null`,标准校验没过的那一条);
+`Precheck` **删除** `Foreign` 档、**新增** `AlreadyHere` / `LocalDiffers` /
+`NeedsVersionChoice` 三档。新增错误码 `FS_SKILL_INVALID`(标准校验没过,`detail` 是
+`ShareBlock` 自己的 serde 字面量)、`FS_NEEDS_VERSION_CHOICE`、`REPO_NAME_TAKEN`;
+`FS_REPLACE_FAILED` 随 `fsops::OnOccupied` 一并删除。**没有**新增事件。
+索引缓存 `INDEX_SCHEMA_VERSION` **3 → 4**(排除名单加了三个系统元文件,hash 口径变了)。
+⚠️ `Result<T, AppError>` 作为**返回值里的字段**时 serde 发的是**大写** `{"Ok":…}/{"Err":…}`
+(内建 impl,`rename_all` 管不到),前端 `RustResult<T>` 按这个形状声明。
 
 ### 现役机制约束(动相关代码前必读)
 
@@ -858,6 +1012,91 @@ v6 的契约变更(技能归属模型):**删除** `skill_claim`/`skill_unclaim` 
   ~~代码里的标识符仍叫 claim/unclaim/claimed~~——v6 起这些标识符本身也已删除
   (只留 `skill_claim_attribution` 一族,语义完全不同,见下)。
 
+- **本体与位置模型(v6 二期)**——**这一节是本期的全部**,动 `converge.rs` /
+  `installer.rs` / `my_skills.rs` / `share.rs` 之前必读:
+  - 🔴 **本体只有一份、住在它现在所在的地方、永不搬动**。用户在 `~/.claude/skills/x`
+    里写的技能就一直在那儿:「我的技能」如实显示那个路径,取回新版本是**原地覆盖
+    同一个文件夹**,canonical 上只挂一条指向它的链接。端到端护栏是
+    `tests/e2e_author_loop.rs`(wiremock)与 `share_live::author_loop_in_a_tool_dir_against_a_real_gitea`
+    (真 Gitea,docker 起着才跑),两条都**分磁盘与账本两层断言**——只断言磁盘的话,
+    "内容对了但 `state.installed[].body` 改指 canonical"照样能过,而下一次
+    `converge::locate` 就会按账本把本体解析到别处。
+  - **产品层的词只剩「一个技能,三个在哪」**:这台电脑上 / 各个工具里(每个工具一个勾)/
+    技能库里。「链接」「关联」「修复关联」「收编」「记账」「占位」全部从界面消失,
+    两侧术语门各加了一条独立测试钉住(`src/i18n/index.test.ts` 与
+    `src-tauri/tests/terminology.rs`,**三份禁词表刻意不合并**:git 术语那份出自
+    `docs/terminology.md`、「纳入管理」那份是 v6 的产物、这一份是 v6 二期的)。
+  - **`converge(target, body)` 只有三个出口**,判据**只看内容**、不问"这个文件夹是谁建的"
+    (磁盘上根本回答不了那个问题):位置空或已是指向 body 的链接 → `Unchanged`/建链;
+    内容与 body **逐字节相同** → 静默换成链接(旧的进废纸篓);**内容不同** →
+    `Differs{existing}` **停下来问用户**,一个字节都不动。
+    🔴 `Ok(Differs)` **必须进失败清单并有自己的文案**——它不是"没做成",是"停下来问你";
+    core 侧 `merge_link_record` 对 `Differs` 直接 return 不写记录,界面若不摆出来,
+    用户看到的就是**勾自己弹回未选中、零错误零提示**,再点还是一样,是永久死路。
+  - 🔴 **删除一律走 `fsops::trash_tree`(系统废纸篓),不是 `remove_tree`**:移除技能、
+    被覆盖的旧本体、降级复制的副本、版本拍板落选的那几份,全部可逆。**这是"少问用户
+    几次"的前提**——因为可逆,`converge` 才敢在内容相同时静默合并、移除才敢只确认一次。
+    `Installer` 必须经 `.with_trasher(...)` 注入;**测试里一律注入 `SandboxTrash`**,
+    否则产物会进这台机器真实的废纸篓,而且"没删掉任何东西"那半断言根本写不出来。
+    ⚠️ macOS 上 `trash` crate 走 Finder AppleScript,adhoc 开发构建首次触发可能弹
+    「自动化授权」对话框——真机验收时别误判成"废纸篓坏了"。
+  - **本体所在的那个工具,勾恒为 ☑ 且不可取消**(`ToolState::Body`,「本体在这里」)。
+    文件就在它的目录里,谈不上"关掉"。成员口径 =
+    `Installer::link_targets ∪ {本体所在目录对应的 agent}`,并按 `agents_detected` 的
+    `installed` 收窄(探测失败时**不收窄**——拿"不知道"当"没有"是另一种撒谎)。
+  - 🔴 **`installer.rs` 的 `install` 改成收 `SkillHome`(本体路径),这是对 CLAUDE.md
+    上一版那条约束的刻意修订,不是违反**。原文写着「`Installer::install` 无条件清空重建
+    canonical,守卫在 `acquire`」——那条**前半句已不成立**(清空重建的是 `home.body`),
+    **后半句仍然成立且更重要**:任何新调用方仍必须走 `acquire::acquire`/`acquire_batch`,
+    或自行先跑 `acquire::precheck` 拿到用户结论。
+  - **有一道文本级守卫 `tests/body_guard.rs` 盯着"别退回按 canonical 拼路径"**,两条形状:
+    `canonical_dir(` 的直接调用,以及从 canonical 根 `.join` 出本体路径这种绕法。
+    ⚠️ **它是烟雾报警不是防火墙**:换个变量名、换个表达式就能绕过去(审查者用
+    `PathBuf::push` + `std::fs::copy` + 中性变量名实测绕过了两条形状)。**真正兜底的是
+    行为 pin**:`tests/share_flow.rs` 里那条 `read_link_target` 断言——它比的是
+    "canonical 上到底是不是一条指向本体的链接",怎么拼路径都逃不掉。改守卫时两处一起看。
+  - 🔴 **两把路径尺子,各有其用,绝不能互相替换**:
+    `fsops::same_physical_path` **连叶子一起 realpath**,用于**自指防护**(agent 目录整体
+    是指向 canonical 的祖先软链那种场景)——把它用在"本体是不是就住在 canonical"上,
+    会**解析穿过刚建好的 canonical→body 链接本身**,把问题解析掉;
+    `fsops::same_intended_location` **只解析父目录、保留叶子名**,用于位置比对。
+    用错方向的代价是 `link_dir` 对物理同一处执行 unlink+relink,**删掉技能本体本身**。
+  - **查账键统一走 `converge::record_key`**(= `installer.home(..).dir_name`,即
+    sanitize 后的名字),**六处**都要用它:`home_of`/`locate`/`keep_version`/`set_agents`/
+    `remove`/批量 FromAccount。用原始 `dir_slug` 查账在大写目录名(`Weekly-Report`)上
+    会**有账查不到** → 走无账路 → 一份杂散副本就让自动更新静默停摆,更糟的是
+    `choose_body` 会把本体"搬"进别处。另一侧:`state::InstalledSkill::library_dir_slug()`
+    (取 `source.path` 末段 = 技能库里的**原始**目录名)是**取数**用的键,
+    scheduler 与 `my_skills` 都必须用它,**不得各自手搓"取末段"**。
+  - **`scan_all` 按清洗名分组,但"合成一行"的判据是字面目录名**:
+    `~/.claude/skills/Weekly Report` 与 `~/.trae/skills/weekly-report` 清洗后同名,
+    但**调用名不同 = 两个技能**,各占一行。合成一行会让用户被问"留哪份"、
+    然后**销毁其中一个技能**。版本二选一只给同一个技能的不同副本用。
+  - 🔴 **从第一次写磁盘到 `save_state` 之间,任何失败都不得让函数带着"磁盘已动、
+    账未存"的状态返回**(`set_agents` / `keep_version` 都按这条重构过):失败一律收集进
+    返回值由界面如实回报,能提前算的(`dir_content_hash`、`link_targets_for`)提到写盘之前。
+    账缺一条 = 一条**永远摘不掉的悬空链接**(`remove` 只按 `state.links` 摘链)。
+  - **空来源的记账不享有 `Managed` 的"无决策直接覆盖"待遇**:`precheck` 里 `recorded`
+    存在但 `!has_source()` 时走与"无账"相同的分档(`AlreadyHere`/`LocalDiffers`)。
+    「勾」是个无害动作,不该让用户的草稿**更容易**被覆盖。`has_source()` 的用途
+    **只有两处**:这条分档 + `OtherLibrary` 判据;**`remove` 刻意不加这道闸**
+    (可逆 + 有确认,拦住它是死路,而且会误伤 v0.5.0 写下的全空来源存量账)。
+  - **分享零编辑 + 标准全量校验**:`share()` 的第 ② 步是 `skills::validate_skill_dir`,
+    **排在任何网络请求之前**(护栏断言的是**请求条数 = 0**,不是错误码)。
+    规则按 Agent Skills 开放标准:`name` 必填、必须等于文件夹名、只能
+    lowercase a-z/0-9/连字符、不首尾连字符、不连续连字符;**文件夹名走同一把尺子**;
+    `description` 必填、≤1024 个 Unicode 标量。frontmatter 补齐链路**整条删除**
+    ——补齐也是改用户的文件。不合格**照常显示技能**、按钮禁用 + 说清哪一条 +
+    「打开文件夹」出口。`ShareBlock` 的 `detail` 取自枚举**自己的 serde 形状**,
+    不手抄第二份映射。
+  - **`LocalDiffers + KeepLocal` 刻意不补建关联**(`acquire` 早退返回 `Kept`,排在
+    `link_only` 之前):那一档没有任何记账,补了链接却没有账,移除时谁也摘不掉。
+    **所以文案必须如实说"这次不改动任何工具的启用状态"并指路去「我的技能」勾选**
+    ——第一版把 `locallyModified + keepLocal`(那一档**确实**补链)的话抄了过来,
+    结果 hint 与紧接着的结果行自相矛盾,而这正是本期的动机场景。
+  - **新建技能仍只落 canonical 一个 `SKILL.md`**(设计 §11「不做」),入口在
+    「我的技能」页顶部。要在 `~/.claude/skills` 里建就直接用 Claude Code 建。
+
 - **技能归属模型(v6)**:「这是不是我分享的技能」取代此前散落各处的四本来历账
   (`state.installed.origin` 的 `claimed`/`acquired`、`InstalledSkillView` 的
   `unclaimed`/`claimBindable`/`localOnly`/`claimed` 四个字段、本地目录扫描)。
@@ -922,7 +1161,7 @@ v6 的契约变更(技能归属模型):**删除** `skill_claim`/`skill_unclaim` 
     下次自然刷新(重新进商店页/手动重试)才跟上,这是刻意接受的取舍。
   - **`store/install.ts` 与 `store/share.ts` 是循环导入**(`share.ts` 反过来
     `import { useInstall } from "@/store/install"`,`keepLocalAndShareMine`
-    需要在没有 `state.installed` 记账时跳转分享页)。安全的前提是**两个 store
+    需要在没有 `state.installed` 记账时跳到「我的技能」走分享)。安全的前提是**两个 store
     只在函数体内惰性引用,绝不在模块顶层解构**——顶层 `const { load } = useShare`
     这类写法会在其中一侧模块求值时读到还没初始化完的绑定。不要重构去消掉这个环
     (牵动一片),但往这两个文件加新引用前先确认新代码遵守这条。
@@ -1423,13 +1662,18 @@ v6 的契约变更(技能归属模型):**删除** `skill_claim`/`skill_unclaim` 
   的链接,实体目录与用户目录无从区分不敢认),否则移除时留一地断链;来源绑定按
   sourceUrl **同源比对**(只看 kind 会把别家 GHE 错绑上,有测试钉住)。
 
-- **`Installer::install` 无条件清空重建 canonical**——守卫在 `core/acquire.rs`,不在它自己身上。
-  任何**新的**调用方都必须走 `acquire::acquire`/`acquire_batch`,或自行先跑
-  `acquire::precheck` 拿到用户结论。直接调 `install()` 就是在静默抹用户改动。
-- **建链/解链两条通道分工**:`repair_links` 按**账上**的 agents 整体重来(修断链/丢失/被改指);
-  `link_agents` 补"安装那一刻就没建成、因而根本没进账"的 agent——repair 够不到它们。
-  后者记账是**并集合并**不是覆盖(整份覆盖会把其余工具从账上抹掉,卸载时漏解链接)。
-  前端先按不替换试一次,只有真撞上 `FS_LINK_OCCUPIED` 才升级成确认弹窗(默认焦点在取消)。
+- **`Installer::install` 无条件清空重建**——⚠️ v6 二期起清空重建的是 **`home.body`**
+  (本体现在不一定在 canonical),但**守卫仍在 `core/acquire.rs`、不在它自己身上**
+  这半句一个字没变,而且更重要:任何**新的**调用方都必须走
+  `acquire::acquire`/`acquire_batch`,或自行先跑 `acquire::precheck` 拿到用户结论。
+  直接调 `install()` 就是在静默抹用户改动。
+- ⚠️ **`repair_links`/`link_agents` 两条通道已于 v6 二期删除**(连同「修复」按钮)。
+  它们做的事现在**全部**由 `converge::set_agents` 承担:对 `wanted` 里**每一个**目标跑一次
+  幂等的 `converge`(不是只跑差集——差集写法下,一个**已在账上**、链接却被别的工具删掉或
+  改指的工具,用户再怎么点也修不好)。记账仍是**并集合并**不是覆盖
+  (整份覆盖会把其余工具从账上抹掉,卸载时漏解链接)。位置被一份内容不同的东西占着时
+  **不再弹"要不要替换"**,而是返回 `Differs` 由界面如实说明并给「打开文件夹」
+  ——`fsops::OnOccupied::Replace` 那条"能直接删用户目录"的后门已一并删除。
 - **`acquire_batch` 的冲突语义**:改过/外来/已最新一律跳过并给人话原因,不弹三选。
   scheduler 的冲突保护直接复用它,**不要另写一套判定**。两档链接目标:
   `Uniform`(向导,统一列表)/ `FromAccount`(定时更新,各技能用账上 agents,自动流程绝不改写关联)。
@@ -1575,13 +1819,15 @@ v6 的契约变更(技能归属模型):**删除** `skill_claim`/`skill_unclaim` 
   1. `state.installed` 里有记账、canonical 目录还在的;
   2. canonical 下有 SKILL.md 的实体目录、但**没有 `state.installed` 记账**
      (别的工具装的与本地新建的 v6 起不再区分)。发现逻辑复用
-     `share::scan_candidates`(取 `in_canonical`),**不另写扫描**;agent 目录里的
-     不算(那些归分享页收编);
-  3. 只在技能库索引里、这台电脑没有本体的——**只有 `relation == Shared` 才摆**
+     `converge::scan_all`;⚠️ **v6 二期起扫的是全部工具目录、不再只扫 canonical**
+     ——用户在 `~/.claude/skills` 里写的技能就该直接出现在这一页;
+  3. `.skill-lock.json` 里有、但上面两档都没覆盖到的;
+  4. 只在技能库索引里、这台电脑没有本体的——**只有 `relation == Shared` 才摆**
      (换电脑 / 数据丢 / 绕过 app 直推)。
-  第 2、3 档没有记账基线,所以**修复关联 / 移除一概不摆**(`skill_repair` /
-  `skill_remove` 都要求记账存在,摆出来就是必然报错的按钮),`hasUpdate` 也
-  **显式判掉**(不靠"空 registryId 恰好对不上 index"碰运气)。
+  ⚠️ **「第 2、3 档不摆移除」这条已随 v6 二期撤销**(R16):移除现在是可逆的
+  (进废纸篓)且有确认,拦住它反而是死路——用户自己写的技能在 app 里删不掉,
+  而且会误伤 v0.5.0 写下的全空来源存量账。`hasUpdate` 仍**显式判掉**无基线的行
+  (不靠"空 registryId 恰好对不上 index"碰运气)。
   🔴 **`install.ts` 的 `refreshInstalled` 必须只收第 1 档**(这条规则本身没变,
   v6 终审修复时被破坏过一次又补回来了):混进另外两档,商店里的同名技能会显示
   **禁用的**「已启用」——用户装的是自己那个,不是库里这个,而且因为按钮是禁用的,
@@ -1620,7 +1866,7 @@ v6 的契约变更(技能归属模型):**删除** `skill_claim`/`skill_unclaim` 
 - **新建技能只创建文件**(M4 任务 4,`core/create.rs` 模块头):落 canonical 的
   `<slug>/SKILL.md` 一个文件,**不建关联、不写 lock、不进 `state`**——对齐上游
   `npx skills init`(它同样只产出这一个文件、同样不写 lock)。新建的技能靠
-  `share::scan_candidates` 的排除法出现在分享页,那是它唯一的出路;进了
+  `converge::scan_all` 出现在「我的技能」里(v6 二期起,不再经分享候选那条路);进了
   `state.installed` 就从候选里消失,而且会让 `acquire::precheck` 撒谎(见「待处理」里
   那条推迟项)。三种撞名(canonical 目录非空 / installed 同名 / shared 同路径)一律拒,
   **空目录放行**(写 SKILL.md 失败会留空壳,一律拒等于同名再也建不成)。
@@ -1657,53 +1903,25 @@ v6 的契约变更(技能归属模型):**删除** `skill_claim`/`skill_unclaim` 
 「我的技能」从三分区改成「我分享的/我安装的」两分区。⚠️ **尚未发版**,
 `RELEASE_NOTES.md` 的 0.6.0 段落已写好。
 
-**下一轮 = v6 二期(2026-08-24 拍板方向,设计与分解尚未做,交接给「v6二期」会话)**
-
-起因是用户真实场景:「我在 Claude Code 的 skill 目录下开发 skill,没有通过 app 分享、
-或者关系断了,我还想取回,并且还在 Claude Code 中继续维护迭代」。查证后确认三处不优雅:
-取回会删掉本地那份、名字对不上会变成两份、无记账的技能没有「修复关联」。
-
-**A. 已拍板的产品决定(用户 2026-08-24 明确,可直接执行,不必复议)**
-
-1. **分享环节零编辑**:分享表单不再有任何输入框——名称、描述、文件夹名全部只读。
-   **frontmatter 补齐链路一并取消**(补齐也是改)。分享就是分享。
-2. **分享前按 Agent Skills 标准全量校验,不合格不让分享**(不只是"一致"这一条):
-   `name` 必填、**必须等于文件夹名**、只能 lowercase a-z/0-9/连字符、不首尾连字符、
-   不连续连字符;**文件夹名同样要过这套字符规则**(因为要等于 name);
-   `description` 必填、1–1024 字符。判据出处见「关键事实」的「命名与目录」。
-3. **名字冲突由用户在本地改文件夹名解决,app 不管**——明确划在边界之外。
-4. 推论:**「远端目录名」这个概念消失**,三者统一(文件夹名 = `name` = 库里的名字);
-   分享表单退化成一块确认屏;**中文名技能分享策略作废**(见「命名与目录」)。
-5. 两条**待用户最终确认**(已给推荐,未获明确答复前按推荐做):
-   - 不合格时**照常显示技能、分享按钮不可用 + 一句人话说明哪不合格 + 「打开文件夹」出口**
-     (理由:用户自己能修好,不给出路才是死路);
-   - **只拦新的分享,不追溯**库里已有的不合格技能(追溯要动别人的技能,超出边界)。
-   影响面实测:本机 107 个技能里只有 3 个不合格(`react-best-practices` 的
-   `name: vercel-react-best-practices`、`ceshi` 的 `name: 测试`),代价极小。
-
-**B. 方向性方案(Fable 顾问出,尚未拍板,需 v6二期 与用户走 brainstorming)**
-
-核心判断:三处不优雅是同一根因——**app 在问一个磁盘上回答不了的问题"这个文件夹是谁建的"**,
-而它真正需要知道的是"动它会不会丢东西",后者用内容比对就能回答。**要改产品定义,不是加功能。**
-- 心智模型「一个技能,三个在哪」:这台电脑上 / 各个工具里(每个工具一个勾)/ 技能库里;
-  「链接」「收编」「记账」「关联」「修复关联」五个词整体从产品层消失;
-- 「我的技能」扫**全部工具目录**(不只 canonical),按 记账→内容指纹→目录名→frontmatter name
-  四级判据合并成一行;
-- 写盘前只比内容:**相同→静默转链接不问**(降级复制的副本必然落这档,于是"副本还是
-  用户写的"这个问题不用回答了)/ 不同+同名→「有两个版本」二选一 / 不同+异名→"这是两个东西";
-- **废纸篓取代删除**(新依赖 `trash` crate,当前未引入)——它是整个方案的安全感来源:
-  因为可逆,app 才敢少问;
-- 断链三档自愈:悬空链接静默重建 / 有记账走既有修复 / **无记账只摆勾绝不猜着写盘**;
-- 顺带:**v6 刚加的 `noBaseline` 第七档可以删掉**——两方比对不需要安装基线,
-  那句「没有获取记录,无法判断是否一致」是在给一个不必存在的状态起名字。
-- 代价(顾问自列 + 我核实两条):要重开 v6 刚焊稳的面(所以 **v6 先发版,这是下一轮**);
-  `.DS_Store` 会污染"静默合并";Windows 降级复制让"编辑即编辑本体"变成假话;
-  ✅ **索引里确实没有任何日期字段**(所以"两个版本"对话框不能给库里那份编日期);
-  ✅ **`trash` crate 确实未引入**。
-- 全景页(面向用户,含前后对照与两处拍板项):
+~~**本体与位置模型(v6 二期)**~~ —— **已完成**(v6 二期任务 1–9,2026-08-26),
+见「现役机制约束」的「本体与位置模型(v6 二期)」一节。当时列的 A(五条已拍板的
+产品决定)与 B(方向性方案)**全部落地**,只有两处刻意没做,理由记在这里:
+- **「悬空链接静默重建」没有单独实现**:B 里写的"断链三档自愈"合并成了一件事
+  ——`set_agents` 对 `wanted` 里每个目标都跑一次幂等 `converge`,断链在那里顺带就接上了。
+  单独做一档"静默重建"等于把「修复」这个概念换个名字留下来。
+- **项目级链路一行未动**(设计 §11「不做」):`skills-lock.json` 是与 `npx skills`
+  共用的契约,零存量互操作承诺优先。所以项目里的技能仍走 v0.5.0 的老规矩:
+  删除不可逆、不联动 scheduler、不能分享回推。
+- ✅ 顺带删掉了 v6 一期刚加的 `noBaseline` 第七档(现在叫 `differs`「本地和库里不一样」,
+  判据是**两方指纹直接比**,不需要安装基线);顺带把「给本地技能建关联的能力仍然没有」
+  那条老欠账也解掉了(见「功能缺口」)。
+- 全景页(面向用户,写于实现之前,含前后对照):
   <https://claude.ai/code/artifact/b6c583c7-9dd0-4d09-81f9-3064bfd43562>
-  ⚠️ 该页写于本节 A 拍板**之前**,「拍板·一」那一节的论据已被 A-2 取代(从偏好问题
-  变成合规问题),读的时候要用本节订正它。
+  ⚠️ 它「拍板·一」那一节的论据已被"分享按 Agent Skills 标准全量校验"取代
+  (从偏好问题变成合规问题),读的时候要订正。
+
+**⚠️ v6(一期 + 二期)尚未发版**,`RELEASE_NOTES.md` 的 0.6.0 段落已按两期重写。
+发版前的三道闸见「当前进度」:整分支终审 → 用户真机视觉走查 → push 后逐 job 核双平台 CI。
 
 ~~调查 `npx skills find` 有没有开放 API~~ ——**已完成并发布**,即 M9 技能广场 +
 M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重新调查一遍。**
@@ -1762,18 +1980,14 @@ M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重�
   才会因此改变 `content_hash` 的取值,不是"所有已装技能"都会漂移
   ——大多数技能的归档里本来就没有 `.DS_Store` 这类文件,名单变化对它们的指纹
   没有实际影响。
-- **给本地技能建关联的能力仍然没有**(M4 任务 4 显式推迟,不是遗漏):
-  新建的技能只落 canonical,`skillsDir` 等于 `.agents/skills` 的工具(Cursor / Codex /
-  universal 那六个)立刻读得到,**Claude Code 与 Trae 读不到**,要走「分享到技能库 →
-  从商店获取」才能用上。这条限制对**所有**本地技能都成立(用户手放的、npx 装的一样),
-  不是向导造出来的。补它需要一处能记链接的账:`link_agents` 硬要 `state.installed`
-  有条目,而把无来源的技能塞进 `installed` 会让 `acquire::precheck` 撒谎
-  (空 owner 必然不等于商店的 owner → 同名技能的卡片说「装自另一个技能库」)。
-  真要做,得加一档 `Precheck` + 放宽 `share::scan_candidates` 的排除条件 +
-  审一遍 scheduler / share_installed / installed_repo_key / remove / repair,
-  是 M4 任务 1 那个量级,不该塞进脚手架任务里。
-  (原文这里还写着"加一个 `localOnly` 标记"——那个 DTO 字段已随 v6 删除,
-  同一件事现在由 `relation == draft` 表达。)
+- ✅ ~~**给本地技能建关联的能力仍然没有**(M4 任务 4 显式推迟)~~ —— **已于 v6 二期
+  顺带解决**(2026-08-26)。当年的原话是:本地技能只落 canonical,Claude Code 与 Trae
+  读不到,要走「分享到技能库 → 从商店获取」才能用上;补它缺的是"一处能记链接的账",
+  而把无来源的技能塞进 `state.installed` 会让 `acquire::precheck` 撒谎。
+  **`converge::set_agents` 就是那本账**:它自己建账(`origin: adopted` + 空来源坐标)、
+  自己记 `state.links`,而 R14 又把"空来源账不享有 `Managed` 的无决策覆盖待遇"钉住,
+  precheck 因此不会撒谎。用户现在在「我的技能」里勾一下就能让任意本地技能对
+  Claude Code / Trae 生效。**这是一个设计里没点名的副产品**,已写进 `RELEASE_NOTES.md`。
 - **Windows 外观打磨决定不做**(M2 任务 6 的判断):UI 规范 §75 要 tauri-plugin-decorum,
   但没有 Windows 真机,装上等于把能用的系统窗口装饰换成无法目视验证的自绘控件——画不出
   窗口控制的话用户连关窗都做不到,而关窗现在还接着"缩到托盘"。等有真机再做,连同 vibrancy。

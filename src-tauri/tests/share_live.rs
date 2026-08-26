@@ -532,3 +532,191 @@ async fn remote_conflict_detection_against_a_real_gitea() {
             .expect("清理失败——手动删掉 skills/conflict-live-* 后再跑");
     }
 }
+
+/// 🔴 **作者闭环的真 Gitea 版**(v6 二期任务 9,wiremock 版在 `tests/e2e_author_loop.rs`)。
+///
+/// wiremock 那条验的是"我们怎么编排",这条验的是**真实 Gitea 的压缩包与提交**
+/// 走完同一圈之后,本体还在不在原地:
+/// 在 `~/.claude/skills/<slug>` 里开发 → 分享(直推 main)→ 同事把库里那份改了 →
+/// **取回** → 内容变成库里的新版,而文件夹**还是那一个**。
+///
+/// 与 wiremock 版刻意不重合的地方:
+/// - 压缩包是 Gitea 自己打的(顶层目录、权限位、路径前缀全是真的);
+/// - `authors.json` 是 `share()` 上一步真写进去的,不是 fixture 摆好的;
+/// - 分享与取回打的是**同一个真实分支**,`commit_sha` 的对齐没有 mock 兜着。
+///
+/// 直推 main,所以要拿 [`MAIN_BRANCH_LOCK`],并在收尾把技能目录删干净
+/// (残留会打红 `gitea_live` 的技能清单断言——真发生过)。
+#[tokio::test]
+async fn author_loop_in_a_tool_dir_against_a_real_gitea() {
+    let _main = MAIN_BRANCH_LOCK.lock().await;
+    let Some(vars) = fixture_env() else {
+        eprintln!("跳过:未找到 fixtures/.env.local,先跑 ./fixtures/init.sh");
+        return;
+    };
+    let need = [
+        "SKILLSYNC_FIXTURE_GITEA_URL",
+        "SKILLSYNC_FIXTURE_ORG",
+        "SKILLSYNC_FIXTURE_REPO",
+        "SKILLSYNC_FIXTURE_ADMIN_TOKEN",
+    ];
+    if let Some(missing) = need.iter().find(|k| !vars.contains_key(**k)) {
+        eprintln!("跳过:fixtures/.env.local 缺 {missing}");
+        return;
+    }
+    let base_url = vars["SKILLSYNC_FIXTURE_GITEA_URL"].clone();
+    let repo = RepoRef {
+        owner: vars["SKILLSYNC_FIXTURE_ORG"].clone(),
+        repo: vars["SKILLSYNC_FIXTURE_REPO"].clone(),
+        branch: "main".into(),
+    };
+    let admin = GiteaClient::new(base_url.clone(), Some(vars["SKILLSYNC_FIXTURE_ADMIN_TOKEN"].clone())).unwrap();
+    if admin.branch_head(&repo).await.is_err() {
+        eprintln!("跳过:连不上 fixture Gitea");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().to_path_buf();
+    let env = TmpEnv { home: home.clone() };
+    let store = Store::new(home.join(".skillsync"));
+    let registry = AgentRegistry::builtin();
+    let trash = skillsync_lib::core::fsops::SandboxTrash::new(home.join("..").join("share-live-loop-trash"));
+
+    // 与上面那条 live 用例同进程,名字必须错开(两条都直推同一个库)
+    let name = format!("author-loop-{:x}", std::process::id());
+    // 🔴 本体**不在** canonical,住在 Claude Code 的技能目录里 —— 这就是本期的场景
+    let body = home.join(".claude").join("skills").join(&name);
+    write_skill(&body, &name, "第一版正文");
+
+    // 登录身份:取回那一步的「这是不是我分享的」判据要拿它跟库里的 authors.json 比
+    let user = admin.current_user().await.unwrap();
+    let mut config = store.load_config().unwrap().value;
+    config.identities.insert(
+        "fixture".into(),
+        skillsync_lib::core::ownership::Identity {
+            login: user.login.clone(),
+            display_name: if user.full_name.trim().is_empty() { user.login.clone() } else { user.full_name.clone() },
+        },
+    );
+    store.save_config(&config).unwrap();
+
+    // ① 分享:直推 main。本体留在原地,canonical 只多一条指向它的链接。
+    let outcome = share::share(
+        &share::ShareClient::Gitea(&admin),
+        &registry,
+        &env,
+        &store,
+        &trash,
+        share::ShareRequest { registry_id: "fixture", repo: &repo, dir_slug: &name },
+        NOW,
+    )
+    .await
+    .expect("分享失败");
+    let ShareOutcome::Shared { mode, .. } = outcome;
+    assert_eq!(mode, ShareMode::Pushed);
+    let canonical = home.join(".agents").join("skills").join(&name);
+    assert_eq!(
+        skillsync_lib::core::fsops::read_link_target(&canonical),
+        Some(skillsync_lib::core::fsops::normalize(&body)),
+        "canonical 该是一条指向本体的链接"
+    );
+
+    // ② 同事经审核把库里那份改成了第二版
+    let remote_md = format!("skills/{name}/SKILL.md");
+    let sha = admin.file_sha(&repo, &remote_md).await.unwrap().expect("刚推上去的文件应当在");
+    admin
+        .change_files(
+            &repo.owner,
+            &repo.repo,
+            &ChangeFilesRequest {
+                branch: "main".into(),
+                new_branch: None,
+                message: format!("同事改了 {name}"),
+                files: vec![FileChange::update(
+                    &remote_md,
+                    format!("---\nname: {name}\ndescription: live 测试用\n---\n第二版正文\n").as_bytes(),
+                    sha,
+                )],
+            },
+        )
+        .await
+        .expect("改库失败");
+
+    // ③ 取回
+    let stages = std::sync::Mutex::new(Vec::new());
+    let sink = |s: skillsync_lib::core::acquire::Stage| stages.lock().unwrap().push(s);
+    let out = skillsync_lib::core::acquire::acquire(
+        &admin,
+        &registry,
+        &env,
+        &store,
+        skillsync_lib::core::acquire::AcquireRequest {
+            source: skillsync_lib::core::acquire::SourceMeta {
+                registry_id: "fixture",
+                kind: "gitea",
+                base_url: &base_url,
+            },
+            repo: &repo,
+            dir_slug: &name,
+            agent_names: &[],
+            resolution: None,
+        },
+        NOW,
+        0,
+        &trash,
+        &sink,
+    )
+    .await
+    .expect("取回失败");
+    assert!(
+        matches!(out, skillsync_lib::core::acquire::AcquireOutcome::Installed { .. }),
+        "作者本地没改动,取回就该直接装下来:{out:?}"
+    );
+
+    // ④ 🔴 同一份文件、内容是库里那版、本体没有搬家
+    assert!(
+        std::fs::read_to_string(body.join("SKILL.md")).unwrap().contains("第二版正文"),
+        "取回之后 ~/.claude/skills 里那份就该是库里的新版"
+    );
+    assert_eq!(
+        skillsync_lib::core::fsops::read_link_target(&canonical),
+        Some(skillsync_lib::core::fsops::normalize(&body)),
+        "本体没有被搬进 canonical"
+    );
+    let state = store.load_state().unwrap().value;
+    assert_eq!(
+        state.installed[0].body.as_deref().map(Path::new),
+        Some(body.as_path()),
+        "账上记的本体位置也不许变"
+    );
+    assert_eq!(trash.trashed().len(), 1, "旧版应当整份进废纸篓:{:?}", trash.trashed());
+
+    // 清理:删掉本轮推上去的技能目录(残留会打红 gitea_live 的清单断言)
+    let head = admin.branch_head(&repo).await.unwrap();
+    let files: Vec<FileChange> = admin
+        .tree_files(&repo.owner, &repo.repo, &head.sha)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.path.starts_with(&format!("skills/{name}/")))
+        .map(|f| FileChange {
+            operation: skillsync_lib::core::gitea::FileOperation::Delete,
+            path: f.path,
+            content: None,
+            sha: Some(f.sha),
+        })
+        .collect();
+    if !files.is_empty() {
+        let cleanup = ChangeFilesRequest {
+            branch: "main".into(),
+            new_branch: None,
+            message: format!("清理 live 测试目录 {name}"),
+            files,
+        };
+        admin
+            .change_files(&repo.owner, &repo.repo, &cleanup)
+            .await
+            .expect("清理失败——手动删掉 skills/author-loop-* 后再跑");
+    }
+}

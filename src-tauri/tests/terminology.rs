@@ -166,6 +166,84 @@ fn extract_messages(file: &Path, source: &str) -> Vec<Extracted> {
     out
 }
 
+/// 从净化文本里找出 `anchor` 开头的结构体字面量里 `field:` 那一项的字符串字面量。
+///
+/// 与 [`extract_messages`] 同一套词法基础(先剥注释、再按调用锚定),差别只在
+/// 定界符是 `{}` 而不是 `()`,以及要按字段名而不是位置取值。
+///
+/// 取值规则:找到 `field:` 之后,收**本字段内**的第一个字面量——遇到本层的 `,`
+/// 或整个块结束就停。这样 `reason: format!("模板…", 变量)` 里取到的是模板本身
+/// (它才是用户看见的那句话),而 `reason: 变量` / `reason`(简写)自然什么都取不到。
+fn extract_field_literals(file: &Path, source: &str, anchors: &[&str], field: &str) -> Vec<Extracted> {
+    let (clean, literals) = strip(source);
+    let mut out = Vec::new();
+    let needle = format!("{field}:");
+    for anchor in anchors {
+        let mut from = 0;
+        while let Some(pos) = clean[from..].find(anchor) {
+            let open = from + pos + anchor.len() - 1; // 指向 `{`
+            from = open + 1;
+            let chars: Vec<char> = clean[open..].chars().collect();
+            // 先定位本块内的 `field:`(按深度限界,别越过块尾去抓下一个结构体的)
+            let mut depth = 0usize;
+            let mut j = 0usize;
+            let mut field_at: Option<usize> = None;
+            while j < chars.len() {
+                match chars[j] {
+                    '{' | '(' => depth += 1,
+                    '}' | ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {
+                        if depth == 1 && chars[j..].starts_with(&needle.chars().collect::<Vec<_>>()[..]) {
+                            field_at = Some(j + needle.chars().count());
+                            break;
+                        }
+                    }
+                }
+                j += 1;
+            }
+            let Some(mut k) = field_at else { continue };
+            // 再收这一项的第一个字面量:本层的 `,` 或块尾即止
+            let mut inner = 1usize;
+            while k < chars.len() {
+                match chars[k] {
+                    '{' | '(' => inner += 1,
+                    '}' | ')' => {
+                        inner -= 1;
+                        if inner == 0 {
+                            break;
+                        }
+                    }
+                    ',' if inner == 1 => break,
+                    '\u{1}' => {
+                        let mut num = String::new();
+                        k += 1;
+                        while k < chars.len() && chars[k] != '\u{1}' {
+                            num.push(chars[k]);
+                            k += 1;
+                        }
+                        let id: usize = num.parse().unwrap();
+                        let (line, text) = &literals[id];
+                        out.push(Extracted {
+                            file: file.to_path_buf(),
+                            line: *line,
+                            message: text.clone(),
+                        });
+                        break;
+                    }
+                    _ => {}
+                }
+                k += 1;
+            }
+        }
+    }
+    out
+}
+
 fn looks_like_code(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
@@ -191,6 +269,53 @@ fn all_messages() -> Vec<Extracted> {
     for file in files {
         let text = std::fs::read_to_string(&file).unwrap();
         out.extend(extract_messages(&file, &text));
+    }
+    out
+}
+
+/// core **直接产出、原样显示给用户**的中文句子。
+///
+/// # 为什么要单开一条通道
+///
+/// 用户可见文案一共有三条通道,这是第四条,而前三道守卫谁都扫不到它:
+/// 前端 `src/i18n/index.test.ts` 只扫 `zh-CN.json`;本文件其余测试只扒
+/// `AppError::new`;`RELEASE_NOTES.md` 那两条只读发版说明。而
+/// `BatchOutcome::Skipped { reason }` 这类字段是 core 拼好一句中文、经 IPC
+/// 原样送到界面上渲染的(`components/Wizard.tsx` 就把它直接贴在结果行末尾)。
+///
+/// # 覆盖范围(明写,别让下一个人以为它管得比实际多)
+///
+/// 只锚定两个类型的**结构体字面量**:
+/// - `BatchOutcome::Skipped { reason }`(`core/acquire.rs`)——向导一键全装与
+///   定时更新的跳过原因,**当前唯一真的被渲染出来的一条通道**;
+/// - `SkippedSkill { reason }`(`core/scheduler.rs` 的定时更新报告、
+///   `core/skills.rs` 的技能发现跳过)——同一个字段名、同一种"人话原因",
+///   今天前端只读数量不读文本,纳进来是防它哪天被渲染。
+///
+/// **挡不住什么**(与 `body_guard` 同一个道理:它是烟雾报警,不是防火墙):
+/// - 间接产出的句子,例如 `reason: err.reason()`(`core/skills.rs:510`)——
+///   文本在另一个函数里,锚定不到;
+/// - `UnlinkResult::Skipped { reason }`(`core/installer.rs` / `core/remove.rs`)
+///   **刻意不纳入**:那批字段今天没有任何渲染点(`UninstallReport.unlinks`
+///   在前端一处都没读),而它们的文案本来就是写给排查用的。
+///   哪天界面开始渲染它,把锚点加进来即可;
+/// - 变量、常量、`format!` 之外的拼接。
+///
+/// 真正兜底的是**逐条读一遍**加上下面这条自保断言:提取器一旦失灵,
+/// 条数会掉下去,而不是静默变成空转。
+fn core_visible_reasons() -> Vec<Extracted> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rust_files(&src, &mut files);
+    let mut out = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file).unwrap();
+        out.extend(extract_field_literals(
+            &file,
+            &text,
+            &["BatchOutcome::Skipped {", "SkippedSkill {"],
+            "reason",
+        ));
     }
     out
 }
@@ -317,6 +442,59 @@ fn error_messages_are_written_in_chinese() {
             "用户可见的错误信息不是中文\n  {}",
             place(&m)
         );
+    }
+}
+
+// ============================================================ core 直出的中文串(第四条通道)
+
+#[test]
+fn core_visible_reasons_are_actually_extracted() {
+    // 提取器的自保:锚点或写法一变,下面两条禁词测试会静默变成空转。
+    // 现役语料 12 条:acquire 8 + scheduler 3(含测试模块里的两条)+ skills 1。
+    // 掉到个位数一定是提取器坏了。
+    let found = core_visible_reasons();
+    assert!(
+        found.len() >= 9,
+        "只提取到 {} 条 core 直出文案,提取器大概率失灵了:{:?}",
+        found.len(),
+        found.iter().map(place).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn core_visible_reasons_use_no_git_terminology_in_chinese() {
+    // 只查中文那份。**刻意不套英文 git 禁词表**:这批句子里有
+    // `format!("同名技能已从 {source_owner}/{source_repo} 获取…")` 这样的模板,
+    // 占位符名字里的 `repo` 会被英文表当成 git 术语误伤,而它根本不会显示给用户
+    // ——替换之后落在用户眼里的是一个真实的技能库坐标。
+    let banned = ["仓库", "分支", "拉取", "推送", "克隆", "合并", "代码库"];
+    for m in core_visible_reasons() {
+        for word in banned {
+            assert!(
+                !m.message.contains(word),
+                "core 直接显示给用户的句子里出现 git 术语「{word}」\n  {}",
+                place(&m)
+            );
+        }
+    }
+}
+
+#[test]
+fn core_visible_reasons_use_no_retired_or_implementation_terms() {
+    // 与 `AppError` 那两份禁词表同源(v6 的「纳入管理」一批 + v6 二期的
+    // 「关联/收编/记账/占位」一批),刻意不合并成一份:三份表的存废理由各不相同。
+    let banned = [
+        "纳入管理", "移出管理", "其他工具装的",
+        "修复关联", "关联", "收编", "记账", "占位",
+    ];
+    for m in core_visible_reasons() {
+        for word in banned {
+            assert!(
+                !m.message.contains(word),
+                "core 直接显示给用户的句子里出现实现术语「{word}」\n  {}",
+                place(&m)
+            );
+        }
     }
 }
 
