@@ -14,7 +14,9 @@
 //! 改动都已经显式刷新过界面了([`crate::commands`] 各处的 `refreshInstalled` /
 //! `load`),不需要监听器再说一遍。
 //!
-//! 落地是 [`app_write`] 这个 RAII 守卫:所有会写盘的 command 在执行期间持有它,
+//! 落地是 [`app_write`] 这个 RAII 守卫:所有会写盘的 **core 编排函数**在执行期间持有它
+//! (名单在 `tests/watcher_guard.rs::GUARDED`;加在 core 层而不是 commands 层,
+//! 因为 scheduler 的自动更新不经过 commands),
 //! 期间的文件事件一律丢弃;释放之后还要再静默 [`QUIET_AFTER_WRITE_MS`] 毫秒
 //! ——FSEvents / ReadDirectoryChangesW 的投递都有延迟,写完那一刻的事件往往
 //! 在守卫释放之后才到。

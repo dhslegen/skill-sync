@@ -278,6 +278,10 @@ export function collectKeepFailures(report: KeepReport): ToolBlocked[] {
     if ("Err" in result) {
       out.push({ kind: "location", path, message: result.Err.message });
     } else if (result.Ok.kind === "differs") {
+      // ⚠️ 今天不可达:`keep_version` 的循环只产出 Linked / SameLocation / Err,
+      // 这一档只是类型上的兜底(`Result<Converged,_>` 不兜就得在前端断言"不可能")。
+      // 它没有测试覆盖,而且因为 kind 是 "location",标题会把它算进「没能完成」
+      // 而不是「需要你看一下」——接受。哪天 core 真产出它,先补测试再决定映成哪档。
       out.push({ kind: "location", path, message: t("mine.locationOccupied") });
     }
   }

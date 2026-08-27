@@ -107,7 +107,7 @@
   "skill.actionReplace": "替换",
   "skill.otherLibraryHint": "同名技能已从「{library}」获取,继续会替换掉它",
   "conflict.otherLibraryTitle": "已有同名技能",
-  "conflict.otherLibraryBody": "「{name}」已经从「{library}」获取过了。继续会用当前这个技能库里的同名技能替换掉它,两者内容可能并不相同,替换后原来的内容找不回来。",
+  "conflict.otherLibraryBody": "「{name}」已经从「{library}」获取过了。继续会用当前这个技能库里的同名技能替换掉它,两者内容可能并不相同;替换后原来的内容会移到废纸篓,可以找回。",
   "conflict.otherLibraryReplace": "用当前技能库的版本替换",
   "conflict.otherLibraryHint": "原来那个会移到废纸篓,可以从那里找回",
   "conflict.mineTitle": "「{name}」库里有新版,你本地也改过",

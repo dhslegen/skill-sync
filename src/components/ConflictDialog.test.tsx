@@ -45,7 +45,7 @@ describe("冲突对话框", () => {
     // 被应用自己否认。
     expect(screen.getByText(/替换掉/)).toBeInTheDocument();
     expect(screen.getByText(/废纸篓,可以从那里找回/)).toBeInTheDocument();
-    expect(screen.queryByText(/无法找回/)).toBeNull();
+    expect(screen.queryByText(/无法找回|找不回/)).toBeNull();
   });
 
   it("默认焦点落在「保留并分享」上 —— 用户拍板的默认项,且回车不会误覆盖", () => {
@@ -135,7 +135,10 @@ describe("冲突对话框", () => {
     expect(screen.getByRole("button", { name: "取消" })).toHaveFocus();
     // 终审 C-2:替换掉的那一份进废纸篓,说「无法找回」是假话
     expect(screen.getByText(/废纸篓,可以从那里找回/)).toBeInTheDocument();
-    expect(screen.queryByText(/无法找回/)).toBeNull();
+    // 复审 Cr-1:正文末句此前写着「找不回来」,与两行之下的 hint 自相矛盾——
+    // 负向断言只查「无法找回」抓不住这个变体,所以它活过了 C-2。正文单独钉一句。
+    expect(screen.getByText(/原来的内容会移到废纸篓/)).toBeInTheDocument();
+    expect(screen.queryByText(/无法找回|找不回/)).toBeNull();
   });
 
   describe("这是我分享的技能(v6 任务 5 的完整变体)", () => {
@@ -200,7 +203,7 @@ describe("冲突对话框", () => {
       render(<ConflictDialog />);
       // 常驻:不必先点一下"武装"才看得见。不敢点的人在**点之前**就该看见能找回。
       expect(screen.getByText(/废纸篓,可以从那里找回/)).toBeInTheDocument();
-      expect(screen.queryByText(/无法找回/)).toBeNull();
+      expect(screen.queryByText(/无法找回|找不回/)).toBeNull();
     });
   });
 
@@ -268,7 +271,7 @@ describe("冲突对话框", () => {
 
       expect(screen.getByText(/移到废纸篓/)).toBeInTheDocument();
       expect(screen.getByText(/可以.*找回/)).toBeInTheDocument();
-      expect(screen.queryByText(/无法找回/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/无法找回|找不回/)).not.toBeInTheDocument();
     });
 
     it("点「保留本地的」→ run(\"keepLocal\");点「用库里的」→ run(\"overwrite\")", async () => {
