@@ -1,4 +1,4 @@
-//! 「审核态」的集成测试(v7 任务 2,修复轮 1)。
+//! 「审核态」的集成测试(v7 任务 2,修复轮 2)。
 //!
 //! 与 `tests/installed_list.rs` 同一种姿势(见该文件模块头):`commands::installed_list`
 //! 依赖真实 `HOME`(`app_store()`)与编译期注入的公司库坐标(`BuiltinSource::from_build()`
@@ -9,11 +9,11 @@
 //! 修复轮 1 M2 下沉出来的纯函数,`installed_list_with` 因此不再自己重写一份
 //! `match`)。
 //!
-//! 四个场景:
+//! 五个场景:
 //! - 前缀匹配:`list_open_pulls` 解析不筛选,筛选按 `review_branch_prefix` 是调用方的事;
 //! - 端到端标记:候选行命中开放 PR 后被正确标记,且**只标真正的候选**——夹带一个
-//!   无关的开放 PR 与一个无关的候选行,证明匹配不是"随便抓一条"(修复轮 1 抓到
-//!   `fill_review_from_pulls` 原先没有 `shared_record_of` 这道候选闸,详见下面
+//!   无关的开放 PR 与一个**它自己的前缀也会命中同一个无关 PR** 的候选行,证明
+//!   候选闸真的在挡而不是摆设(修复轮 2 的 C1 附带修复,详见下面
 //!   `a_candidate_row_gets_marked_under_review_when_its_pull_is_open` 的注释);
 //! - 网络失败降级:整张列表不报错,按 `state.shared` 的本地记录兜底;
 //! - GitHub 库不发请求:`shared_record_of` 只认**公司库主仓**(`registry_id` 与
@@ -21,19 +21,29 @@
 //!   自然也不会触发任何查询——这条真的走 `installed_list_with`(而不是只调
 //!   `has_review_candidates` 这半步),`.expect(0)` 才是在守一条本来**可能**被拨通
 //!   的电话(修复轮 1 M1:旧版没有任何 client 指向那台 server,`.expect(0)` 恒过)。
+//! - 翻页止损(修复轮 2 新增):服务端如果不尊重 `page` 参数、每一页都原样回满页,
+//!   `list_open_pulls` 必须在 `PULLS_MAX_PAGES` 次请求后止损,不能转到把
+//!   `installed_list` 挂死。
+//!
+//! 🔴 **本文件两处直接命中 `list_open_pulls`(不经过 `my_skills`)的 mock 现在必须
+//! 按页响应**:修复轮 1 把翻页停止条件从"这一页比页大小少"改成"这一页空了"
+//! (`raw.is_empty()`)之后,只用 `path()` 匹配、不区分 `page` 查询参数的 mock 会让
+//! 每一页都拿到同一批非空数据,永远等不到空页——用 `query_param("page", "1")` /
+//! `("page", "2")` 精确区分,第 2 页给空数组才能让循环正常停下,不然会一路转到
+//! `PULLS_MAX_PAGES` 才因为止损报错,而不是原本要测的那件事。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use skillsync_lib::core::agents::{AgentEnv, AgentRegistry};
-use skillsync_lib::core::gitea::{review_branch_prefix, GiteaClient};
+use skillsync_lib::core::gitea::{review_branch_prefix, GiteaClient, PULLS_MAX_PAGES};
 use skillsync_lib::core::installer::Installer;
 use skillsync_lib::core::my_skills::{self, InstalledRow};
 use skillsync_lib::core::ownership::Section;
 use skillsync_lib::core::registry;
 use skillsync_lib::core::state::{Config, InstalledSkill, SharedSkill, SkillSource, State, Store};
 
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const NOW: &str = "2026-08-28T00:00:00.000Z";
@@ -163,10 +173,19 @@ async fn open_pulls_are_matched_to_skills_by_branch_prefix() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/repos/skills/skills/pulls"))
+        .and(query_param("page", "1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
             { "number": 7, "html_url": "http://x/pulls/7", "head": { "ref": "skillsync/weekly-report-20260828" } },
             { "number": 8, "html_url": "http://x/pulls/8", "head": { "ref": "feature/unrelated" } }
         ])))
+        .mount(&server)
+        .await;
+    // 第 2 页给空数组,翻页判据(修复轮 2:"这一页空了")才会正常停下——不这样配的话
+    // 每一页都会拿到第 1 页那份非空数据,循环会一路转到 `PULLS_MAX_PAGES` 才止损。
+    Mock::given(method("GET"))
+        .and(path("/api/v1/repos/skills/skills/pulls"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
         .mount(&server)
         .await;
 
@@ -181,8 +200,8 @@ async fn open_pulls_are_matched_to_skills_by_branch_prefix() {
     assert_eq!(mine[0].number, 7);
 }
 
-/// 端到端 + 鉴别力(修复轮 1 C1 的护栏):候选行在开放 PR 列表命中对应分支前缀后
-/// 被正确标记,同时验证两条容易被空转掉的边:
+/// 端到端 + 鉴别力(修复轮 1 C1 的护栏,修复轮 2 补真了对照行的信号):候选行在
+/// 开放 PR 列表命中对应分支前缀后被正确标记,同时验证两条容易被空转掉的边:
 ///
 /// 1. **候选闸真的在挡**:`weekly-report` 这一行是**带外源记账**的(`state.installed`
 ///    的 `source.path` 是 `skills/zhoubao`,与本体的字面叶子名 `weekly-report`
@@ -197,14 +216,23 @@ async fn open_pulls_are_matched_to_skills_by_branch_prefix() {
 ///    (`skillsync/other-skill-2026`),真正命中的那条排第二。断言的是**精确的
 ///    URL**,不是"有没有命中"——如果实现退化成 `pulls.first()`,这一行会被错误
 ///    标上无关 PR 的链接,断言会红(已手工验证:见任务报告的注入记录)。
-/// 3. 同时摆一个**没有分享过**的 `Shareable` 行(`another-draft`)作对照:候选闸
-///    (`shared_record_of`)如果被去掉,任何 `Shareable` 行都会参与前缀扫描,
-///    这一行不该被扫描到任何东西、`review` 恒 `None`。
+/// 3. 🔴 **对照行 `other-skill` 必须是"闸没了就会真的被误标"那一种,不能是摆设**
+///    (修复轮 2 复审抓到的原缺陷:此前对照行叫 `another-draft`,它自己的前缀
+///    `skillsync/another-draft-` 跟列表里两条 PR 都不匹配,有闸无闸这条断言恒真,
+///    没有任何鉴别力)。现在改名成 `other-skill`——它的目录名与 frontmatter
+///    `name` 都是 `other-skill`,前缀 `skillsync/other-skill-` **恰好命中列表里那条
+///    无关 PR** `skillsync/other-skill-2026`。它自己没有 `state.shared` 记录,
+///    正确实现下候选闸(`shared_record_of`)会先拦住它,压根不参与前缀扫描,
+///    `review` 仍是 `None`;闸一旦被去掉、退化成对每个 `Shareable` 行都直接扫描
+///    (哪怕换掉键),这一行就会被误标上 `#99` 的链接——见下面
+///    `a_candidate_row_gets_marked_under_review_when_its_pull_is_open` 的鉴别力
+///    注入(报告里的记录):去掉候选闸退回兜底键时,这条测试**会真的变红**。
 #[tokio::test]
 async fn a_candidate_row_gets_marked_under_review_when_its_pull_is_open() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/repos/skills/skills/pulls"))
+        .and(query_param("page", "1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
             { "number": 99, "html_url": "http://gitea.internal:3000/skills/skills/pulls/99",
               "head": { "ref": "skillsync/other-skill-2026" } },
@@ -213,12 +241,20 @@ async fn a_candidate_row_gets_marked_under_review_when_its_pull_is_open() {
         ])))
         .mount(&server)
         .await;
+    // 第 2 页给空数组,理由同上一条测试:修复轮 2 的翻页判据是"这一页空了"。
+    Mock::given(method("GET"))
+        .and(path("/api/v1/repos/skills/skills/pulls"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .mount(&server)
+        .await;
 
     let rows = installed_list_with(&server, |ctx| {
         // 本体叶子名与 `share_name` 都是 weekly-report。
         let body = write_shareable_draft(ctx, "weekly-report");
-        // 另一个从没分享过的草稿,dir_slug 恰好排在同一份列表里。
-        write_shareable_draft(ctx, "another-draft");
+        // 另一个从没分享过的草稿,前缀恰好命中列表里那条无关 PR(#99)——
+        // 候选闸如果被去掉,这一行会被误标,是真正有鉴别力的对照(修复轮 2)。
+        write_shareable_draft(ctx, "other-skill");
 
         let mut state = State::default();
         // 带外源记账:`dir_slug` 走 `library_dir_slug()` = "zhoubao",与
@@ -255,9 +291,12 @@ async fn a_candidate_row_gets_marked_under_review_when_its_pull_is_open() {
         "必须是精确匹配到的那条 PR,不是列表里排第一的那条"
     );
 
-    let unrelated = row(&rows, "another-draft");
+    let unrelated = row(&rows, "other-skill");
     assert_eq!(unrelated.section, Section::Shareable);
-    assert!(unrelated.review.is_none(), "从没分享过的草稿不该被任何 PR 命中");
+    assert!(
+        unrelated.review.is_none(),
+        "从没分享过的草稿不该被任何 PR 命中,即便它自己的前缀能命中列表里的无关 PR"
+    );
 }
 
 /// Step 2:网络查询失败(500)不拖垮整张列表;有 `state.shared` 记录且这个技能
@@ -352,4 +391,43 @@ async fn a_shared_record_pointing_at_a_builtin_extra_repo_never_triggers_a_pulls
     assert!(r.review.is_none(), "追加仓不是主仓,不该成为候选");
 
     server.verify().await;
+}
+
+/// 翻页止损(修复轮 2 新增,对应复审提出的"新 Important"):服务端如果不尊重
+/// `page` 参数——反向代理丢了 query string、或部署本身有 bug——每一页都会原样
+/// 回同一批**非空**数据,修复轮 1 那版"这一页空了才停"的判据永远等不到空页,
+/// 会一路转下去。`list_open_pulls` 因此必须在 [`PULLS_MAX_PAGES`] 次请求后止损,
+/// 把这次查询当"失败"交回调用方(既有降级路本来就是为"拿不到真实 PR 状态"准备的)。
+///
+/// `.expect(PULLS_MAX_PAGES as u64)` 是这条测试的核心断言:直接引用实现里的常量,
+/// 不在这里另抄一份数字——常量与断言必须是同一把尺子,否则测试守的会是一个
+/// 错误的边界(参见 `review_branch`/`review_branch_prefix` 那条"两把尺子必须
+/// 同源"的既有教训)。如果止损逻辑被去掉或改错,要么请求次数超出预期让
+/// `server.verify()` 失败,要么循环根本不停、这条测试自己因为撞上
+/// `PULLS_QUERY_DEADLINE`(15 秒)或 `#[tokio::test]` 默认无超时而挂起太久
+/// ——两条路都能让红灯亮起来,不会悄悄放过。
+#[tokio::test]
+async fn a_server_that_ignores_the_page_parameter_does_not_loop_forever() {
+    let server = MockServer::start().await;
+    // 无论请求几次都原样返回同一批非空数据,模拟"page 参数被服务端忽略"。
+    let full_page: Vec<_> = (0..50)
+        .map(|i| {
+            serde_json::json!({
+                "number": i,
+                "html_url": format!("http://x/pulls/{i}"),
+                "head": { "ref": format!("feature/unrelated-{i}") }
+            })
+        })
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/api/v1/repos/skills/skills/pulls"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(full_page)))
+        .expect(PULLS_MAX_PAGES as u64)
+        .mount(&server)
+        .await;
+
+    let err = client(&server).list_open_pulls("skills", "skills").await.unwrap_err();
+    assert_eq!(err.code, "NET_PULLS_TOO_MANY", "止损后应当按查询失败处理,交回调用方走既有降级路");
+
+    server.verify().await; // 请求次数确实有上限(恰好 PULLS_MAX_PAGES 次),不是无限转下去
 }

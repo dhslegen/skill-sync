@@ -261,6 +261,25 @@ pub struct ForkResult {
     pub already_existed: bool,
 }
 
+/// [`GiteaClient::list_open_pulls`] 单页条数,同时用于生成请求参数与判断该不该
+/// 继续翻页(修复轮 2:公开出来是为了测试能直接引用这个数字,而不是在
+/// `tests/review_state.rs` 里另抄一份 20/50 的字面量——两边一旦漂移,测试守的
+/// 就是一个错误的边界)。Gitea 的 `[api] MAX_RESPONSE_ITEMS` 默认也是 50,
+/// 不同部署可能改过,所以显式给出而不依赖服务端默认值。
+pub const PULLS_PAGE_SIZE: u32 = 50;
+
+/// [`GiteaClient::list_open_pulls`] 翻页的硬上限(修复轮 2 新增)。配合
+/// [`PULLS_PAGE_SIZE`],最多请求 `PULLS_MAX_PAGES * PULLS_PAGE_SIZE` = 1000 条
+/// ——公司库开放的提交审核数量到不了这个量级,超出即视为异常(服务端不尊重
+/// `page` 参数、每页都原样回同一批数据),当作查询失败交回调用方走既有降级路。
+pub const PULLS_MAX_PAGES: u32 = 20;
+
+/// [`GiteaClient::list_open_pulls`] 整趟查询(含全部翻页)的总耗时上限(修复轮 2
+/// 新增)。单次请求各自还有调用方给的 `app_http_client_with_timeout`,但那管不住
+/// 翻页反复调用的总时长——这条查询按设计只是"查不到就当没有"的锦上添花,
+/// 不该让 `installed_list` 挂在一次可能要转二十页的查询上。
+pub const PULLS_QUERY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// 一个开放的合并请求(v7 任务 2「审核态」用)。
 ///
 /// 只取解析用得上的三个字段,不 1:1 照搬 Gitea 的完整 PR 形状。
@@ -689,15 +708,37 @@ impl GiteaClient {
     ///
     /// **翻页到空**,不赌"开放 PR 数永远小于某个默认页大小"——躺久的审核请求
     /// 掉出第一页会静默截断,表现是「审核中」凭空消失、分享按钮回来、用户重复
-    /// 提交,恰是这整个功能存在的理由。每页 `PULLS_PAGE_SIZE` 条,拿到的条数
-    /// 少于这个数就说明到底了;显式给出页大小而不依赖服务端默认值(Gitea 的
-    /// `[api] MAX_RESPONSE_ITEMS` 默认 50,不同部署可能改过)。
+    /// 提交,恰是这整个功能存在的理由。每页 [`PULLS_PAGE_SIZE`] 条。
+    ///
+    /// 🔴 **停止条件是"这一页空了"(`raw.is_empty()`),不是"这一页比页大小少"**
+    /// (修复轮 2 改,原实现的教训):按数量比较在服务端把 `limit` 截得比我们要求
+    /// 的更小时(比如某个部署把响应硬上限设成 20)会提前判定"到底了"——第一页
+    /// 拿到 20 条(< 50)就 `break`,后面的页再也不会去要,静默截断原样重演一次。
+    /// 空页判据对"服务端到底给多大一页"不敏感,只要 `page` 参数被服务端尊重,
+    /// 迟早会拿到一页真正的空数组。
+    ///
+    /// 🔴 **两层止损,防的是"服务端不尊重 `page` 参数"这个相反的极端**:如果服务端
+    /// 完全忽略 `page`(反向代理丢了 query string、或部署本身有 bug),每一页都会
+    /// 原样返回同一批非空数据,空页判据永远等不到——翻页会**转到 [`PULLS_MAX_PAGES`]
+    /// 页就止损**,同时整趟查询包着 [`PULLS_QUERY_DEADLINE`] 的**总耗时**上限
+    /// (单次请求各自还有调用方给的 `app_http_client_with_timeout`,但那管不住
+    /// 翻页反复调用的总时长)。两条中任一条命中都当作"这次查询失败",交回调用方
+    /// 走既有的按本地证据降级的路——这条路本来就是为"拿不到真实 PR 状态"准备的
+    /// 语义,不是新开一个错误分支。
     ///
     /// **不筛选**——筛选是调用方的事(按 [`review_branch_prefix`] 把 `head_ref`
     /// 匹配回具体的技能,这样连存量分享(那些从没落过 PR 坐标的)也认得出,
     /// 不必依赖本地记账里的 `review_number`)。
     pub async fn list_open_pulls(&self, owner: &str, repo: &str) -> Result<Vec<PullBrief>, AppError> {
-        const PULLS_PAGE_SIZE: u32 = 50;
+        match tokio::time::timeout(PULLS_QUERY_DEADLINE, self.list_open_pulls_paged(owner, repo)).await {
+            Ok(result) => result,
+            Err(_) => Err(AppError::new("NET_PULLS_TIMEOUT", "查询提交审核状态超时,请稍后重试").with_detail(
+                format!("list_open_pulls exceeded overall deadline of {PULLS_QUERY_DEADLINE:?}"),
+            )),
+        }
+    }
+
+    async fn list_open_pulls_paged(&self, owner: &str, repo: &str) -> Result<Vec<PullBrief>, AppError> {
         let base = self.api(&format!("/repos/{owner}/{repo}/pulls"));
         let mut out = Vec::new();
         let mut page = 1u32;
@@ -709,14 +750,22 @@ impl GiteaClient {
                 ))
                 .await?;
             let raw: Vec<RawPull> = parse_json(resp).await?;
-            let got = raw.len();
+            if raw.is_empty() {
+                break;
+            }
             out.extend(raw.into_iter().map(|p| PullBrief {
                 number: p.number,
                 html_url: p.html_url,
                 head_ref: p.head.git_ref,
             }));
-            if got < PULLS_PAGE_SIZE as usize {
-                break;
+            if page >= PULLS_MAX_PAGES {
+                return Err(AppError::new(
+                    "NET_PULLS_TOO_MANY",
+                    "开放的提交审核数量过多,已停止查询,请稍后重试",
+                )
+                .with_detail(format!(
+                    "list_open_pulls exceeded {PULLS_MAX_PAGES} pages of {PULLS_PAGE_SIZE} items each"
+                )));
             }
             page += 1;
         }
