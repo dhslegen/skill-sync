@@ -1562,6 +1562,11 @@ pub struct InstalledSkillView {
     /// 分享前的标准校验没过的话,是哪一条(v6 二期 A-2:不合格不让分享,
     /// 但照常显示 + 说明哪不合格 + 给「打开文件夹」的出口)。`None` = 可以分享。
     pub share_blocked: Option<skills::ShareBlock>,
+    /// 「我的技能」页按公司技能库分的三区(v7):`installedFrom`(安装自公司库)/
+    /// `sharedTo`(已分享到公司库)/ `shareable`(可分享到公司库)。
+    /// `ownership::section(relation)` 的**唯一**填法,前端直接按它分区,
+    /// 不再自己从 `relation` 推。
+    pub section: ownership::Section,
 }
 
 /// 一个已装技能的来源还通不通(M4 任务 2)。返回 `(source_removed, library_removed)`。
@@ -1613,6 +1618,7 @@ impl From<my_skills::InstalledRow> for InstalledSkillView {
             tools: r.tools,
             versions: r.versions,
             share_blocked: r.share_blocked,
+            section: r.section,
         }
     }
 }

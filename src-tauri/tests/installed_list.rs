@@ -793,6 +793,7 @@ fn installed_row_serializes_with_camel_case_keys() {
             "localPresent",
             "registryId",
             "relation",
+            "section",
             "shareBlocked",
             "sourceLabel",
             "sourceOwner",
@@ -951,7 +952,7 @@ fn installed_skill_view_serializes_with_the_same_camel_case_keys() {
     let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
     keys.sort();
     assert_eq!(keys, core_keys, "DTO 与 core 行的键必须逐个对应,From 漏搬一个就在这里红");
-    assert_eq!(keys.len(), 21);
+    assert_eq!(keys.len(), 22);
 }
 
 /// R20 的第二半:**有账那一行的 `versions` 也只跟同字面名的实体比**。

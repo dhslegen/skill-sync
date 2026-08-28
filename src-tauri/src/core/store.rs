@@ -273,6 +273,20 @@ pub fn cached_author(dir: &Path, registry_id: &str, repo: &RepoRef, dir_slug: &s
         .map(|a| a.author.clone())
 }
 
+/// 索引缓存里某个技能的远端内容指纹(v7 三区判据用,取不到一律 `None`)。
+///
+/// 与 [`cached_author`] 同款(同一份缓存、同一套寻址口径、同一份"取不到就是不知道"
+/// 的姿态),只是取的字段不同——三区判据的第三支「内容与公司库同名技能逐字节相同」
+/// 要靠这个函数,不与 [`crate::core::my_skills::in_builtin_library`] 里的
+/// `IndexedSkill::content_hash` 各自手搓一遍读缓存的过程。
+pub fn cached_content_hash(dir: &Path, registry_id: &str, repo: &RepoRef, dir_slug: &str) -> Option<String> {
+    if registry_id.is_empty() {
+        return None;
+    }
+    let index = load_cache(&cache_path(dir, registry_id, repo))?;
+    index.skills.iter().find(|s| s.dir_slug == dir_slug).map(|s| s.content_hash.clone())
+}
+
 /// 清掉某个源**全部**仓的索引缓存(移除整源时用):精确名 `index-<id>.json`
 /// (M3 的旧命名,升级残留)+ 前缀 `index-<id>-`(按仓分文件的新命名)。
 /// 前缀带尾横杠,`custom-1` 不会误伤 `custom-10` 的文件。

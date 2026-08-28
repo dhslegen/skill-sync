@@ -146,6 +146,9 @@ pub struct InstalledRow {
     /// 分享前的标准校验没过的话,是哪一条(v6 二期 A-2)。`None` = 可以分享。
     /// 第 4 源恒 `None`:本地没有文件,没什么可校验的。
     pub share_blocked: Option<skills::ShareBlock>,
+    /// 「我的技能」页按公司技能库分的三区(v7),`ownership::section(relation)`
+    /// 的**唯一**填法,不在这里另写一遍映射。
+    pub section: ownership::Section,
 }
 
 /// 算出「这个技能在各个工具里的启用态」。
@@ -311,6 +314,72 @@ fn library_author_of(store: &Store, source: &state::SkillSource, dir_slug: &str)
     store::cached_author(store.dir(), &source.registry_id, &repo, dir_slug)
 }
 
+/// 内建源(公司技能库)主仓 + 追加仓的坐标列表(v7 三区判据用)。**只服务这一件事**
+/// ——判"这个技能是不是装自公司库"只看这些仓,不看自定义源或广场:名字撞上不该
+/// 让一个广场技能被判成"安装自公司库"(疑虑 4)。与 [`all_repo_refs`] 的区别只在于
+/// 收窄到内建源那一段,坐标拼法复用同一套。
+fn builtin_repo_refs(builtin: &registry::BuiltinSource, config: &state::Config) -> Vec<RepoRef> {
+    let mut out = Vec::new();
+    if let (Some(_base), Some((o, r))) = (builtin.base_url, builtin.repo) {
+        out.push(RepoRef { owner: o.to_string(), repo: r.to_string(), branch: builtin.branch.to_string() });
+        for c in &config.builtin_extra_repos {
+            out.push(RepoRef { owner: c.owner.clone(), repo: c.repo.clone(), branch: c.branch.clone() });
+        }
+    }
+    out
+}
+
+/// 没有记账、或记账不指向公司库时,按公司库坐标直接查这个 `dir_slug` 的作者
+/// (找不到 `None`)——第一个命中的仓为准,与 [`library_author_of`] 的区别是
+/// 后者按**记账自己的坐标**查、这个按**公司库坐标**查(记账缺失时没有别的坐标可用)。
+fn builtin_author_of(
+    store: &Store,
+    builtin: &registry::BuiltinSource,
+    config: &state::Config,
+    dir_slug: &str,
+) -> Option<String> {
+    builtin_repo_refs(builtin, config)
+        .iter()
+        .find_map(|repo| store::cached_author(store.dir(), registry::BUILTIN_REGISTRY_ID, repo, dir_slug))
+}
+
+/// 公司库索引里这个 `dir_slug` 的远端内容指纹(找不到 `None`)——第一个命中的仓为准。
+fn builtin_remote_hash(
+    store: &Store,
+    builtin: &registry::BuiltinSource,
+    config: &state::Config,
+    dir_slug: &str,
+) -> Option<String> {
+    builtin_repo_refs(builtin, config).iter().find_map(|repo| {
+        store::cached_content_hash(store.dir(), registry::BUILTIN_REGISTRY_ID, repo, dir_slug)
+    })
+}
+
+/// 「这个技能算不算装自公司技能库」的三支判据(v7,三区划分的地基)。
+///
+/// 三支任一成立即算「在公司库里」:
+/// - `record` 本身有一条指向公司库的记账(哪怕本地内容已经改过——改过不该让一个
+///   本来就装自公司库的技能跳区,那正是"安装自"这个说法要承诺的稳定性,见
+///   `a_record_pointing_at_the_company_library_stays_installed_from_after_local_edits`);
+/// - 公司库索引里查得到这个 `dir_slug` 的作者(即便没有记账也可能成立——见
+///   `my_own_shared_skill_lands_in_shared_to`,库里记着作者是我,本地却是第一次
+///   经这台机器碰到这个目录);
+/// - 本体此刻的内容与公司库索引里同名技能逐字节相同(没有记账、名字撞上,但内容
+///   确实是那个技能——换电脑 / 绕过 app 直推的场景)。
+///
+/// 三支都不成立时按 `Section::Shareable`(可分享到)处理,而不是谎称"安装自"
+/// ——名字撞上不代表内容对得上,见 `a_same_named_but_different_skill_is_shareable_not_installed_from`。
+fn in_builtin_library(
+    record: &state::InstalledSkill,
+    local_hash: &str,
+    author: Option<&str>,
+    remote_hash: Option<&str>,
+) -> bool {
+    let builtin_record =
+        record.has_source() && record.source.registry_id == registry::BUILTIN_REGISTRY_ID;
+    builtin_record || author.is_some() || remote_hash.is_some_and(|h| !h.is_empty() && h == local_hash)
+}
+
 /// `.skill-lock.json` 的全部条目,按它自己的 `key` 建表,供来源展示
 /// ([`ownership::source_label`])查表用。**只读**,与已撤销的「认领」无关。
 ///
@@ -462,20 +531,24 @@ pub fn build(
         let dir_slug = record
             .library_dir_slug()
             .unwrap_or_else(|| home.dir_name.clone());
-        // 空来源账(纯本地技能第一次被勾选/拍板时建的)压根没经过任何技能库,
-        // `in_library` 必须是 false —— 硬填 true 会让一个手写的草稿被判成
-        // `Installed`(「我安装的」),而诚实的答案是 `Draft`。
-        let (in_library, author) = if record.has_source() {
-            (true, library_author_of(store, &record.source, &dir_slug))
+        // R4:一次遍历,两个用途。读不出来留空,**不冒充"改过了"**。
+        let local_hash = fsops::dir_content_hash(&home.body).unwrap_or_default();
+        // v7 三区判据:是不是「安装自公司技能库」不再是"有没有任意来源"这一刀切
+        // (那会把广场/自定义源装的技能也判成"安装自公司库"),而是
+        // `in_builtin_library` 的三支判据——理由见该函数文档。
+        let author = if record.has_source() {
+            library_author_of(store, &record.source, &dir_slug)
         } else {
-            (false, None)
+            // 无来源(空账/其他源账)时,按公司库坐标直接查一次:名字撞上公司库里
+            // 记的作者,也算数(三支之一)。
+            builtin_author_of(store, builtin, config, &dir_slug)
         };
+        let remote_hash = builtin_remote_hash(store, builtin, config, &dir_slug);
+        let in_library = in_builtin_library(record, &local_hash, author.as_deref(), remote_hash.as_deref());
         let identity = config.identities.get(&record.source.registry_id);
         let relation = ownership::relation(identity, author.as_deref(), in_library, true);
 
         let (recorded, _) = remove::state_links_to_recorded(&record.links);
-        // R4:一次遍历,两个用途。读不出来留空,**不冒充"改过了"**。
-        let local_hash = fsops::dir_content_hash(&home.body).unwrap_or_default();
         let (source_removed, library_removed) = reachability_of(builtin, config, record);
         rows.push(InstalledRow {
             dir_slug,
@@ -506,6 +579,7 @@ pub fn build(
             // 把它摆进"留哪个"的选项里就是在诱导用户销毁另一个技能(R20)。
             versions: versions_for(&home.body, literal_group(&all, &home.dir_name, &body_literal)),
             share_blocked: skills::validate_skill_dir(&home.body).err(),
+            section: ownership::section(relation),
         });
     }
 
@@ -523,6 +597,8 @@ pub fn build(
                 installer,
                 registry,
                 env,
+                store,
+                builtin,
                 state,
                 config,
                 &library,
@@ -584,6 +660,7 @@ pub fn build(
             tools: Vec::new(),
             versions: Vec::new(),
             share_blocked: None,
+            section: ownership::section(relation),
         });
     }
 
@@ -643,6 +720,8 @@ fn unmanaged_row(
     installer: &Installer,
     registry: &AgentRegistry,
     env: &dyn AgentEnv,
+    store: &Store,
+    builtin: &registry::BuiltinSource,
     state: &state::State,
     config: &state::Config,
     library: &ownership::LibraryAttribution,
@@ -699,13 +778,19 @@ fn unmanaged_row(
     // 库里**没有**同名条目时保持空串是对的:那种行 `relation` 恒为 `Draft`
     // (库里没有它),前端在第 2 档就短路了,根本走不到第 4 档。
     let library_entry = library.get(&dir_slug).or_else(|| library.get(key));
-    let relation = match library_entry {
-        Some(entry) => {
-            let me = config.identities.get(&entry.registry_id);
-            ownership::relation(me, entry.author.as_deref(), true, true)
-        }
-        None => ownership::relation(None, None, false, true),
-    };
+
+    // v7 三区判据(疑虑 4):`library_entry` 是**全部已配置库**(含自定义源、广场)
+    // 合并后的表,"库里查得到"不能直接当 `in_library`——名字撞上广场的同名技能
+    // 不该被判成"安装自公司库"。三区只认公司库,与 `in_builtin_library` 同一套
+    // 收窄:这一档天生没有 `state.installed` 记账(第一支恒不成立),只剩后两支
+    // ——公司库索引里查得到这个 `dir_slug` 的作者,或本体内容与公司库同名技能
+    // 逐字节相同。
+    let local_hash = fsops::dir_content_hash(&body).unwrap_or_default();
+    let author = builtin_author_of(store, builtin, config, &dir_slug);
+    let remote_hash = builtin_remote_hash(store, builtin, config, &dir_slug);
+    let in_library = author.is_some() || remote_hash.is_some_and(|h| !h.is_empty() && h == local_hash);
+    let identity = config.identities.get(registry::BUILTIN_REGISTRY_ID);
+    let relation = ownership::relation(identity, author.as_deref(), in_library, true);
 
     // 本体的叶子名可能与记账键大小写不同(`Weekly-Report` vs `weekly-report`),
     // 而 lock 的键是清洗后的那一个——两把都试一次,别让大小写差异吞掉来源展示。
@@ -736,11 +821,12 @@ fn unmanaged_row(
         local_present: true,
         source_label,
         links: Vec::new(),
-        local_hash: fsops::dir_content_hash(&body).unwrap_or_default(),
+        local_hash,
         tools,
         versions: versions_for(&body, group.to_vec()),
         share_blocked: skills::validate_skill_dir(&body).err(),
         body: body.to_string_lossy().into_owned(),
+        section: ownership::section(relation),
     }
 }
 

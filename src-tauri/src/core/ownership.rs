@@ -126,6 +126,31 @@ pub fn relation(
     }
 }
 
+/// 「我的技能」页按**公司技能库**分的三区(v7):安装自公司库 / 已分享到公司库 /
+/// 可分享到公司库。与 [`Relation`] 的区别只在于**说法**——`Relation` 说的是
+/// "这个技能与我的关系",`Section` 说的是"这一行该出现在哪一栏",两者是一一对应
+/// 的同一件事的两种措辞,序列化为对外契约的三个字面量(前端按它分区,名字不得再改)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Section {
+    /// 安装自公司技能库。
+    InstalledFrom,
+    /// 已分享到公司技能库(库里记的分享者是我)。
+    SharedTo,
+    /// 可分享到公司技能库(本地草稿,库里还没有,或库里有的是另一个同名但内容不同
+    /// 的技能——名字撞上不代表这就是"安装自"那个技能,见 `my_skills::in_builtin_library`)。
+    Shareable,
+}
+
+/// [`Relation`] → [`Section`] 的**唯一**映射,调用方不得另写一份。
+pub fn section(relation: Relation) -> Section {
+    match relation {
+        Relation::Shared => Section::SharedTo,
+        Relation::Installed => Section::InstalledFrom,
+        Relation::Draft => Section::Shareable,
+    }
+}
+
 /// 把上游 `.skill-lock.json` 的 `(sourceType, source, sourceUrl)` 归一化成一句展示文案。
 ///
 /// **凡是装来的技能都有来源**(实测 lock 41 条逐条核过,一条不缺),但形状有四种
@@ -169,6 +194,17 @@ mod tests {
 
     fn me() -> Identity {
         Identity { login: "zhaowh".into(), display_name: "赵文浩".into() }
+    }
+
+    #[test]
+    fn every_relation_maps_to_exactly_one_section() {
+        assert_eq!(section(Relation::Shared), Section::SharedTo);
+        assert_eq!(section(Relation::Installed), Section::InstalledFrom);
+        assert_eq!(section(Relation::Draft), Section::Shareable);
+        // 序列化字面量钉死(前端按它分区)
+        assert_eq!(serde_json::to_string(&Section::InstalledFrom).unwrap(), "\"installedFrom\"");
+        assert_eq!(serde_json::to_string(&Section::SharedTo).unwrap(), "\"sharedTo\"");
+        assert_eq!(serde_json::to_string(&Section::Shareable).unwrap(), "\"shareable\"");
     }
 
     #[test]
