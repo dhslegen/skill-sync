@@ -259,10 +259,18 @@ pub fn cache_path(dir: &Path, registry_id: &str, repo: &RepoRef) -> PathBuf {
 /// `None` 覆盖三种情况,对 [`crate::core::ownership::relation`] 来说完全等价:
 /// 从没取过索引 / 取过但库里没写作者 / 缓存版本不认识。`repo` 的 `branch`
 /// 不参与寻址([`cache_path`] 只用 owner/repo),调用方可以留空。
+///
+/// **不单独判 `registry_id.is_empty()`**(修复轮 2 订正:此前这里配的注释说
+/// "这道闸是给多个调用方里可能传空 `registry_id` 的那些兜底"——实测逐一核过
+/// 当时全部三个调用点:`library_author_of`(v7 修复轮 1 起只在 `builtin_record`
+/// 为真时才调,`registry_id` 恒等于 `BUILTIN_REGISTRY_ID`)、`builtin_author_of`
+/// (直接传编译期常量)、`share.rs::share`(`req.registry_id` 缺省即回落
+/// `BUILTIN_REGISTRY_ID`,从不是空串),**没有一个能传空**,那句理由在写下的
+/// 那一刻就是假的。空 `registry_id` 走完整流程与提前 `return None` 结果相同
+/// ([`cache_path`] 对空 `registry_id` 拼出的文件名从没有任何写入路径产出过,
+/// [`load_cache`] 找不到文件照样返回 `None`),删掉这道闸不改变任何可观察行为,
+/// 只是不再维护一句会随调用方变化而过期的断言。
 pub fn cached_author(dir: &Path, registry_id: &str, repo: &RepoRef, dir_slug: &str) -> Option<String> {
-    if registry_id.is_empty() {
-        return None;
-    }
     let index = load_cache(&cache_path(dir, registry_id, repo))?;
     index
         .skills
@@ -275,16 +283,11 @@ pub fn cached_author(dir: &Path, registry_id: &str, repo: &RepoRef, dir_slug: &s
 
 /// 索引缓存里某个技能的远端内容指纹(v7 三区判据用,取不到一律 `None`)。
 ///
-/// 与 [`cached_author`] 同款(同一份缓存、同一套寻址口径、同一份"取不到就是不知道"
-/// 的姿态),只是取的字段不同——三区判据的第三支「内容与公司库同名技能逐字节相同」
-/// 要靠这个函数,不与 [`crate::core::my_skills::in_builtin_library`] 里的
+/// 与 [`cached_author`] 同款——同一份缓存、同一套寻址口径、同一份"取不到就是
+/// 不知道"的姿态、同一套不单独判空 `registry_id` 的理由(见上),只是取的字段
+/// 不同——三区判据的第三支「内容与公司库同名技能逐字节相同」要靠这个函数,
+/// 不与 [`crate::core::my_skills::in_builtin_library`] 里的
 /// `IndexedSkill::content_hash` 各自手搓一遍读缓存的过程。
-///
-/// **没有 `registry_id.is_empty()` 那道闸**(修复轮 1 M1):`cached_author` 那道闸
-/// 是给它自己多个调用方里可能传空 `registry_id` 的那些兜底(如空来源记账);
-/// 这个函数唯一的调用方(`my_skills::builtin_repo_refs` 系)恒传编译期常量
-/// `registry::BUILTIN_REGISTRY_ID`,永不为空——补一道用不上的闸只会让两个"同款"
-/// 函数看起来在管两件事,其实什么都没多防住。
 pub fn cached_content_hash(dir: &Path, registry_id: &str, repo: &RepoRef, dir_slug: &str) -> Option<String> {
     let index = load_cache(&cache_path(dir, registry_id, repo))?;
     index.skills.iter().find(|s| s.dir_slug == dir_slug).map(|s| s.content_hash.clone())
