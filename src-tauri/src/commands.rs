@@ -1567,6 +1567,10 @@ pub struct InstalledSkillView {
     /// `ownership::section(relation)` 的**唯一**填法,前端直接按它分区,
     /// 不再自己从 `relation` 推。
     pub section: ownership::Section,
+    /// 「可分享到」区的审核态(v7 任务 2):有它就是"审核中",前端据此隐藏分享
+    /// 按钮,避免重复提交。`None` = 从没分享过,或查询失败又没有本地兜底证据
+    /// ——两者在界面上是同一档"可以分享"。
+    pub review: Option<my_skills::ReviewView>,
 }
 
 /// 一个已装技能的来源还通不通(M4 任务 2)。返回 `(source_removed, library_removed)`。
@@ -1619,17 +1623,44 @@ impl From<my_skills::InstalledRow> for InstalledSkillView {
             versions: r.versions,
             share_blocked: r.share_blocked,
             section: r.section,
+            review: r.review,
         }
     }
+}
+
+/// 审核态(v7 任务 2)的唯一网络查询:一次请求取回**公司库**当前开放的合并请求。
+/// 内建源的读永远匿名(公开可读,gitea.rs 模块头);未配置内网(`SKILLSYNC_NO_INTRANET`
+/// 那一档)时直接报错,调用方按"查询失败"统一降级,不额外区分原因。
+///
+/// **只查公司库**:`Section` 的整套语义就是相对公司技能库的三区,这里没有必要
+/// (`installed_list` 每次都发一次请求的代价也不允许)按每个候选行各自的来源仓库
+/// 分别查询——`my_skills::shared_record_of` 已经把候选收窄到只认公司库的记录。
+async fn list_open_builtin_pulls() -> Result<Vec<crate::core::gitea::PullBrief>, AppError> {
+    let builtin = registry::BuiltinSource::from_build();
+    let (owner, repo) = builtin
+        .repo
+        .ok_or_else(|| AppError::new("NET_UNREACHABLE", "尚未配置公司技能库").with_detail("builtin repo unset"))?;
+    let base_url = builtin.base_url.ok_or_else(|| {
+        AppError::new("NET_UNREACHABLE", "尚未配置公司技能库地址").with_detail("builtin base_url unset")
+    })?;
+    let http = crate::core::gitea::app_http_client()?;
+    let client = GiteaClient::with_http(base_url, None, http);
+    client.list_open_pulls(owner, repo).await
 }
 
 /// 「我的技能」页的整行数据。**编排逻辑在 [`my_skills::build`]**(v6 任务 2 下沉,
 /// 理由见该模块头):这里只做"凑齐 I/O 依赖 → 调用 → 转成 IPC DTO"三步,
 /// 保持 command 是薄壳(`local_modified` 要逐文件读盘算 hash,技能一多就是一次
 /// 不小的 IO,挪到阻塞线程池、IPC 立即返还)。
+///
+/// v7 任务 2 在 `build` **之后**补一步:「可分享到」区里有走过评审的记录的行,
+/// 异步查一次公司库当前开放的合并请求,按分支名前缀把「审核中」标回去。
+/// **网络请求必须落在这里,不能进 `my_skills::build`**(那是同步、零网络的);
+/// 查询失败也**绝不让整张列表报错**——按本地证据降级,`my_skills::build` 的其余
+/// 行为原样不变。
 #[tauri::command]
 pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
-    tauri::async_runtime::spawn_blocking(|| {
+    let (mut rows, state) = tauri::async_runtime::spawn_blocking(|| {
         let store = app_store()?;
         let registry = AgentRegistry::builtin();
         let installer = app_installer(&registry);
@@ -1645,12 +1676,22 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
             &config,
             &state,
         )?;
-        Ok(rows.into_iter().map(InstalledSkillView::from).collect())
+        Ok::<_, AppError>((rows, state))
     })
     .await
-    .map_err(|e| {
-        AppError::new("FS_TASK", "读取已安装列表失败,请重试").with_detail(e.to_string())
-    })?
+    .map_err(|e| AppError::new("FS_TASK", "读取已安装列表失败,请重试").with_detail(e.to_string()))??;
+
+    if my_skills::has_review_candidates(&rows, &state) {
+        match list_open_builtin_pulls().await {
+            Ok(pulls) => my_skills::fill_review_from_pulls(&mut rows, &pulls),
+            Err(e) => {
+                tracing::debug!(code = %e.code, message = %e.message, "审核状态查询失败,按本地记录降级");
+                my_skills::fill_review_from_records(&mut rows, &state);
+            }
+        }
+    }
+
+    Ok(rows.into_iter().map(InstalledSkillView::from).collect())
 }
 
 /// 本地技能定位:已装技能给 `dirSlug`(core 自己解析 canonical 目录,前端不传路径);

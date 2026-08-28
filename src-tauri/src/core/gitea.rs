@@ -247,6 +247,42 @@ pub struct ForkResult {
     pub already_existed: bool,
 }
 
+/// 一个开放的合并请求(v7 任务 2「审核态」用)。
+///
+/// 只取解析用得上的三个字段,不 1:1 照搬 Gitea 的完整 PR 形状。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct PullBrief {
+    pub number: u64,
+    pub html_url: String,
+    /// 源分支名(不带 `owner:` 前缀——本模块的评审分支都开在目标库自己身上,
+    /// fork 提交才会是那种形状,而列表查询问的是目标库,`head.ref` 就是纯分支名)。
+    pub head_ref: String,
+}
+
+/// Gitea 响应的原始形状:`head` 嵌套着 `ref`(Rust 关键字,需要 `rename`)。
+/// 只在这个函数内部用,不对外暴露——外部只该看到扁平的 [`PullBrief`]。
+#[derive(Debug, Deserialize)]
+struct RawPull {
+    number: u64,
+    html_url: String,
+    head: RawPullHead,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPullHead {
+    #[serde(rename = "ref")]
+    git_ref: String,
+}
+
+/// 评审分支名的前缀,与 [`crate::core::share::review_branch`] 共用同一份实现
+/// (它内部就调用这个函数再拼时间戳)——两把尺子不能各自维护一份字面量,
+/// 一旦分支名的格式变了而这里没跟着变,「审核中」会永远匹配不上(见
+/// `tests/review_state.rs` 的同源断言)。
+pub fn review_branch_prefix(share_name: &str) -> String {
+    format!("skillsync/{share_name}-")
+}
+
 /// 压缩包里的一个文件。
 #[derive(Debug, Clone)]
 pub struct ArchiveEntry {
@@ -635,6 +671,30 @@ impl GiteaClient {
         Ok(())
     }
 
+    /// 目标库当前开放的合并请求(v7 任务 2「审核态」)。
+    ///
+    /// 一次请求取回全部,**不筛选**——筛选是调用方的事(按
+    /// [`review_branch_prefix`] 把 `head_ref` 匹配回具体的技能,这样连存量
+    /// 分享(那些从没落过 PR 坐标的)也认得出,不必依赖本地记账里的
+    /// `review_number`)。
+    pub async fn list_open_pulls(&self, owner: &str, repo: &str) -> Result<Vec<PullBrief>, AppError> {
+        let resp = self
+            .send(self.request(
+                reqwest::Method::GET,
+                format!("{}?state=open", self.api(&format!("/repos/{owner}/{repo}/pulls"))),
+            ))
+            .await?;
+        let raw: Vec<RawPull> = parse_json(resp).await?;
+        Ok(raw
+            .into_iter()
+            .map(|p| PullBrief {
+                number: p.number,
+                html_url: p.html_url,
+                head_ref: p.head.git_ref,
+            })
+            .collect())
+    }
+
     async fn http_send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response, AppError> {
         req.send().await.map_err(|e| {
             if is_unreachable(&e) {
@@ -823,6 +883,17 @@ pub fn unzip_archive(bytes: &[u8]) -> Result<RepoArchive, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 两把尺子必须同源:`review_branch_prefix`(这个文件)与
+    /// `share::review_branch`(实际生成分支名的地方)如果各自维护一份字面量,
+    /// 分支名格式一变、这里没跟着变,「审核中」就会永远匹配不上。
+    /// `review_branch` 内部就调用这个函数,所以这条断言在正确实现下是必然成立的
+    /// ——它守的是"将来别把两者拆开各写一份"这件事。
+    #[test]
+    fn the_prefix_matches_what_review_branch_actually_produces() {
+        let branch = crate::core::share::review_branch("weekly-report", "2026-08-28T10:00:00Z");
+        assert!(branch.starts_with(&review_branch_prefix("weekly-report")));
+    }
 
     #[test]
     fn same_origin_accepts_only_the_library_itself() {

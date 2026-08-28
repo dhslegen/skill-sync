@@ -962,6 +962,8 @@ async fn a_legacy_row_whose_name_differs_from_its_path_is_updated_in_place() {
         },
         last_pushed_sha: "oldcommit".into(),
         content_hash: "sha256:stale".into(),
+        review_url: None,
+        review_number: None,
     });
     c.store.save_state(&state).unwrap();
 

@@ -380,6 +380,16 @@ pub struct SharedSkill {
     /// 效果是"显示可再推"——宁可多推一次,也不把用户的改动藏起来。
     #[serde(default)]
     pub content_hash: String,
+    /// 上次分享走评审时开出的合并请求链接(v7 任务 2「审核态」)。`None` = 直推
+    /// 进了默认分支,或旧版 state 没有这个字段。**不是**审核态的匹配判据——
+    /// 匹配靠分支名前缀实时查(`core::my_skills::fill_review_from_pulls`),这两个
+    /// 字段只在网络查询失败时当本地兜底证据用,读旧文件不报错(见
+    /// `reads_a_pre_v7_state_json_without_the_review_fields`)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_url: Option<String>,
+    /// 同一份合并请求的编号,与 `review_url` 同一来源,一并可选。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_number: Option<u64>,
 }
 
 // ============================================================ 读写
@@ -727,6 +737,41 @@ mod tests {
             text.starts_with(&format!("{{\n  \"schemaVersion\": {SCHEMA_VERSION}")),
             "{text}"
         );
+    }
+
+    /// v7 任务 2 给 `SharedSkill` 加了 `reviewUrl`/`reviewNumber` 两个可选字段
+    /// (审核态)。旧文件没有它们,读的时候不能报错——`skip_serializing_if` +
+    /// `default` 补 `None`,不是升 schema。
+    #[test]
+    fn reads_a_pre_v7_state_json_without_the_review_fields() {
+        let (_tmp, s) = store();
+        std::fs::create_dir_all(s.dir()).unwrap();
+        let old = r#"{
+            "schemaVersion": 2,
+            "installed": [],
+            "shared": [{
+                "name": "weekly-report",
+                "localPath": "/h/.claude/skills/weekly-report",
+                "origin": "local",
+                "target": {
+                    "registryId": "company",
+                    "owner": "skills",
+                    "repo": "skills",
+                    "path": "skills/weekly-report",
+                    "ref": "main"
+                },
+                "lastPushedSha": "abc123",
+                "contentHash": "sha256:deadbeef"
+            }]
+        }"#;
+        std::fs::write(s.dir().join("state.json"), old).unwrap();
+
+        let loaded = s.load_state().unwrap();
+
+        assert_eq!(loaded.value.shared.len(), 1);
+        assert_eq!(loaded.value.shared[0].name, "weekly-report");
+        assert_eq!(loaded.value.shared[0].review_url, None);
+        assert_eq!(loaded.value.shared[0].review_number, None);
     }
 
     #[test]

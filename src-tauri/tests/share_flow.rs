@@ -213,6 +213,8 @@ fn the_shared_record_is_matched_by_path_not_by_string() {
         },
         last_pushed_sha: "abc".into(),
         content_hash: fsops::dir_content_hash(&dir).unwrap(),
+        review_url: None,
+        review_number: None,
     });
 
     let found = share::scan_candidates(&c.registry, &env, &state, &Default::default(), &Default::default()).unwrap();
@@ -351,6 +353,8 @@ fn previously_shared_skills_report_whether_local_changed_since() {
         },
         last_pushed_sha: "abc".into(),
         content_hash: fsops::dir_content_hash(&dir).unwrap(),
+        review_url: None,
+        review_number: None,
     });
 
     let found = share::scan_candidates(&c.registry, &env, &state, &Default::default(), &Default::default()).unwrap();
@@ -428,6 +432,8 @@ async fn precheck_mine_when_we_shared_it_before() {
         },
         last_pushed_sha: "abc".into(),
         content_hash: String::new(),
+        review_url: None,
+        review_number: None,
     });
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
@@ -1114,6 +1120,8 @@ async fn updating_a_skill_i_shared_before_uses_remote_shas() {
         },
         last_pushed_sha: "oldcommit".into(),
         content_hash: String::new(),
+        review_url: None,
+        review_number: None,
     });
     c.store.save_state(&state).unwrap();
 

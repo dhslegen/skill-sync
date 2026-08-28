@@ -259,6 +259,8 @@ fn shared_record_pointing_at(ctx: &Ctx, slug: &str) -> SharedSkill {
         },
         last_pushed_sha: "abc".into(),
         content_hash: "hash".into(),
+        review_url: None,
+        review_number: None,
     }
 }
 

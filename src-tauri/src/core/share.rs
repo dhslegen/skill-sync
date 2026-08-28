@@ -561,6 +561,10 @@ pub async fn share(
         },
         last_pushed_sha: submitted.commit_sha.clone(),
         content_hash: fsops::dir_content_hash(&body)?,
+        // v7 任务 2「审核态」:直推时两者恒 `None`(submitted.review_* 本就是 None);
+        // 走评审时原样带上,「可分享到」区据此在合并前隐藏分享按钮。
+        review_url: submitted.review_url.clone(),
+        review_number: submitted.review_number,
     };
     let content_hash = entry.content_hash.clone();
     // 🔴 **钥匙是本体路径,不是远端名**:CLAUDE.md 记着 `state.shared` 读写双键
@@ -789,6 +793,11 @@ pub struct Submitted {
     pub mode: ShareMode,
     pub commit_sha: String,
     pub review_url: Option<String>,
+    /// 走评审时开出的合并请求编号(v7 任务 2)。**只有 Gitea 才有**——GitHub 的
+    /// `PullView` 没有这个字段(`github.rs` 模块头),那两处构造点恒 `None`。
+    /// 审核态的匹配判据是分支名前缀(见 `gitea::review_branch_prefix`),不是这个
+    /// 编号——它只是锦上添花,给详情面板将来想直接展示编号时用。
+    pub review_number: Option<u64>,
 }
 
 /// 按来源类型分发提交。`fresh` = 远端还没有该技能(Gitea 路径可跳过拉取 blob sha);
@@ -1272,6 +1281,7 @@ async fn submit_gitea(
                         mode: ShareMode::Pushed,
                         commit_sha: commit.sha,
                         review_url: None,
+                        review_number: None,
                     })
                 }
                 // 403 = 默认分支受保护(只读在上面已分流)。降级开分支走评审。
@@ -1293,6 +1303,7 @@ async fn submit_gitea(
             mode: ShareMode::ReviewRequested,
             commit_sha: commit.sha,
             review_url: Some(pull.html_url),
+            review_number: Some(pull.number),
         });
     }
 
@@ -1329,6 +1340,7 @@ async fn submit_gitea(
         mode: ShareMode::ReviewRequested,
         commit_sha: commit.sha,
         review_url: Some(pull.html_url),
+        review_number: Some(pull.number),
     })
 }
 
@@ -1365,6 +1377,7 @@ async fn submit_github(
                         mode: ShareMode::Pushed,
                         commit_sha: oid,
                         review_url: None,
+                        review_number: None,
                     })
                 }
                 Err(e) if e.code == "REPO_PROTECTED" => {}
@@ -1385,6 +1398,9 @@ async fn submit_github(
             mode: ShareMode::ReviewRequested,
             commit_sha: oid,
             review_url: Some(pull.html_url),
+            // GitHub 的 `PullView` 没有 `number` 字段(github.rs 模块头)——
+            // 审核态匹配靠分支名前缀,不依赖这个编号,GitHub 侧恒 `None` 无害。
+            review_number: None,
         });
     }
 
@@ -1423,13 +1439,19 @@ async fn submit_github(
         mode: ShareMode::ReviewRequested,
         commit_sha: oid,
         review_url: Some(pull.html_url),
+        review_number: None,
     })
 }
 
 /// 评审分支名。从 `now` 派生而非取系统时间:核心不摸时钟,测试才能钉住它。
-fn review_branch(share_name: &str, now: &str) -> String {
+///
+/// 前缀部分委托给 [`crate::core::gitea::review_branch_prefix`]——v7 任务 2
+/// 的「审核态」判定要靠**同一把尺子**把开放的合并请求按分支名前缀匹配回技能,
+/// 两处各写一份字面量迟早会漂。`pub(crate)` 是因为 `my_skills`/`gitea` 侧的
+/// 同源测试要调用它。
+pub(crate) fn review_branch(share_name: &str, now: &str) -> String {
     let stamp: String = now.chars().filter(|c| c.is_ascii_digit()).collect();
-    format!("skillsync/{share_name}-{stamp}")
+    format!("{}{stamp}", crate::core::gitea::review_branch_prefix(share_name))
 }
 
 /// 把本地目录读成 `(远端路径, 字节)` 清单。来源无关:Gitea 侧再按远端 blob sha

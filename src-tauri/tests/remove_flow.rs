@@ -335,6 +335,8 @@ fn remove_trashes_the_body_unlinks_every_tool_and_the_canonical_link() {
         },
         last_pushed_sha: "aaa1111".into(),
         content_hash: fsops::dir_content_hash(&body).unwrap(),
+        review_url: None,
+        review_number: None,
     });
     c.store.save_state(&state).unwrap();
 
@@ -543,6 +545,8 @@ fn removing_also_clears_the_shared_baseline_it_leaves_behind() {
             },
             last_pushed_sha: "aaa1111".into(),
             content_hash: "hash".into(),
+            review_url: None,
+            review_number: None,
         });
     }
     c.store.save_state(&state).unwrap();

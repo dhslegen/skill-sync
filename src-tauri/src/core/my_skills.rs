@@ -55,7 +55,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::core::agents::{AgentEnv, AgentRegistry};
-use crate::core::gitea::RepoRef;
+use crate::core::gitea::{self, RepoRef};
 use crate::core::converge;
 use crate::core::fsops;
 use crate::core::installer::{self, Installer};
@@ -94,6 +94,18 @@ pub enum ToolState {
 pub struct ToolView {
     pub agent: String,
     pub state: ToolState,
+}
+
+/// 「可分享到」区的审核态(v7 任务 2)。有它就是"审核中"——界面据此隐藏「分享」
+/// 按钮,避免用户重复提交;查不到(从没分享过,或这次网络查询失败又没有本地
+/// 兜底证据)就是 `None`,与"可以分享"是同一档。
+///
+/// **只在 `commands::installed_list` 里由异步查询补上**——`build` 本身零网络,
+/// 这里产出的每一行恒为 `None`,别在这个模块里猜。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewView {
+    pub url: String,
 }
 
 /// 「我的技能」一行——`commands::InstalledSkillView` 的核心数据,字段一一对应
@@ -149,6 +161,9 @@ pub struct InstalledRow {
     /// 「我的技能」页按公司技能库分的三区(v7),`ownership::section(relation)`
     /// 的**唯一**填法,不在这里另写一遍映射。
     pub section: ownership::Section,
+    /// 「可分享到」区的审核态(v7 任务 2)。`build` 里恒 `None`——由
+    /// `commands::installed_list` 在 `build` 之后异步补查,见 [`ReviewView`]。
+    pub review: Option<ReviewView>,
 }
 
 /// 算出「这个技能在各个工具里的启用态」。
@@ -615,6 +630,7 @@ pub fn build(
             versions: versions_for(&home.body, literal_group(&all, &home.dir_name, &body_literal)),
             share_blocked: skills::validate_skill_dir(&home.body).err(),
             section: ownership::section(relation),
+            review: None,
         });
     }
 
@@ -696,6 +712,7 @@ pub fn build(
             versions: Vec::new(),
             share_blocked: None,
             section: ownership::section(relation),
+            review: None,
         });
     }
 
@@ -867,6 +884,73 @@ fn unmanaged_row(
         share_blocked: skills::validate_skill_dir(&body).err(),
         body: body.to_string_lossy().into_owned(),
         section: ownership::section(relation),
+        review: None,
+    }
+}
+
+// ============================================================ 审核态(v7 任务 2)
+//
+// `build` 本身零网络(见模块头「网络请求必须落在异步的 commands::installed_list」
+// 那条全局约束)——这里只放**纯函数**:候选行怎么找、拿到网络结果怎么填、
+// 网络查询失败时怎么按本地证据降级。真正发请求的地方在 `commands.rs`。
+
+/// 一行「可分享到」的候选,是否挂着一条走过评审的 `state.shared` 记录。
+///
+/// 两把闸都要过:
+/// - **只认公司库**(`target.registry_id == BUILTIN_REGISTRY_ID`):`Section` 的整套
+///   语义就是"相对公司技能库"的三区,一条分享去了别的源(自定义 Gitea / 广场)的
+///   记录与"能不能分享到公司库"这件事无关,拿它填「审核中」是在说一句不相干的假话。
+/// - **按 `Path` 比本体路径,不按字符串比**(项目既有教训,`share::share` 写这本账
+///   时就是这么找的——两侧必须用同一把尺子,否则大小写、尾随分隔符这类字符串层面的
+///   差异会让"明明记了账却怎么也查不到"重演一次)。
+fn shared_record_of<'a>(state: &'a state::State, body: &str) -> Option<&'a state::SharedSkill> {
+    if body.is_empty() {
+        return None;
+    }
+    let target = Path::new(body);
+    state
+        .shared
+        .iter()
+        .find(|s| s.target.registry_id == registry::BUILTIN_REGISTRY_ID && Path::new(&s.local_path) == target)
+}
+
+/// 这份列表里有没有值得为「审核态」发一次网络请求的行——一次请求覆盖全部候选,
+/// 零候选就不发(`commands::installed_list` 据此决定要不要打这次请求)。
+pub fn has_review_candidates(rows: &[InstalledRow], state: &state::State) -> bool {
+    rows.iter()
+        .any(|r| r.section == ownership::Section::Shareable && shared_record_of(state, &r.body).is_some())
+}
+
+/// 网络查询成功:把开放的合并请求按分支名前缀(`gitea::review_branch_prefix`)
+/// 匹配回各行。**不依赖候选行本地是否记着 `review_url`**——这样连存量分享
+/// (那些从没落过 PR 坐标的旧记录)也认得出,匹配的唯一判据是分支名。
+pub fn fill_review_from_pulls(rows: &mut [InstalledRow], pulls: &[gitea::PullBrief]) {
+    for row in rows.iter_mut() {
+        if row.section != ownership::Section::Shareable {
+            continue;
+        }
+        let prefix = gitea::review_branch_prefix(&row.dir_slug);
+        if let Some(p) = pulls.iter().find(|p| p.head_ref.starts_with(&prefix)) {
+            row.review = Some(ReviewView { url: p.html_url.clone() });
+        }
+    }
+}
+
+/// 网络查询失败时的降级(全局约束 3:绝不让整张列表报错)。判据只剩本地证据:
+/// 这一行是「可分享到」且挂着一条 `state.shared` 记录——那条记录**存在本身**
+/// 就是"曾经提交过、而这个技能眼下仍不在公司库索引里"的信号,唯一站得住脚的
+/// 解释就是"还在评审中"(真被合并的话,`in_builtin_library` 早把它挪出这一区了)。
+/// 拿不到真实 PR 状态,这是能给出的、诚实的最佳猜测。
+pub fn fill_review_from_records(rows: &mut [InstalledRow], state: &state::State) {
+    for row in rows.iter_mut() {
+        if row.section != ownership::Section::Shareable {
+            continue;
+        }
+        if let Some(shared) = shared_record_of(state, &row.body) {
+            row.review = Some(ReviewView {
+                url: shared.review_url.clone().unwrap_or_default(),
+            });
+        }
     }
 }
 
