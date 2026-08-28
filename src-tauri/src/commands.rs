@@ -1628,22 +1628,33 @@ impl From<my_skills::InstalledRow> for InstalledSkillView {
     }
 }
 
-/// 审核态(v7 任务 2)的唯一网络查询:一次请求取回**公司库**当前开放的合并请求。
-/// 内建源的读永远匿名(公开可读,gitea.rs 模块头);未配置内网(`SKILLSYNC_NO_INTRANET`
-/// 那一档)时直接报错,调用方按"查询失败"统一降级,不额外区分原因。
+/// 审核态(v7 任务 2)查询的超时:这次查询按设计只是锦上添花(查不到就是
+/// "可以分享"),而 `installed_list` 会被 `useLocalRefresh` 在窗口重获焦点/
+/// 切页/文件变更三处触发。用户不在内网(或撞上黑洞网关)时不能让整页数据
+/// 一直挂在一次无超时的请求上——`gitea::app_http_client()`/`app_http_client_proxied()`
+/// 默认无超时(修复轮 1 I1),这里改用专给这次查询准备的
+/// `app_http_client_with_timeout`,不影响其余调用方。
+const REVIEW_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 审核态(v7 任务 2)的唯一网络查询:一次请求取回**公司库主仓**当前开放的
+/// 合并请求。内建源的读永远匿名(公开可读,gitea.rs 模块头);未配置内网
+/// (`SKILLSYNC_NO_INTRANET` 那一档)时直接报错,调用方按"查询失败"统一降级,
+/// 不额外区分原因。
 ///
-/// **只查公司库**:`Section` 的整套语义就是相对公司技能库的三区,这里没有必要
-/// (`installed_list` 每次都发一次请求的代价也不允许)按每个候选行各自的来源仓库
-/// 分别查询——`my_skills::shared_record_of` 已经把候选收窄到只认公司库的记录。
-async fn list_open_builtin_pulls() -> Result<Vec<crate::core::gitea::PullBrief>, AppError> {
-    let builtin = registry::BuiltinSource::from_build();
+/// **只查公司库主仓**:`Section` 的整套语义就是相对公司技能库的三区,这里没有
+/// 必要(`installed_list` 每次都发一次请求的代价也不允许)按每个候选行各自的
+/// 来源仓库分别查询——`my_skills::shared_record_of` 已经把候选收窄到只认
+/// **公司库主仓**(`registry_id` 与 `owner/repo` 都要对得上)的记录,追加仓
+/// (`config.builtinExtraRepos`)下的分享因此不会被误标(会漏标,这是已知边界,
+/// 不是缺陷——宁可漏报不误报)。
+async fn list_open_builtin_pulls(builtin: &registry::BuiltinSource) -> Result<Vec<crate::core::gitea::PullBrief>, AppError> {
     let (owner, repo) = builtin
         .repo
         .ok_or_else(|| AppError::new("NET_UNREACHABLE", "尚未配置公司技能库").with_detail("builtin repo unset"))?;
     let base_url = builtin.base_url.ok_or_else(|| {
         AppError::new("NET_UNREACHABLE", "尚未配置公司技能库地址").with_detail("builtin base_url unset")
     })?;
-    let http = crate::core::gitea::app_http_client()?;
+    let http = crate::core::gitea::app_http_client_with_timeout(REVIEW_QUERY_TIMEOUT)?;
     let client = GiteaClient::with_http(base_url, None, http);
     client.list_open_pulls(owner, repo).await
 }
@@ -1656,8 +1667,8 @@ async fn list_open_builtin_pulls() -> Result<Vec<crate::core::gitea::PullBrief>,
 /// v7 任务 2 在 `build` **之后**补一步:「可分享到」区里有走过评审的记录的行,
 /// 异步查一次公司库当前开放的合并请求,按分支名前缀把「审核中」标回去。
 /// **网络请求必须落在这里,不能进 `my_skills::build`**(那是同步、零网络的);
-/// 查询失败也**绝不让整张列表报错**——按本地证据降级,`my_skills::build` 的其余
-/// 行为原样不变。
+/// 成功/失败怎么填由 `my_skills::apply_review` 统一分派(修复轮 1 M2)——
+/// 这里只负责发请求、把 `Result` 交出去,自己不带任何分支。
 #[tauri::command]
 pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
     let (mut rows, state) = tauri::async_runtime::spawn_blocking(|| {
@@ -1681,14 +1692,10 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
     .await
     .map_err(|e| AppError::new("FS_TASK", "读取已安装列表失败,请重试").with_detail(e.to_string()))??;
 
-    if my_skills::has_review_candidates(&rows, &state) {
-        match list_open_builtin_pulls().await {
-            Ok(pulls) => my_skills::fill_review_from_pulls(&mut rows, &pulls),
-            Err(e) => {
-                tracing::debug!(code = %e.code, message = %e.message, "审核状态查询失败,按本地记录降级");
-                my_skills::fill_review_from_records(&mut rows, &state);
-            }
-        }
+    let builtin = registry::BuiltinSource::from_build();
+    if my_skills::has_review_candidates(&rows, &state, builtin.repo) {
+        let result = list_open_builtin_pulls(&builtin).await;
+        my_skills::apply_review(&mut rows, &state, builtin.repo, result);
     }
 
     Ok(rows.into_iter().map(InstalledSkillView::from).collect())

@@ -45,20 +45,34 @@ use crate::error::AppError;
 /// 所有对技能库的请求都应从这里或 [`app_http_client_proxied`] 构造 client,
 /// 别在各处散落 `Client::builder()`——那会让代理策略悄悄回到 reqwest 默认值。
 pub fn app_http_client() -> Result<reqwest::Client, AppError> {
-    build_client(true)
+    build_client(true, None)
 }
 
 /// 外部源(自定义 Gitea / GitHub)的 HTTP client:带同一 UA、**跟随系统代理**。
 /// 公司代理网络下外网只有经代理才通(M3 任务 3,模块头有完整理由)。
 pub fn app_http_client_proxied() -> Result<reqwest::Client, AppError> {
-    build_client(false)
+    build_client(false, None)
 }
 
-fn build_client(no_proxy: bool) -> Result<reqwest::Client, AppError> {
+/// 内建源的 HTTP client,带一个**短超时**——只给"查不到就当没有"的锦上添花式
+/// 查询用(v7 任务 2「审核态」):`installed_list` 会被 `useLocalRefresh` 在窗口
+/// 重获焦点/切页/文件变更三处触发,而这次查询失败本就有既定的降级路。不给超时
+/// 的话,用户不在内网(或撞上黑洞网关)时整页数据会挂在一次无超时的请求上
+/// ——这是本任务新引入的暴露面,`app_http_client()`/`app_http_client_proxied()`
+/// 两个既有函数的默认无超时行为**不受影响**(`build_client` 的 `timeout` 参数
+/// 缺省给 `None`)。
+pub fn app_http_client_with_timeout(timeout: std::time::Duration) -> Result<reqwest::Client, AppError> {
+    build_client(true, Some(timeout))
+}
+
+fn build_client(no_proxy: bool, timeout: Option<std::time::Duration>) -> Result<reqwest::Client, AppError> {
     let mut builder =
         reqwest::Client::builder().user_agent(concat!("SkillSync/", env!("CARGO_PKG_VERSION")));
     if no_proxy {
         builder = builder.no_proxy();
+    }
+    if let Some(t) = timeout {
+        builder = builder.timeout(t);
     }
     builder.build().map_err(|e| {
         AppError::new("NET_CLIENT_INIT", "网络组件初始化失败,请重启应用")
@@ -250,7 +264,7 @@ pub struct ForkResult {
 /// 一个开放的合并请求(v7 任务 2「审核态」用)。
 ///
 /// 只取解析用得上的三个字段,不 1:1 照搬 Gitea 的完整 PR 形状。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all(serialize = "camelCase"))]
 pub struct PullBrief {
     pub number: u64,
@@ -673,26 +687,40 @@ impl GiteaClient {
 
     /// 目标库当前开放的合并请求(v7 任务 2「审核态」)。
     ///
-    /// 一次请求取回全部,**不筛选**——筛选是调用方的事(按
-    /// [`review_branch_prefix`] 把 `head_ref` 匹配回具体的技能,这样连存量
-    /// 分享(那些从没落过 PR 坐标的)也认得出,不必依赖本地记账里的
-    /// `review_number`)。
+    /// **翻页到空**,不赌"开放 PR 数永远小于某个默认页大小"——躺久的审核请求
+    /// 掉出第一页会静默截断,表现是「审核中」凭空消失、分享按钮回来、用户重复
+    /// 提交,恰是这整个功能存在的理由。每页 `PULLS_PAGE_SIZE` 条,拿到的条数
+    /// 少于这个数就说明到底了;显式给出页大小而不依赖服务端默认值(Gitea 的
+    /// `[api] MAX_RESPONSE_ITEMS` 默认 50,不同部署可能改过)。
+    ///
+    /// **不筛选**——筛选是调用方的事(按 [`review_branch_prefix`] 把 `head_ref`
+    /// 匹配回具体的技能,这样连存量分享(那些从没落过 PR 坐标的)也认得出,
+    /// 不必依赖本地记账里的 `review_number`)。
     pub async fn list_open_pulls(&self, owner: &str, repo: &str) -> Result<Vec<PullBrief>, AppError> {
-        let resp = self
-            .send(self.request(
-                reqwest::Method::GET,
-                format!("{}?state=open", self.api(&format!("/repos/{owner}/{repo}/pulls"))),
-            ))
-            .await?;
-        let raw: Vec<RawPull> = parse_json(resp).await?;
-        Ok(raw
-            .into_iter()
-            .map(|p| PullBrief {
+        const PULLS_PAGE_SIZE: u32 = 50;
+        let base = self.api(&format!("/repos/{owner}/{repo}/pulls"));
+        let mut out = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let resp = self
+                .send(self.request(
+                    reqwest::Method::GET,
+                    format!("{base}?state=open&limit={PULLS_PAGE_SIZE}&page={page}"),
+                ))
+                .await?;
+            let raw: Vec<RawPull> = parse_json(resp).await?;
+            let got = raw.len();
+            out.extend(raw.into_iter().map(|p| PullBrief {
                 number: p.number,
                 html_url: p.html_url,
                 head_ref: p.head.git_ref,
-            })
-            .collect())
+            }));
+            if got < PULLS_PAGE_SIZE as usize {
+                break;
+            }
+            page += 1;
+        }
+        Ok(out)
     }
 
     async fn http_send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response, AppError> {

@@ -96,16 +96,24 @@ pub struct ToolView {
     pub state: ToolState,
 }
 
-/// 「可分享到」区的审核态(v7 任务 2)。有它就是"审核中"——界面据此隐藏「分享」
-/// 按钮,避免用户重复提交;查不到(从没分享过,或这次网络查询失败又没有本地
-/// 兜底证据)就是 `None`,与"可以分享"是同一档。
+/// 「可分享到」区的审核态(v7 任务 2)。`InstalledRow.review == Some(_)` 就是
+/// "审核中"——界面据此隐藏「分享」按钮,避免用户重复提交;`None`(从没分享过,
+/// 或这次网络查询失败又没有本地兜底证据)与"可以分享"是同一档。
+///
+/// 🔴 **`url` 本身是 `Option`,修复轮 1 拍板**:`state.shared[].review_url` 缺席
+/// 有两类原因——直推进 main 的记录、以及 v7 之前的存量记录,两者都**没有** PR
+/// 链接可给,但记录本身仍然成立"这一行大概率还在等公司库合并"这件事(候选闸
+/// `shared_record_of` 已经把"库里已经有了"的行排除在外)。把这一档做成
+/// `Some(ReviewView{url:None})`(审核中,但没有链接可给),而不是用空串冒充链接
+/// ——那会让前端把一个假 URL 当真链接渲染出去。前端(任务 3/4)按 `null` 判断
+/// 要不要显示可点的「查看审核」。
 ///
 /// **只在 `commands::installed_list` 里由异步查询补上**——`build` 本身零网络,
 /// 这里产出的每一行恒为 `None`,别在这个模块里猜。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewView {
-    pub url: String,
+    pub url: Option<String>,
 }
 
 /// 「我的技能」一行——`commands::InstalledSkillView` 的核心数据,字段一一对应
@@ -892,64 +900,115 @@ fn unmanaged_row(
 //
 // `build` 本身零网络(见模块头「网络请求必须落在异步的 commands::installed_list」
 // 那条全局约束)——这里只放**纯函数**:候选行怎么找、拿到网络结果怎么填、
-// 网络查询失败时怎么按本地证据降级。真正发请求的地方在 `commands.rs`。
+// 网络查询失败时怎么按本地证据降级。真正发请求的地方在 `commands.rs`,它只做
+// 两件事:发请求、把 `Result` 转交给 `apply_review`——分派本身也是纯函数,
+// 不留在 `commands.rs` 里没人测得到(修复轮 1 M2)。
+
+/// 公司库主仓坐标,`registry::BuiltinSource::from_build().repo` 的形状。
+/// 未配置内网(`SKILLSYNC_NO_INTRANET`)时是 `None`。
+pub type BuiltinRepo<'a> = Option<(&'a str, &'a str)>;
 
 /// 一行「可分享到」的候选,是否挂着一条走过评审的 `state.shared` 记录。
 ///
-/// 两把闸都要过:
-/// - **只认公司库**(`target.registry_id == BUILTIN_REGISTRY_ID`):`Section` 的整套
-///   语义就是"相对公司技能库"的三区,一条分享去了别的源(自定义 Gitea / 广场)的
-///   记录与"能不能分享到公司库"这件事无关,拿它填「审核中」是在说一句不相干的假话。
+/// 三把闸都要过:
+/// - **只认公司库**(`target.registry_id == BUILTIN_REGISTRY_ID` **且**
+///   `(target.owner, target.repo) == builtin_repo`):`Section` 的整套语义就是
+///   "相对公司技能库"的三区。只比 `registry_id` 不够——`config.builtinExtraRepos`
+///   下的追加仓 `registry_id` 同样是内建源的 id,只有 `owner/repo` 不同,那样的
+///   记录与"能不能分享到公司库**主仓**"这件事无关(修复轮 1 I2)。`builtin_repo`
+///   为 `None`(未配置内网)时无法确认任何记录指向"主仓",一律不算候选——
+///   宁可漏报,不误报。
 /// - **按 `Path` 比本体路径,不按字符串比**(项目既有教训,`share::share` 写这本账
 ///   时就是这么找的——两侧必须用同一把尺子,否则大小写、尾随分隔符这类字符串层面的
 ///   差异会让"明明记了账却怎么也查不到"重演一次)。
-fn shared_record_of<'a>(state: &'a state::State, body: &str) -> Option<&'a state::SharedSkill> {
+fn shared_record_of<'a>(
+    state: &'a state::State,
+    body: &str,
+    builtin_repo: BuiltinRepo<'_>,
+) -> Option<&'a state::SharedSkill> {
     if body.is_empty() {
         return None;
     }
     let target = Path::new(body);
-    state
-        .shared
-        .iter()
-        .find(|s| s.target.registry_id == registry::BUILTIN_REGISTRY_ID && Path::new(&s.local_path) == target)
+    state.shared.iter().find(|s| {
+        s.target.registry_id == registry::BUILTIN_REGISTRY_ID
+            && Some((s.target.owner.as_str(), s.target.repo.as_str())) == builtin_repo
+            && Path::new(&s.local_path) == target
+    })
 }
 
 /// 这份列表里有没有值得为「审核态」发一次网络请求的行——一次请求覆盖全部候选,
 /// 零候选就不发(`commands::installed_list` 据此决定要不要打这次请求)。
-pub fn has_review_candidates(rows: &[InstalledRow], state: &state::State) -> bool {
+pub fn has_review_candidates(rows: &[InstalledRow], state: &state::State, builtin_repo: BuiltinRepo<'_>) -> bool {
     rows.iter()
-        .any(|r| r.section == ownership::Section::Shareable && shared_record_of(state, &r.body).is_some())
+        .any(|r| r.section == ownership::Section::Shareable && shared_record_of(state, &r.body, builtin_repo).is_some())
 }
 
-/// 网络查询成功:把开放的合并请求按分支名前缀(`gitea::review_branch_prefix`)
-/// 匹配回各行。**不依赖候选行本地是否记着 `review_url`**——这样连存量分享
-/// (那些从没落过 PR 坐标的旧记录)也认得出,匹配的唯一判据是分支名。
-pub fn fill_review_from_pulls(rows: &mut [InstalledRow], pulls: &[gitea::PullBrief]) {
-    for row in rows.iter_mut() {
-        if row.section != ownership::Section::Shareable {
-            continue;
-        }
-        let prefix = gitea::review_branch_prefix(&row.dir_slug);
-        if let Some(p) = pulls.iter().find(|p| p.head_ref.starts_with(&prefix)) {
-            row.review = Some(ReviewView { url: p.html_url.clone() });
+/// 网络查询成功或失败之后**唯一**的分派点:成功按分支名匹配,失败按本地证据
+/// 降级(全局约束 3:绝不让整张列表报错)。下沉成纯函数是因为 `commands.rs`
+/// 里那一层 `match` 本身没有任何测试能碰到它(`commands::installed_list` 依赖
+/// 真实 `HOME`,这个项目一贯不直接单测这类薄壳)——分派逻辑本身则可以脱离网络、
+/// 直接喂一个 `Result` 进来单测,详见 `tests/review_state.rs`。
+pub fn apply_review(
+    rows: &mut [InstalledRow],
+    state: &state::State,
+    builtin_repo: BuiltinRepo<'_>,
+    result: Result<Vec<gitea::PullBrief>, AppError>,
+) {
+    match result {
+        Ok(pulls) => fill_review_from_pulls(rows, state, builtin_repo, &pulls),
+        Err(e) => {
+            tracing::debug!(code = %e.code, message = %e.message, "审核状态查询失败,按本地记录降级");
+            fill_review_from_records(rows, state, builtin_repo);
         }
     }
 }
 
-/// 网络查询失败时的降级(全局约束 3:绝不让整张列表报错)。判据只剩本地证据:
-/// 这一行是「可分享到」且挂着一条 `state.shared` 记录——那条记录**存在本身**
-/// 就是"曾经提交过、而这个技能眼下仍不在公司库索引里"的信号,唯一站得住脚的
-/// 解释就是"还在评审中"(真被合并的话,`in_builtin_library` 早把它挪出这一区了)。
-/// 拿不到真实 PR 状态,这是能给出的、诚实的最佳猜测。
-pub fn fill_review_from_records(rows: &mut [InstalledRow], state: &state::State) {
-    for row in rows.iter_mut() {
-        if row.section != ownership::Section::Shareable {
+/// 网络查询成功:把开放的合并请求按分支名前缀(`gitea::review_branch_prefix`)
+/// 匹配回各行。
+///
+/// 🔴 **候选闸与 `has_review_candidates`/`fill_review_from_records` 必须是
+/// 同一把 `shared_record_of`**(修复轮 1 C1):此前这里对每一个 `Shareable` 行
+/// 都无条件参与匹配,后果有三层——①**误报成死路**:同事正在审核
+/// `weekly-report`,我本地有个同名草稿从没分享过,只要另有候选让这次请求发出去,
+/// 我这一行就被误标「审核中」、分享按钮消失,而我明明可以分享,一直堵到别人的
+/// PR 合并;②成功/失败两条路的候选集不一致,同一行的标记随网络状态翻转;
+/// ③**尺子也漂移**:改用 `state.shared[].name`(下面这行的 `rec.name`)而不是
+/// `row.dir_slug`——后者对带外源记账的行(`InstalledRow::dir_slug` 优先取
+/// `library_dir_slug()`,即技能库/来源仓的目录名)可能与本体的字面叶子名不同,
+/// 而分支名从来是 `share()` 按**本体叶子名**(`state.shared[].name` 记的正是
+/// 这同一个值)开的,拿错键匹配必然恒 miss。存量分享(那些从没落过 PR 坐标的
+/// 旧记录)一样认得出——匹配的判据是分支名,不依赖本地记着的 `review_number`。
+pub fn fill_review_from_pulls(
+    rows: &mut [InstalledRow],
+    state: &state::State,
+    builtin_repo: BuiltinRepo<'_>,
+    pulls: &[gitea::PullBrief],
+) {
+    for row in rows.iter_mut().filter(|r| r.section == ownership::Section::Shareable) {
+        let Some(rec) = shared_record_of(state, &row.body, builtin_repo) else {
             continue;
+        };
+        let prefix = gitea::review_branch_prefix(&rec.name);
+        if let Some(p) = pulls.iter().find(|p| p.head_ref.starts_with(&prefix)) {
+            row.review = Some(ReviewView { url: Some(p.html_url.clone()) });
         }
-        if let Some(shared) = shared_record_of(state, &row.body) {
-            row.review = Some(ReviewView {
-                url: shared.review_url.clone().unwrap_or_default(),
-            });
+    }
+}
+
+/// 网络查询失败时的降级。判据只剩本地证据:这一行是「可分享到」且挂着一条
+/// (指向公司库主仓的)`state.shared` 记录——那条记录**存在本身**就是"曾经
+/// 提交过、而这个技能眼下仍不在公司库索引里"的信号,唯一站得住脚的解释就是
+/// "还在评审中"(真被合并的话,`in_builtin_library` 早把它挪出这一区了)。
+/// 拿不到真实 PR 状态,这是能给出的、诚实的最佳猜测。
+///
+/// `ReviewView.url` 原样传 `shared.review_url`(`Option<String>`,不再
+/// `unwrap_or_default()`):记录存在但没有 `review_url`(直推留下的记录、或
+/// v7 之前的存量)时,给的是"审核中但没有链接可给"而不是拿空串冒充一个链接。
+pub fn fill_review_from_records(rows: &mut [InstalledRow], state: &state::State, builtin_repo: BuiltinRepo<'_>) {
+    for row in rows.iter_mut().filter(|r| r.section == ownership::Section::Shareable) {
+        if let Some(shared) = shared_record_of(state, &row.body, builtin_repo) {
+            row.review = Some(ReviewView { url: shared.review_url.clone() });
         }
     }
 }
