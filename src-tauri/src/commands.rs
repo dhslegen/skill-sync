@@ -2893,10 +2893,6 @@ pub struct ProjectUpdateArgs {
     pub registry_id: Option<String>,
     pub repo: Option<String>,
     pub dir_slug: String,
-    /// ⚠️ **已不再驱动建链目标**(v7 任务 3 起,见 `project_skill_update` 的模块头):
-    /// 现在改走 `project::current_agents` 从磁盘反推。字段保留只是不破坏现有 IPC
-    /// 调用形状(前端界面改选由任务 8 接手),command 内部不读它。
-    pub agent_ids: Vec<String>,
     /// 用户已确认"丢弃我改的内容"。本体被改过且没带这个标记时返回 `hasLocalEdits`。
     #[serde(default)]
     pub discard_local_edits: bool,
@@ -2916,14 +2912,24 @@ pub enum ProjectUpdateOutcome {
 ///
 /// 先判本体有没有被用户改过——改过且未确认就停下,磁盘零写入。
 ///
-/// 🔴 **建链目标不用 `args.agent_ids`,改用 [`project::current_agents`] 从磁盘反推**
-/// (v7 任务 3 修复):此前这里直接转发前端传来的 `agent_ids`,而前端(`ProjectSections.tsx`)
-/// 填它的办法是现场调 `agentsDetected()` + `defaultSelectedAgents`——本机这一刻装了什么、
-/// 禁用了什么,与"这个技能当初装到了哪些工具里"毫无关系。后果是「更新」会把关联悄悄
-/// 改写成一套探测出来的默认值:本来只关联了 claude-code 的技能,若这台机器上还装着
+/// 🔴 **建链目标不用请求里的 `agent_ids`,改用 [`project::current_agents`] 从磁盘反推**
+/// (v7 任务 3 修复,复审 I1/I5 修复轮 1 收尾):此前 `ProjectUpdateArgs` 带一个
+/// `agent_ids` 字段并直接转发,而前端(`ProjectSections.tsx`)填它的办法是现场调
+/// `agentsDetected()` + `defaultSelectedAgents`——本机这一刻装了什么、禁用了什么,
+/// 与"这个技能当初装到了哪些工具里"毫无关系。后果是「更新」会把关联悄悄改写成
+/// 一套探测出来的默认值:本来只关联了 claude-code 的技能,若这台机器上还装着
 /// Cursor,点一次更新就会多出一个从未选过的关联;反过来,当初关联的工具如果这次没被
 /// 探测到,更新后关联会被摘掉。「更新」问的是"远端有没有新内容",不该顺带改写
 /// "这个技能在哪些工具里生效"这件事——那是 `project_skill_set_agents` 该管的。
+/// `agent_ids` 字段本身已从 `ProjectUpdateArgs` 删除(不是保留不读):`serde` 对
+/// 未知字段默认忽略、这个 struct 没有 `deny_unknown_fields`,尚未同步的前端继续
+/// 发送 `agentIds` 不会报错,只是那个键从此没有后端在乎——`ipc.ts`/`project.ts`
+/// 那侧的清理留给任务 8。
+///
+/// 文本级守卫见 `tests/project_update_agent_wiring.rs`(函数体必须调用
+/// `project::current_agents(`,且不出现 `args.agent_ids`)——这条接线本身没有
+/// 任何测试经过它:三条 `set_agents` 测试都不走这条 command,前端测试 mock 了
+/// invoke,复审曾把接线改回 `args.agent_ids` 而全仓测试照绿。
 #[tauri::command]
 pub async fn project_skill_update(
     args: ProjectUpdateArgs,

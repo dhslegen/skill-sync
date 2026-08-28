@@ -434,6 +434,14 @@ pub fn current_agents(project_root: &Path, key: &str) -> Result<Vec<String>, App
     let body = body_dir(project_root, key);
     let mut out = Vec::new();
     for agent in AgentRegistry::builtin().agents() {
+        // ⚠️ **这道跳过在这里是"表达意图的死守卫",与 `link_dirs` 里那道不同**
+        // (复审 M3):universal agent 的 `skillsDir` 恒等于 `PROJECT_BODY_DIR`,
+        // 也就是说它的 `link` 恒等于 `body` 本身——`fsops::link_state(&body, &body)`
+        // 走 `same_physical_path` 分支返回 `SameLocation`,永远不会匹配下面的
+        // `Linked(_)`。删掉这个 `continue` 不会改变任何行为,因此**没有加对应的
+        // 单测**:任何构造都会因为上述恒等式落回 `SameLocation`,写出来的测试
+        // 只会是另一个"删了也不红"的空转断言,而不是真正的护栏(CLAUDE.md 记的
+        // 空转模式之一)。留着它只是为了让读者不必推一遍上面这条恒等式。
         if agent.is_universal() {
             continue;
         }
@@ -453,11 +461,28 @@ pub fn current_agents(project_root: &Path, key: &str) -> Result<Vec<String>, App
 /// 因此总是同进同退,不会出现"名义上摘了 trae-cn、物理链接却因为 trae 还在而没动"
 /// 这种账实不符。
 ///
-/// 🔴 **铁律 7**:该建的位置被一个内容不同的实体目录占着 → 不建、进 `kept`;
-/// 该摘的位置是这样的实体目录(或指向别处的手工链接)→ 不摘、进 `kept`。
-/// 一个字节都不碰。
+/// 🔴 **铁律 7**:该摘的位置是内容不同的实体目录、或指向别处的手工链接
+/// → 不摘、进 `kept`,一个字节不碰。⚠️ **该建的这一侧不享有同等的谨慎**:
+/// 占位如果是**指向别处的手工链接**(不是实体目录),这里调的
+/// `fsops::link_dir` 会照它对 `install()` 的既有姿态——直接摘掉换成指向本体的
+/// 链接,不进 `kept`、不问用户。这不是本函数新引入的行为,是 `link_dir`
+/// 自身的既有语义(只对"实体目录/文件占位"报 `FS_LINK_OCCUPIED`,对"链接占位"
+/// 静默替换);只有实体目录占着"该建"的位置时才会落进 `kept`。
+///
+/// 单个目录建/摘失败(真实 I/O 错误,如权限不足)不阻断其余目录——与
+/// [`install`] 同一姿态,只留痕不早退。项目级没有 links 账本,不存在
+/// "磁盘动了、账没存"的悬空风险,所以对齐 `install` 即可满足"如实回报"。
 pub fn set_agents(project_root: &Path, key: &str, wanted: &[String]) -> Result<SetAgentsDone, AppError> {
     let body = body_dir(project_root, key);
+    if !body.is_dir() {
+        return Err(AppError::new(
+            "FS_MISSING_SKILL",
+            "这个技能的本体不在项目里了,请刷新后重试",
+        )
+        .with_detail(format!("body missing: {}", body.display())));
+    }
+
+    let registry = AgentRegistry::builtin();
     let mut linked = Vec::new();
     let mut unlinked = Vec::new();
     let mut kept = Vec::new();
@@ -474,7 +499,9 @@ pub fn set_agents(project_root: &Path, key: &str, wanted: &[String]) -> Result<S
             // 与 `install` 同一立场,不算一次建链。
             Ok(fsops::LinkOutcome::Unchanged(_)) | Ok(fsops::LinkOutcome::SameLocation) => {}
             Err(ref e) if e.code == "FS_LINK_OCCUPIED" => kept.extend(dir.agents.iter().cloned()),
-            Err(e) => return Err(e),
+            Err(e) => {
+                tracing::warn!(agent = ?dir.agents, error = %e.message, "项目级事后改选建链失败");
+            }
         }
     }
 
@@ -483,13 +510,28 @@ pub fn set_agents(project_root: &Path, key: &str, wanted: &[String]) -> Result<S
             continue;
         }
         let link = dir.join(key);
-        let names = agents_sharing_dir(project_root, &dir);
+        let names = agents_sharing_dir(&registry, project_root, &dir);
         match fsops::link_state(&link, &body) {
             fsops::LinkState::Linked(_) | fsops::LinkState::Broken => {
-                if fsops::unlink_dir(&link)? {
-                    unlinked.extend(names);
+                match fsops::unlink_dir(&link) {
+                    Ok(true) => unlinked.extend(names),
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!(agent = ?names, error = %e.message, "项目级事后改选摘链失败");
+                    }
                 }
             }
+            // 🔴 实体目录不能一律留下:先比内容,与本体逐字节相同说明是我们
+            // 降级复制出来的副本(Windows junction 失败会走到这一档),删了换成
+            // "摘掉"才对——与 `remove:401-404` 同一条判据,否则这个位置永远
+            // 摘不掉(用户取消勾选也没用),且更新时 `current_agents` 只认
+            // `Linked(_)`,这份副本会从名单里悄悄消失、永不刷新。
+            fsops::LinkState::Real if same_content(&link, &body) => match fsops::remove_tree(&link) {
+                Ok(_) => unlinked.extend(names),
+                Err(e) => {
+                    tracing::warn!(agent = ?names, error = %e.message, "项目级事后改选删除降级副本失败");
+                }
+            },
             fsops::LinkState::Real | fsops::LinkState::Foreign(_) => kept.extend(names),
             fsops::LinkState::Missing | fsops::LinkState::SameLocation => {}
         }
@@ -501,8 +543,12 @@ pub fn set_agents(project_root: &Path, key: &str, wanted: &[String]) -> Result<S
 /// 反查:注册表里有哪些非 universal agent 的 `skillsDir` 展开后正是这个目录
 /// (在 `project_root` 下)。给共享目录的 agent(trae/trae-cn、qoder/qoder-cn、
 /// zencoder/zenflow)一起报账,呼应 [`set_agents`] 按目录处理的立场。
-fn agents_sharing_dir(project_root: &Path, dir: &Path) -> Vec<String> {
-    AgentRegistry::builtin()
+///
+/// registry 由调用方传入而不是每次现取:`AgentRegistry::builtin()` 要重新
+/// `serde_json::from_str` 整份 75-agent 注册表,`set_agents` 一次调用里这个函数
+/// 会被调用多次(每个候选目录一次),现取会让这份解析重复十几到几十遍。
+fn agents_sharing_dir(registry: &AgentRegistry, project_root: &Path, dir: &Path) -> Vec<String> {
+    registry
         .agents()
         .iter()
         .filter(|a| !a.is_universal() && project_root.join(&a.skills_dir) == dir)
@@ -563,7 +609,11 @@ pub fn link_dirs(project_root: &Path, agent_names: &[String]) -> Result<Vec<Link
 }
 
 /// 注册表里所有可能的项目级建链目录(卸载/事后改选时逐个查看)。
-pub(crate) fn all_link_dirs(project_root: &Path) -> Result<Vec<PathBuf>, AppError> {
+///
+/// 🔴 **保持模块私有**:任务书原写"私有 → 提成 `pub(crate)`",但两个调用方
+/// (`remove`、`set_agents`)都在**本模块内**,不需要放宽可见性——放宽等于给
+/// 将来的调用方开一条绕过 `link_dirs` 那层 universal 跳过的门(复审 M1)。
+fn all_link_dirs(project_root: &Path) -> Result<Vec<PathBuf>, AppError> {
     let registry = AgentRegistry::builtin();
     let mut out: Vec<PathBuf> = Vec::new();
     for agent in registry.agents() {
