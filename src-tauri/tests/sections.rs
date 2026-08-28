@@ -33,7 +33,7 @@ use skillsync_lib::core::my_skills;
 use skillsync_lib::core::ownership::{Identity, Section};
 use skillsync_lib::core::registry::{self, BUILTIN_REGISTRY_ID};
 use skillsync_lib::core::skill_lock::{self, LockEntry};
-use skillsync_lib::core::state::{Config, InstalledSkill, SkillSource, State, Store};
+use skillsync_lib::core::state::{Config, InstalledSkill, SkillSource, State, Store, ORIGIN_ADOPTED};
 use skillsync_lib::core::store::{self, IndexedSkill, SkillAttribution, SkillFile, StoreIndex};
 
 const NOW: &str = "2026-08-27T00:00:00.000Z";
@@ -68,6 +68,10 @@ struct Ctx {
     /// 🔴 绝不用默认的 `SYSTEM_TRASH`(同 `tests/installed_list.rs` 的教训):
     /// `build` 只读,但不注入沙盒的话产物会进这台机器真实的废纸篓。
     sandbox: fsops::SandboxTrash,
+}
+
+fn me() -> Identity {
+    Identity { login: "zhaowenhao".into(), display_name: "赵文浩".into() }
 }
 
 fn ctx() -> Ctx {
@@ -126,18 +130,17 @@ fn indexed_skill(dir_slug: &str, author: Option<&str>, content_hash: &str) -> In
     }
 }
 
-/// 往公司库(`BUILTIN_REGISTRY_ID`,坐标即 `ctx().builtin` 的 `skills/skills`)的索引
-/// 缓存里写入若干技能。`entries` = `(dir_slug, marker)`,`content_hash` 用
-/// [`hash_for_marker`] 现算,不带作者。
-fn write_index_cache(ctx: &Ctx, skills: Vec<IndexedSkill>) {
-    let repo =
-        skillsync_lib::core::gitea::RepoRef { owner: "skills".into(), repo: "skills".into(), branch: "main".into() };
-    let path = store::cache_path(ctx.store.dir(), BUILTIN_REGISTRY_ID, &repo);
+/// 往任意 `(registry_id, owner, repo)` 的索引缓存里写入若干技能——
+/// [`write_index_cache`](公司库那一份)与修复轮 1 新增的"自定义源"测试共用这一份实现。
+fn write_index_cache_for(ctx: &Ctx, registry_id: &str, owner: &str, repo: &str, skills: Vec<IndexedSkill>) {
+    let repo_ref =
+        skillsync_lib::core::gitea::RepoRef { owner: owner.into(), repo: repo.into(), branch: "main".into() };
+    let path = store::cache_path(ctx.store.dir(), registry_id, &repo_ref);
     let index = StoreIndex {
         schema_version: store::INDEX_SCHEMA_VERSION,
-        registry_id: BUILTIN_REGISTRY_ID.into(),
-        owner: "skills".into(),
-        repo: "skills".into(),
+        registry_id: registry_id.into(),
+        owner: owner.into(),
+        repo: repo.into(),
         branch: "main".into(),
         commit_sha: "abc1111".into(),
         committed_at: NOW.into(),
@@ -147,6 +150,13 @@ fn write_index_cache(ctx: &Ctx, skills: Vec<IndexedSkill>) {
         curated: Vec::new(),
     };
     store::save_cache(&path, &index).unwrap();
+}
+
+/// 往公司库(`BUILTIN_REGISTRY_ID`,坐标即 `ctx().builtin` 的 `skills/skills`)的索引
+/// 缓存里写入若干技能。`entries` = `(dir_slug, marker)`,`content_hash` 用
+/// [`hash_for_marker`] 现算,不带作者。
+fn write_index_cache(ctx: &Ctx, skills: Vec<IndexedSkill>) {
+    write_index_cache_for(ctx, BUILTIN_REGISTRY_ID, "skills", "skills", skills);
 }
 
 fn ctx_with_builtin_index(entries: &[(&str, &str)]) -> Ctx {
@@ -206,6 +216,34 @@ fn state_with_record(ctx: &Ctx, dir_slug: &str, registry_id: &str, marker: &str)
         },
         NOW,
     );
+    state
+}
+
+/// 一条**空来源**的 `state.installed` 记账(`converge::set_agents`/`keep_version`
+/// 给纯本地技能建的 `adopted` 账同款:三个坐标字段都是空串)。`body` 可以显式指定
+/// ——真实的 adopted 账把它填成本体的实际路径,不像 [`state_with_record`] 那样
+/// 靠 `body: None` 退回 canonical,I2 的回归测试需要这一点(本体住在字面大小写
+/// 与记账键不同的工具目录下)。
+fn state_with_sourceless_record(dir_slug: &str, body: Option<&Path>, content_hash: &str) -> State {
+    let mut state = State::default();
+    state.installed.push(InstalledSkill {
+        name: dir_slug.into(),
+        source: SkillSource {
+            registry_id: String::new(),
+            owner: String::new(),
+            repo: String::new(),
+            path: String::new(),
+            git_ref: String::new(),
+        },
+        commit_sha: String::new(),
+        content_hash: content_hash.into(),
+        origin: Some(ORIGIN_ADOPTED.into()),
+        body: body.map(|p| p.to_string_lossy().into_owned()),
+        agents: Vec::new(),
+        links: Vec::new(),
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    });
     state
 }
 
@@ -283,7 +321,71 @@ fn a_skill_installed_from_the_plaza_is_shareable_not_installed_from() {
 fn my_own_shared_skill_lands_in_shared_to() {
     let ctx = ctx_with_builtin_index_and_author(&[("rcs-generator", "HASH3", "赵文浩")]);
     let config = config_with_identity(BUILTIN_REGISTRY_ID, "zhaowenhao", "赵文浩");
-    skill_dir_with_hash(&ctx.home, ".agents/skills/rcs-generator", "HASH3");
+    // M3(修复轮 1):本地内容故意与索引里的 marker 不同,让 hash 那支必然不成立
+    // ——只留"公司库索引查得到作者"这一支单独把这一行判成 `SharedTo`,不让它与
+    // 第三支(hash 相等)重复满足同一个断言。
+    skill_dir_with_hash(&ctx.home, ".agents/skills/rcs-generator", "HASH3-LOCAL-EDIT");
     let rows = build_rows_with_config(&ctx, &config);
     assert_eq!(row(&rows, "rcs-generator").section, Section::SharedTo);
+}
+
+#[test]
+fn a_custom_source_author_does_not_count_toward_the_company_library() {
+    // C1(修复轮 1):`author` 的判据必须是 `builtin_record`,不是 `has_source()`
+    // ——否则自定义源(甚至广场)索引里凑巧带的作者信息会被当成"公司库的作者"喂进
+    // 三支判据第二支,把一个装自别处的技能判成「安装自公司库」,作者恰好是本人时
+    // 更是直接说成「已分享到公司技能库」。公司库索引本身是空的,如果这一行不是
+    // `Shareable`,说明自定义源的作者信息漏进了公司库判据。
+    let ctx = ctx_with_builtin_index(&[]);
+    write_index_cache_for(
+        &ctx,
+        "custom-1",
+        "owner",
+        "repo",
+        vec![indexed_skill("weekly-report", Some("赵文浩"), "")],
+    );
+    let state = state_with_record(&ctx, "weekly-report", "custom-1", "HASH1");
+    // 身份只登记在 custom-1 下:如果连 C2 那类"identity 键取错"的缺陷也在,
+    // 这里同样会被误判成「已分享到」——两条修复分开验证,这里只钉 C1。
+    let mut config = Config::default();
+    config.identities.insert("custom-1".into(), me());
+    skill_dir_with_hash(&ctx.home, ".agents/skills/weekly-report", "HASH1");
+    let rows = build(&ctx, &config, &state);
+    assert_eq!(row(&rows, "weekly-report").section, Section::Shareable);
+}
+
+#[test]
+fn a_sourceless_record_credited_to_me_in_the_company_library_is_shared() {
+    // C2(修复轮 1):`author` 来自公司库坐标(记账没有来源)时,identity 必须用
+    // `BUILTIN_REGISTRY_ID` 查——用记账自己的(空)registry_id 查恒 `None`,作者
+    // 本人分享的技能会被判成「安装自」而不是「已分享到」。这不是边角场景:
+    // 普通员工对公司库是"写权限 + main 受保护",走评审的分享不会留下带来源的
+    // 记账,只要在「我的技能」勾过任何工具就会建一条 `origin: adopted` 的
+    // 空来源账(`state_with_sourceless_record` 同款)。
+    let ctx = ctx_with_builtin_index_and_author(&[("rcs-generator", "HASH3", "赵文浩")]);
+    skill_dir_with_hash(&ctx.home, ".agents/skills/rcs-generator", "HASH3");
+    let state = state_with_sourceless_record("rcs-generator", None, &hash_for_marker("HASH3"));
+    let config = config_with_identity(BUILTIN_REGISTRY_ID, "zhaowenhao", "赵文浩");
+    let rows = build(&ctx, &config, &state);
+    assert_eq!(row(&rows, "rcs-generator").section, Section::SharedTo);
+}
+
+#[test]
+fn a_sourceless_record_keeps_its_bodys_original_case_when_matched_against_the_company_index() {
+    // I2(修复轮 1):公司库索引按库里的**原始**目录名建键(大小写不清洗)。
+    // 无来源记账查索引时不能用清洗后的 `home.dir_name`(账本身的清洗键),
+    // 必须用本体的**字面**目录名——否则 `Weekly-Report` 这样的技能永远查空,
+    // 即便公司库里恰好就是同名同内容的那一份。
+    //
+    // 现场:账键(`state.installed[].name`)是清洗后的 `weekly-report`,但
+    // `body` 显式指向一个字面大小写为 `Weekly-Report` 的工具目录——与真实的
+    // `adopted` 账(`converge::set_agents`)同款,`home.dir_name` 与本体的字面
+    // 目录名因此不同,正是 I2 要处理的那道裂缝。
+    let ctx = ctx_with_builtin_index_and_author(&[("Weekly-Report", "HASH4", "赵文浩")]);
+    let body = skill_dir_with_hash(&ctx.home, ".claude/skills/Weekly-Report", "HASH4");
+    let state =
+        state_with_sourceless_record("weekly-report", Some(&body), &hash_for_marker("HASH4"));
+    let config = config_with_identity(BUILTIN_REGISTRY_ID, "zhaowenhao", "赵文浩");
+    let rows = build(&ctx, &config, &state);
+    assert_eq!(row(&rows, "weekly-report").section, Section::SharedTo);
 }

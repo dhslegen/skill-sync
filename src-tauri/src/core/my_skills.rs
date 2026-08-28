@@ -320,11 +320,20 @@ fn library_author_of(store: &Store, source: &state::SkillSource, dir_slug: &str)
 /// 收窄到内建源那一段,坐标拼法复用同一套。
 fn builtin_repo_refs(builtin: &registry::BuiltinSource, config: &state::Config) -> Vec<RepoRef> {
     let mut out = Vec::new();
-    if let (Some(_base), Some((o, r))) = (builtin.base_url, builtin.repo) {
-        out.push(RepoRef { owner: o.to_string(), repo: r.to_string(), branch: builtin.branch.to_string() });
-        for c in &config.builtin_extra_repos {
-            out.push(RepoRef { owner: c.owner.clone(), repo: c.repo.clone(), branch: c.branch.clone() });
-        }
+    // 两个条件都要成立才算"内建源真的配置了":`base_url` 缺失是编译期没注入
+    // 内网地址(`SKILLSYNC_BUILTIN_GITEA_URL` 未设),`repo` 缺失同理对应
+    // `SKILLSYNC_BUILTIN_REPO`。修复轮 1 M2:原先用 `Some(_base)` 当哨兵,
+    // 读起来像是在用它的值、其实只是借用它"是不是 Some"这一件事,容易让人以为
+    // `base_url` 参与了坐标拼接——这里从不需要 URL 本身,只需要知道两者都配置了,
+    // 用 `let-else` 直接拿到 `repo` 的值,不再靠 `is_some()` + `expect()` 这种
+    // clippy 也会指出"多此一举"的两步走。
+    if builtin.base_url.is_none() {
+        return out;
+    }
+    let Some((o, r)) = builtin.repo else { return out };
+    out.push(RepoRef { owner: o.to_string(), repo: r.to_string(), branch: builtin.branch.to_string() });
+    for c in &config.builtin_extra_repos {
+        out.push(RepoRef { owner: c.owner.clone(), repo: c.repo.clone(), branch: c.branch.clone() });
     }
     out
 }
@@ -358,25 +367,33 @@ fn builtin_remote_hash(
 /// 「这个技能算不算装自公司技能库」的三支判据(v7,三区划分的地基)。
 ///
 /// 三支任一成立即算「在公司库里」:
-/// - `record` 本身有一条指向公司库的记账(哪怕本地内容已经改过——改过不该让一个
-///   本来就装自公司库的技能跳区,那正是"安装自"这个说法要承诺的稳定性,见
-///   `a_record_pointing_at_the_company_library_stays_installed_from_after_local_edits`);
-/// - 公司库索引里查得到这个 `dir_slug` 的作者(即便没有记账也可能成立——见
+/// - `builtin_record`:调用方算好的"这条记账本身有没有指向公司库"(哪怕本地内容
+///   已经改过——改过不该让一个本来就装自公司库的技能跳区,那正是"安装自"这个
+///   说法要承诺的稳定性,见
+///   `a_record_pointing_at_the_company_library_stays_installed_from_after_local_edits`)。
+///   **必须是 `record.has_source() && record.source.registry_id == BUILTIN_REGISTRY_ID`**
+///   ——不是"有没有任意来源",自定义源/广场的记账不算数(修复轮 1 C1);
+/// - `author`:公司库索引里查得到这个技能的作者(即便没有记账也可能成立——见
 ///   `my_own_shared_skill_lands_in_shared_to`,库里记着作者是我,本地却是第一次
-///   经这台机器碰到这个目录);
-/// - 本体此刻的内容与公司库索引里同名技能逐字节相同(没有记账、名字撞上,但内容
-///   确实是那个技能——换电脑 / 绕过 app 直推的场景)。
+///   经这台机器碰到这个目录)。**调用方必须只用公司库坐标查这个值**,自定义源/
+///   广场索引里凑巧带的作者不算数——理由与 `builtin_record` 同源;
+/// - `remote_hash == local_hash`:本体此刻的内容与公司库索引里同名技能逐字节相同
+///   (没有记账、名字撞上,但内容确实是那个技能——换电脑 / 绕过 app 直推的场景)。
 ///
 /// 三支都不成立时按 `Section::Shareable`(可分享到)处理,而不是谎称"安装自"
 /// ——名字撞上不代表内容对得上,见 `a_same_named_but_different_skill_is_shareable_not_installed_from`。
+///
+/// 🔴 **这是唯一一份实现**(修复轮 1 C3):此前 `unmanaged_row` 内联复写了后两支,
+/// 两份判据分叉的直接后果是测试对不上——五条测试里能走到这个函数的那两条
+/// (第一支单独成立的 `a_record_pointing_at_the_company_library_...` 与
+/// `a_skill_installed_from_the_plaza_...`)都被 `builtin_record` 短路或索引为空,
+/// 函数版本的后两支一行测试都没有真的走过,注入验证也因此发现不了它们被删掉。
 fn in_builtin_library(
-    record: &state::InstalledSkill,
-    local_hash: &str,
+    builtin_record: bool,
     author: Option<&str>,
+    local_hash: &str,
     remote_hash: Option<&str>,
 ) -> bool {
-    let builtin_record =
-        record.has_source() && record.source.registry_id == registry::BUILTIN_REGISTRY_ID;
     builtin_record || author.is_some() || remote_hash.is_some_and(|h| !h.is_empty() && h == local_hash)
 }
 
@@ -536,16 +553,34 @@ pub fn build(
         // v7 三区判据:是不是「安装自公司技能库」不再是"有没有任意来源"这一刀切
         // (那会把广场/自定义源装的技能也判成"安装自公司库"),而是
         // `in_builtin_library` 的三支判据——理由见该函数文档。
-        let author = if record.has_source() {
+        //
+        // 🔴 修复轮 1 C1:第一支的判据必须是 `builtin_record`(记账**指向公司库**),
+        // 不是 `record.has_source()`(有没有任意来源)。原先按 `has_source()` 分流
+        // 会拿自定义源自己的 `authors.json` 作者去满足公司库的第二支——一条
+        // `registry_id = "custom-1"` 的记账会被判成"安装自公司库",作者恰好是本人
+        // 时更是直接说成"已分享到公司技能库",彻底的假话。
+        let builtin_record =
+            record.has_source() && record.source.registry_id == registry::BUILTIN_REGISTRY_ID;
+        // 🔴 修复轮 1 I2:无来源(或来源不是公司库)时按公司库坐标查作者/内容指纹,
+        // 查询键必须是**本体的字面目录名**(`body_literal`),不能用 `dir_slug`
+        // ——空来源账没有 `library_dir_slug()`,`dir_slug` 会落回**清洗后**的
+        // `home.dir_name`,而公司库索引按库里的原始目录名建键,大小写不清洗,
+        // `Weekly-Report` 这样的技能这一档会查空。
+        let author = if builtin_record {
             library_author_of(store, &record.source, &dir_slug)
         } else {
-            // 无来源(空账/其他源账)时,按公司库坐标直接查一次:名字撞上公司库里
-            // 记的作者,也算数(三支之一)。
-            builtin_author_of(store, builtin, config, &dir_slug)
+            builtin_author_of(store, builtin, config, &body_literal)
         };
-        let remote_hash = builtin_remote_hash(store, builtin, config, &dir_slug);
-        let in_library = in_builtin_library(record, &local_hash, author.as_deref(), remote_hash.as_deref());
-        let identity = config.identities.get(&record.source.registry_id);
+        let remote_hash = builtin_remote_hash(store, builtin, config, &body_literal);
+        let in_library = in_builtin_library(builtin_record, author.as_deref(), &local_hash, remote_hash.as_deref());
+        // 🔴 修复轮 1 C2:identity 统一用 `BUILTIN_REGISTRY_ID` 查,不用
+        // `record.source.registry_id`——`builtin_record` 为真时两者本就相等;
+        // 为假时(空来源 / 其他源)后者要么是空串、要么是别的源,查出来恒 `None`,
+        // 作者本人分享的技能会被判成「安装自」而不是「已分享到」。这不是边角场景:
+        // 普通员工对公司库是"写权限 + main 受保护",走评审的分享不会留下带来源的
+        // 记账,只要在「我的技能」勾过任何工具就会建一条 `origin: adopted` 的
+        // 空来源账——同一个函数里两把不同的钥匙本身就是缺陷信号。
+        let identity = config.identities.get(registry::BUILTIN_REGISTRY_ID);
         let relation = ownership::relation(identity, author.as_deref(), in_library, true);
 
         let (recorded, _) = remove::state_links_to_recorded(&record.links);
@@ -775,20 +810,25 @@ fn unmanaged_row(
     // 空串会让它们缺省打到**内建源主库**——取回一个同名但完全不同的技能,
     // 或把改动推到错误的库里。
     //
-    // 库里**没有**同名条目时保持空串是对的:那种行 `relation` 恒为 `Draft`
-    // (库里没有它),前端在第 2 档就短路了,根本走不到第 4 档。
+    // 🔴 修复轮 1 I1:上面这段话已经过期——v7 之前 `relation` 直接由
+    // `library_entry` 是否存在推导,"库里没有同名条目"与"`relation` 恒为 `Draft`"
+    // 曾经是同一件事。v7 起 `relation` 改由 `in_builtin_library` 的三支判据
+    // (只认公司库)决定,`library_entry`(全部已配置库合并表)与它是**两件独立
+    // 的事**:一行完全可能是 `library_entry: Some`(名字在广场/自定义库里有同名
+    // 条目)同时 `relation: Draft`(公司库三支都不成立)——`source_owner` 等坐标
+    // 字段仍然填得出来(下面用 `library_entry` 填),但那不代表"安装自公司库"。
     let library_entry = library.get(&dir_slug).or_else(|| library.get(key));
 
     // v7 三区判据(疑虑 4):`library_entry` 是**全部已配置库**(含自定义源、广场)
     // 合并后的表,"库里查得到"不能直接当 `in_library`——名字撞上广场的同名技能
-    // 不该被判成"安装自公司库"。三区只认公司库,与 `in_builtin_library` 同一套
-    // 收窄:这一档天生没有 `state.installed` 记账(第一支恒不成立),只剩后两支
-    // ——公司库索引里查得到这个 `dir_slug` 的作者,或本体内容与公司库同名技能
-    // 逐字节相同。
+    // 不该被判成"安装自公司库"。三区只认公司库,收窄的算法与 `in_builtin_library`
+    // 是**同一份实现**(修复轮 1 C3,不再各自内联一遍):这一档天生没有
+    // `state.installed` 记账,第一支恒传 `false`,只剩后两支——公司库索引里
+    // 查得到这个 `dir_slug` 的作者,或本体内容与公司库同名技能逐字节相同。
     let local_hash = fsops::dir_content_hash(&body).unwrap_or_default();
     let author = builtin_author_of(store, builtin, config, &dir_slug);
     let remote_hash = builtin_remote_hash(store, builtin, config, &dir_slug);
-    let in_library = author.is_some() || remote_hash.is_some_and(|h| !h.is_empty() && h == local_hash);
+    let in_library = in_builtin_library(false, author.as_deref(), &local_hash, remote_hash.as_deref());
     let identity = config.identities.get(registry::BUILTIN_REGISTRY_ID);
     let relation = ownership::relation(identity, author.as_deref(), in_library, true);
 

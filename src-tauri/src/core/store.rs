@@ -279,10 +279,13 @@ pub fn cached_author(dir: &Path, registry_id: &str, repo: &RepoRef, dir_slug: &s
 /// 的姿态),只是取的字段不同——三区判据的第三支「内容与公司库同名技能逐字节相同」
 /// 要靠这个函数,不与 [`crate::core::my_skills::in_builtin_library`] 里的
 /// `IndexedSkill::content_hash` 各自手搓一遍读缓存的过程。
+///
+/// **没有 `registry_id.is_empty()` 那道闸**(修复轮 1 M1):`cached_author` 那道闸
+/// 是给它自己多个调用方里可能传空 `registry_id` 的那些兜底(如空来源记账);
+/// 这个函数唯一的调用方(`my_skills::builtin_repo_refs` 系)恒传编译期常量
+/// `registry::BUILTIN_REGISTRY_ID`,永不为空——补一道用不上的闸只会让两个"同款"
+/// 函数看起来在管两件事,其实什么都没多防住。
 pub fn cached_content_hash(dir: &Path, registry_id: &str, repo: &RepoRef, dir_slug: &str) -> Option<String> {
-    if registry_id.is_empty() {
-        return None;
-    }
     let index = load_cache(&cache_path(dir, registry_id, repo))?;
     index.skills.iter().find(|s| s.dir_slug == dir_slug).map(|s| s.content_hash.clone())
 }
