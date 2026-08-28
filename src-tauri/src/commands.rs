@@ -2893,6 +2893,9 @@ pub struct ProjectUpdateArgs {
     pub registry_id: Option<String>,
     pub repo: Option<String>,
     pub dir_slug: String,
+    /// ⚠️ **已不再驱动建链目标**(v7 任务 3 起,见 `project_skill_update` 的模块头):
+    /// 现在改走 `project::current_agents` 从磁盘反推。字段保留只是不破坏现有 IPC
+    /// 调用形状(前端界面改选由任务 8 接手),command 内部不读它。
     pub agent_ids: Vec<String>,
     /// 用户已确认"丢弃我改的内容"。本体被改过且没带这个标记时返回 `hasLocalEdits`。
     #[serde(default)]
@@ -2912,6 +2915,15 @@ pub enum ProjectUpdateOutcome {
 /// 更新项目里的一个技能:按 lock 记的来源重新取数覆盖。
 ///
 /// 先判本体有没有被用户改过——改过且未确认就停下,磁盘零写入。
+///
+/// 🔴 **建链目标不用 `args.agent_ids`,改用 [`project::current_agents`] 从磁盘反推**
+/// (v7 任务 3 修复):此前这里直接转发前端传来的 `agent_ids`,而前端(`ProjectSections.tsx`)
+/// 填它的办法是现场调 `agentsDetected()` + `defaultSelectedAgents`——本机这一刻装了什么、
+/// 禁用了什么,与"这个技能当初装到了哪些工具里"毫无关系。后果是「更新」会把关联悄悄
+/// 改写成一套探测出来的默认值:本来只关联了 claude-code 的技能,若这台机器上还装着
+/// Cursor,点一次更新就会多出一个从未选过的关联;反过来,当初关联的工具如果这次没被
+/// 探测到,更新后关联会被摘掉。「更新」问的是"远端有没有新内容",不该顺带改写
+/// "这个技能在哪些工具里生效"这件事——那是 `project_skill_set_agents` 该管的。
 #[tauri::command]
 pub async fn project_skill_update(
     args: ProjectUpdateArgs,
@@ -2922,12 +2934,14 @@ pub async fn project_skill_update(
         return Ok(ProjectUpdateOutcome::HasLocalEdits { key: args.key });
     }
 
+    let agent_ids = project::current_agents(&root, &args.key)?;
+
     match project_skill_install(ProjectInstallArgs {
         project_path: args.project_path,
         dir_slug: args.dir_slug,
         registry_id: args.registry_id,
         repo: args.repo,
-        agent_ids: args.agent_ids,
+        agent_ids,
         // 改动检测已在上面做过,这里的"覆盖"是用户要的那个更新动作本身。
         confirmed_replace: true,
         // 🔴 **不能给 force**:给了的话"内容已经一样"这一档就再也走不到,
@@ -2989,6 +3003,30 @@ pub async fn project_skill_remove(
         ));
     }
     project::remove(std::path::Path::new(&project_path), &key)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSetAgentsArgs {
+    pub project_path: String,
+    pub key: String,
+    /// 目标集合(不是增量):账上/磁盘上有而这里没有的会被摘掉关联。
+    pub agent_ids: Vec<String>,
+}
+
+/// 装完之后事后改选「这个技能在这个项目里对哪些工具生效」。
+///
+/// v5 只在安装那一刻选一次,装完就没有入口能改——这条补上它。判定表在
+/// `project::set_agents`(纯函数、可单测),这里只是薄壳。
+#[tauri::command]
+pub async fn project_skill_set_agents(
+    args: ProjectSetAgentsArgs,
+) -> Result<project::SetAgentsDone, AppError> {
+    project::set_agents(
+        std::path::Path::new(&args.project_path),
+        &args.key,
+        &args.agent_ids,
+    )
 }
 
 #[cfg(test)]

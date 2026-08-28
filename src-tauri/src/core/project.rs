@@ -122,6 +122,19 @@ pub struct RemoveDone {
     pub kept: Vec<RemovedItem>,
 }
 
+/// 事后改选「让哪些工具能用」的回报。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAgentsDone {
+    /// 新建了链接的 agent 名单。
+    pub linked: Vec<String>,
+    /// 摘掉了链接的 agent 名单。
+    pub unlinked: Vec<String>,
+    /// 该建/该摘的位置被一个内容不同的实体目录占着,一个字节没动、原样留下
+    /// (铁律 7)。
+    pub kept: Vec<String>,
+}
+
 /// 技能本体目录:`<项目>/.agents/skills/<键>`。
 pub fn body_dir(project_root: &Path, key: &str) -> PathBuf {
     project_root.join(PROJECT_BODY_DIR).join(key)
@@ -407,6 +420,96 @@ pub fn remove(project_root: &Path, key: &str) -> Result<RemoveDone, AppError> {
     })
 }
 
+/// 这个技能眼下实际链接到了哪些 agent——**扫各工具目录反推**,不是查账
+/// (项目 lock 没有 links 字段,这本账从来就不存在)。
+///
+/// 供两处用:界面在"更新"前拿它当默认勾选(而不是灌入探测/禁用状态的默认值,
+/// 见 `commands::project_skill_update` 的模块头教训);[`set_agents`] 内部
+/// 用它决定该摘掉哪些位置。
+///
+/// 逐 agent 检查而不是先按目录分组:多个 agent(如 trae / trae-cn)可能共享同一个
+/// `skillsDir`,这时链接天然对双方同时生效,如实报告全部关联方——与全局链路
+/// 「以目录为单位」同一条铁律的自然推论。
+pub fn current_agents(project_root: &Path, key: &str) -> Result<Vec<String>, AppError> {
+    let body = body_dir(project_root, key);
+    let mut out = Vec::new();
+    for agent in AgentRegistry::builtin().agents() {
+        if agent.is_universal() {
+            continue;
+        }
+        let link = project_root.join(&agent.skills_dir).join(key);
+        if matches!(fsops::link_state(&link, &body), fsops::LinkState::Linked(_)) {
+            out.push(agent.name.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// 事后改选:把「这个技能对哪些工具生效」收敛到 `wanted`。
+///
+/// **以目录为单位处理,不按 agent 逐个建/摘**(与全局链路、`link_dirs` 同一条铁律):
+/// 先算出 `wanted` 对应的目标目录集合,再拿 [`all_link_dirs`] 找出"当前确实链接到
+/// 本体、但不在这次目标里"的目录逐个摘掉。共享同一目录的 agent(trae/trae-cn 等)
+/// 因此总是同进同退,不会出现"名义上摘了 trae-cn、物理链接却因为 trae 还在而没动"
+/// 这种账实不符。
+///
+/// 🔴 **铁律 7**:该建的位置被一个内容不同的实体目录占着 → 不建、进 `kept`;
+/// 该摘的位置是这样的实体目录(或指向别处的手工链接)→ 不摘、进 `kept`。
+/// 一个字节都不碰。
+pub fn set_agents(project_root: &Path, key: &str, wanted: &[String]) -> Result<SetAgentsDone, AppError> {
+    let body = body_dir(project_root, key);
+    let mut linked = Vec::new();
+    let mut unlinked = Vec::new();
+    let mut kept = Vec::new();
+
+    let wanted_dirs = link_dirs(project_root, wanted)?;
+    let wanted_paths: std::collections::BTreeSet<&Path> =
+        wanted_dirs.iter().map(|d| d.path.as_path()).collect();
+
+    for dir in &wanted_dirs {
+        let link = dir.path.join(key);
+        match fsops::link_dir(&body, &link, fsops::default_link_chain()) {
+            Ok(fsops::LinkOutcome::Created(_)) => linked.extend(dir.agents.iter().cloned()),
+            // Unchanged:已经是这个样子,不必回报。SameLocation:目标就是本体自己,
+            // 与 `install` 同一立场,不算一次建链。
+            Ok(fsops::LinkOutcome::Unchanged(_)) | Ok(fsops::LinkOutcome::SameLocation) => {}
+            Err(ref e) if e.code == "FS_LINK_OCCUPIED" => kept.extend(dir.agents.iter().cloned()),
+            Err(e) => return Err(e),
+        }
+    }
+
+    for dir in all_link_dirs(project_root)? {
+        if wanted_paths.contains(dir.as_path()) {
+            continue;
+        }
+        let link = dir.join(key);
+        let names = agents_sharing_dir(project_root, &dir);
+        match fsops::link_state(&link, &body) {
+            fsops::LinkState::Linked(_) | fsops::LinkState::Broken => {
+                if fsops::unlink_dir(&link)? {
+                    unlinked.extend(names);
+                }
+            }
+            fsops::LinkState::Real | fsops::LinkState::Foreign(_) => kept.extend(names),
+            fsops::LinkState::Missing | fsops::LinkState::SameLocation => {}
+        }
+    }
+
+    Ok(SetAgentsDone { linked, unlinked, kept })
+}
+
+/// 反查:注册表里有哪些非 universal agent 的 `skillsDir` 展开后正是这个目录
+/// (在 `project_root` 下)。给共享目录的 agent(trae/trae-cn、qoder/qoder-cn、
+/// zencoder/zenflow)一起报账,呼应 [`set_agents`] 按目录处理的立场。
+fn agents_sharing_dir(project_root: &Path, dir: &Path) -> Vec<String> {
+    AgentRegistry::builtin()
+        .agents()
+        .iter()
+        .filter(|a| !a.is_universal() && project_root.join(&a.skills_dir) == dir)
+        .map(|a| a.name.clone())
+        .collect()
+}
+
 /// 两个目录的内容是否逐字节相同(上游 hash 口径)。任一侧读不出来一律判"不同"
 /// ——判不出来时保守留着,不删。
 fn same_content(a: &Path, b: &Path) -> bool {
@@ -459,8 +562,8 @@ pub fn link_dirs(project_root: &Path, agent_names: &[String]) -> Result<Vec<Link
     Ok(out)
 }
 
-/// 注册表里所有可能的项目级建链目录(卸载时逐个查看)。
-fn all_link_dirs(project_root: &Path) -> Result<Vec<PathBuf>, AppError> {
+/// 注册表里所有可能的项目级建链目录(卸载/事后改选时逐个查看)。
+pub(crate) fn all_link_dirs(project_root: &Path) -> Result<Vec<PathBuf>, AppError> {
     let registry = AgentRegistry::builtin();
     let mut out: Vec<PathBuf> = Vec::new();
     for agent in registry.agents() {

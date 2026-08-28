@@ -220,6 +220,7 @@ pub fn run() {
             commands::project_skill_install,
             commands::project_skill_remove,
             commands::project_skill_update,
+            commands::project_skill_set_agents,
             commands::project_reveal
         ])
         .build(tauri::generate_context!())
