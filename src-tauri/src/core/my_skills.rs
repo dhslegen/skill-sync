@@ -937,8 +937,11 @@ fn shared_record_of<'a>(
     })
 }
 
-/// 这份列表里有没有值得为「审核态」发一次网络请求的行——一次请求覆盖全部候选,
-/// 零候选就不发(`commands::installed_list` 据此决定要不要打这次请求)。
+/// 这份列表里有没有值得为「审核态」发一次查询的行——一次查询覆盖全部候选
+/// (`GiteaClient::list_open_pulls` 翻页到空,正常情况下通常是 2 次 HTTP 请求:
+/// 有数据的一页 + 确认到底的空页,不是字面意义的"一次请求";这里的"一次"说的是
+/// "一次决策",不是"一次 HTTP 调用"),零候选就不发(`commands::installed_list`
+/// 据此决定要不要打这趟查询)。
 pub fn has_review_candidates(rows: &[InstalledRow], state: &state::State, builtin_repo: BuiltinRepo<'_>) -> bool {
     rows.iter()
         .any(|r| r.section == ownership::Section::Shareable && shared_record_of(state, &r.body, builtin_repo).is_some())

@@ -26,7 +26,7 @@
 //!   `installed_list` 挂死。
 //!
 //! 🔴 **本文件两处直接命中 `list_open_pulls`(不经过 `my_skills`)的 mock 现在必须
-//! 按页响应**:修复轮 1 把翻页停止条件从"这一页比页大小少"改成"这一页空了"
+//! 按页响应**:2026-08-28 把翻页停止条件从"这一页比页大小少"改成"这一页空了"
 //! (`raw.is_empty()`)之后,只用 `path()` 匹配、不区分 `page` 查询参数的 mock 会让
 //! 每一页都拿到同一批非空数据,永远等不到空页——用 `query_param("page", "1")` /
 //! `("page", "2")` 精确区分,第 2 页给空数组才能让循环正常停下,不然会一路转到
@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use skillsync_lib::core::agents::{AgentEnv, AgentRegistry};
-use skillsync_lib::core::gitea::{review_branch_prefix, GiteaClient, PULLS_MAX_PAGES};
+use skillsync_lib::core::gitea::{review_branch_prefix, GiteaClient, PULLS_MAX_PAGES, PULLS_PAGE_SIZE};
 use skillsync_lib::core::installer::Installer;
 use skillsync_lib::core::my_skills::{self, InstalledRow};
 use skillsync_lib::core::ownership::Section;
@@ -393,24 +393,29 @@ async fn a_shared_record_pointing_at_a_builtin_extra_repo_never_triggers_a_pulls
     server.verify().await;
 }
 
-/// 翻页止损(修复轮 2 新增,对应复审提出的"新 Important"):服务端如果不尊重
+/// 翻页止损(2026-08-28 新增,对应复审提出的"新 Important"):服务端如果不尊重
 /// `page` 参数——反向代理丢了 query string、或部署本身有 bug——每一页都会原样
-/// 回同一批**非空**数据,修复轮 1 那版"这一页空了才停"的判据永远等不到空页,
-/// 会一路转下去。`list_open_pulls` 因此必须在 [`PULLS_MAX_PAGES`] 次请求后止损,
-/// 把这次查询当"失败"交回调用方(既有降级路本来就是为"拿不到真实 PR 状态"准备的)。
+/// 回同一批**非空**数据,"这一页空了才停"的判据(同日改的,见 `list_open_pulls`
+/// 文档)永远等不到空页,会一路转下去。`list_open_pulls` 因此必须在
+/// [`PULLS_MAX_PAGES`] 次请求后止损,把这次查询当"失败"交回调用方(既有降级路
+/// 本来就是为"拿不到真实 PR 状态"准备的)。
 ///
 /// `.expect(PULLS_MAX_PAGES as u64)` 是这条测试的核心断言:直接引用实现里的常量,
 /// 不在这里另抄一份数字——常量与断言必须是同一把尺子,否则测试守的会是一个
 /// 错误的边界(参见 `review_branch`/`review_branch_prefix` 那条"两把尺子必须
-/// 同源"的既有教训)。如果止损逻辑被去掉或改错,要么请求次数超出预期让
-/// `server.verify()` 失败,要么循环根本不停、这条测试自己因为撞上
-/// `PULLS_QUERY_DEADLINE`(15 秒)或 `#[tokio::test]` 默认无超时而挂起太久
-/// ——两条路都能让红灯亮起来,不会悄悄放过。
+/// 同源"的既有教训)。如果页数上限这层止损被去掉或改错,有两种可能的表现:
+/// 要么请求次数超出预期让 `server.verify()` 失败,要么这一层失效但
+/// `PULLS_QUERY_DEADLINE` 兜底(15 秒后返回超时错误,而不是页数上限的
+/// 那个错误码)——`assert_eq!(err.code, ...)` 那句会因为拿到不同的错误码而红
+/// (已用注入验证过这条:去掉页数上限判断,`err.code` 从 `NET_PULLS_TOO_MANY`
+/// 变成 `NET_PULLS_TIMEOUT`)。⚠️ 如果两层止损**都**被去掉,循环会真的转不停,
+/// 这条测试会一直挂住而不是变红——那是止损机制整体失效的场景,不是这条测试
+/// 单独能兜住的,靠的是两层止损各自独立、不会同时失效这条假设。
 #[tokio::test]
 async fn a_server_that_ignores_the_page_parameter_does_not_loop_forever() {
     let server = MockServer::start().await;
     // 无论请求几次都原样返回同一批非空数据,模拟"page 参数被服务端忽略"。
-    let full_page: Vec<_> = (0..50)
+    let full_page: Vec<_> = (0..PULLS_PAGE_SIZE)
         .map(|i| {
             serde_json::json!({
                 "number": i,

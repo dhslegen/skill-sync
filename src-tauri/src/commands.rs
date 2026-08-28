@@ -1636,14 +1636,21 @@ impl From<my_skills::InstalledRow> for InstalledSkillView {
 /// `app_http_client_with_timeout`,不影响其余调用方。
 const REVIEW_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// 审核态(v7 任务 2)的唯一网络查询:一次请求取回**公司库主仓**当前开放的
+/// 审核态(v7 任务 2)的唯一网络查询:一次查询取回**公司库主仓**当前开放的
 /// 合并请求。内建源的读永远匿名(公开可读,gitea.rs 模块头);未配置内网
 /// (`SKILLSYNC_NO_INTRANET` 那一档)时直接报错,调用方按"查询失败"统一降级,
 /// 不额外区分原因。
 ///
+/// 🔴 **"一次查询"不等于"一次 HTTP 请求"**:`GiteaClient::list_open_pulls`
+/// 翻页到空(修复轮 2),正常情况下这一次查询通常要发 **2 次**请求——有数据的
+/// 一页 + 确认到底的空页——而不是修复轮 1 及以前那版"一页装得下就只发 1 次"。
+/// 这是空页判据本身的代价(见 `list_open_pulls` 文档),换来的是不会在开放 PR
+/// 数量掉出第一页时静默截断;`REVIEW_QUERY_TIMEOUT` 管的是**单次**请求,两次
+/// 请求各自都有这个上限,`gitea::PULLS_QUERY_DEADLINE` 才是管总耗时的那道闸。
+///
 /// **只查公司库主仓**:`Section` 的整套语义就是相对公司技能库的三区,这里没有
-/// 必要(`installed_list` 每次都发一次请求的代价也不允许)按每个候选行各自的
-/// 来源仓库分别查询——`my_skills::shared_record_of` 已经把候选收窄到只认
+/// 必要(每个候选行各自查一遍来源仓库的代价更不划算)按每个候选行各自的来源
+/// 仓库分别查询——`my_skills::shared_record_of` 已经把候选收窄到只认
 /// **公司库主仓**(`registry_id` 与 `owner/repo` 都要对得上)的记录,追加仓
 /// (`config.builtinExtraRepos`)下的分享因此不会被误标(会漏标,这是已知边界,
 /// 不是缺陷——宁可漏报不误报)。
