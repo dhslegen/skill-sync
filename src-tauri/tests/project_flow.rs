@@ -93,11 +93,17 @@ fn setting_agents_links_the_missing_ones_and_unlinks_the_extra_ones() {
 /// 🔴 铁律 7:该摘的位置是内容不同的实体目录——不知道那是不是用户自己的东西,
 /// 一个字节都不许动,并如实回报,不能悄悄吞掉。
 ///
-/// ⚠️ **这条测试的证明力其实来自 `fsops::unlink_dir`,不是来自 `set_agents` 自己
-/// 新增的判断**(复审 I2):`unlink_dir` 对实体目录直接返回 `FS_NOT_A_LINK` 早退,
-/// 就算把 `set_agents` 里"先判 Real/Foreign 才不摘"的那道分支整个删掉,这个用例
-/// 照样因为 `unlink_dir` 的 `?` 早退而红,文件依旧完好——铁律 7 在这一档并不是靠
-/// 本函数的判断力兜住的。真正吃力的是下面那条 `a_hand_made_symlink_...`。
+/// ⚠️ **这条测试的证明力不完全来自 `set_agents` 自己新增的判断**(复审 I2 + 修复轮 2
+/// 订正):把 `Real | Foreign(_) => kept.extend(names)` 这道分支删掉、合并进 unlink 臂后,
+/// `fsops::unlink_dir` 对实体目录会返回 `Err(FS_NOT_A_LINK)`——**但 I6 已经把 unlink 那一侧
+/// 从 `?` 早退改成了 `tracing::warn!` + 继续**(见 `project.rs` 的 `set_agents`),
+/// 所以这个 `Err` 不会再让整个函数早退、也不会让本用例的 `.unwrap()` panic。真正发生的是:
+/// 这次改选**既不进 `unlinked` 也不进 `kept`**(warn 分支两边都不写),
+/// `kept` 因此保持空,下面 `done.kept.contains(...)` 的断言会失败而让测试变红
+/// (2026-08-28 注入验证过:失败信息是`实际 []`,行号落在 `kept` 断言上,不是 panic
+/// 在 `.unwrap()`)——铁律 7 在这一档仍然不是靠本函数的判断力兜住的,只是"红的机制"
+/// 从"函数级错误传播"换成了"账目回报为空导致断言失败"。真正吃力的是下面那条
+/// `a_hand_made_symlink_...`。
 #[test]
 fn a_foreign_directory_in_a_tool_folder_is_kept_and_reported_not_deleted() {
     let (_tmp, p) = project_with_skill("erp", "weekly-report", &["claude-code"]);
