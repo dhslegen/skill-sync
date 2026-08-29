@@ -4,6 +4,7 @@ import { Check, TriangleAlert } from "lucide-react";
 import { Icon } from "@/components/Icon";
 import { InstallButton } from "@/components/InstallButton";
 import { InstallScopeMenu } from "@/components/InstallScopeMenu";
+import { ToolPicker, type ToolPickerItem } from "@/components/ToolPicker";
 import { t, type MessageKey } from "@/i18n";
 import { failedLinks, linkedAgents, useInstall } from "@/store/install";
 import { cn } from "@/lib/cn";
@@ -344,27 +345,20 @@ function AgentChooser({ onCancel }: { onCancel: () => void }) {
   // 的错误更诚实。
   const confirmDisabled = registryId === PLAZA_REGISTRY_ID && repo === null;
 
+  // v7 任务 5:与「我的技能」的勾组共用同一个 ToolPicker,不再各自维护一套排版。
+  // 这里没有 body/copy/missing 这几档(还没装,谈不上本体在哪),只有勾没勾两态。
+  const items: ToolPickerItem[] = linkable.map((agent) => ({
+    agent: agent.name,
+    label: agent.displayName,
+    path: agent.installed ? (agent.globalSkillsDir ?? "") : t("install.notDetected"),
+    state: selected.has(agent.name) ? "linked" : "off",
+  }));
+
   return (
     <div className="border-t border-border px-5 py-3.5">
       <div className="mb-2 text-[12px] font-[550]">{t("install.choose")}</div>
-      <div className="max-h-[168px] overflow-y-auto rounded-card border border-border">
-        {linkable.map((agent) => (
-          <label
-            key={agent.name}
-            className="flex cursor-default items-center gap-2.5 border-t border-border px-3 py-2 first:border-t-0 hover:bg-surface-2"
-          >
-            <input
-              type="checkbox"
-              checked={selected.has(agent.name)}
-              onChange={() => toggleAgent(agent.name)}
-              className="size-3.5 accent-[var(--accent)]"
-            />
-            <span className="text-[12.5px] font-medium">{agent.displayName}</span>
-            <span className="ml-auto truncate font-mono text-[11px] text-text-3">
-              {agent.installed ? agent.globalSkillsDir : t("install.notDetected")}
-            </span>
-          </label>
-        ))}
+      <div className="max-h-[168px] overflow-y-auto rounded-card border border-border px-3 py-2">
+        <ToolPicker items={items} onToggle={(agent) => toggleAgent(agent)} />
       </div>
       <p className="mt-2 text-[11.5px] leading-[1.5] text-text-3">{t("install.chooseHint")}</p>
       <div className="mt-2.5 flex items-center gap-2">
