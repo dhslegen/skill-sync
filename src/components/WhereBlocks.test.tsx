@@ -133,6 +133,7 @@ beforeEach(() => {
     setAgentsBusy: null,
     toolFailures: null,
     setAgentsError: null,
+    toolFailuresFor: null,
   });
   useStoreIndex.setState({ index: null });
 });
@@ -274,6 +275,7 @@ describe("WhereBlocks", () => {
     it("请求本身失败(抛错)时也要有渲染点,与 Differs 是不同的量", () => {
       useMySkills.setState({
         setAgentsError: { code: "FS_LINK_FAILED", message: "统一目录那一处没配上" },
+        toolFailuresFor: "weekly-report",
       });
       render(
         <WhereBlocks
@@ -285,6 +287,49 @@ describe("WhereBlocks", () => {
       );
       expect(screen.getByText(/没能改动 AI 工具的启用状态/)).toBeInTheDocument();
       expect(screen.getByText(/统一目录那一处没配上/)).toBeInTheDocument();
+    });
+
+    // R19:跨技能状态泄漏——toolFailures/setAgentsError 是全局字段,不按
+    // toolFailuresFor 过滤的话,对技能 A 打勾失败后不点「知道了」就打开技能 B
+    // 的详情,B 的面板会显示 A 的占用路径。拆成两条独立的 it(而不是同一条里
+    // 先后 render 两次):协调者要单独回报"A 的面板看得到"那条是否保持绿,
+    // 合在一条里的话,注入让"B 看不到"红了之后,断言会在同一条测试内**提前
+    // 中断**,"A 看得到"那半永远跑不到、也就永远不知道它是不是保持绿。
+    it("技能 A 的失败不会泄漏进技能 B 的面板(跨技能状态泄漏,R19)", () => {
+      useMySkills.setState({
+        toolFailures: [{ kind: "differs", agent: "zed", existing: "/h/.zed/skills/skill-a" }],
+        toolFailuresFor: "skill-a",
+      });
+
+      render(
+        <WhereBlocks
+          skill={mk("skill-b", "installedFrom", {
+            tools: [{ agent: "claude-code", state: "linked" }],
+          })}
+          agentNames={NAMES}
+        />,
+      );
+      expect(screen.queryByText("有 1 处需要你看一下")).not.toBeInTheDocument();
+    });
+
+    // 正对照:同一份 store 状态,渲染的是它真正归属的技能 A,必须看得到
+    // ——否则"哪儿都不显示"这种坏实现也能让上面那条断言通过。
+    it("技能 A 自己的面板看得到自己的失败(正对照,防「哪儿都不显示」蒙混过关)", () => {
+      useMySkills.setState({
+        toolFailures: [{ kind: "differs", agent: "zed", existing: "/h/.zed/skills/skill-a" }],
+        toolFailuresFor: "skill-a",
+      });
+
+      render(
+        <WhereBlocks
+          skill={mk("skill-a", "installedFrom", {
+            tools: [{ agent: "claude-code", state: "linked" }],
+          })}
+          agentNames={NAMES}
+        />,
+      );
+      expect(screen.getByText("有 1 处需要你看一下")).toBeInTheDocument();
+      expect(screen.getByText(/Zed 那个位置上已经有一份内容不同的技能/)).toBeInTheDocument();
     });
   });
 

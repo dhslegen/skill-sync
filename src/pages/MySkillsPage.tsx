@@ -52,6 +52,7 @@ export function MySkillsPage() {
     setAgentsBusy,
     setAgentsError,
     toolFailures,
+    toolFailuresFor,
     dismissToolFailures,
     beginShare,
     pull,
@@ -181,9 +182,28 @@ export function MySkillsPage() {
             {/* 判据是「有没有真的失败」,所以写成 `!== "differs"` 而不是列举失败档:
                 新增一档失败(终审 C-1/I-1 的 `location` 就是)时,列举式会**默认把
                 它算成温和提示**——那正是这一批修复要消灭的形状。 */}
-            {toolFailures.some((f) => f.kind !== "differs")
-              ? t("mine.toolsPartialFailed", { count: toolFailures.length })
-              : t("mine.toolsNeedLook", { count: toolFailures.length })}
+            {/* 🔴 v7 任务 6 修复轮 2(R19):这条横幅是全局的,用户对 A 打勾失败后
+                滚到别的技能那一行,横幅仍挂在页顶——不点名归属技能的话,读者会以为
+                说的是眼前这一行。**不能靠"没有归属就不显示"来解决**:`confirmRemove`
+                清空记账后那一行本身就从这一页消失了(见 `my-skills.ts` 模块注释,
+                这正是终审 C-1/I-1 修的那条"没删掉的东西要如实回报"),`toolFailuresFor`
+                对 remove/keepVersion 恒为 `null`——藏掉 `toolFailuresFor` 为空的
+                这条,等于把那两条修复过的失败又变回零渲染点。所以这里只**加名字**,
+                不加隐藏条件:有归属(`toolFailuresFor` 非空,只有 `setAgents` 会写)
+                就点名是哪个技能;没有归属(remove/keepVersion)照旧渲染,零回归。 */}
+            {toolFailuresFor
+              ? toolFailures.some((f) => f.kind !== "differs")
+                ? t("mine.toolsPartialFailedFor", {
+                    name: nameOf(toolFailuresFor),
+                    count: toolFailures.length,
+                  })
+                : t("mine.toolsNeedLookFor", {
+                    name: nameOf(toolFailuresFor),
+                    count: toolFailures.length,
+                  })
+              : toolFailures.some((f) => f.kind !== "differs")
+                ? t("mine.toolsPartialFailed", { count: toolFailures.length })
+                : t("mine.toolsNeedLook", { count: toolFailures.length })}
           </p>
           <ul className="mt-1 flex flex-col gap-1">
             {toolFailures.map((f, i) => (
@@ -256,7 +276,12 @@ export function MySkillsPage() {
       )}
       {setAgentsError && (
         <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
-          {t("mine.toolsFailed")}
+          {/* setAgentsError 只由 setAgents 写(唯一写点见 my-skills.ts),
+              toolFailuresFor 与它同一次 set() 落地,理论上恒非空;
+              仍留 nameOf 缺省(退回 dirSlug 本身)防御 index 里查不到的边界情况。 */}
+          {toolFailuresFor
+            ? t("mine.toolsFailedFor", { name: nameOf(toolFailuresFor) })
+            : t("mine.toolsFailed")}
           {t("punct.labelSeparator")}
           {setAgentsError.message}
         </p>

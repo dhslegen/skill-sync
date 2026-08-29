@@ -346,7 +346,9 @@
   "mine.toolBodyHint": "本体在这里",
   "mine.toolCopy": "副本",
   "mine.toolsFailed": "没能改动 AI 工具的启用状态",
+  "mine.toolsFailedFor": "没能改动「{name}」的 AI 工具启用状态",
   "mine.toolsPartialFailed": "有 {count} 处没能完成",
+  "mine.toolsPartialFailedFor": "「{name}」有 {count} 处没能完成",
   "mine.dismiss": "知道了",
   "mine.chooseVersion": "选择保留哪一份",
   "mine.versionKeep": "保留这一份",
@@ -395,6 +397,7 @@
   "mine.toolCanonical": "统一技能目录",
   "mine.locationOccupied": "那个位置上已经有一份内容不同的技能,没有覆盖它。",
   "mine.toolsNeedLook": "有 {count} 处需要你看一下",
+  "mine.toolsNeedLookFor": "「{name}」有 {count} 处需要你看一下",
   "mine.openFolderOf": "打开 {tool} 那个位置的文件夹",
   "mine.openFolderFailed": "打不开那个文件夹"
 }

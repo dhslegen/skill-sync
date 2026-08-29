@@ -169,8 +169,17 @@ function EachToolBlock({
 }) {
   const installedAgents = useMySkills((s) => s.installedAgents);
   const busy = useMySkills((s) => s.setAgentsBusy) === skill.dirSlug;
-  const failures = useMySkills((s) => s.toolFailures);
-  const setAgentsError = useMySkills((s) => s.setAgentsError);
+  // 🔴 跨技能状态泄漏(v7 任务 6 修复轮 2,R19):toolFailures/setAgentsError 是
+  // useMySkills 的全局字段(ToolBlocked 类型里没有 dirSlug)。不按 toolFailuresFor
+  // 过滤的话,用户对技能 A 打勾失败后不点「知道了」就打开技能 B 的详情,这里会显示
+  // A 的占用路径、「打开文件夹」按钮也会指向 A 的位置——从"零反馈"变成了
+  // "错误的反馈",对用户撒谎的是"哪个技能出了问题"。
+  const rawFailures = useMySkills((s) => s.toolFailures);
+  const rawSetAgentsError = useMySkills((s) => s.setAgentsError);
+  const failuresFor = useMySkills((s) => s.toolFailuresFor);
+  const mine = failuresFor === skill.dirSlug;
+  const failures = mine ? rawFailures : null;
+  const setAgentsError = mine ? rawSetAgentsError : null;
   const dismissToolFailures = useMySkills((s) => s.dismissToolFailures);
   // 这里裸算一遍 visibleTools 只是为了决定"有没有工具可显示",与 ToolChecks
   // 内部同一次调用结论必然一致(同一个函数、同一份输入)——耦合是隐式的:

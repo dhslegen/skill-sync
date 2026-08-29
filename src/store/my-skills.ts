@@ -138,6 +138,21 @@ interface MySkillsState {
    * 以为成了,实际那个工具里什么都没发生。所以这个字段一定要有渲染点。
    */
   toolFailures: ToolBlocked[] | null;
+  /**
+   * `toolFailures`/`setAgentsError` 归属的那个 `dirSlug`(v7 任务 6 修复轮 2,
+   * R19)——这两个字段是**全局**的(`ToolBlocked` 类型里没有 `dirSlug`),此前
+   * 只在 `MySkillsPage` 当页面级横幅渲染,语义上勉强成立(页面只有一份、
+   * 紧跟用户刚做的动作)。详情面板的 `WhereBlocks`(块 2)把同一份全局状态接了
+   * 进来,而它明确针对**某一个** `skill.dirSlug`——不按归属过滤的话,对技能 A
+   * 打勾失败后不点「知道了」就去开技能 B 的详情,B 的面板会显示 A 的占用路径,
+   * 「打开文件夹」按钮也指向 A 的位置:从"零反馈"变成了"**错误的反馈**"。
+   *
+   * 只在 `setAgents` 写入失败/错误时记下真实 `dirSlug`;`confirmRemove`/
+   * `keepVersion` 写 `toolFailures` 时统一清成 `null`(它们的失败不是"某个工具
+   * 勾"的失败,`EachToolBlock` 按设计就不该显示,清空比留一个错误的 dirSlug
+   * 更安全——错就错在"不显示",不会错成"显示给错的技能看")。
+   */
+  toolFailuresFor: string | null;
 
   /** 「有几个版本,留哪一份」待拍板;null = 没有。 */
   versionChoice: VersionChoice | null;
@@ -349,6 +364,7 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   setAgentsBusy: null,
   setAgentsError: null,
   toolFailures: null,
+  toolFailuresFor: null,
   versionChoice: null,
   keepBusy: false,
   keepError: null,
@@ -396,7 +412,9 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   confirmRemove: async () => {
     const { removeTarget } = get();
     if (!removeTarget) return;
-    set({ removePhase: "busy", removeError: null, toolFailures: null });
+    // confirmRemove 的失败不是"某个工具勾"的失败,EachToolBlock 不该显示它
+    // ——清成 null 而不是留着上一次 setAgents 可能写下的 dirSlug,防止误配对。
+    set({ removePhase: "busy", removeError: null, toolFailures: null, toolFailuresFor: null });
     try {
       // core 的 RemoveOutcome 只剩「已移除」一档:改过本体的二次确认已撤销,
       // 本体进系统废纸篓所以可逆。这里不再有 needsDecision 分支。
@@ -421,7 +439,9 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   },
 
   setAgents: async (dirSlug, agents) => {
-    set({ setAgentsBusy: dirSlug, setAgentsError: null, toolFailures: null });
+    // 🔴 归属在动作一开始就落定(R19):不管这一轮成功还是失败,只要
+    // toolFailures/setAgentsError 之后被写入非空值,它们说的都是这个 dirSlug。
+    set({ setAgentsBusy: dirSlug, setAgentsError: null, toolFailures: null, toolFailuresFor: dirSlug });
     try {
       const outcome = await skillSetAgents({ dirSlug, agents });
       if (outcome.outcome === "needsVersionChoice") {
@@ -449,7 +469,9 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   },
 
   keepVersion: async (dirSlug, keepPath) => {
-    set({ keepBusy: true, keepError: null, toolFailures: null });
+    // 同 confirmRemove:keepVersion 的失败按位置报,不是"某个工具勾"的失败,
+    // EachToolBlock 不该显示它,清成 null 防止误配对。
+    set({ keepBusy: true, keepError: null, toolFailures: null, toolFailuresFor: null });
     try {
       const report = await skillKeepVersion({ dirSlug, keepPath });
       const pending = get().versionChoice;
@@ -487,7 +509,8 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
 
   cancelVersionChoice: () => set({ versionChoice: null, keepError: null }),
 
-  dismissToolFailures: () => set({ toolFailures: null, setAgentsError: null }),
+  dismissToolFailures: () =>
+    set({ toolFailures: null, setAgentsError: null, toolFailuresFor: null }),
 
   beginShare: (dirSlug) => {
     set({ shareTarget: { dirSlug }, shareError: null, shareDone: null });

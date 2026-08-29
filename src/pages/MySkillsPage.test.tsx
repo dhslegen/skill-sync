@@ -131,6 +131,7 @@ function reset() {
     setAgentsBusy: null,
     setAgentsError: null,
     toolFailures: null,
+    toolFailuresFor: null,
     versionChoice: null,
     keepBusy: false,
     keepError: null,
@@ -810,6 +811,51 @@ describe("勾选工具的失败必须看得见", () => {
     });
     render(<MySkillsPage />);
     await screen.findByText(/统一技能目录 那个位置上已经有一份内容不同的技能/);
+  });
+
+  // v7 任务 6 修复轮 2(R19):toolFailures/setAgentsError 是全局字段,横幅此前
+  // 不点名归属技能——用户对 A 打勾失败后滚到别的技能那一行,横幅仍挂在页顶,
+  // 读者会以为说的是眼前这一行。**不能靠"没有归属就不显示"来解决**(见下面
+  // 那条"没有归属"的对照):remove 清账后那一行本身就从这一页消失了,
+  // `toolFailuresFor` 对 remove/keepVersion 恒为 null,硬要求"有归属才显示"
+  // 会让那两类失败又变回零渲染点,重演终审 C-1/I-1。所以只加名字,不加隐藏条件。
+  it("有归属(setAgents 来源)时,横幅点名是哪个技能,不再语焉不详", async () => {
+    seedIpc([view()]);
+    seedIndex();
+    useMySkills.setState({
+      toolFailures: [{ kind: "differs", agent: "trae", existing: "/x" }],
+      toolFailuresFor: "weekly-report",
+    });
+    render(<MySkillsPage />);
+    await screen.findByText(/「周报生成」有 1 处需要你看一下/);
+  });
+
+  it("setAgentsError 同样点名归属技能", async () => {
+    seedIpc([view()]);
+    seedIndex();
+    useMySkills.setState({
+      setAgentsError: { code: "FS_LINK_FAILED", message: "统一目录那一处没配上" },
+      toolFailuresFor: "weekly-report",
+    });
+    render(<MySkillsPage />);
+    await screen.findByText(/没能改动「周报生成」的 AI 工具启用状态/);
+  });
+
+  it("没有归属(remove/keepVersion 来源,toolFailuresFor 为 null)时不点名,零回归", async () => {
+    seedIpc([view()]);
+    seedIndex();
+    useMySkills.setState({
+      toolFailures: [
+        { kind: "location", path: "/h/.trae/skills/weekly-report", message: "移到废纸篓失败" },
+      ],
+      toolFailuresFor: null,
+    });
+    render(<MySkillsPage />);
+    await screen.findByText(/有 1 处没能完成/);
+    // 缩窄到"没有把这个技能的展示名点进横幅"这件事本身,不用宽泛的「」扫描
+    // ——页面别处(比如项目分区的空态提示)也含中文书名号,泛扫描会把无关内容
+    // 算成假阳性。
+    expect(screen.queryByText(/「周报生成」/)).not.toBeInTheDocument();
   });
 
   it("没有失败时不摆那个框", async () => {
