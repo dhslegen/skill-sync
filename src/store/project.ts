@@ -104,7 +104,15 @@ interface ProjectState {
    * universal agent(如 cursor/codex)不摆:项目级 `current_agents`/`link_dirs`
    * 都跳过它们(它们的 `skillsDir` 落在 `.agents/skills`,与本体同一处,
    * 点了也没有效果),摆出来就是一个死勾。
-   * `null` = 探测失败,这时**不收窄**(拿"不知道"当"没有"是另一种撒谎)。
+   *
+   * 🔴 `null` = 探测失败。这里**没有**"通用"页 `ToolChecks`(R21)那种
+   * "不收窄"可用——那条规则的前提是有一份不受探测影响的全量列表可退(`tools`
+   * 就是),而项目 picker 的候选**唯一**来源就是 `agents_detected`,失败了
+   * 没有全量可退,candidates 只能是空。**空不等于"这台机器没有可选的工具"**,
+   * 是两件不同的事:界面必须按 `pickableAgents === null` 单独走一句失败态文案
+   * (`mine.projectToolsUnknown`),不能把它并进"候选为空"那一档说成"没有能
+   * 改选的工具"——那是一句假话。已经关联的工具(`skill.agents`)不受这条影响,
+   * 仍然照常显示、可以取消勾选,只是没法新增。
    */
   pickableAgents: DetectedAgent[] | null;
 
@@ -227,8 +235,9 @@ export const useProjects = create<ProjectState>((set, get) => ({
         pickableAgents: detected.agents.filter((a) => a.installed && !a.isUniversal),
       });
     } catch {
-      // 拿不到就先用内部名顶着、也不收窄 picker:探测失败不该让整页挂掉,
-      // 更不该让能改选的工具凭空消失(与 `useMySkills.load` 同一姿态)。
+      // 探测失败不该让整页挂掉——但候选**确实**只能归零(没有全量列表可退,
+      // 见 `pickableAgents` 的字段 doc)。留下 `null` 而不是 `[]`,是为了让
+      // 界面分得清"候选为空"与"探测失败、候选未知"这两件事,走不同的文案。
       set({ pickableAgents: null });
     }
   },

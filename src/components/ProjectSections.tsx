@@ -195,6 +195,12 @@ function ProjectSkillRow({
   // 探测出来的候选列表——藏起来的已启用工具不能被静默停用(与「通用」页
   // `ToolChecks` 的 R21 同一条纪律)。`pickableAgents` 只管**显示**哪些候选,
   // 已经关联但没被探测认出来的那些仍然作为独立一项摆出来,不会从名单里消失。
+  //
+  // 🔴 `pickableAgents === null`(探测失败)时 `candidates` 只能是空——这里
+  // **没有**全量列表可退(项目 picker 的候选唯一来源就是 `agents_detected`,
+  // 不像「通用」页 `ToolChecks` 有 `tools` 兜底)。空 ≠ "没有可选的工具",
+  // 两者的界面文案必须分开(见下面渲染那一段),不能让"探测失败"读起来像
+  // "这台机器确实没有工具能选"——那是一句假话。
   const currentAgents = skill.agents ?? [];
   const candidates = pickableAgents ?? [];
   const candidateNames = new Set(candidates.map((a) => a.name));
@@ -232,6 +238,7 @@ function ProjectSkillRow({
           type="button"
           data-testid={`prow-${skill.key}-body`}
           aria-label={t("mine.projectToggleTools", { name: skill.displayName })}
+          aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)}
           className="group flex min-w-0 flex-1 items-center gap-3 text-left"
         >
@@ -255,6 +262,7 @@ function ProjectSkillRow({
             <button
               type="button"
               disabled={busy}
+              title={t("mine.projectRemoveHint")}
               onClick={() => {
                 setConfirmingRemove(false);
                 void remove(projectPath, skill.key, true);
@@ -292,7 +300,23 @@ function ProjectSkillRow({
 
       {expanded && (
         <div className="border-t border-border bg-surface-2/40 px-3.5 py-2.5">
-          {items.length === 0 ? (
+          {/* 🔴 I1 修复:"探测失败,候选未知"与"探测成功,确实没有可选的工具"
+              是两件不同的事,不能合并成同一句"这台机器上没有能改选的工具"
+              ——前者是假话。`pickableAgents === null` 单独判,且不拦已关联的
+              工具继续显示(仍然可以取消勾选,只是没法新增)。 */}
+          {pickableAgents === null ? (
+            <>
+              <p className="text-[11.5px] text-text-3">{t("mine.projectToolsUnknown")}</p>
+              {items.length > 0 && (
+                <ToolPicker
+                  items={items}
+                  onToggle={handleToggle}
+                  disabled={setAgentsBusy === skill.key}
+                  layout="list"
+                />
+              )}
+            </>
+          ) : items.length === 0 ? (
             <p className="text-[11.5px] text-text-3">{t("mine.projectNoTools")}</p>
           ) : (
             <ToolPicker

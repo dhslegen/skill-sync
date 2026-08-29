@@ -20,6 +20,12 @@ const AGENT_FIXTURES = [
   // universal agent 摆进探测结果里,验证它不会混进 picker——项目级
   // current_agents/link_dirs 都跳过它,摆出来就是一个点了没效果的死勾。
   { name: "cursor", displayName: "Cursor", installed: true, isUniversal: true, needsLink: false, disabled: false },
+  // 🔴 M2 修复:真实 `agents_detected` 是 `detect_all`,注册表里的 75 个 agent
+  // **全部**出现,没装的那些带 `installed: false`——不是"这台机器没探测到就
+  // 从列表里消失"。zed 摆在这里就是这个真实形态:候选(installed 的那些)里
+  // 没有它,但 `agentNames` 这份全量 name→displayName 映射里有,所以"已关联
+  // 但没被探测装上"的那一档仍然能解析出真实展示名,不会退回内部 id。
+  { name: "zed", displayName: "Zed", installed: false, isUniversal: false, needsLink: true, disabled: false },
 ];
 
 function skill(over: Partial<ProjectSkillView> = {}): ProjectSkillView {
@@ -183,6 +189,11 @@ describe("项目分区", () => {
     await userEvent.click(within(row).getByRole("button", { name: "更多" }));
     await userEvent.click(screen.getByRole("menuitem", { name: "移除" }));
 
+    // 🔴 M1 修复:正面断言确认块真的渲染出来了,不能只断言"没有说谎的词"
+    // ——那种断言区分不了"文案对"和"整个确认块没渲染出来"。
+    expect(
+      screen.getByText('从这个文件夹移除「React 最佳实践」?'),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/废纸篓/)).toBeNull();
     expect(screen.queryByText(/可以找回/)).toBeNull();
   });
@@ -239,13 +250,12 @@ describe("项目分区", () => {
 describe("v7 任务 8:项目卡片压扁", () => {
   it("项目名与路径挤在标题行同一行,不再各占一行", async () => {
     seed([group()]);
-    const { container } = render(<ProjectSections />);
+    render(<ProjectSections />);
     await screen.findByText("我的项目");
 
     const name = screen.getByText("我的项目");
     const path = screen.getByText("/w/我的项目");
     expect(name.parentElement).toBe(path.parentElement);
-    void container;
   });
 
   it("项目级动作在卡片标题行的「…」里", async () => {
@@ -271,6 +281,82 @@ describe("v7 任务 8:项目行事后改选工具", () => {
     expect(lastInvoke("project_skill_set_agents")?.args.agentIds).toContain("junie");
   });
 
+  it("🔴 I2:取消勾选也要真的从提交名单里去掉,不能恒加", async () => {
+    seedProjects([
+      group({
+        folderName: "erp",
+        path: "/w/erp",
+        skills: [
+          skill({
+            key: "weekly-report",
+            displayName: "weekly-report",
+            agents: ["claude-code", "junie"],
+          }),
+        ],
+      }),
+    ]);
+    render(<ProjectSections />);
+    await screen.findByText("weekly-report");
+
+    await userEvent.click(screen.getByTestId("prow-weekly-report-body"));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Junie" }));
+
+    // 🔴 用 toEqual,不用 arrayContaining——后者拦不住"多发了一个"(比如
+    // 取消勾选那一支坏成恒加,提交出去的仍然含 junie,arrayContaining 照样通过)。
+    const call = lastInvoke("project_skill_set_agents");
+    expect(call?.args.agentIds).toEqual(["claude-code"]);
+  });
+
+  it("🔴 I1:这台机器的工具列表探测失败时,走独立的失败态文案,不能说成没有能改选的工具", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "project_list") return [proj("erp", ["weekly-report"])];
+      if (cmd === "agents_detected") throw { code: "IPC_FAILED", message: "探测失败" };
+      return null;
+    });
+    render(<ProjectSections />);
+    await screen.findByText("weekly-report");
+
+    await userEvent.click(screen.getByTestId("prow-weekly-report-body"));
+
+    // "探测失败,候选未知" 与 "确实没有可选的工具" 是两件不同的事,不能说成后者
+    await screen.findByText(/暂时读不到这台机器上的工具列表/);
+    expect(screen.queryByText("这台机器上没有能改选的工具")).toBeNull();
+  });
+
+  it("探测失败时,已经关联的工具仍然显示、仍能取消勾选", async () => {
+    // 模拟"上一次刷新探测成功过,这一次失败"——比"从第一次就没成功过"更贴近
+    // 真实场景(agents_detected 是本机同步探测,基本不会失败;失败的更可能是
+    // 后续某一次刷新)。这样 agentNames 里已经有 junie 的真实展示名,断言不会
+    // 无意中把"内部 id 上屏"这个边界情形钉成预期行为。
+    useProjects.setState({ agentNames: new Map([["junie", "Junie"]]) });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "project_list") {
+        return [
+          group({
+            folderName: "erp",
+            path: "/w/erp",
+            skills: [
+              skill({ key: "weekly-report", displayName: "weekly-report", agents: ["junie"] }),
+            ],
+          }),
+        ];
+      }
+      if (cmd === "agents_detected") throw { code: "IPC_FAILED", message: "探测失败" };
+      return null;
+    });
+    render(<ProjectSections />);
+    await screen.findByText("weekly-report");
+
+    await userEvent.click(screen.getByTestId("prow-weekly-report-body"));
+
+    const junieBox = screen.getByRole("checkbox", { name: "Junie" });
+    expect(junieBox).toBeChecked();
+
+    await userEvent.click(junieBox);
+    const call = lastInvoke("project_skill_set_agents");
+    expect(call?.args.agentIds).toEqual([]);
+  });
+
   it("universal agent(如 cursor)不摆进 picker —— 落点与本体同一处,点了没有效果", async () => {
     seedProjects([proj("erp", ["weekly-report"])]);
     render(<ProjectSections />);
@@ -292,9 +378,12 @@ describe("v7 任务 8:项目行事后改选工具", () => {
     await screen.findByText("weekly-report");
 
     await userEvent.click(screen.getByTestId("prow-weekly-report-body"));
-    // zed 不在 AGENT_FIXTURES 的候选列表里,但已经关联,必须仍然可见且是勾上的
-    const zedBox = screen.getByRole("checkbox", { name: /zed/ });
+    // zed 没被这台机器探测装上(installed:false),不在候选(可勾选安装项)
+    // 里,但已经关联,必须仍然可见且是勾上的——展示名走真实的 "Zed",
+    // 不是内部 id "zed"(内部标识不能上屏,本仓已踩过两次)。
+    const zedBox = screen.getByRole("checkbox", { name: "Zed" });
     expect(zedBox).toBeChecked();
+    expect(screen.queryByText("zed")).toBeNull();
 
     // 再勾一个 Junie,提交名单必须仍含 zed(藏起来的已启用工具不能被静默停用)
     await userEvent.click(screen.getByRole("checkbox", { name: /Junie/ }));
