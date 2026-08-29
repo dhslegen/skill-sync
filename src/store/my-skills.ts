@@ -107,6 +107,22 @@ interface MySkillsState {
    * 勾组要按它过滤,见 {@link visibleTools} 的理由。
    */
   installedAgents: Set<string> | null;
+  /**
+   * 统一技能目录的绝对路径(`agents_detected` 的 `canonicalDir`)。
+   *
+   * 详情面板「这台电脑上」那句话(`bodyLocationText`)靠它判断本体是不是住在
+   * 这个位置——**不按目录反查 agent**(那正是"Zed 本体在这里"那个真实缺陷的
+   * 根因:6 个 agent 的全局目录恰好都是这里,反查会随机点名其中一个)。
+   * 探测失败或还没加载完时是空串,`bodyLocationText` 对空串一律不命中,
+   * 落进"这台电脑上"那句中性兜底话,不撒谎。
+   */
+  canonicalDir: string;
+  /**
+   * agent 内部名 → 该 agent 的全局技能目录(`agents_detected` 全量给出,
+   * **不按"这台机器装没装"过滤**——本体是否住在某个工具专属目录,是一句
+   * 路径事实,与这台机器探测不探测得到那个工具无关)。
+   */
+  toolDirs: Map<string, string>;
 
   removePhase: RemovePhase;
   removeTarget: string | null;
@@ -325,6 +341,8 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   loading: false,
   agentNames: new Map(),
   installedAgents: null,
+  canonicalDir: "",
+  toolDirs: new Map(),
   removePhase: "idle",
   removeTarget: null,
   removeError: null,
@@ -355,6 +373,12 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
         agentNames: new Map(detected.agents.map((a) => [a.name, a.displayName])),
         installedAgents: new Set(
           detected.agents.filter((a) => a.installed).map((a) => a.name),
+        ),
+        canonicalDir: detected.canonicalDir ?? "",
+        toolDirs: new Map(
+          detected.agents
+            .filter((a): a is typeof a & { globalSkillsDir: string } => !!a.globalSkillsDir)
+            .map((a) => [a.name, a.globalSkillsDir]),
         ),
       });
     } catch {

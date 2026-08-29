@@ -6,6 +6,7 @@ import { InstallPanel } from "@/components/InstallPanel";
 import { InstalledScopes } from "@/components/InstalledScopes";
 import { Markdown } from "@/components/Markdown";
 import { SkillIcon } from "@/components/SkillIcon";
+import { WhereBlocks } from "@/components/WhereBlocks";
 import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { formatBytes, relativeTimeFromIso, shortSha } from "@/lib/format";
@@ -19,6 +20,7 @@ import {
   type SkillDetail,
 } from "@/lib/ipc";
 import { useLocalDetail } from "@/store/local-detail";
+import { useMySkills } from "@/store/my-skills";
 import { locatePlazaSkill, usePlaza } from "@/store/plaza";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
@@ -120,6 +122,30 @@ export function DetailPanel() {
   );
 }
 
+/**
+ * 「在哪」三块要用的 `InstalledSkillView`——`PanelBody`(商店/广场详情)与
+ * `LocalPanelBody`(本地详情,「我的技能」的行打开的就是这一条路径)共用同一份
+ * 查找逻辑:按 `dirSlug` 在 `useMySkills().list` 里找。找不到(浏览商店里一个
+ * 从没在这台电脑上出现过的技能)就不渲染「在哪」——那三块本就是在回答"这台电脑上
+ * 这个技能的情况",没有 `InstalledSkillView` 就没有可回答的东西。
+ *
+ * `list` 在 App 启动时已经会加载一次(侧边栏角标需要它),这里的 `load()` 只是
+ * 防御性兜底——直接从商店页快速打开详情、或测试环境没有走过启动路径时,
+ * 保证这一块不会因为"还没来得及拉"而永远空着。
+ */
+function useWhereSkill(dirSlug: string) {
+  const list = useMySkills((s) => s.list);
+  const agentNames = useMySkills((s) => s.agentNames);
+  const load = useMySkills((s) => s.load);
+
+  useEffect(() => {
+    if (list === null) void load();
+  }, [list, load]);
+
+  const skill = list?.find((s) => s.dirSlug === dirSlug) ?? null;
+  return { skill, agentNames };
+}
+
 /** 「在访达/资源管理器中打开」的按钮文案按平台挑。webview 里没有可靠的 OS API,
  *  userAgent 足够区分三档——挑错平台也只是措辞不地道,不影响行为。 */
 export function revealLabel(userAgent: string): string {
@@ -131,6 +157,7 @@ export function revealLabel(userAgent: string): string {
 function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
   const { close, reveal, revealError } = useLocalDetail();
   const [tab, setTab] = useState<"readme" | "files">("readme");
+  const { skill, agentNames } = useWhereSkill(detail.dirSlug);
 
   return (
     <>
@@ -161,6 +188,8 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
           />
         </div>
       </div>
+
+      {skill && <WhereBlocks skill={skill} agentNames={agentNames} />}
 
       <div className="flex gap-0.5 px-5 pt-2.5" role="tablist">
         <Tab selected={tab === "readme"} onClick={() => setTab("readme")}>
@@ -352,6 +381,7 @@ function PanelBody({
   const closePlaza = usePlaza((s) => s.closeDetail);
   const closeDetail = plaza ? closePlaza : closeDetailStore;
   const [tab, setTab] = useState<"readme" | "files">("readme");
+  const { skill: whereSkill, agentNames: whereAgentNames } = useWhereSkill(detail.dirSlug);
 
   // 「这是我分享的」(v6 任务 5)的门槛:`useSession` 只反映**内建源**的登录态
   // (`auth_status` 不带 registryId),`claim_attribution` 也只有 Gitea 型的库支持
@@ -413,6 +443,8 @@ function PanelBody({
           )}
         </div>
       </div>
+
+      {whereSkill && <WhereBlocks skill={whereSkill} agentNames={whereAgentNames} />}
 
       <div className="flex gap-0.5 px-5 pt-2.5" role="tablist">
         <Tab selected={tab === "readme"} onClick={() => setTab("readme")}>

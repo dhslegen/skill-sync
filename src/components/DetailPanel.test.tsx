@@ -3,9 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { contributorsText, DetailPanel, revealLabel, stripFrontmatter } from "./DetailPanel";
-import type { LocalSkillDetail, SkillDetail } from "@/lib/ipc";
+import type { InstalledSkillView, LocalSkillDetail, SkillDetail } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
+import { useMySkills } from "@/store/my-skills";
 import { usePlaza } from "@/store/plaza";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
@@ -311,10 +312,71 @@ function openLocal(over: Partial<LocalSkillDetail> = {}) {
   return d;
 }
 
+const installedView = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
+  dirSlug: "weekly-report",
+  commitSha: "a1b2c3d",
+  contentHash: "sha256:base",
+  agents: ["claude-code"],
+  installedAt: "2026-08-01T00:00:00.000Z",
+  updatedAt: "2026-08-01T00:00:00.000Z",
+  localModified: false,
+  sourceOwner: "skills",
+  sourceRepo: "skills",
+  registryId: "company",
+  sourceRemoved: false,
+  libraryRemoved: false,
+  relation: "installed",
+  localPresent: true,
+  sourceLabel: "skills/skills",
+  body: "/home/u/.agents/skills/weekly-report",
+  localHash: "sha256:base",
+  tools: [{ agent: "claude-code", state: "linked" }],
+  versions: [],
+  shareBlocked: null,
+  section: "installedFrom",
+  review: null,
+  ...over,
+});
+
 describe("DetailPanel(本地详情模式)", () => {
   beforeEach(() => {
     useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
     useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    // 每条用例都显式给出这一份数据,不依赖上一条用例残留的 useMySkills 全局状态。
+    useMySkills.setState({
+      list: null,
+      agentNames: new Map(),
+      installedAgents: null,
+      canonicalDir: "",
+      toolDirs: new Map(),
+    });
+  });
+
+  it("能打开一个不在商店索引里的技能,且详情面板显示「在哪」三块(v7 任务 6 DoD)", () => {
+    // 🔴 这个技能只在 useMySkills().list 里,商店索引(useStoreIndex)对它一无所知
+    // ——真实场景就是「我的技能」页的行:点开走的是 useLocalDetail,不是商店详情。
+    useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null, index: null });
+    useMySkills.setState({
+      list: [installedView()],
+      agentNames: new Map([["claude-code", "Claude Code"]]),
+      installedAgents: null,
+      canonicalDir: "/home/u/.agents/skills",
+      toolDirs: new Map([["claude-code", "/home/u/.claude/skills"]]),
+    });
+    openLocal();
+    render(<DetailPanel />);
+    const titles = screen.getAllByTestId("where-title").map((e) => e.textContent);
+    expect(titles).toEqual(["这台电脑上", "各个工具里", "技能库里"]);
+    // 本体在统一目录:界面必须说「统一技能目录」,不点名任何工具
+    // ——修的就是"Zed 本体在这里"那个真实缺陷。
+    expect(screen.getByText(/统一技能目录/)).toBeInTheDocument();
+  });
+
+  it("这个技能不在 useMySkills().list 里时,「在哪」三块整体不出现,面板其余部分照常打开", () => {
+    openLocal();
+    render(<DetailPanel />);
+    expect(screen.queryByTestId("where-title")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "周报生成" })).toBeInTheDocument();
   });
 
   it("渲染名称、本地路径与正文;没有安装面板", () => {
