@@ -479,6 +479,34 @@ export interface InstalledSkillView {
   /** 分享前的标准校验没过的话,是哪一条。`null` = 可以分享。
    *  本地没有本体的行恒 `null`(没什么可校验的)。 */
   shareBlocked: ShareBlock | null;
+  /**
+   * 「我的技能」页按**公司技能库**分的三区(v7,`core::ownership::section(relation)`
+   * 的**唯一**填法,前端直接按它分区,不再自己从 {@link relation} 推)。
+   *
+   * `installedFrom` = 安装自公司技能库(库里有,作者不是我);
+   * `sharedTo` = 已分享到公司技能库(库里有,作者是我);
+   * `shareable` = 可分享到公司技能库(不在公司库:本地草稿,或从广场/GitHub/
+   * 自定义源装的)。
+   */
+  section: Section;
+  /**
+   * 「可分享到」区的审核态(v7)。有它就是"审核中"——界面据此隐藏「分享」按钮,
+   * 避免用户重复提交。`null` = 从没分享过,或这次查询失败又没有本地兜底证据,
+   * 两者在界面上是同一档"可以分享"。
+   *
+   * 🔴 `url` 本身可能是 `null`(直推进 main 留下的记录、或 v7 之前的存量记录都
+   * 没有 PR 链接可给,但记录本身仍然成立"审核中"这件事)——**不要用空串冒充
+   * 链接**,按 `null` 判断要不要显示可点的「查看审核」。
+   */
+  review: ReviewView | null;
+}
+
+/** 「我的技能」页按公司技能库分的三区(`core::ownership::Section`)。 */
+export type Section = "installedFrom" | "sharedTo" | "shareable";
+
+/** 「可分享到」区的审核态(`core::my_skills::ReviewView`)。 */
+export interface ReviewView {
+  url: string | null;
 }
 
 /**

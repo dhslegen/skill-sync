@@ -23,7 +23,7 @@
 //   没读过那个字段——**注释说谎的那个版本正是终审 C-3 的现场**,别把它抄回来。
 import { create } from "zustand";
 
-import { t } from "@/i18n";
+import { t, type MessageKey } from "@/i18n";
 import {
   agentsDetected,
   installedList,
@@ -38,12 +38,14 @@ import {
   type Converged,
   type KeepReport,
   type RustResult,
+  type Section,
   type SetAgentsOutcome,
   type ShareMode,
   type SkillVersion,
   type ToolView,
   type UninstallReport,
 } from "@/lib/ipc";
+import { rowAction, type RowAction } from "@/lib/ownership";
 import { remoteHashOf } from "@/lib/update";
 import { defaultSelectedAgents, useInstall } from "@/store/install";
 import { useShare } from "@/store/share";
@@ -504,7 +506,12 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   },
 
   shareChanges: async (dirSlug) => {
-    await runShareChanges(dirSlug, false, set, get);
+    // 🔴 v7:「安装自」那一区的贡献更改一律走提交审核,不看权限矩阵
+    // ——那不是我的技能,即便我有直推权限,作者也该先看一眼。「已分享到」
+    // 那一区不强制,走正常的权限分流(与既有回推权限矩阵一致)。
+    const skill = get().list?.find((s) => s.dirSlug === dirSlug);
+    const forceReview = skill?.section === "installedFrom";
+    await runShareChanges(dirSlug, forceReview, set, get);
   },
 
   shareUpdate: async (dirSlug) => {
@@ -644,18 +651,26 @@ export function localEqualsRemote(
 }
 
 /**
- * 侧边栏角标的计数(M6 任务 3)。
+ * 侧边栏角标的计数(M6 任务 3;v7 改按 `rowAction` 重新定义)。
  *
- * **必须逐条走 `hasUpdate`**,不另写一套判定——角标与页内状态是同一件事的两个说法,
- * 口径一漂就会出现"角标说 3、点进去只有 1"。草稿/来源已移除两档由
- * `hasUpdate` 统一判掉:它们没有更新去处,计进角标就是虚报。
+ * 🔴 **v7 起不再是"逐条走 `hasUpdate`"**:v6 的两分区页只有"有没有更新"这一个
+ * 问题要回答,`hasUpdate` 恰好就是答案;v7 三区页里,`remoteChanged` 为真时
+ * 主按钮可能是「更新」,也可能是「库里有新版…」三选一冲突框(`installedFrom`
+ * 本地也改过、或 `sharedTo` 库被别人改过)——角标说的是「全部更新」那颗批量
+ * 按钮能一键处理几条(见任务 7 的页头总览),冲突行需要用户拍板,不在其列,
+ * 计进角标就是"角标说 3、点了「全部更新」只处理了 1"的重演。
+ *
+ * 所以这里改成:先用 `hasUpdate` 算出 `remoteChanged`(逐技能比内容指纹、
+ * 比到技能库这套既有判据完全不变,草稿/来源已移除两档仍由它统一判掉),
+ * 再喂给 `rowAction` 求出这一行**此刻的主按钮**,只数 `kind === "update"` 的行。
  */
 export function updateCount(
   list: InstalledSkillView[] | null | undefined,
   index: Parameters<typeof hasUpdate>[1],
 ): number {
   if (!list) return 0;
-  return list.filter((skill) => hasUpdate(skill, index)).length;
+  return list.filter((skill) => rowAction(skill, hasUpdate(skill, index)).kind === "update")
+    .length;
 }
 
 export interface MySkillsSection {
@@ -685,5 +700,58 @@ export function sections(list: InstalledSkillView[]): MySkillsSection[] {
       items: list.filter((s) => s.relation === "installed"),
     },
   ];
+  return all.filter((sec) => sec.items.length > 0);
+}
+
+// ---------------------------------------------------------------------------
+// v7:「我的技能」重设计的三区(按公司技能库分:安装自 / 已分享到 / 可分享到)。
+//
+// 🔴 **按 R1 裁定,本任务不删上面的两分区 `sections`/`MySkillsSection`**
+// ——`MySkillsPage.tsx:306` 至今仍在调用它(v6 二期的旧页面)。两套实现同名会撞,
+// 所以新的这一套改叫 `librarySections`/`LibrarySection`,任务 7 重写整页时把
+// 旧的删掉、把这一套的调用方接上、也可以顺手把名字改回 brief 给的
+// `sections`/`MySkillsSection`(那时旧实现的唯一消费者已经不存在了)。
+// ---------------------------------------------------------------------------
+
+export interface LibrarySection {
+  key: Section;
+  title: string;
+  items: InstalledSkillView[];
+}
+
+/** 三区固定顺序(design 根决策 #2,用户拍板的理由:"原创必然少于安装;
+ *  从商店跳过来的心流是先看装了些啥")。 */
+const LIBRARY_SECTION_TITLES: { key: Section; title: MessageKey }[] = [
+  { key: "installedFrom", title: "mine.sectionInstalledFrom" },
+  { key: "sharedTo", title: "mine.sectionSharedTo" },
+  { key: "shareable", title: "mine.sectionShareable" },
+];
+
+/**
+ * 「我的技能」v7 三区(按公司技能库分,取代上面的两分区)。
+ *
+ * 顺序固定:安装自 → 已分享到 → 可分享到,空区不出现(调用方不用再判)。
+ *
+ * `action` 由调用方传入(通常就是 {@link rowAction} 部分应用了 `remoteChanged`
+ * 之后的结果)——这个函数本身不算"库里新不新",只管分区与排序,与
+ * `rowAction` 判定表分工明确、不重叠。
+ *
+ * 区内排序:**有主按钮的行置顶,其余按名字**(design 根决策 #9)。两组各自都
+ * 按 `dirSlug` 字典序稳定排序(brief 给的例子只覆盖了"其余"那一组内部要按名字
+ * 排,但"置顶"那一组若不给出一个确定顺序,同一份数据在两次渲染之间就可能跳动
+ * ——用同一把尺子排序,而不是留一个未定义的相对顺序)。
+ */
+export function librarySections(
+  list: InstalledSkillView[],
+  action: (skill: InstalledSkillView) => RowAction,
+): LibrarySection[] {
+  const byName = (a: InstalledSkillView, b: InstalledSkillView) =>
+    a.dirSlug.localeCompare(b.dirSlug);
+  const all: LibrarySection[] = LIBRARY_SECTION_TITLES.map(({ key, title }) => {
+    const rows = list.filter((s) => s.section === key);
+    const withAction = rows.filter((s) => action(s).kind !== "none").sort(byName);
+    const rest = rows.filter((s) => action(s).kind === "none").sort(byName);
+    return { key, title: t(title), items: [...withAction, ...rest] };
+  });
   return all.filter((sec) => sec.items.length > 0);
 }

@@ -34,6 +34,8 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   tools: [],
   versions: [],
   shareBlocked: null,
+  section: "shareable",
+  review: null,
   ...over,
 });
 

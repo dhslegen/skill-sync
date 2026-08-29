@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { hasUpdate, localEqualsRemote, sections, updateCount, useMySkills } from "./my-skills";
+import {
+  hasUpdate,
+  librarySections,
+  localEqualsRemote,
+  sections,
+  updateCount,
+  useMySkills,
+} from "./my-skills";
+import { t } from "@/i18n";
 import { useInstall } from "@/store/install";
 import { useShare } from "@/store/share";
 import type { InstalledSkillView } from "@/lib/ipc";
@@ -30,6 +38,8 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   tools: [],
   versions: [],
   shareBlocked: null,
+  section: "installedFrom",
+  review: null,
   ...over,
 });
 
@@ -1114,6 +1124,134 @@ describe("更新判定与更新动作", () => {
     const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
     expect(call?.[1].args.dirSlug).toBe("weekly-report");
     expect(useMySkills.getState().shareDone).toEqual({ dirSlug: "weekly-report", mode: "pushed" });
+  });
+});
+
+describe("shareChanges 的 forceReview(v7):安装自那一区恒走评审,已分享到不强制", () => {
+  beforeEach(reset);
+
+  function stubShareChanges() {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_share_changes")
+        return { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null };
+      if (cmd === "installed_list") return useMySkills.getState().list ?? [];
+      return AGENTS;
+    });
+  }
+
+  it("安装自那一区的贡献更改一律走提交审核 —— 不看权限矩阵", async () => {
+    useMySkills.setState({
+      list: [view({ dirSlug: "weekly-report", section: "installedFrom", localModified: true })],
+    });
+    stubShareChanges();
+
+    await useMySkills.getState().shareChanges("weekly-report");
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
+    expect(call?.[1].args.forceReview).toBe(true);
+  });
+
+  it("已分享到那一区的分享改动不强制评审 —— 走正常权限分流", async () => {
+    useMySkills.setState({
+      list: [view({ dirSlug: "rcs-generator", section: "sharedTo", localModified: true })],
+    });
+    stubShareChanges();
+
+    await useMySkills.getState().shareChanges("rcs-generator");
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
+    expect(call?.[1].args.forceReview).toBe(false);
+  });
+
+  it("可分享到那一区同样不强制(只有安装自才强制)", async () => {
+    useMySkills.setState({
+      list: [view({ dirSlug: "my-draft", section: "shareable", localModified: true })],
+    });
+    stubShareChanges();
+
+    await useMySkills.getState().shareChanges("my-draft");
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
+    expect(call?.[1].args.forceReview).toBe(false);
+  });
+});
+
+describe("librarySections(v7 三区)", () => {
+  const noneAction = () => ({ kind: "none" as const });
+
+  it("三区顺序固定,空区不出现", () => {
+    const list = [
+      view({ dirSlug: "a", section: "shareable" }),
+      view({ dirSlug: "b", section: "installedFrom" }),
+    ];
+    expect(librarySections(list, noneAction).map((s) => s.key)).toEqual([
+      "installedFrom",
+      "shareable",
+    ]);
+  });
+
+  it("有主按钮的行置顶,其余按名字", () => {
+    const list = [
+      view({ dirSlug: "zeta", section: "installedFrom" }),
+      view({ dirSlug: "alpha", section: "installedFrom" }),
+      view({ dirSlug: "beta", section: "installedFrom" }),
+    ];
+    const act = (s: InstalledSkillView) =>
+      s.dirSlug === "zeta" ? ({ kind: "update" as const }) : noneAction();
+    expect(librarySections(list, act)[0]?.items.map((s) => s.dirSlug)).toEqual([
+      "zeta",
+      "alpha",
+      "beta",
+    ]);
+  });
+
+  it("每区只收自己那一档,不串区", () => {
+    const list = [
+      view({ dirSlug: "a", section: "installedFrom" }),
+      view({ dirSlug: "b", section: "sharedTo" }),
+      view({ dirSlug: "c", section: "shareable" }),
+    ];
+    const secs = librarySections(list, noneAction);
+    expect(secs.map((s) => [s.key, s.items.map((i) => i.dirSlug)])).toEqual([
+      ["installedFrom", ["a"]],
+      ["sharedTo", ["b"]],
+      ["shareable", ["c"]],
+    ]);
+  });
+
+  it("标题走 i18n,不是拼出来的英文 key", () => {
+    const list = [view({ dirSlug: "a", section: "installedFrom" })];
+    expect(librarySections(list, noneAction)[0]?.title).toBe(t("mine.sectionInstalledFrom"));
+  });
+});
+
+describe("updateCount 改按 rowAction 数(v7):冲突行不计入「全部更新」", () => {
+  it("库新+本地都改过(conflict 档)不计入 —— 与 hasUpdate 旧口径的区别", () => {
+    const index = {
+      registryId: "company",
+      owner: "skills",
+      repo: "skills",
+      skills: [{ dirSlug: "weekly-report", contentHash: "sha256:newer" }],
+    };
+    const list = [
+      view({ dirSlug: "weekly-report", section: "installedFrom", localModified: true }),
+    ];
+    // hasUpdate 本身仍判 true(远端确实变了),但这一行的主按钮是三选一冲突框,
+    // 不是「更新」——旧口径(逐条走 hasUpdate)会把它算进「全部更新」能处理的数量,
+    // 而「全部更新」批量按钮压根不会碰这一行,是"角标说 1、点了只处理 0"的重演。
+    expect(hasUpdate(list[0]!, index)).toBe(true);
+    expect(updateCount(list, index)).toBe(0);
+  });
+
+  it("库新、本地没改(update 档)照常计入", () => {
+    const index = {
+      registryId: "company",
+      owner: "skills",
+      repo: "skills",
+      skills: [{ dirSlug: "weekly-report", contentHash: "sha256:newer" }],
+    };
+    const list = [view({ dirSlug: "weekly-report", section: "installedFrom" })];
+    expect(updateCount(list, index)).toBe(1);
   });
 });
 

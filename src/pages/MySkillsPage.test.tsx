@@ -39,6 +39,8 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   tools: [{ agent: "claude-code", state: "linked" }],
   versions: [],
   shareBlocked: null,
+  section: "installedFrom",
+  review: null,
   ...over,
 });
 
