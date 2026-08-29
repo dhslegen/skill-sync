@@ -6,8 +6,18 @@ import { describe, expect, it, vi } from "vitest";
 import { ToolPicker, orderForPicker, type ToolPickerItem } from "@/components/ToolPicker";
 import type { ToolState } from "@/lib/ipc";
 
+// M1(修复轮 1):label 与 agent 刻意不同源(不是简单大写首字母),避免这批
+// 用例在 label/agent 解耦之后失去"显示的是 displayName、不是内部 agent 名"
+// 这层保护——本仓为"界面泄漏内部 agent name"这条踩过两次(见 CLAUDE.md)。
+const LABELS: Record<string, string> = {
+  junie: "Junie",
+  "claude-code": "Claude Code",
+  "trae-cn": "Trae (国内版)",
+  zed: "Zed 编辑器",
+};
+
 function i(agent: string, state: ToolState): ToolPickerItem {
-  return { agent, label: agent.charAt(0).toUpperCase() + agent.slice(1), path: "", state };
+  return { agent, label: LABELS[agent] ?? agent, path: "", state };
 }
 
 /** 测试用的受控外壳:模拟真实调用方——点一下只翻转那一项的 state,不重新排序。 */
@@ -69,6 +79,19 @@ describe("ToolPicker", () => {
   it("items 为空整组不渲染", () => {
     const { container } = render(<ToolPicker items={[]} onToggle={() => {}} />);
     expect(container.firstChild).toBeNull();
+  });
+
+  it("Critical-2(修复轮 1):以 items=[] 挂载、随后才拿到数据 —— 排序仍然生效", () => {
+    // 复现 AgentChooser 的真实场景:useInstall 的 agents 初值是 []、agentsDetected()
+    // 回来之前组件就已经以空 items 渲染过一轮(见 store/install.ts 的 begin/beginFromPlaza)。
+    // 用 useState(() => ...) 的惰性初始值会在这一刻把排序结果永久钉成空数组;
+    // 必须用 useRef 把"钉住"这件事延后到第一次拿到非空 items 才发生。
+    const { rerender } = render(<ToolPicker items={[]} onToggle={() => {}} />);
+    rerender(<ToolPicker items={[i("junie", "off"), i("claude-code", "linked")]} onToggle={() => {}} />);
+    expect(screen.getAllByRole("checkbox").map((c) => c.getAttribute("name"))).toEqual([
+      "claude-code",
+      "junie",
+    ]);
   });
 
   it("path 留空时不渲染路径那一段,给出路径时渲染", () => {

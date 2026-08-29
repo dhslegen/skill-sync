@@ -345,8 +345,10 @@ function AgentChooser({ onCancel }: { onCancel: () => void }) {
   // 的错误更诚实。
   const confirmDisabled = registryId === PLAZA_REGISTRY_ID && repo === null;
 
-  // v7 任务 5:与「我的技能」的勾组共用同一个 ToolPicker,不再各自维护一套排版。
-  // 这里没有 body/copy/missing 这几档(还没装,谈不上本体在哪),只有勾没勾两态。
+  // v7 任务 5:与「我的技能」的勾组共用同一个 ToolPicker(同一套 checkbox/label
+  // token),但用 layout="list"(R17 裁定)——这里没有 body/copy/missing 这几档
+  // (还没装,谈不上本体在哪),只有勾没勾两态;而"工具名 + 落点路径"天然是一份
+  // 竖排清单,拉平成 chip 流会让长 mono 路径和工具名混排,是真实的可读性回归。
   const items: ToolPickerItem[] = linkable.map((agent) => ({
     agent: agent.name,
     label: agent.displayName,
@@ -357,8 +359,8 @@ function AgentChooser({ onCancel }: { onCancel: () => void }) {
   return (
     <div className="border-t border-border px-5 py-3.5">
       <div className="mb-2 text-[12px] font-[550]">{t("install.choose")}</div>
-      <div className="max-h-[168px] overflow-y-auto rounded-card border border-border px-3 py-2">
-        <ToolPicker items={items} onToggle={(agent) => toggleAgent(agent)} />
+      <div className="max-h-[168px] overflow-y-auto rounded-card border border-border">
+        <ToolPicker items={items} onToggle={(agent) => toggleAgent(agent)} layout="list" />
       </div>
       <p className="mt-2 text-[11.5px] leading-[1.5] text-text-3">{t("install.chooseHint")}</p>
       <div className="mt-2.5 flex items-center gap-2">
