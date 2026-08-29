@@ -1508,6 +1508,50 @@ describe("ensureShareableIndexes(v7 任务 7 修复轮 1,I3):点击立即查 + �
     expect(calls).toBe(2);
   });
 
+  it("🔴 修复轮 2:force 调用只查被点的那几个来源,不顺带扫其余(哪怕其余也从没查过)", async () => {
+    // 此前 forceKeys.has(key) || stale 是一次"或"判据:首次点击时全部来源都
+    // 还没有时间戳、恒 stale,于是点开一行详情会把**全部**外部来源都探一遍
+    // ——与"只对这一行自己的外部来源发请求"这句话不符。修复轮 2 之后两条路径
+    // 拆开:传了 forceDirSlugs 就精确只查这几个。
+    const other = view({
+      dirSlug: "b",
+      relation: "draft",
+      section: "shareable",
+      registryId: "custom-1",
+      sourceOwner: "acme",
+      sourceRepo: "tools",
+    });
+    const requested: string[] = [];
+    invoke.mockImplementation(async (cmd: string, args?: { args?: { repo?: string } }) => {
+      if (cmd === "store_index") {
+        requested.push(args?.args?.repo ?? "");
+        return {
+          registryId: "plaza",
+          owner: "vercel-labs",
+          repo: "agent-skills",
+          branch: "main",
+          commitSha: "x",
+          committedAt: "",
+          fetchedAt: 0,
+          skipped: [],
+          fromCache: false,
+          offline: false,
+          curated: [],
+          skills: [],
+        };
+      }
+      return AGENTS;
+    });
+    useMySkills.setState({ list: [shareableSkill("a"), other] });
+
+    await useMySkills.getState().ensureShareableIndexes(["a"]);
+
+    expect(requested).toEqual(["vercel-labs/agent-skills"]);
+    expect(useMySkills.getState().shareableIndexesLastFetchedAt.has("custom-1::acme/tools")).toBe(
+      false,
+    );
+  });
+
   it("load() 不再触发 ensureShareableIndexes——翻开页面本身不发请求(I3)", async () => {
     let calls = 0;
     invoke.mockImplementation(async (cmd: string) => {

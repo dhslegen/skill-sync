@@ -344,11 +344,16 @@ export function MySkillsPage() {
                           void useLocalDetail
                             .getState()
                             .open(skill.body ? { path: skill.body } : { dirSlug: skill.dirSlug });
-                          // 🔴 I3(用户拍板):点击是"立即查"这一半的触发点
-                          // ——只对这一行自己的外部来源发请求,不碰其余行、
-                          // 不无视其余来源的节流。shareableSourceKey 为 null
-                          // (非 shareable 区/纯本地草稿)时 ensureShareableIndexes
-                          // 自己会跳过,这里不必先判一遍。
+                          // 🔴 I3(用户拍板)+ 修复轮 2 订正:点击是"立即查"
+                          // 这一半的触发点——只对这一行自己的外部来源发请求,
+                          // 不碰其余行(修复轮 2 之前这句话是假话:`forceDirSlugs`
+                          // 与被动兜底共用一次"或"判据,首次点击时全部来源都还
+                          // 没有时间戳、恒 stale,实际会把当时**全部**外部来源
+                          // 探一遍——行为仍在预算内但与这句注释不符,现在两条
+                          // 路径已经拆开,这里传参就是精确只查这一个)。
+                          // shareableSourceKey 为 null(非 shareable 区/纯本地
+                          // 草稿)时 ensureShareableIndexes 自己会跳过,这里不必
+                          // 先判一遍。
                           void ensureShareableIndexes([skill.dirSlug]);
                         }}
                       />
@@ -565,7 +570,14 @@ function Row({
   // 动作不会消失——用户可能就是想直接把本地内容推去评审,不想先经过
   // `ConflictDialog` 那条"要不要保留本地"的三选一。两个区共用同一个判据
   // (`localModified`),只是文案不同。
-  if (action.kind === "conflict" && skill.localModified) {
+  //
+  // 🔴 修复轮 2(Important):必须再叠一道 `!skill.shareBlocked`——C1 刚在主
+  // 按钮那一侧堵上"不合规内容也能推去评审"这个洞,这里若不重复同一道闸,
+  // 用户仍能从「更多」菜单绕过去点一个必然报 `FS_SKILL_INVALID` 的按钮
+  // (design §8「不可用项不显示」)。core 会拦、错误也有渲染点,所以定级
+  // Important 不是 Critical,但闸必须在**每一个能触发同一个动作的入口**上
+  // 都生效,不能只在主按钮那一侧生效一次。
+  if (action.kind === "conflict" && skill.localModified && !skill.shareBlocked) {
     menuItems.push({
       key: "contributeOrShareChanges",
       label: skill.section === "installedFrom" ? t("mine.contribute") : t("mine.shareChanges"),
@@ -630,8 +642,12 @@ function Row({
                 <Badge title={t("mine.badgeLibraryRemovedHint")}>{t("mine.badgeLibraryRemoved")}</Badge>
               )}
             </div>
+            {/* 🔴 M3/④(复审):design §6 点名这一行是"等宽来源标签"——UI 硬规则
+                "等宽字体展示 slug/路径/sha"在这里的落点。这处与 WhereBlocks.tsx
+                (设计 §11「技能库里」那一块)不是同一个元素,那边没有被点名要求
+                等宽,不与本处捆绑修改。 */}
             {skill.section === "shareable" && skill.sourceLabel && (
-              <div className="mt-0.5 truncate text-[11px] text-text-3">
+              <div className="mt-0.5 truncate font-mono text-[11px] text-text-3">
                 {t("mine.sourceLabel", { label: skill.sourceLabel })}
               </div>
             )}

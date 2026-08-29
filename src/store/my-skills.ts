@@ -683,21 +683,33 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     const list = get().list ?? [];
     const lastFetchedAt = get().shareableIndexesLastFetchedAt;
     const now = Date.now();
-    const forceKeys = new Set(
-      (forceDirSlugs ?? [])
-        .map((slug) => list.find((s) => s.dirSlug === slug))
-        .map((s) => (s ? shareableSourceKey(s) : null))
-        .filter((k): k is string => k !== null),
-    );
     const targets = new Map<string, { registryId: string; owner: string; repo: string }>();
-    for (const skill of list) {
-      const key = shareableSourceKey(skill);
-      if (!key) continue;
-      const last = lastFetchedAt.get(key);
-      const stale = last === undefined || now - last >= SHAREABLE_INDEX_STALE_MS;
-      // 点击触发的那几个来源无视节流;其余按"距上次请求 ≥ 1 小时"的被动兜底。
-      if (forceKeys.has(key) || stale) {
-        targets.set(key, { registryId: skill.registryId, owner: skill.sourceOwner, repo: skill.sourceRepo });
+    if (forceDirSlugs) {
+      // 🔴 修复轮 2:点击触发路径**只查这几个技能自己的来源**,不顺带扫一遍
+      // 其余行——这两件事此前用一次"或"判据(`forceKeys.has(key) || stale`)
+      // 混在一起,首次点击时全部来源都还没有时间戳、恒 stale,于是"点开一行
+      // 详情"会把**所有**外部来源都探一遍,与"只对这一行自己的外部来源发
+      // 请求"这句注释的字面意思不符(哪怕仍在每源每小时的预算内)。现在两条
+      // 路径各自独立:传了 `forceDirSlugs` 就精确只查这几个,不管其余来源
+      // 过没过期。
+      for (const slug of forceDirSlugs) {
+        const skill = list.find((s) => s.dirSlug === slug);
+        const key = skill ? shareableSourceKey(skill) : null;
+        if (key && skill) {
+          targets.set(key, { registryId: skill.registryId, owner: skill.sourceOwner, repo: skill.sourceRepo });
+        }
+      }
+    } else {
+      // 被动兜底(未传参数):扫一遍所有 shareable 行,只碰距上次请求
+      // ≥ 1 小时的来源。
+      for (const skill of list) {
+        const key = shareableSourceKey(skill);
+        if (!key) continue;
+        const last = lastFetchedAt.get(key);
+        const stale = last === undefined || now - last >= SHAREABLE_INDEX_STALE_MS;
+        if (stale) {
+          targets.set(key, { registryId: skill.registryId, owner: skill.sourceOwner, repo: skill.sourceRepo });
+        }
       }
     }
     if (targets.size === 0) return;

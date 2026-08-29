@@ -346,6 +346,81 @@ describe("三区排列与判定表接线", () => {
     expect(useInstall.getState().dirSlug).toBe("a");
   });
 
+  it("🔴 修复轮 2(①):conflict 档的「更多」菜单里,贡献更改/分享改动同样要过 shareBlocked 这道闸(正反对照)", async () => {
+    // 正例:conflict + 本地改过 + 合格 → 菜单里有「贡献更改」,点击真的调
+    // skill_share_changes(与主按钮那条 conflict 链路互不冲突,是"更多"里的
+    // 另一条路)。
+    const list = [mk("a", "installedFrom", { remote: "NEW", localModified: true })];
+    seed(list);
+    // 🔴 覆写 invoke 时不能读 `useMySkills.getState().list` 回填
+    // `installed_list`——首次 `load()` 落地之前那份状态还是初值 `null`,会喂出
+    // 一个空列表(本项目记着的既有教训:注入过一次几乎一样的时序 bug)。
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return stripFixtureOnly(list);
+      if (cmd === "agents_detected") return AGENT_LIST;
+      if (cmd === "store_index") return companyIndex(list);
+      if (cmd === "skill_share_changes")
+        return { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null };
+      return null;
+    });
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-a");
+    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "贡献更改" }));
+    await vi.waitFor(() =>
+      expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_share_changes")).toBe(true),
+    );
+  });
+
+  it("🔴 修复轮 2(①反例):conflict + 本地改过 + 标准校验不过 → 「更多」菜单里没有贡献更改/分享改动", async () => {
+    // C1 在主按钮那一侧堵上了"不合规内容也能推去评审"这个洞;这里补上
+    // 「更多」菜单那一侧的同款反例——不合规时这条动作不该从另一个入口冒出来。
+    seed([
+      mk("a", "installedFrom", { remote: "NEW", localModified: true, shareBlocked: "nameFormat" }),
+    ]);
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-a");
+    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    expect(screen.queryByRole("menuitem", { name: "贡献更改" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "分享改动" })).toBeNull();
+  });
+
+  it("🔴 修复轮 2(③):ReviewPendingText 的「在技能库里查看」失败要有渲染点", async () => {
+    const list = [mk("a", "shareable", { review: { url: "http://gitea/x/y/pulls/7" } })];
+    seed(list);
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return stripFixtureOnly(list);
+      if (cmd === "agents_detected") return AGENT_LIST;
+      if (cmd === "open_library_url") throw { code: "NET_BLOCKED", message: "这个地址不允许打开" };
+      return null;
+    });
+    render(<MySkillsPage />);
+    await screen.findByText("审核中");
+
+    await userEvent.click(screen.getByRole("button", { name: "在技能库里查看" }));
+
+    expect(await screen.findByText(/这个地址不允许打开/)).toBeInTheDocument();
+  });
+
+  it("🔴 修复轮 2(③):审核中没有链接时,不摆「在技能库里查看」——url 为 null 时如实不摆", async () => {
+    seed([mk("a", "shareable", { review: { url: null } })]);
+    render(<MySkillsPage />);
+    await screen.findByText("审核中");
+    expect(screen.queryByRole("button", { name: "在技能库里查看" })).toBeNull();
+  });
+
+  it("🔴 修复轮 2(③):「更多」菜单里「移除」永远排最后,且与前面的动作有一条分隔线", async () => {
+    seed([mk("a", "installedFrom", { remote: "NEW", localModified: true })]);
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-a");
+    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+
+    const items = screen.getAllByRole("menuitem");
+    expect(items[items.length - 1]).toHaveTextContent("移除");
+    // 分隔线只在"移除"前面有别的动作时才画——它的 className 里带 border-t
+    expect(items[items.length - 1].className).toContain("border-t");
+  });
+
   it("sharedTo:本地改过、库没变 → 「分享改动」", async () => {
     seed([mk("a", "sharedTo", { localModified: true })]);
     render(<MySkillsPage />);
@@ -381,6 +456,15 @@ describe("三区排列与判定表接线", () => {
     render(<MySkillsPage />);
     await screen.findByText("审核中");
     expect(screen.queryByRole("button", { name: "分享" })).toBeNull();
+  });
+
+  it("🔴 修复轮 2(④/M3):shareable 区外源行的来源标签是等宽字体(design §6)", async () => {
+    seed([
+      mk("a", "shareable", { sourceLabel: "vercel-labs/agent-skills" }),
+    ]);
+    render(<MySkillsPage />);
+    const label = await screen.findByText("来源 vercel-labs/agent-skills");
+    expect(label.className).toContain("font-mono");
   });
 
   it("🔴 shareable:有外部来源且外源有新版 → 「更新」是主按钮,「分享」退进「更多」", async () => {
