@@ -56,7 +56,7 @@ export type RowAction =
   | { kind: "chooseVersion" }; // 压过一切
 
 /**
- * 「我的技能」v7 每行主按钮的判定表(十一档,brief 十档 + R3 追加的 `pull`)。
+ * 「我的技能」v7 每行主按钮的判定表(十档,brief 九档 + R3 追加的 `pull`)。
  *
  * # 短路顺序(从上到下,排错位置就会误判)
  *

@@ -367,7 +367,12 @@ async fn a_skill_installed_from_the_company_library_can_be_edited_and_contribute
     assert_eq!(row.relation, Relation::Installed, "库里记的作者不是我 = 「安装自」");
     assert_eq!(row.section, Section::InstalledFrom);
     assert!(!row.local_modified, "刚取回,内容与基线相同");
-    assert!(row.review.is_none(), "「安装自」区不参与审核态候选(设计决策 #4 的范围)");
+    // `review` 恒 None 是 `my_skills::build` 自身的构造行为(三处构造点都是如此,
+    // 与 section 无关),这条断言只是走查这个字段确实存在、值符合预期——它**不是**
+    // "安装自区不参与审核候选"这个判据的证明,那件事有专门的正面测试
+    // (`tests/review_state.rs::an_installed_from_row_with_a_shared_record_is_never_marked_under_review`,
+    // 直接调 `fill_review_from_records`,只有那条测试删掉候选闸才会变红)。
+    assert!(row.review.is_none());
     assert!(row.share_blocked.is_none());
     assert_eq!(row.content_hash, baseline_hash);
 
@@ -435,6 +440,13 @@ async fn a_skill_installed_from_the_company_library_can_be_edited_and_contribute
     // 从来不参与审核候选闸 —— 所以这一行此刻**磁盘与账本都没有变化**,和提交之前一样。
     let after_submit = c.state();
     assert_eq!(after_submit.installed[0].content_hash, baseline_hash, "走评审,记账一个字不动");
+    // 🔴 这才是 `share.rs` 那道"记账不动"承诺**真正**控制的量(复审 Important-1):
+    // `share_installed` 走评审时不写任何 `state.shared` 记录——它与 `share()`
+    // (首次分享草稿)长得像,但没有那一份"落一条 shared 账"的动作。这条断言与
+    // `content_hash` 那条断言合起来,才共同封死了"审核中候选"在这条路径上
+    // 连前提(有一条挂着的 shared 记录)都不成立的事实,而不是靠"review 恒为
+    // None"这种在任何 section 上都为真的空话。
+    assert!(after_submit.shared.is_empty(), "走评审不写任何 state.shared 记录");
     assert!(skill_md(&c).contains("我贡献的正文"), "本体是我们自己刚编辑的那一份,提交不碰本体");
 
     let rows = c.rows(&env);
@@ -442,7 +454,9 @@ async fn a_skill_installed_from_the_company_library_can_be_edited_and_contribute
     assert_eq!(row.relation, Relation::Installed);
     assert_eq!(row.section, Section::InstalledFrom, "仍在「安装自」区,贡献更改不搬区");
     assert!(row.local_modified, "本地改动仍未进 main,如实显示为「本地改」");
-    assert!(row.review.is_none(), "同上:该区不追踪审核态,不冒充「审核中」");
+    // 同上:这里只是复述 `build()` 的恒定行为,真正验证候选闸的测试在
+    // `tests/review_state.rs`(见上面的注释)。
+    assert!(row.review.is_none());
 
     // ────────────── ⑤ 模拟 PR 被合并:库里现在是我贡献的那一版
     mount_library_v2(&server, "我贡献的正文").await;

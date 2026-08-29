@@ -436,3 +436,70 @@ async fn a_server_that_ignores_the_page_parameter_does_not_loop_forever() {
 
     server.verify().await; // 请求次数确实有上限(恰好 PULLS_MAX_PAGES 次),不是无限转下去
 }
+
+// ============================================================ v7 任务 9 修复轮 2
+
+/// 复审 Important-1:`tests/e2e_sections.rs` 原先用 `my_skills::build()` 的输出
+/// 断言「安装自区的行 `review` 恒为 `None`」,而 `build()` 在三处构造点(`my_skills.rs`
+/// 里普通行/无本体行/占位行三条路径)**无条件**填 `review: None`——那条断言对任何
+/// `section` 都恒真,把 `fill_review_from_pulls`/`fill_review_from_records`/
+/// `has_review_candidates` 的 `Section::Shareable` 过滤全部删掉,它也不会红。
+///
+/// 这里改成直接调 `fill_review_from_records`(真正带着候选闸的那个纯函数):
+/// 构造一个记账指向公司库主仓的「安装自」行(`builtin_record` 判据成立,
+/// `section == InstalledFrom`),并给它挂上一条本该只属于「可分享到」区候选的
+/// `state.shared` 记录——这在现实中不会发生(`share_installed` 走评审从不写
+/// `state.shared`,`tests/e2e_sections.rs` 的新断言 `after_submit.shared.is_empty()`
+/// 钉的正是这一点),这里是刻意构造的反例,专门用来检验候选闸本身。
+///
+/// 断言:即便有这样一条记录挂着,`fill_review_from_records` 也绝不会把
+/// `InstalledFrom` 行标成审核中——候选闸的第一道门槛是 `section == Shareable`,
+/// 这条行连这道门槛都过不了。
+#[tokio::test]
+async fn an_installed_from_row_with_a_shared_record_is_never_marked_under_review() {
+    let ctx = ctx();
+    // 复用「写一个真实技能目录」的辅助:这里没有"草稿"的语义,只是需要磁盘上有
+    // 一份真实内容,`build()` 才会把它算进行里。
+    let body = write_shareable_draft(&ctx, "weekly-report");
+
+    let mut state = State::default();
+    // `source.registry_id == BUILTIN_REGISTRY_ID` 是 `in_builtin_library` 三支判据的
+    // 第一支(`builtin_record`),单独成立即可让这一行落进 `InstalledFrom`,
+    // 不需要额外配置作者/索引。
+    state.installed.push(InstalledSkill {
+        name: "weekly-report".into(),
+        source: SkillSource {
+            registry_id: registry::BUILTIN_REGISTRY_ID.into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            path: "skills/weekly-report".into(),
+            git_ref: "main".into(),
+        },
+        commit_sha: "abc1111".into(),
+        content_hash: String::new(),
+        origin: None,
+        body: None,
+        agents: Vec::new(),
+        links: Vec::new(),
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    });
+    state.shared.push(shared_record_under_review(&body, "weekly-report"));
+
+    let mut rows = build_rows(&ctx, &state);
+    let r = row(&rows, "weekly-report");
+    assert_eq!(
+        r.section,
+        Section::InstalledFrom,
+        "记账指向公司库主仓,builtin_record 判据成立 = 安装自区"
+    );
+    assert!(r.review.is_none(), "build() 本身零网络,恒为 None(与本测试要钉的候选闸无关)");
+
+    my_skills::fill_review_from_records(&mut rows, &state, ctx.builtin.repo);
+    let r = row(&rows, "weekly-report");
+    assert!(
+        r.review.is_none(),
+        "「安装自」区的行即便挂着一条 state.shared 记录,候选闸也不该放行——\
+         审核态是「可分享到」区专属(设计决策 #4)"
+    );
+}

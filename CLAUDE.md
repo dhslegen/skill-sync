@@ -76,7 +76,9 @@ src/
   i18n/          文案资源 + t() 插值;测试里带术语与禁 emoji 的自动门
   styles/        设计 token、dark: 变体绑定 data-theme、少量非 utility 样式
   lib/           ipc(唯一 invoke 通道 + core 返回类型)、format、search、tint、cn、
-                 slug(与 core 同一把尺子,口径在 fixtures/slug-samples.json)、update(cardState)
+                 slug(与 core 同一把尺子,口径在 fixtures/slug-samples.json)、update(cardState)、
+                 ownership(v7:「我的技能」每行的 rowAction 判定表 + 三区排序 sections,
+                 不接触索引、不算指纹,只吃调用方喂好的布尔量)
   store/         Zustand:appearance/store-index/install/session/ui/my-skills/share/
                  wizard/settings(agent 开关+更新档位+App 自更新)/prefs(偏好落盘协调)/
                  registries(多源)/local-detail(本地详情)/create(新建技能向导)
@@ -85,7 +87,13 @@ src/
                  InstallScopeMenu(作用域下拉)/ProjectSections(我的技能·项目分区)/
                  ProjectDecisionDialog(项目级替换/本地改动拍板)/
                  Markdown/Icon/SkillIcon/InstallPanel/Wizard +
-                 ToolChecks(每个 AI 工具一个勾,取代了旧的「修复」按钮)/
+                 ToolPicker(v7:三处工具多选统一成的唯一实现,`layout: "inline"|"list"`
+                 两种容器共用同一副 checkbox/label 骨架)/
+                 ToolChecks(v7 起是 ToolPicker 的薄壳,「我的技能」详情面板「各个工具里」
+                 那一组勾,取代了旧的「修复」按钮)/
+                 WhereBlocks(v7:详情面板「在哪」三块——这台电脑上/各个工具里/技能库里,
+                 插在 DetailPanel 与 LocalPanelBody 正文之上)/
+                 SkillRowMenu(v7:「我的技能」行尾「…」菜单)/
                  VersionChooser(同名多份内容不同时的版本拍板)/
                  ShareConfirm(分享确认屏,零输入框)/CreateSkill(新建技能)+ 三个弹窗:
                  ConflictDialog(四档正列,无兜底分支)/RemoveDialog(单确认,进废纸篓)/
@@ -502,7 +510,7 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 分享过的草稿、「已同步」这句话对没有安装基线的行毫无意义、「我安装的」这个说法有歧义、
 按钮不分主次同色、信息密度过高、多选组件三处各写一份互不一致。方案是把两分区改成按
 **公司技能库**分的三区(安装自 / 已分享到 / 可分享到),每行至多一颗主按钮
-(`RowAction`,十一档,取代 v6 二期的八态机 `sharedState`),详情面板加「在哪」三块,
+(`RowAction`,十档,取代 v6 二期的七状态机 `sharedState`),详情面板加「在哪」三块,
 多选组件收敛成一个 `ToolPicker`,项目行支持事后改选工具。任务 1 三支判据 +
 `Section` DTO → 任务 2 审核态(列开放 PR 按分支前缀匹配 + 网络失败降级)→
 任务 3 项目级事后改选工具 → 任务 4 前端三区分档 + `rowAction` 判定表 + 贡献更改恒走
@@ -556,6 +564,15 @@ progress.md`,本地记录不进版本控制)。本机 Rust **基线 883**(Task 3
   理由已被查出是事实错误——真正理由是低成本可修,只是未在本期顺手做);
   ⑤**`ToolPicker` 钉序没有内在防护**(R18):当前"不残留"靠调用方 keying 与
   组件类型切换保证,自身没有"items 集合变了就重钉"的显式判据。
+  ⑥🔴 **本任务(任务 9)自己发现、此前未登记的观察项**:「贡献更改」提交成功后,
+  用户没有任何"已经提过了"的线索——`installedFrom` 行既不写 `state.shared`
+  也不进入审核候选闸(见上面第 1 点),提交后按钮原样停在「贡献更改」。
+  `share.rs::review_branch` 的分支名带时间戳(`skillsync/<name>-<timestamp>`),
+  于是**再点一次会开出第二个、内容相同的合并请求**——这是"贡献更改不新造候选/
+  网络查询"这条既定取舍(设计决策 #4/#7)的直接推论,不是本任务引入的新缺陷,
+  但此前没有任何文档提到它。修法(如果要修)超出 v7 边界:要么给 `installedFrom`
+  区也接候选闸(与决策 #4 冲突,需要重新拍板),要么在前端本地记一次"最近提交过"
+  的临时状态(纯 UI 层面,不需要动 core)。
 
 **v6 二期 = 本体与位置模型**(2026-08-24 拍板方向,2026-08-26 完成,设计在本地
 `docs/设计-v6二期-本体与位置模型.md`)。起因是用户的真实场景:「我在 Claude Code 的
@@ -930,6 +947,23 @@ v6 二期的契约变更(本体与位置模型):**删除** `share_candidates` / 
 ⚠️ `Result<T, AppError>` 作为**返回值里的字段**时 serde 发的是**大写** `{"Ok":…}/{"Err":…}`
 (内建 impl,`rename_all` 管不到),前端 `RustResult<T>` 按这个形状声明。
 
+v7 的契约变更(「我的技能」三区重设计):**新增** IPC `project_skill_set_agents`
+(`{projectPath, key, agentIds}` → `project::SetAgentsDone{linked, unlinked, kept}`,
+`agentIds` 是**完整目标集合不是增量**,账上/磁盘上有而这里没有的会被摘掉关联)——
+任务 3/8,给项目里的技能补上"事后改选让哪些工具用它"的入口,原先只能卸载重装。
+**没有**新增事件。`InstalledSkillView` **新增** `section`(新类型 `Section`,序列化
+字面量 `installedFrom`/`sharedTo`/`shareable`,`ownership::section(relation)` 的
+唯一映射)与 `review`(新类型 `ReviewView{ url: Option<String> }`,`build()` 恒填
+`None`,只有 `commands::installed_list` 在异步补查之后可能填值;**只在 `section
+== "shareable"` 的行上才可能非空**,「安装自」/「已分享到」区恒 `None`——见
+「我的技能三区模型(v7)」一节)。`ProjectSkillView` **新增** `agents: Vec<String>`
+(这个技能在这个项目里眼下实际链到了哪些工具,`project_skill_set_agents` 的 picker
+唯一的数据来源);`ProjectUpdateArgs` **删除** `agentIds`(serde 忽略未知键,删除
+对存量前端零影响,而留着会强迫调用方永远构造一个无意义的数组,见 R13)。
+新增错误码 `NET_PULLS_TOO_MANY`(审核态查询翻页止损)、`NET_PULLS_TIMEOUT`
+(查询超出整体 deadline),同归 `NET_*` 族,均只影响"审核态"这条网络例外、
+不影响 `installed_list` 主体(网络失败一律降级,见「我的技能三区模型(v7)」一节)。
+
 ### 现役机制约束(动相关代码前必读)
 
 这些**都已实现**,列在这里是因为它们的不变量不看就会破坏。已完成的过程叙事在 git log。
@@ -939,7 +973,7 @@ v6 二期的契约变更(本体与位置模型):**删除** `share_candidates` / 
   之前必读。设计在本地 `docs/设计-v7-我的技能重设计.md`,任务分解在
   `docs/v7-任务分解.md`(均不受版本控制)。核心改动:三分区改成按**公司技能库**
   分的三区(安装自 / 已分享到 / 可分享到),每行至多一颗主按钮(`RowAction`,
-  十一档,`src/lib/ownership.ts::rowAction`),取代 v6 二期的八态机 `sharedState`。
+  十档,`src/lib/ownership.ts::rowAction`),取代 v6 二期的七状态机 `sharedState`。
   - **「在公司库里」的判据是三支之一成立**(`my_skills.rs::in_builtin_library`,
     唯一实现):`builtin_record`(记账本身指向公司库,哪怕内容已改过)∨
     `author`(公司库索引查得到这个技能的作者,即便没有记账——换电脑/绕过 app
