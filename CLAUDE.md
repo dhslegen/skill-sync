@@ -291,6 +291,18 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
   **可辨联合**,`tsc` 当场指出两处测试 fixture 还在按旧形状塞值——正是"下一个人照旧
   形状写"的现场演示。类型检查是唯一不会被遗忘的评审员。
 
+- 🔴 **「统一口径」这类裁定本身也要过实测,不能靠少数服从多数或沿用既有说法**
+  (v7 任务 9 修复轮 2,控制者自己的裁定错误):`CLAUDE.md` 三处提到已删除的
+  `SharedState` 联合类型时原本是"八/八/七"(两处对、一处错),控制者派工时写
+  「按既有的七状态机口径改,别引入第三个数」——**没有先去核实哪个数是对的**,
+  按"三处里两处说八、一处说七,选七"这种计数直觉裁定,而"既有说法"恰好选中了
+  错的那个,结果把两处本来正确的也改成了七,还与 `src/lib/ownership.ts` 里
+  **仍然正确**的两处"八态机"(该类型删除前的源码,`git show <commit>:src/lib/
+  ownership.ts` 可查:`SharedState` 联合确有 8 个成员、判定表编号到 8)撞出新的
+  文档-代码矛盾。修复轮 3 靠复审去 `git show` 核实旧代码才订正回「八态机」。
+  与本期反复出现的「不做的理由本身也要过实测」是同一条尺子的另一面:
+  **裁定本身也要过实测,"统一"不能替代"核实哪个是对的"**。
+
 - 🔴 **「在已知假红清单里」是排查的起点,不是跳过的理由**(v6 二期终审修复波实测):
   交接材料把 `share_live::remote_conflict_detection_against_a_real_gitea` 列成两条已知假红之一,
   它这次红了——**但不是假红**:真因是本期新加的分享校验闸,那条 live 的 fixture 自己就写着
@@ -510,7 +522,7 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 分享过的草稿、「已同步」这句话对没有安装基线的行毫无意义、「我安装的」这个说法有歧义、
 按钮不分主次同色、信息密度过高、多选组件三处各写一份互不一致。方案是把两分区改成按
 **公司技能库**分的三区(安装自 / 已分享到 / 可分享到),每行至多一颗主按钮
-(`RowAction`,十档,取代 v6 二期的七状态机 `sharedState`),详情面板加「在哪」三块,
+(`RowAction`,十档,取代 v6 二期的八态机 `sharedState`),详情面板加「在哪」三块,
 多选组件收敛成一个 `ToolPicker`,项目行支持事后改选工具。任务 1 三支判据 +
 `Section` DTO → 任务 2 审核态(列开放 PR 按分支前缀匹配 + 网络失败降级)→
 任务 3 项目级事后改选工具 → 任务 4 前端三区分档 + `rowAction` 判定表 + 贡献更改恒走
@@ -973,7 +985,7 @@ v7 的契约变更(「我的技能」三区重设计):**新增** IPC `project_sk
   之前必读。设计在本地 `docs/设计-v7-我的技能重设计.md`,任务分解在
   `docs/v7-任务分解.md`(均不受版本控制)。核心改动:三分区改成按**公司技能库**
   分的三区(安装自 / 已分享到 / 可分享到),每行至多一颗主按钮(`RowAction`,
-  十档,`src/lib/ownership.ts::rowAction`),取代 v6 二期的七状态机 `sharedState`。
+  十档,`src/lib/ownership.ts::rowAction`),取代 v6 二期的八态机 `sharedState`。
   - **「在公司库里」的判据是三支之一成立**(`my_skills.rs::in_builtin_library`,
     唯一实现):`builtin_record`(记账本身指向公司库,哪怕内容已改过)∨
     `author`(公司库索引查得到这个技能的作者,即便没有记账——换电脑/绕过 app
@@ -1368,7 +1380,7 @@ v7 的契约变更(「我的技能」三区重设计):**新增** IPC `project_sk
     `keepLocalAndShare` 同一个理由):前提就是"库里已有新版",直推等于覆盖
     同事经审核改过的版本。`remoteChanged` 为假(单纯"本地改了、远端没变")时
     不强制,走正常的权限矩阵分流。
-  - 🔴 **前端「我的技能」页的七状态机(`lib/ownership.ts::sharedState`)里,
+  - 🔴 **前端「我的技能」页的八态机(`lib/ownership.ts::sharedState`)里,
     `noBaseline`(判据 `!contentHash`)必须压过 `both`/`localAhead`/`remoteAhead`**,
     不能排在它们之后:那三档全部依赖"安装那一刻的内容基线"里的
     `localModified`/`remoteChanged`,而 `noBaseline` 这一档**根本没有基线**
