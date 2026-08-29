@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 
 import { CreateSkillButton, CreateSkillPanel } from "@/components/CreateSkill";
 import { ProjectSections } from "@/components/ProjectSections";
+import { PrimaryAction, rowMenuHandler } from "@/components/RowActionControls";
 import { SkillIcon } from "@/components/SkillIcon";
 import { SkillRowMenu, type SkillRowMenuItem } from "@/components/SkillRowMenu";
 import { t } from "@/i18n";
-import { isAppError, openLibraryUrl, skillReveal, type InstalledSkillView } from "@/lib/ipc";
-import { rowAction, type RowAction } from "@/lib/ownership";
+import { skillReveal, type InstalledSkillView } from "@/lib/ipc";
+import { buildRowMenuItems, rowAction, type RowAction } from "@/lib/ownership";
 import { SHARE_BLOCK_LABEL } from "@/lib/share-block";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
@@ -31,7 +32,9 @@ import { useUi } from "@/store/ui";
  *
  * 按公司技能库分:安装自 / 已分享到 / 可分享到(`core::ownership::Section`,
  * v7 任务 1-4 已埋好)。每一行**只讲一句"该做什么"**——判定表在
- * `src/lib/ownership.ts` 的 `rowAction`,十一档穷尽,`kind !== "none"` 时
+ * `src/lib/ownership.ts` 的 `rowAction`,十档穷尽(brief 九档 + R3 追加的
+ * `pull`,`RowAction` 的字面量联合类型实测数下来是十种,不是十一种——档数订正
+ * 见 `lib/ownership.test.ts`),`kind !== "none"` 时
  * 摆一颗主按钮,其余能做但不是当务之急的事(打开文件夹/移除/被压过一头的
  * 分享或更新)收进行尾的「更多」菜单(`SkillRowMenu`)。
  *
@@ -309,9 +312,16 @@ export function MySkillsPage() {
                 {/* 🔴 M5(复审):未登录提示紧跟在**第一个**区标题旁边,不是摆在
                     整个区列表的最上面——画布里它就贴在「安装自技能库」标题下方。
                     「已分享到」区未登录时天然不会出现(core 的 relation 决定,
-                    这里不需要按登录态过滤 sec),所以固定挂在 secIndex===0 那一区
-                    就等价于"第一个真正渲染出来的区"。 */}
-                {secIndex === 0 && sessionStatus !== "signedIn" && (
+                    这里不需要按登录态过滤 sec)。
+                    🔴 终审 M-8:光判 `secIndex === 0` 不够——用户**只有草稿**
+                    (没有任何"安装自"的行)时,「可分享到」会顶到第一位,这句
+                    "登录后能区分哪些是你分享的"贴在草稿标题下毫无意义(草稿本来
+                    就与登录态无关,是"安装自 vs 已分享到"这对区分才需要登录)。
+                    改判 `secs[0]?.key === "installedFrom"`:未登录时 `sharedTo`
+                    结构性必空(design 决策 #4),所以第一区要么是
+                    `installedFrom`(该摆)要么是 `shareable`(不该摆),这一条
+                    判据就够穷尽两种情形。 */}
+                {secIndex === 0 && secs[0]?.key === "installedFrom" && sessionStatus !== "signedIn" && (
                   <p className="pb-1.5 text-[11.5px] text-text-3">{t("mine.signedOutHint")}</p>
                 )}
                 <div className="overflow-hidden rounded-card border border-border bg-surface-1">
@@ -562,57 +572,21 @@ function Row({
   const openVersions = useMySkills((s) => s.versionChoice);
   const setVersionChoice = useMySkills.setState;
 
-  const menuItems: SkillRowMenuItem[] = [];
-  if (skill.body) {
-    menuItems.push({ key: "reveal", label: t("mine.openFolder"), onClick: () => onReveal(skill.body) });
-  }
-  // 🔴 I1 修复:`conflict` 压过主按钮之后,「贡献更改」/「分享改动」这两个
-  // 动作不会消失——用户可能就是想直接把本地内容推去评审,不想先经过
-  // `ConflictDialog` 那条"要不要保留本地"的三选一。两个区共用同一个判据
-  // (`localModified`),只是文案不同。
-  //
-  // 🔴 修复轮 2(Important):必须再叠一道 `!skill.shareBlocked`——C1 刚在主
-  // 按钮那一侧堵上"不合规内容也能推去评审"这个洞,这里若不重复同一道闸,
-  // 用户仍能从「更多」菜单绕过去点一个必然报 `FS_SKILL_INVALID` 的按钮
-  // (design §8「不可用项不显示」)。core 会拦、错误也有渲染点,所以定级
-  // Important 不是 Critical,但闸必须在**每一个能触发同一个动作的入口**上
-  // 都生效,不能只在主按钮那一侧生效一次。
-  if (action.kind === "conflict" && skill.localModified && !skill.shareBlocked) {
-    menuItems.push({
-      key: "contributeOrShareChanges",
-      label: skill.section === "installedFrom" ? t("mine.contribute") : t("mine.shareChanges"),
-      onClick: onShareChanges,
-    });
-  }
-  // 被压过一头、暂时不是主按钮的动作,不会丢失,退进这里(见 RowAction 的判定表文档)。
-  if (skill.section === "shareable") {
-    if (action.kind === "shareBlocked" && remoteChanged) {
-      menuItems.push({ key: "update", label: t("mine.update"), onClick: onPull });
-    } else if (action.kind === "update") {
-      menuItems.push({ key: "share", label: t("mine.share"), onClick: onShare });
-    }
-  }
-  // 🔴 C3 修复:没有安装基线时,「改用库里的版本」是这一档**唯一**的出口
-  // ——点击复用既有 `pull`(等价 `beginUpdate`),core 的预检会把它判成需要
-  // 拍板的那一档,自然弹出既有的 `ConflictDialog`,这里不用再造一层确认。
-  if (noBaselineDiffers) {
-    menuItems.push({
-      key: "useLibraryVersion",
-      label: t("mine.useLibraryVersion"),
-      title: t("mine.useLibraryVersionHint"),
-      onClick: onPull,
-    });
-  }
-  if (skill.localPresent && action.kind !== "chooseVersion") {
-    // 破坏性动作放最后,并与上面"能做的事"用一条分隔线隔开,防止手滑
-    // (I1:此前"移除"混在中间,没有视觉上的"这条不一样"提示)。
-    menuItems.push({
-      key: "remove",
-      label: t("mine.remove"),
-      onClick: onRemove,
-      separatorBefore: menuItems.length > 0,
-    });
-  }
+  // 🔴 终审 §12:菜单**判定**(摆哪几项、什么文案)搬进 `lib/ownership.ts` 的
+  // `buildRowMenuItems`,详情面板的动作区共用同一份——这里只把 `kind` 翻成
+  // 这一行自己的回调。分开各写一份判定正是本项目记录的空转测试模式 #1。
+  const menuItems: SkillRowMenuItem[] = buildRowMenuItems(
+    skill,
+    action,
+    remoteChanged,
+    noBaselineDiffers,
+  ).map((spec) => ({
+    key: spec.kind,
+    label: t(spec.labelKey),
+    title: spec.titleKey ? t(spec.titleKey) : undefined,
+    separatorBefore: spec.separatorBefore,
+    onClick: rowMenuHandler(spec.kind, { onReveal: () => onReveal(skill.body), onShareChanges, onPull, onShare, onRemove }),
+  }));
 
   const explainShareBlocked = action.kind === "shareBlocked";
 
@@ -681,174 +655,6 @@ function Row({
         </p>
       )}
     </div>
-  );
-}
-
-/** 每一档 `RowAction.kind` 翻成一颗按钮(或者一句没有按钮的话)。 */
-function PrimaryAction({
-  action,
-  pulling,
-  sharing,
-  openVersions,
-  onPull,
-  onShareChanges,
-  onShare,
-  onChooseVersion,
-}: {
-  action: RowAction;
-  pulling: boolean;
-  sharing: boolean;
-  openVersions: boolean;
-  onPull: () => void;
-  onShareChanges: () => void;
-  onShare: () => void;
-  onChooseVersion: () => void;
-}) {
-  switch (action.kind) {
-    case "none":
-      return null;
-    case "chooseVersion":
-      return (
-        <SolidButton disabled={openVersions} onClick={onChooseVersion}>
-          {t("mine.chooseVersion")}
-        </SolidButton>
-      );
-    case "pull":
-      return (
-        <SolidButton disabled={pulling} onClick={onPull}>
-          {pulling ? t("mine.pulling") : t("mine.pull")}
-        </SolidButton>
-      );
-    case "update":
-      return (
-        <SolidButton disabled={pulling} onClick={onPull}>
-          {pulling ? t("mine.updating") : t("mine.update")}
-        </SolidButton>
-      );
-    case "conflict":
-      // 浅色文字链形态:这一档不是"点了就做完",是"点了会先问你"。
-      return (
-        <button
-          type="button"
-          disabled={pulling}
-          onClick={onPull}
-          className="h-6 rounded-ctl px-1.5 text-[11.5px] font-medium text-text-2 underline decoration-dotted underline-offset-2 hover:text-text disabled:opacity-50"
-        >
-          {pulling ? t("mine.updating") : t("mine.conflictPending")}
-        </button>
-      );
-    case "contribute":
-      return (
-        <OutlineButton disabled={sharing} onClick={onShareChanges}>
-          {sharing ? t("mine.contributing") : t("mine.contribute")}
-        </OutlineButton>
-      );
-    case "shareChanges":
-      return (
-        <OutlineButton disabled={sharing} onClick={onShareChanges}>
-          {sharing ? t("mine.sharingChanges") : t("mine.shareChanges")}
-        </OutlineButton>
-      );
-    case "share":
-      return (
-        <SolidButton disabled={sharing} onClick={onShare}>
-          {t("mine.share")}
-        </SolidButton>
-      );
-    case "shareBlocked": {
-      // 🔴 C1:三个区都可能落进这一档,按钮文案要说对被拦下的是哪个动作
-      // ——不是每次都说「分享」(那句话对 installedFrom/sharedTo 是错的)。
-      const label =
-        action.blockedAction === "contribute"
-          ? t("mine.contribute")
-          : action.blockedAction === "shareChanges"
-            ? t("mine.shareChanges")
-            : t("mine.share");
-      const Btn = action.blockedAction === "share" ? SolidButton : OutlineButton;
-      return (
-        <Btn disabled onClick={() => {}}>
-          {label}
-        </Btn>
-      );
-    }
-    case "underReview":
-      return <ReviewPendingText url={action.url} />;
-  }
-}
-
-/**
- * 「审核中」+(有链接时)「在技能库里查看」——`RowAction.underReview.url` 此前
- * 只在算出来就没有任何渲染点用过(I1 修复:v7 任务 7 修复轮 1)。
- *
- * 自己开一份局部错误状态,不复用页面级的 `revealError`——那个字段说的是
- * "打开文件夹"失败,这里是"打开外部链接"失败,是两件不同的事,合并成一个
- * 字段只会在两种失败同时发生时互相覆盖。与 `WhereBlocks.tsx` 的 `ReviewLink`
- * 是同一个模式的两处独立实现(那边服务详情面板,这边服务列表行,两处场景
- * 不同不共用状态,但都遵守"失败要有渲染点"这条硬规则)。
- */
-function ReviewPendingText({ url }: { url: string | null }) {
-  const [error, setError] = useState<string | null>(null);
-  return (
-    <span className="flex items-center gap-1.5 px-1.5 text-[11.5px] text-text-3">
-      {t("detail.whereReviewPending")}
-      {url && (
-        <button
-          type="button"
-          onClick={() => {
-            setError(null);
-            openLibraryUrl(url).catch((raw: unknown) =>
-              setError(isAppError(raw) ? raw.message : t("error.generic")),
-            );
-          }}
-          className="text-accent underline decoration-dotted underline-offset-2 hover:opacity-80"
-        >
-          {t("mine.reviewLink")}
-        </button>
-      )}
-      {error && <span className="text-[#c0392b] dark:text-[#e0705f]">{error}</span>}
-    </span>
-  );
-}
-
-function SolidButton({
-  disabled,
-  onClick,
-  children,
-}: {
-  disabled?: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
-    >
-      {children}
-    </button>
-  );
-}
-
-function OutlineButton({
-  disabled,
-  onClick,
-  children,
-}: {
-  disabled?: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50"
-    >
-      {children}
-    </button>
   );
 }
 

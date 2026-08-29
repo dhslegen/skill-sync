@@ -4,13 +4,16 @@ import { t } from "@/i18n";
 import type { ToolState } from "@/lib/ipc";
 
 /**
- * 「各个工具里」通用勾选项——今天有两处独立实现在描述同一件事(`ToolChecks` 的
+ * 「各个工具里」通用勾选项——最初有两处独立实现在描述同一件事(`ToolChecks` 的
  * 「我的技能」行内勾组、`InstallPanel` 私有的 `AgentChooser`),排序不同、
- * 形态也不同。这个组件是两处共用的唯一真相,`ToolChecks`/`AgentChooser`
- * 都改成薄壳调它。
+ * 形态也不同。这个组件是共用的唯一真相,`ToolChecks`/`AgentChooser` 都是薄壳
+ * 调它。⚠️ **调用方现在是四处,不是两处**(终审 M-5 订正,见下方
+ * `ToolPicker` 函数文档的完整清单):`ProjectSections.tsx` 的项目行"事后改选"
+ * (v7 任务 8)与 `InstallPanel.tsx` 的项目确认条(终审 §15)后来居上,各自
+ * 新增一处调用。
  *
- * `path` 留空("")时不渲染路径那一段——「我的技能」页目前没有把落点路径穿到这一层,
- * 留空是诚实的"没有这个信息",不是伪造一个空字符串路径。
+ * `path` 留空("")时不渲染路径那一段——「我的技能」页与项目确认条目前都没有把
+ * 落点路径穿到这一层,留空是诚实的"没有这个信息",不是伪造一个空字符串路径。
  */
 export interface ToolPickerItem {
   agent: string;
@@ -38,7 +41,10 @@ export function orderForPicker(items: ToolPickerItem[]): ToolPickerItem[] {
 }
 
 /**
- * 三处工具多选统一成这一个组件:「我的技能」勾组、获取面板的 agent 选择。
+ * 四处工具多选统一成这一个组件(终审 M-5 订正计数):「我的技能」勾组
+ * (`ToolChecks`)、获取面板的 agent 选择(`AgentChooser`)、项目行事后改选
+ * (`ProjectSections.tsx`,v7 任务 8)、项目确认条上可选工具
+ * (`InstallPanel.tsx` 的 `ConfirmBar`,终审 §15)。
  *
  * # 排序:拿到第一份非空数据时排一次,操作期间绝不重排
  *
@@ -64,13 +70,22 @@ export function orderForPicker(items: ToolPickerItem[]): ToolPickerItem[] {
  * 🔴 **这个"钉住"没有自证机制,前提假设是调用方会在换技能时换掉这个组件实例**
  * (补于 v7 任务 7 修复轮 1,I2:任务 5 报告原文承诺过这句但没写)。`pinned`
  * 这个 `useRef` 挂在组件**实例**上,只有 React 判定"这是新的一份"(不同的
- * `key`,或元素类型本身变了)才会重新拿到一个干净的 `useRef`。今天两处调用方
- * 各自天然满足这个前提,但都是**调用方**的责任,不是这个组件自己保证的:
+ * `key`,或元素类型本身变了)才会重新拿到一个干净的 `useRef`。⚠️ **现在四处
+ * 调用方各自天然满足这个前提**(终审 M-5 订正:此前这里只记了两处,漏了后来
+ * 加的另外两处),但这始终是**调用方**的责任,不是这个组件自己保证的:
  * - `ToolChecks`(「我的技能」勾组)：外层详情面板按 `target`/`dirSlug` 整体
  *   换挂载(见 `store/local-detail.ts` 的 `open`),换技能等于换了一整棵子树;
  * - `AgentChooser`(获取面板):`useInstall` 的 `phase` 从 `choosing` 退回
  *   `idle` 再进 `choosing`(比如取消一次安装重选另一个技能)时,`InstallPanel`
- *   按 `phase` 分支渲染,同样会把这棵子树连根卸载重建。
+ *   按 `phase` 分支渲染,同样会把这棵子树连根卸载重建;
+ * - `ProjectSections.tsx` 的项目行事后改选(v7 任务 8):每一行的
+ *   `ToolPicker` 挂在 `ProjectSkillRow` 里,`key={skill.key}` 保证换技能/换行
+ *   就是换组件实例;
+ * - `InstallPanel.tsx` 的 `ConfirmBar`(项目确认条,终审 §15):同一个技能上
+ *   点「换个文件夹」时 `ConfirmBar` 实例本身**不会**卸载(只有换技能才会,
+ *   见 `InstallPanel` 顶层按 `dirSlug` 收尾的那个 effect),所以这里的
+ *   `ToolPicker` 元素显式带了 `key={confirm.projectPath}`,靠这把 key 补上
+ *   "换项目 = 换实例"这条前提。
  * 如果将来有调用方在**同一个挂载的组件实例上**换技能(比如给一个列表里的每一
  * 行都用同一个 `ToolPicker` 却不给它按 `dirSlug` 单独的 `key`),钉住的顺序会
  * 从上一个技能"漏"到下一个技能,且没有任何报错——这不是这个组件能防的,新增

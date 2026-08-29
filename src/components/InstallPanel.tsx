@@ -8,11 +8,13 @@ import { ToolPicker, type ToolPickerItem } from "@/components/ToolPicker";
 import { t, type MessageKey } from "@/i18n";
 import { failedLinks, linkedAgents, useInstall } from "@/store/install";
 import { cn } from "@/lib/cn";
-import { PLAZA_REGISTRY_ID, type InstallStage } from "@/lib/ipc";
+import { PLAZA_REGISTRY_ID, type InstallStage, type ToolState } from "@/lib/ipc";
 import { cardState, remoteHashOf, type LibraryRef } from "@/lib/update";
+import { useLocalDetail } from "@/store/local-detail";
 import { useProjects } from "@/store/project";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
+import { useUi } from "@/store/ui";
 
 /** `owner/repo` → 广场坐标下的 `LibraryRef`。广场技能永远走固定的 `plaza` 源。 */
 function ownerRepoToLibrary(ownerRepo: string): LibraryRef {
@@ -262,6 +264,24 @@ function ConfirmBar() {
   const confirmInstall = useProjects((s) => s.confirmInstall);
   const cancelConfirm = useProjects((s) => s.cancelConfirm);
   const requestInstall = useProjects((s) => s.requestInstall);
+  const pickableAgents = useProjects((s) => s.pickableAgents);
+  const toggleConfirmAgent = useProjects((s) => s.toggleConfirmAgent);
+
+  // design §15 前半:确认条上可选工具——IPC 早就收 `agentIds`,只是此前没摆
+  // 控件,用户只能沿用 `requestInstall` 算好的默认集合。候选口径与「行改选」
+  // (`ProjectSections.tsx`)同一份:`pickableAgents`(已排除 universal——那类
+  // 工具的 skillsDir 与本体同一处,勾了也没用),落点路径这一层同样没有项目内
+  // 相对路径可穿(与 `ProjectSections` 既有处置同一姿态,留空)。
+  //
+  // 🔴 `pickableAgents === null`(探测失败)时不摆 picker——`confirm.agentLabels`
+  // 已经用文字把默认集合说清楚了,摆一个空的 picker 会让人以为"这台机器没有
+  // 可选的工具"(那是假话,只是探测失败,`mine.projectToolsUnknown` 同款教训)。
+  const items: ToolPickerItem[] = (pickableAgents ?? []).map((a) => ({
+    agent: a.name,
+    label: a.displayName,
+    path: "",
+    state: (confirm.agentIds.includes(a.name) ? "linked" : "off") as ToolState,
+  }));
 
   return (
     <div className="mt-2.5 rounded-card border border-border bg-surface-2 px-3 py-2.5">
@@ -282,6 +302,22 @@ function ConfirmBar() {
                   })
                 : t("install.confirmNoAgents")}
           </div>
+          {items.length > 0 && (
+            <div className="mt-1.5 max-h-[140px] overflow-y-auto rounded-ctl border border-border">
+              {/* 🔴 key={confirm.projectPath}:`ToolPicker` 的"已勾排前面"只在
+                  拿到第一份非空 items 时排一次(见该组件文档),往后不重排。
+                  用户点「换个文件夹」时 `ConfirmBar` 实例不会卸载(只有换技能
+                  才会,见 `InstallPanel` 顶层那个按 dirSlug 收尾的 effect),
+                  换一个 key 强制它换成一份干净的 `useRef`,新项目默认勾选的
+                  那批工具才排得对,不会沿用上一个项目的排序。 */}
+              <ToolPicker
+                key={confirm.projectPath}
+                items={items}
+                onToggle={(agent) => toggleConfirmAgent(agent)}
+                layout="list"
+              />
+            </div>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {/* 已经装过时主动作换成「覆盖重装」而不是撤掉按钮(2026-08-22 用户拍板:
@@ -448,6 +484,21 @@ function DoneFooter({
               ? t("install.done", { agents: agents.join(t("punct.listSeparator")) })
               : t("install.doneCanonicalOnly")}
         </div>
+        {/* design §18:商店装完那一屏加「在我的技能里查看」,切页并直接打开
+            那一行的详情——此前装完只能自己去「我的技能」页里找。用 dirSlug
+            打开(不是 body 路径):`skill_local_detail` 的 dirSlug 分支走
+            `converge::home_of` 从账上解析本体位置,装完这一刻账已经写好了,
+            不需要现算 body。 */}
+        <button
+          type="button"
+          onClick={() => {
+            useUi.getState().setPage("mine");
+            void useLocalDetail.getState().open({ dirSlug });
+          }}
+          className="h-6 flex-none rounded-ctl px-1.5 text-[11.5px] font-medium text-text-2 underline decoration-dotted underline-offset-2 hover:text-text"
+        >
+          {t("install.viewInMine")}
+        </button>
         {/* 装完那一屏也要留出口(2026-08-22 用户反馈:"这时候也没有更多操作空间")。
             与「已启用」终态同一形态:结果是状态,「装到项目…」是动作,并排摆。 */}
         <InstallScopeMenu

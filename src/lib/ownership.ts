@@ -16,6 +16,7 @@
 // ——"摆哪颗按钮"本就是"是什么状态"的下一步,两问一答揉进一个函数不算重复。
 // 它当年的判定顺序(versions 最优先 / 无基线档压过改动判定三档)现在活在
 // `rowAction` 的短路顺序里,道理没丢,只是不再单独占一个函数。
+import type { MessageKey } from "@/i18n";
 import type { InstalledSkillView, ShareBlock } from "@/lib/ipc";
 
 // ---------------------------------------------------------------------------
@@ -129,4 +130,77 @@ export function rowAction(
     return { kind: "shareChanges" };
   }
   return { kind: "none" };
+}
+
+// ---------------------------------------------------------------------------
+// 「更多」菜单的条目判定表(终审 §12 修复:从 `MySkillsPage.tsx` 的 `Row` 抠出来,
+// 供「我的技能」列表行与详情面板动作区共用同一份判定——分开各写一遍正是本项目
+// 记录的空转测试模式 #1,详情面板此前压根没有动作区(终审 C-3)。
+// ---------------------------------------------------------------------------
+
+export type RowMenuItemKind =
+  | "reveal"
+  | "contributeOrShareChanges"
+  | "update"
+  | "share"
+  | "useLibraryVersion"
+  | "remove";
+
+/** 一条「…」菜单项的**判定结果**,不含 `onClick`——两处调用方(行 / 详情动作区)
+ *  各自把 `kind` 翻成自己那份回调,标签与出现条件只有这一处判定。 */
+export interface RowMenuItemSpec {
+  kind: RowMenuItemKind;
+  labelKey: MessageKey;
+  titleKey?: MessageKey;
+  /** 在这一项**上方**画一条分隔线(只用在「移除」这类破坏性动作前面)。 */
+  separatorBefore?: boolean;
+}
+
+/**
+ * 「更多」菜单该摆哪几项、摆什么文案——逐字对应 `MySkillsPage.tsx` 的 `Row`
+ * 修复轮 1/2 定下的规则(design §8「不可用项不显示」),原样搬出来:
+ *
+ * 1. 有本体就有「打开文件夹」;
+ * 2. `conflict` 压过主按钮之后,「贡献更改」/「分享改动」不会消失——用户可能就是
+ *    想直接推去评审,不想先经过冲突框的三选一。**必须再叠一道 `!shareBlocked`**
+ *    ——C1 刚在主按钮堵上"不合规内容也能推去评审"这个洞,这里若不重复同一道闸,
+ *    用户仍能从「更多」菜单绕过去点一个必然报 `FS_SKILL_INVALID` 的按钮;
+ * 3. `shareable` 区内,被压过一头、暂时不是主按钮的动作退进这里(不会丢失);
+ * 4. 没有安装基线但本体与库不一样时,「改用库里的版本」是这一档唯一的出口;
+ * 5. 破坏性动作(移除)放最后,并加分隔线——防止手滑。
+ */
+export function buildRowMenuItems(
+  skill: Pick<InstalledSkillView, "body" | "localPresent" | "localModified" | "shareBlocked" | "section">,
+  action: RowAction,
+  remoteChanged: boolean,
+  noBaselineDiffers: boolean,
+): RowMenuItemSpec[] {
+  const items: RowMenuItemSpec[] = [];
+  if (skill.body) {
+    items.push({ kind: "reveal", labelKey: "mine.openFolder" });
+  }
+  if (action.kind === "conflict" && skill.localModified && !skill.shareBlocked) {
+    items.push({
+      kind: "contributeOrShareChanges",
+      labelKey: skill.section === "installedFrom" ? "mine.contribute" : "mine.shareChanges",
+    });
+  }
+  if (skill.section === "shareable") {
+    if (action.kind === "shareBlocked" && remoteChanged) {
+      items.push({ kind: "update", labelKey: "mine.update" });
+    } else if (action.kind === "update") {
+      items.push({ kind: "share", labelKey: "mine.share" });
+    }
+  }
+  if (noBaselineDiffers) {
+    items.push({
+      kind: "useLibraryVersion",
+      labelKey: "mine.useLibraryVersion",
+      titleKey: "mine.useLibraryVersionHint",
+    });
+  }
+  if (skill.localPresent && action.kind !== "chooseVersion") {
+    items.push({ kind: "remove", labelKey: "mine.remove", separatorBefore: items.length > 0 });
+  }
+  return items;
 }

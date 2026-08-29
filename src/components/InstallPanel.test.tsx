@@ -4,9 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { InstallPanel } from "@/components/InstallPanel";
 import { useInstall } from "@/store/install";
+import { useLocalDetail } from "@/store/local-detail";
 import { useProjects } from "@/store/project";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
+import { useUi } from "@/store/ui";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -31,6 +33,10 @@ beforeEach(() => {
   useProjects.setState({
     groups: [], loading: false, error: null, installing: null,
     notice: null, decision: null, busyKey: null, confirm: null,
+    // 🔴 终审 §15:必须显式重置,否则某条用例调 `useProjects.setState({
+    // pickableAgents: ... })` 之后会**残留到后面的用例**(这个 `beforeEach`
+    // 之前没有把它列进去,是因为确认条的 `ToolPicker` 是这次才加的)。
+    pickableAgents: null,
   });
   useInstall.setState({ phase: "idle", dirSlug: null, mineKept: null });
   useStoreIndex.setState({ activeRegistry: "company", activeRepo: "skills/skills" });
@@ -50,7 +56,10 @@ describe("装到项目的确认条", () => {
     // 确认条要说清装到哪、路径是什么、会关联哪些工具
     await screen.findByText("我的项目");
     expect(screen.getByText("/w/我的项目")).toBeTruthy();
-    expect(screen.getByText(/Claude Code/)).toBeTruthy();
+    // 🔴 design §15 前半加了 `ToolPicker` 之后,"Claude Code" 这串字会出现两处
+    // (说明文字 + picker 里的 checkbox label),不能再用宽泛的 /Claude Code/
+    // 子串匹配——精确匹配"会启用到 Claude Code"这一整句。
+    expect(screen.getByText("会启用到 Claude Code")).toBeTruthy();
     expect(invoke.mock.calls.filter(([c]) => c === "project_skill_install")).toHaveLength(0);
   });
 
@@ -173,6 +182,57 @@ describe("装到项目的确认条", () => {
     await userEvent.click(screen.getByRole("button", { name: "换个文件夹" }));
 
     await screen.findByText("另一个项目");
+  });
+
+  it("🔴 design §15 前半:确认条上能勾/去勾要关联的工具,IPC 早就收 agentIds 只是此前没摆控件", async () => {
+    useProjects.setState({ pickableAgents: AGENTS.agents });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "project_pick") return "/w/我的项目";
+      if (cmd === "project_skill_install") return { status: "installed", key: "x", linkedAgents: [] };
+      if (cmd === "project_list") return [];
+      return null;
+    });
+    render(<InstallPanel dirSlug="weekly-report" />);
+    await openScopeMenu();
+    await userEvent.click(screen.getByRole("menuitem", { name: "装到项目…" }));
+    await screen.findByText("我的项目");
+
+    // 默认沿用全局默认规则(已探测且未禁用)——与 requestInstall 算好的初值一致
+    const checkbox = await screen.findByRole("checkbox", { name: "Claude Code" });
+    expect(checkbox).toBeChecked();
+
+    await userEvent.click(checkbox);
+    expect(checkbox).not.toBeChecked();
+
+    await userEvent.click(screen.getByRole("button", { name: "装到这里" }));
+
+    await waitFor(() => {
+      const call = invoke.mock.calls.find(([c]) => c === "project_skill_install");
+      expect(call?.[1].args.agentIds).toEqual([]);
+    });
+  });
+
+  it("探测失败(pickableAgents 为 null)时不摆一个空的 picker —— 摆了会误导成'这台机器没有可选的工具'", async () => {
+    // 🔴 光在这里 setState(null) 不够:`InstallScopeMenu` 打开时会自己
+    // `useProjects.load()`,那一步的 `agents_detected` 若照常成功,`pickableAgents`
+    // 会被重新填成非空——必须让探测本身失败,才是"探测失败"这个场景的真实姿势
+    // (与 `store/project.ts::load` 的 catch 分支同一条路径)。
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "agents_detected") throw { code: "IPC_FAILED", message: "探测失败" };
+      if (cmd === "project_pick") return "/w/我的项目";
+      if (cmd === "project_list") return [];
+      return null;
+    });
+    render(<InstallPanel dirSlug="weekly-report" />);
+    await openScopeMenu();
+    await userEvent.click(screen.getByRole("menuitem", { name: "装到项目…" }));
+    await screen.findByText("我的项目");
+
+    await waitFor(() => {
+      expect(useProjects.getState().pickableAgents).toBeNull();
+    });
+    expect(screen.queryByRole("checkbox")).toBeNull();
   });
 });
 
@@ -352,6 +412,34 @@ describe("装完之后的出口", () => {
     expect(screen.getByRole("button", { name: "装到项目…" })).toBeTruthy();
   });
 
+  it("🔴 design §18:装完那一屏能「在我的技能里查看」,切页并打开这一行的详情", async () => {
+    useUi.setState({ page: "store" });
+    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "agents_detected") return AGENTS;
+      if (cmd === "skill_local_detail")
+        return {
+          name: "周报生成",
+          dirSlug: "weekly-report",
+          description: "",
+          path: "/h/.agents/skills/weekly-report",
+          skillMd: "",
+          files: [],
+          hasScripts: false,
+        };
+      return null;
+    });
+    render(<InstallPanel dirSlug="weekly-report" />);
+    act(() => seedDone());
+
+    await userEvent.click(screen.getByRole("button", { name: "在我的技能里查看" }));
+
+    expect(useUi.getState().page).toBe("mine");
+    await waitFor(() => {
+      expect(useLocalDetail.getState().target).toEqual({ dirSlug: "weekly-report" });
+    });
+  });
+
   it("装完点最近项目,确认条照样出得来 —— 它不该只活在「未安装」那一屏", async () => {
     // 结构问题:确认条此前挂在 IdleFooter 内部,done 档整个渲染不出来。
     const groups = [
@@ -406,7 +494,11 @@ describe("「保留本地的」装完那一屏不能是死路", () => {
 
     const text = document.body.textContent ?? "";
     expect(text).toMatch(/已保留你的本地内容,未做其他改动/);
-    expect(text).not.toMatch(/我的技能/);
+    // 🔴 不能再断言"整段文字里没有「我的技能」四个字"——设计 §18 加的
+    // 「在我的技能里查看」按钮在**两档都会**渲染(它是 `DoneFooter` 通用的出口,
+    // 不是 `localDiffers` 专属文案的一部分)。这里真正要钉的是"两档不混":
+    // `mine` 档不该说出 `localDiffers` 专属的那句"到「我的技能」里勾一下"。
+    expect(text).not.toMatch(/到「我的技能」里勾一下/);
   });
 });
 

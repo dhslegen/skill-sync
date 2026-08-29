@@ -422,6 +422,52 @@ export function collectRemoveFailures(report: UninstallReport): ToolBlocked[] {
   return out;
 }
 
+/**
+ * 分享这一行,最终会去哪个库——由 **section** 决定,不由"有没有坐标"决定
+ * (终审 C-1)。
+ *
+ * # 🔴 为什么不能按"有没有坐标"分流
+ *
+ * `shareable` 区(草稿,以及从广场/GitHub/自定义源装来的技能)的
+ * `sourceOwner`/`sourceRepo` 说的是**它自己的外部来源**,不是公司技能库
+ * ——分享确认屏上写的却恒是「分享到公司技能库」(`mine.shareTitle`)。此前
+ * "有坐标就用账上坐标"那支会把这类技能推去它自己的外部源仓:最可能是未登录
+ * 报错(GitHub/plaza 与公司库是两套凭证),若登录过就在别人的公开仓开出一个
+ * PR——界面说一件事、代码做另一件事。
+ *
+ * `sharedTo`/`installedFrom` 区(第 1/4 源:公司库的记账或"我分享的但本地
+ * 没有")的 `sourceOwner`/`sourceRepo` **就是公司库自己的坐标**,继续信账上
+ * 的值——这是 `install.ts::goToSharePage`("我分享的、没有安装基线")那条路
+ * 唯一会走到的分支,要避免把一个技能的更新推到另一个库去。
+ *
+ * # 与 `ShareConfirm.tsx` 共用同一份判定
+ *
+ * 确认屏上的「分享目标」展示行必须调用**同一个函数**——分开各写一份的话,
+ * 界面显示的目标库与实际提交的目标库很容易对不上,是与 C-1 本身同一种缺陷
+ * (显示与行为分叉),只是换了个地方。
+ *
+ * @returns `undefined` = 该源主库(IPC `skill_share` 的缺省值);其余是
+ *   `owner/repo` 寻址键。
+ */
+export function shareTargetRepo(
+  skill: Pick<InstalledSkillView, "section" | "sourceOwner" | "sourceRepo"> | undefined,
+  chosenRepo: string | null,
+): string | undefined {
+  if (skill && skill.section !== "shareable" && skill.sourceOwner && skill.sourceRepo) {
+    return `${skill.sourceOwner}/${skill.sourceRepo}`;
+  }
+  return chosenRepo ?? undefined;
+}
+
+/** {@link shareTargetRepo} 的 `registryId` 一半:`shareable` 区恒不传
+ *  (IPC 缺省内建源),其余区继续信账上的坐标。 */
+export function shareTargetRegistryId(
+  skill: Pick<InstalledSkillView, "section" | "registryId"> | undefined,
+): string | undefined {
+  if (skill && skill.section !== "shareable" && skill.registryId) return skill.registryId;
+  return undefined;
+}
+
 /** 「可分享到」外源索引被动兜底的节流窗口:1 小时(v7 任务 7 修复轮 1,I3)。 */
 export const SHAREABLE_INDEX_STALE_MS = 60 * 60 * 1000;
 
@@ -611,15 +657,11 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     const skill = get().list?.find((s) => s.dirSlug === target.dirSlug);
     set({ shareBusy: target.dirSlug, shareError: null, shareDone: null });
     try {
-      // 目标库:账上有来源就用账上的(避免把一个技能的更新推到另一个库去),
-      // 没有来源(草稿)才落到确认屏上选中的那个库。
-      const repo =
-        skill?.sourceOwner && skill.sourceRepo
-          ? `${skill.sourceOwner}/${skill.sourceRepo}`
-          : (useShare.getState().targetRepo ?? undefined);
+      const repo = shareTargetRepo(skill, useShare.getState().targetRepo);
+      const registryId = shareTargetRegistryId(skill);
       const result = await skillShare({
         dirSlug: target.dirSlug,
-        ...(skill?.registryId ? { registryId: skill.registryId } : {}),
+        ...(registryId ? { registryId } : {}),
         ...(repo ? { repo } : {}),
       });
       set({ shareTarget: null, shareDone: { dirSlug: target.dirSlug, mode: result.mode } });

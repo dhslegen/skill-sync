@@ -131,6 +131,26 @@ describe("摆出来的信息", () => {
     expect(screen.queryByText("公司技能库")).toBeNull();
   });
 
+  it("🔴 终审 C-1:「可分享到」区哪怕带着(它自己外部来源的)坐标,目标库仍显示公司技能库", async () => {
+    // 典型场景:从广场/GitHub 装来、还没分享过的技能——section 是 shareable,
+    // sourceOwner/sourceRepo/registryId 记的是它自己的外部来源,不是公司库。
+    // 与上一条(relation:"shared"/section:"sharedTo")的对照组:同样带着坐标,
+    // 这里必须显示公司库而不是那个坐标——这一屏的标题恒是「分享到公司技能库」,
+    // 显示的目标必须与之一致,也必须与实际提交的目标一致(见 my-skills.test.ts
+    // 对 confirmShare 本身的同款用例)。
+    openWith(
+      view({
+        relation: "draft",
+        registryId: "plaza",
+        sourceOwner: "vercel-labs",
+        sourceRepo: "agent-skills",
+      }),
+    );
+    await screen.findByText("weekly-report");
+    expect(screen.getByText("公司技能库")).toBeInTheDocument();
+    expect(screen.queryByText("vercel-labs/agent-skills")).toBeNull();
+  });
+
   it("路径预告探不到就整条不显示 —— 不假装知道", async () => {
     useShare.setState({ preview: "unknown" });
     openWith();

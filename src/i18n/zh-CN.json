@@ -176,6 +176,7 @@
   "install.localDiffersKept": "已保留你本地的这一份,没有改动任何文件,也没有改动工具的启用状态。要让某个工具用它,到「我的技能」里勾一下。",
   "install.linkFailed": "有 {count} 个位置没能启用",
   "install.linkFailedHint": "技能本体已经装好。没能启用通常是因为那个位置已有同名文件夹,可稍后处理。",
+  "install.viewInMine": "在我的技能里查看",
   "install.retry": "重试",
   "install.undecidable": "这次获取需要你先做一次选择,但这个版本的应用没认出是哪一种情况。请重试;如果一直这样,把应用更新到最新版再试。",
   "conflict.modifiedTitle": "你修改过这个技能",

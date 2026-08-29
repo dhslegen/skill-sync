@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import type { InstalledSkillView } from "@/lib/ipc";
+import type { InstalledSkillView, ProjectSkillView } from "@/lib/ipc";
 
 // 「我的技能」页头搜索框的查询词(v7 任务 4;design 根决策 #16「页头:搜索框
 // (商店同款)」)。
@@ -53,4 +53,27 @@ export function matchesMineQuery(
   if (displayName.toLowerCase().includes(q)) return true;
   if (skill.dirSlug.toLowerCase().includes(q)) return true;
   return skill.sourceLabel?.toLowerCase().includes(q) ?? false;
+}
+
+/**
+ * 「项目里」页签同一个搜索框的匹配(终审 M-3):此前 `ProjectSections` 完全不读
+ * `useMineSearch`——页头的搜索框是「我的技能」整页共用的单例(`Toolbar.tsx` 按
+ * `page === "mine"` 渲染,不分子页签),用户切到「项目里」子页签后往里敲字,
+ * 界面一个字都不会变,是一颗死控件。
+ *
+ * `ProjectSkillView` 本身就带展示名(`displayName`),不像 `InstalledSkillView`
+ * 需要调用方另外解析——这里不需要 {@link matchesMineQuery} 那份 `displayName`
+ * 参数,直接吃 core 给的字段。匹配面按同一个道理:展示名 / 仓库目录名(`key`,
+ * 技能行渲染的等宽 slug 就是它——虽然真正的取数键是 `dirSlug`,但用户看得见、
+ * 搜得出来的是 `key`)/ 来源(`source`,行上没有展示名时会退回显示它,同款兜底)。
+ */
+export function matchesProjectQuery(
+  skill: Pick<ProjectSkillView, "key" | "displayName" | "source">,
+  query: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  if (skill.displayName.toLowerCase().includes(q)) return true;
+  if (skill.key.toLowerCase().includes(q)) return true;
+  return skill.source.toLowerCase().includes(q);
 }

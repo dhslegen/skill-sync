@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectSections } from "@/components/ProjectSections";
 import type { ProjectGroupView, ProjectSkillView } from "@/lib/ipc";
+import { useMineSearch } from "@/store/mine-search";
 import { useProjects } from "@/store/project";
 
 const invoke = vi.fn();
@@ -244,6 +245,92 @@ describe("项目分区", () => {
 
     // core 刻意不删内容不一样的实体目录,界面必须说出来,不能装作全清干净了
     await screen.findByText(/有 1 个位置没有清理/);
+  });
+});
+
+describe("终审 M-3:「项目里」页签接上页头那个搜索框", () => {
+  // 此前 `ProjectSections` 完全不读 `useMineSearch`——页头搜索框是「我的技能」
+  // 整页共用的单例(`Toolbar.tsx` 按 `page === "mine"` 渲染,不分子页签),
+  // 用户切到「项目里」往里敲字,界面一个字都不会变,是一颗死控件。
+  beforeEach(() => {
+    useMineSearch.setState({ query: "" });
+  });
+
+  it("按展示名过滤,不匹配的技能不显示", async () => {
+    seed([
+      group({
+        skills: [
+          skill({ key: "a", displayName: "周报生成", source: "skills/skills" }),
+          skill({ key: "b", displayName: "React 最佳实践", source: "vercel-labs/agent-skills" }),
+        ],
+      }),
+    ]);
+    render(<ProjectSections />);
+    await screen.findByText("周报生成");
+
+    useMineSearch.setState({ query: "React" });
+
+    await waitFor(() => {
+      expect(screen.queryByText("周报生成")).toBeNull();
+      expect(screen.getByText("React 最佳实践")).toBeInTheDocument();
+    });
+  });
+
+  it("也按仓库目录名(key)与来源匹配——同一份判据,不是只认展示名", async () => {
+    seed([
+      group({
+        skills: [
+          skill({ key: "weekly-report", displayName: "周报生成", source: "skills/skills" }),
+        ],
+      }),
+    ]);
+    render(<ProjectSections />);
+    await screen.findByText("周报生成");
+
+    useMineSearch.setState({ query: "skills/skills" });
+    await waitFor(() => expect(screen.getByText("周报生成")).toBeInTheDocument());
+
+    useMineSearch.setState({ query: "没有任何技能会匹配这串" });
+    await waitFor(() => expect(screen.queryByText("周报生成")).toBeNull());
+  });
+
+  it("搜索把某个项目的技能全部过滤掉时,说「没有匹配」,不是说「这个文件夹里还没有技能」", async () => {
+    seed([group()]); // 默认技能叫「React 最佳实践」
+    render(<ProjectSections />);
+    await screen.findByText("React 最佳实践");
+
+    useMineSearch.setState({ query: "查无此技能" });
+
+    await waitFor(() => {
+      expect(screen.getByText('没有匹配「查无此技能」的技能。')).toBeInTheDocument();
+      // 与"这个文件夹里还没有技能"是两句不同的话——项目里其实是有技能的
+      expect(screen.queryByText("这个文件夹里还没有技能")).toBeNull();
+    });
+  });
+
+  it("清空搜索词,过滤掉的技能重新出现", async () => {
+    seed([
+      group({
+        skills: [
+          skill({ key: "a", displayName: "周报生成", source: "skills/skills" }),
+          skill({ key: "b", displayName: "React 最佳实践", source: "vercel-labs/agent-skills" }),
+        ],
+      }),
+    ]);
+    render(<ProjectSections />);
+    await screen.findByText("周报生成");
+
+    useMineSearch.setState({ query: "React" });
+    await waitFor(() => expect(screen.queryByText("周报生成")).toBeNull());
+
+    useMineSearch.setState({ query: "" });
+    await waitFor(() => expect(screen.getByText("周报生成")).toBeInTheDocument());
+  });
+
+  it("空查询词不影响真正空项目的既有文案", async () => {
+    seed([group({ skills: [] })]);
+    render(<ProjectSections />);
+    await screen.findByText("这个文件夹里还没有技能");
   });
 });
 

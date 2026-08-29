@@ -416,6 +416,88 @@ describe("DetailPanel(本地详情模式)", () => {
     render(<DetailPanel />);
     expect(screen.getByText(/不是技能/)).toBeInTheDocument();
   });
+
+  it("🔴 设计 §12:动作区把行上主按钮与「…」各项全部摆出来,不必先关面板", async () => {
+    // 详情面板是 modal + 遮罩,此前行上的按钮(更新/贡献更改/移除…)一个都够
+    // 不到——用户必须先关掉详情才能点。这条钉住:同一份判定(installedFrom
+    // 区、本地改过、远端没变 → 贡献更改)在详情面板里也要给出同一颗主按钮,
+    // 「…」的各项(移除等)全部平铺,不再收进一个「更多」下拉。
+    // ⚠️ 不断言「打开文件夹」——那颗按钮属于紧邻的 `WhereBlocks`「这台电脑上」
+    // 块,动作区自己把这一项过滤掉了(两处摆同一颗按钮是噪音,见
+    // `SkillActionsBlock` 模块头),这里只钉动作区独有的项。
+    useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null, index: null });
+    useMySkills.setState({
+      list: [installedView({ localModified: true })],
+      agentNames: new Map([["claude-code", "Claude Code"]]),
+      installedAgents: null,
+      canonicalDir: "/home/u/.agents/skills",
+      toolDirs: new Map(),
+    });
+    openLocal();
+    render(<DetailPanel />);
+
+    expect(screen.getByRole("button", { name: "贡献更改" })).toBeInTheDocument();
+
+    // 「移除」触发的是全局状态(`useMySkills.askRemove`),不依赖 MySkillsPage
+    // 在场——`RemoveDialog` 同样全局挂在 App.tsx,这正是 §12 要解决的问题本身。
+    await userEvent.click(screen.getByRole("button", { name: "移除" }));
+    expect(useMySkills.getState().removePhase).toBe("confirming");
+    expect(useMySkills.getState().removeTarget).toBe("weekly-report");
+  });
+
+  it("没有主按钮(未改动、库里也没有新版)时,动作区仍摆着「移除」这类恒在项", () => {
+    useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null, index: null });
+    useMySkills.setState({
+      list: [installedView()],
+      agentNames: new Map([["claude-code", "Claude Code"]]),
+      installedAgents: null,
+      canonicalDir: "/home/u/.agents/skills",
+      toolDirs: new Map(),
+    });
+    openLocal();
+    render(<DetailPanel />);
+
+    // 没有主按钮(action.kind === "none"),但「移除」这条「…」项仍在
+    // ——它不依赖有没有主按钮,只要本体存在。
+    expect(screen.queryByRole("button", { name: "贡献更改" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "移除" })).toBeInTheDocument();
+  });
+});
+
+describe("商店详情的动作区(设计 §12,`PanelBody` 一侧)", () => {
+  beforeEach(() => {
+    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    useMySkills.setState({
+      list: null,
+      agentNames: new Map(),
+      installedAgents: null,
+      canonicalDir: "",
+      toolDirs: new Map(),
+    });
+  });
+
+  it("这台电脑上装着这个技能时,商店详情面板也有动作区——此前 PanelBody 完全没有", async () => {
+    const d = open();
+    useMySkills.setState({
+      list: [installedView({ dirSlug: d.dirSlug, localModified: true })],
+      agentNames: new Map(),
+      canonicalDir: "/home/u/.agents/skills",
+      toolDirs: new Map(),
+    });
+    render(<DetailPanel />);
+
+    expect(screen.getByRole("button", { name: "贡献更改" })).toBeInTheDocument();
+    // 「移除」是动作区独有的项(「打开文件夹」属于紧邻的 WhereBlocks 块,
+    // 动作区自己把这一项过滤掉了,见 `SkillActionsBlock` 模块头)。
+    expect(screen.getByRole("button", { name: "移除" })).toBeInTheDocument();
+  });
+
+  it("这台电脑上没有这个技能(纯浏览)时,动作区不出现——没有可回答的「在哪」", () => {
+    open();
+    // useMySkills.list 保持 null(beforeEach 已重置):这个技能从没在这台电脑上出现过。
+    render(<DetailPanel />);
+    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+  });
 });
 
 describe("revealLabel", () => {

@@ -253,6 +253,81 @@ describe("装到项目前的确认", () => {
   });
 });
 
+describe("确认条上的工具勾选(design §15 前半)", () => {
+  it("取消勾选会同时更新 agentIds 与展示用的 agentLabels,不留一份对不上的文案", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "project_pick") return "/w/a";
+      if (cmd === "agents_detected") {
+        return {
+          agents: [
+            { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, isUniversal: false, needsLink: true },
+          ],
+        };
+      }
+      return null;
+    });
+    await useProjects.getState().requestInstall({ dirSlug: "x" });
+    expect(useProjects.getState().confirm?.agentIds).toEqual(["claude-code"]);
+
+    useProjects.getState().toggleConfirmAgent("claude-code");
+
+    expect(useProjects.getState().confirm?.agentIds).toEqual([]);
+    expect(useProjects.getState().confirm?.agentLabels).toEqual([]);
+  });
+
+  it("再点一次会把它加回去——不是只能取消,不能反悔", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "project_pick") return "/w/a";
+      if (cmd === "agents_detected") {
+        return {
+          agents: [
+            { name: "claude-code", displayName: "Claude Code", installed: true, disabled: true, isUniversal: false, needsLink: true },
+          ],
+        };
+      }
+      return null;
+    });
+    // 默认规则(已探测且未禁用)不会选中它——它被禁用了
+    await useProjects.getState().requestInstall({ dirSlug: "x" });
+    expect(useProjects.getState().confirm?.agentIds).toEqual([]);
+
+    useProjects.setState({ agentNames: new Map([["claude-code", "Claude Code"]]) });
+    useProjects.getState().toggleConfirmAgent("claude-code");
+
+    expect(useProjects.getState().confirm?.agentIds).toEqual(["claude-code"]);
+    expect(useProjects.getState().confirm?.agentLabels).toEqual(["Claude Code"]);
+  });
+
+  it("没有待确认条目时什么都不做——不该凭空造出一个 confirm", () => {
+    useProjects.setState({ confirm: null });
+    useProjects.getState().toggleConfirmAgent("claude-code");
+    expect(useProjects.getState().confirm).toBeNull();
+  });
+
+  it("confirmInstall 带着用户改过的 agentIds 去调 project_skill_install,不是又用回默认值", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "project_pick") return "/w/a";
+      if (cmd === "agents_detected") {
+        return {
+          agents: [
+            { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, isUniversal: false, needsLink: true },
+          ],
+        };
+      }
+      if (cmd === "project_skill_install") return { status: "installed", key: "x", linkedAgents: [] };
+      if (cmd === "project_list") return [];
+      return null;
+    });
+    await useProjects.getState().requestInstall({ dirSlug: "x" });
+    useProjects.getState().toggleConfirmAgent("claude-code");
+
+    await useProjects.getState().confirmInstall();
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "project_skill_install");
+    expect(call?.[1].args.agentIds).toEqual([]);
+  });
+});
+
 describe("提示的生命周期", () => {
   it("换一个技能看详情时,上一次的安装提示不该还挂着", async () => {
     // 真实缺陷:dismissNotice 定义了但全项目一处都没调用,提示一旦出现就永久留着

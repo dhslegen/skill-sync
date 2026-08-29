@@ -12,6 +12,7 @@ import {
   type ProjectSkillView,
   type ToolState,
 } from "@/lib/ipc";
+import { matchesProjectQuery, useMineSearch } from "@/store/mine-search";
 import { useProjects } from "@/store/project";
 
 /**
@@ -47,6 +48,12 @@ export function ProjectSections() {
   const loading = useProjects((s) => s.loading);
   const load = useProjects((s) => s.load);
   const notice = useProjects((s) => s.notice);
+  // 终审 M-3:页头的搜索框是「我的技能」整页共用的单例(`Toolbar.tsx` 按
+  // `page === "mine"` 渲染,不分「通用」/「项目里」子页签),此前这个组件
+  // 完全不读 `useMineSearch`——用户切到这个子页签往里敲字,界面一个字都不会变,
+  // 是一颗死控件。判定与「通用」页同一条纪律:**只影响展示,不影响项目/技能
+  // 本身的计数**(标题行的「N 个技能」仍是未过滤的真实数量)。
+  const query = useMineSearch((s) => s.query);
 
   useEffect(() => {
     void load();
@@ -64,7 +71,7 @@ export function ProjectSections() {
       ) : (
         <div className="flex flex-col gap-2">
           {groups.map((g) => (
-            <ProjectGroup key={g.path} group={g} />
+            <ProjectGroup key={g.path} group={g} query={query} />
           ))}
         </div>
       )}
@@ -74,8 +81,9 @@ export function ProjectSections() {
   );
 }
 
-function ProjectGroup({ group }: { group: ProjectGroupView }) {
+function ProjectGroup({ group, query }: { group: ProjectGroupView; query: string }) {
   const forget = useProjects((s) => s.forget);
+  const filteredSkills = (group.skills ?? []).filter((s) => matchesProjectQuery(s, query));
 
   // 项目级动作:压进标题行的「更多」,不再是两颗常驻按钮。目录不在了就没有
   // 「在文件夹中显示」——摆一个必然失败的按钮不比不摆更有用。
@@ -122,8 +130,12 @@ function ProjectGroup({ group }: { group: ProjectGroupView }) {
         <StatusRow text={t("mine.projectReadOnly")} hint={t("mine.projectReadOnlyHint")} warn />
       ) : (group.skills?.length ?? 0) === 0 ? (
         <StatusRow text={t("mine.projectEmpty")} />
+      ) : filteredSkills.length === 0 ? (
+        // 项目里确实有技能,只是没有一个匹配这次搜索——与上面"这个文件夹里
+        // 还没有技能"是两句不同的话,复用「通用」页同一句搜索空态文案。
+        <StatusRow text={t("mine.searchEmpty", { query })} />
       ) : (
-        (group.skills ?? []).map((skill) => (
+        filteredSkills.map((skill) => (
           <ProjectSkillRow key={skill.key} projectPath={group.path} skill={skill} />
         ))
       )}

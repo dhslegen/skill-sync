@@ -729,6 +729,43 @@ describe("分享确认屏(零编辑)", () => {
     expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", repo: "skills/skills" });
   });
 
+  it("🔴 终审 C-1:「可分享到」区哪怕带着(它自己外部来源的)坐标,也恒推公司库", async () => {
+    // 典型场景:从广场/GitHub 装来、还没分享过的技能(section: "shareable")。
+    // sourceOwner/sourceRepo/registryId 记的是它自己的外部来源坐标(GitHub/plaza),
+    // 不是公司技能库——此前"有坐标就用账上坐标"那支会把这一行推去 vercel-labs 的
+    // 公开仓,而确认屏上写的却是「分享到公司技能库」。与下面「无记账但库里有它的
+    // 行」(section:"sharedTo")那条是对照组:同样带着坐标,section 不同,结论相反。
+    // 🔴 显式清掉 `targetRepo`——上一条用例("草稿没有来源坐标")把它设成了
+    // "skills/skills" 且没有重置,不清的话这条测试会拿到那份残留值,断言看起来
+    // 是巧合地对了(repo 字段缺席这一半仍会通过?不会——`shareTargetRepo` 在
+    // `chosenRepo` 非空时会把它塞进去,残留值会让 `call.args` 多出一个
+    // `repo: "skills/skills"`,与这里要证明的"恒不带外部坐标"这件事对不上)。
+    useShare.setState({ targetRepo: null });
+    useMySkills.setState({
+      list: [
+        view({
+          relation: "draft",
+          registryId: "plaza",
+          sourceOwner: "vercel-labs",
+          sourceRepo: "agent-skills",
+        }),
+      ],
+      shareTarget: { dirSlug: "weekly-report" },
+    });
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_share") return { outcome: "shared", mode: "pushed", url: null };
+      if (cmd === "installed_list") return [];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().confirmShare();
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share");
+    // 不带 registryId(缺省内建源)、repo 不是 vercel-labs/agent-skills
+    // (没选过额外仓,缺省该源主库,IPC 层面就是不传 repo)
+    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report" });
+  });
+
   it("失败时确认屏留着、错误可读——关掉就等于失败被静默吞掉", async () => {
     useMySkills.setState({
       list: [view({ relation: "draft" })],

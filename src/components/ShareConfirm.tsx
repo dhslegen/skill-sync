@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { t, type MessageKey } from "@/i18n";
 import { skillLocalDetail, skillReveal, type SharePath } from "@/lib/ipc";
 import { SHARE_BLOCK_LABEL } from "@/lib/share-block";
-import { useMySkills } from "@/store/my-skills";
+import { shareTargetRepo, useMySkills } from "@/store/my-skills";
 import { useShare } from "@/store/share";
 
 /**
@@ -91,10 +91,10 @@ export function ShareConfirm() {
   if (!shareTarget || !skill) return null;
 
   const blocked = skill.shareBlocked;
-  const library =
-    skill.sourceOwner && skill.sourceRepo
-      ? `${skill.sourceOwner}/${skill.sourceRepo}`
-      : (targetRepo ?? t("mine.shareTargetDefault"));
+  // 🔴 终审 C-1:必须与 `confirmShare` 实际提交时用的**同一个判定**
+  // (`shareTargetRepo`)——分开各写一份的话,这一行显示的目标库很容易与
+  // 实际提交的目标库对不上(与 C-1 本身同一种缺陷,只是换了个地方)。
+  const library = shareTargetRepo(skill, targetRepo) ?? t("mine.shareTargetDefault");
   const pathHint = preview === "unknown" ? null : PATH_LABEL[preview];
 
   return (

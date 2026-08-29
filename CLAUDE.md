@@ -87,10 +87,13 @@ src/
                  InstallScopeMenu(作用域下拉)/ProjectSections(我的技能·项目分区)/
                  ProjectDecisionDialog(项目级替换/本地改动拍板)/
                  Markdown/Icon/SkillIcon/InstallPanel/Wizard +
-                 ToolPicker(v7:三处工具多选统一成的唯一实现,`layout: "inline"|"list"`
+                 ToolPicker(v7:四处工具多选统一成的唯一实现,`layout: "inline"|"list"`
                  两种容器共用同一副 checkbox/label 骨架)/
                  ToolChecks(v7 起是 ToolPicker 的薄壳,「我的技能」详情面板「各个工具里」
                  那一组勾,取代了旧的「修复」按钮)/
+                 RowActionControls(终审 §12:主按钮 `PrimaryAction` + 「…」按钮翻译
+                 `rowMenuHandler`,「我的技能」行与详情面板动作区共用的唯一实现)/
+                 SkillActionsBlock(终审 §12:详情面板的动作区,挂在 `WhereBlocks` 之后)/
                  WhereBlocks(v7:详情面板「在哪」三块——这台电脑上/各个工具里/技能库里,
                  插在 DetailPanel 与 LocalPanelBody 正文之上)/
                  SkillRowMenu(v7:「我的技能」行尾「…」菜单)/
@@ -975,6 +978,11 @@ v7 的契约变更(「我的技能」三区重设计):**新增** IPC `project_sk
 新增错误码 `NET_PULLS_TOO_MANY`(审核态查询翻页止损)、`NET_PULLS_TIMEOUT`
 (查询超出整体 deadline),同归 `NET_*` 族,均只影响"审核态"这条网络例外、
 不影响 `installed_list` 主体(网络失败一律降级,见「我的技能三区模型(v7)」一节)。
+`state.json` 的 `SharedSkill`(`state.shared[]`)**新增**两个可选字段
+`reviewUrl`/`reviewNumber`(任务 2,「审核态」的本地兜底证据,网络查询失败时用;
+`serde(default, skip_serializing_if = "Option::is_none")`,旧文件缺这两个字段
+读入即为 `None`,不报错),不升 `schemaVersion`(与 M11 的 `lastSeenVersion`、
+v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
 
 ### 现役机制约束(动相关代码前必读)
 
@@ -1019,10 +1027,13 @@ v7 的契约变更(「我的技能」三区重设计):**新增** IPC `project_sk
     窗口重获焦点那一级,不接在 `load()`——翻页本身不该发请求),节流状态只存
     内存不落盘;单个来源查询失败静默降级(不摆错误横幅),两套机制职责不同、
     互不影响,别把它们当成同一件事。
-  - **多选组件三处统一**(`ToolPicker.tsx`,`ToolPickerItem` 是唯一的入参形状):
-    商店获取面板(`InstallPanel`,`list` 布局)、详情面板「各个工具里」
-    (`ToolChecks`→`WhereBlocks`,`inline` 布局)、项目行改选
-    (`ProjectSections`)。两种 `layout` 共用同一副 checkbox/label 骨架与类名,
+  - **多选组件四处统一**(`ToolPicker.tsx`,`ToolPickerItem` 是唯一的入参形状;
+    终审 M-5 订正——此前这里写的是"三处",补齐设计 §15 之后是四处):
+    商店获取面板(`InstallPanel` 的 `AgentChooser`,`list` 布局)、详情面板
+    「各个工具里」(`ToolChecks`→`WhereBlocks`,`inline` 布局)、项目行事后改选
+    (`ProjectSections`,`list` 布局)、项目确认条上可选工具
+    (`InstallPanel` 的 `ConfirmBar`,`list` 布局,终审 §15)。两种 `layout`
+    共用同一副 checkbox/label 骨架与类名,
     只是容器排布不同(`inline` 是 chip 流、`list` 是带路径的竖排清单)——
     "统一"指的是骨架,不是排布方向。排序"已勾在前、其余按注册表原相对顺序"
     只在**第一次拿到非空 `items`** 时算一次并用 `useRef` 惰性钉住,操作期间
@@ -1351,9 +1362,15 @@ v7 的契约变更(「我的技能」三区重设计):**新增** IPC `project_sk
     记账那一档 + "只在库里、本地没本体"那一档)、`share::candidate`
     (`scan_candidates` 用)。前端**没有**跨语言复用同一份代码,但有一份口径对齐的
     独立镜像:`lib/update.ts::isMine`(展示名/登录名任一相同即算)驱动
-    `cardState`,`lib/ownership.ts::sharedState` 驱动「我的技能」页的七状态。
-    改判定表**必须四处 Rust 调用 + 两处前端镜像一起改**,漏一处就是新一轮
-    "卡片说有更新、按钮却是禁用的"那种缺陷(`CLAUDE.md` 记的既有教训)。
+    `cardState`(商店卡片)。改判定表**必须四处 Rust 调用 + 这一处前端镜像一起改**,
+    漏一处就是新一轮"卡片说有更新、按钮却是禁用的"那种缺陷(`CLAUDE.md` 记的
+    既有教训)。
+    ⚠️ **这句话原先还提到 `lib/ownership.ts::sharedState` 是第二处前端镜像
+    (v6 二期,「我的技能」页的七状态)——v7 任务 4 起该函数已删除**:三区
+    (`installedFrom`/`sharedTo`/`shareable`)现在由 `InstalledSkillView.section`
+    直接给出(core 侧 `ownership::section(relation)` 算好),`src/lib/ownership.ts`
+    的 `rowAction` 只消费这个字段,不在前端重新判一遍"这是不是我的技能"
+    ——所以**镜像只剩一处**(`isMine`/`cardState`),不再是两处。
   - 🔴 **`acquire::precheck` 里 `Mine` 判在 `Foreign` 之前、在 `Managed` 之后**:
     没有 `state.installed` 记账时(第一次遇到这个目录),先判 `is_mine`——是我
     就直接给 `Mine{local_changed:true, remote_changed:true}`,不是我才落进
@@ -1380,14 +1397,21 @@ v7 的契约变更(「我的技能」三区重设计):**新增** IPC `project_sk
     `keepLocalAndShare` 同一个理由):前提就是"库里已有新版",直推等于覆盖
     同事经审核改过的版本。`remoteChanged` 为假(单纯"本地改了、远端没变")时
     不强制,走正常的权限矩阵分流。
-  - 🔴 **前端「我的技能」页的八态机(`lib/ownership.ts::sharedState`)里,
-    `noBaseline`(判据 `!contentHash`)必须压过 `both`/`localAhead`/`remoteAhead`**,
-    不能排在它们之后:那三档全部依赖"安装那一刻的内容基线"里的
-    `localModified`/`remoteChanged`,而 `noBaseline` 这一档**根本没有基线**
-    ——`relation === "shared"` 且本地有本体,但没有 `state.installed` 记账
-    (典型场景:确实是作者,但直接经 git 推进库,没经过本 app 装过)。core 侧
-    对这种行恒填 `localModified:false` 且 `contentHash:""`,没有基线却断言
-    "已同步"或"有改动未分享"都是在编。
+  - 🔴 **"没有安装基线时不能瞎猜『改没改过』"这条道理仍然成立,只是落点已经
+    换了地方**——原文这里写的是"前端「我的技能」页的八态机
+    (`lib/ownership.ts::sharedState`)里 `noBaseline` 必须压过 `both`/
+    `localAhead`/`remoteAhead`",那个八态机与那三档判据**已随 v7 任务 7 删除**
+    (旧的两分区页整页撤掉,`sharedState`/`localEqualsRemote`/`STATE_LABEL`
+    生产代码零引用)。现在的落点是 `src/store/my-skills.ts` 的
+    `localDiffersNoBaseline`(v7 任务 7 修复轮 1,C3):判据仍是同一件事——
+    `relation === "shared"` 且本地有本体,但没有 `state.installed` 记账
+    (典型场景:确实是作者,但直接经 git 推进库,没经过本 app 装过,core 侧
+    对这种行恒填 `localModified:false` 且 `contentHash:""`)——但**不再靠
+    "档位优先级"表达**:`localDiffersNoBaseline` 一进门就判 `if (skill.contentHash)
+    return false`,有基线的行连这个函数都不会走到,`rowAction`(三区判定表)
+    压根不读它,只有「更多」菜单要不要多一条「改用库里的版本」才用它。
+    没有基线时不能断言"已同步"或"有改动未分享"这条道理没变,变的只是
+    "拿两方**实时**指纹直接比"取代了"在一张状态表里排优先级"。
   - 🔴 **点「这是我分享的」(`skill_claim_attribution`)成功后,`DetailPanel` 的
     `ClaimAttribution` 组件刻意不调 `openDetail`/`load(true)` 重载
     `useStoreIndex`**——即便看起来"重刷一下让作者信息自然出现"更省事。

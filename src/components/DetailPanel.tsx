@@ -5,6 +5,7 @@ import { Icon } from "@/components/Icon";
 import { InstallPanel } from "@/components/InstallPanel";
 import { InstalledScopes } from "@/components/InstalledScopes";
 import { Markdown } from "@/components/Markdown";
+import { SkillActionsBlock } from "@/components/SkillActionsBlock";
 import { SkillIcon } from "@/components/SkillIcon";
 import { WhereBlocks } from "@/components/WhereBlocks";
 import { t } from "@/i18n";
@@ -190,6 +191,11 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
       </div>
 
       {skill && <WhereBlocks skill={skill} agentNames={agentNames} />}
+      {/* 设计 §12:动作区(行上主按钮 + 「…」各项全部再摆一遍)。挂在「在哪」
+          三块之后,与既有的「在访达中显示」(下方,OS 措辞)是两件事:后者是
+          这一屏本来就有的"打开本体所在文件夹"这一个动作,动作区是"这一行原本
+          该有的其余动作"整套补齐——两者并存,不是互相替代。 */}
+      {skill && <SkillActionsBlock skill={skill} />}
 
       <div className="flex gap-0.5 px-5 pt-2.5" role="tablist">
         <Tab selected={tab === "readme"} onClick={() => setTab("readme")}>
@@ -445,6 +451,9 @@ function PanelBody({
       </div>
 
       {whereSkill && <WhereBlocks skill={whereSkill} agentNames={whereAgentNames} />}
+      {/* 设计 §12:动作区。商店/广场详情此前完全没有对应"打开文件夹"以外的
+          任何动作出口,这台电脑上有这个技能时(`whereSkill` 非空)才有事可做。 */}
+      {whereSkill && <SkillActionsBlock skill={whereSkill} />}
 
       <div className="flex gap-0.5 px-5 pt-2.5" role="tablist">
         <Tab selected={tab === "readme"} onClick={() => setTab("readme")}>

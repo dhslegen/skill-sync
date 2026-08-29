@@ -181,6 +181,16 @@ interface ProjectState {
    * 走既有的决策对话框。合并成一个开关就是静默抹掉用户改过的内容。
    */
   confirmInstall: (force?: boolean) => Promise<void>;
+  /**
+   * 确认条上勾/取消一个工具(design §15 前半:「装到项目」的确认条上可选工具
+   * ——IPC 早就收 `agentIds`,只是前端没摆控件,用户只能沿用 `requestInstall`
+   * 算好的默认集合)。
+   *
+   * `agentLabels`(展示名)与 `agentIds` 一起更新,不留一份对不上的展示文案
+   * ——`agentNames` 是登录时 `load()` 探测出来的 agent 内部名→展示名映射,
+   * 内部标识不能露给用户,这里现算一次而不是让上一次的 `agentLabels` 漂移。
+   */
+  toggleConfirmAgent: (agent: string) => void;
   cancelConfirm: () => void;
   remove: (projectPath: string, key: string, confirmed: boolean) => Promise<void>;
   forget: (path: string) => Promise<void>;
@@ -295,6 +305,16 @@ export const useProjects = create<ProjectState>((set, get) => ({
   },
 
   cancelConfirm: () => set({ confirm: null }),
+
+  toggleConfirmAgent: (agent) => {
+    const confirm = get().confirm;
+    if (!confirm) return;
+    const has = confirm.agentIds.includes(agent);
+    const agentIds = has ? confirm.agentIds.filter((a) => a !== agent) : [...confirm.agentIds, agent];
+    const agentNames = get().agentNames;
+    const agentLabels = agentIds.map((a) => agentNames.get(a) ?? a);
+    set({ confirm: { ...confirm, agentIds, agentLabels } });
+  },
 
   install: async ({ projectPath, dirSlug, agentIds, registryId, repo, confirmedReplace, force }) => {
     set({ installing: { projectPath, dirSlug }, error: null, notice: null });

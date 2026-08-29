@@ -28,7 +28,9 @@ use skillsync_lib::core::my_skills;
 use skillsync_lib::core::ownership::{Identity, Relation};
 use skillsync_lib::core::registry;
 use skillsync_lib::core::skill_lock::{self, LockEntry};
-use skillsync_lib::core::state::{Config, InstalledSkill, SkillSource, State, Store};
+use skillsync_lib::core::state::{
+    Config, InstalledSkill, RegistryConfig, RepoConfig, SkillSource, State, Store,
+};
 use skillsync_lib::core::store::{self, IndexedSkill, SkillAttribution, SkillFile, StoreIndex};
 
 const NOW: &str = "2026-08-23T00:00:00.000Z";
@@ -281,6 +283,65 @@ fn three_way_merge_relation_and_source_label_when_signed_in() {
     assert!(
         rows.iter().all(|r| r.dir_slug != "library-only-by-someone-else"),
         "D 在库里但作者是别人,本地也没有本体,不该出现在列表里"
+    );
+}
+
+/// 🔴 终审 C-2:C 档(第 4 源,"只在库里、本地没有本体")此前直接吃
+/// `library_attribution` 的**合并全源表**——一条自定义 Gitea 源里我署名的技能,
+/// 会被判成「已分享到**公司**技能库」,与已经修过的 C1(`in_builtin_library` 只认
+/// 公司库坐标)是**同一形状的缺陷**,只是长在第 4 源那个循环里。收窄之后
+/// (`builtin_library_attribution`),这一行必须**完全不出现**——它既不在这台
+/// 电脑上,也不是公司库里的技能,没有理由摆出来。
+#[test]
+fn a_custom_source_library_only_row_does_not_leak_into_the_company_library() {
+    let ctx = ctx();
+
+    let custom_repo = skillsync_lib::core::gitea::RepoRef {
+        owner: "acme".into(),
+        repo: "design-skills".into(),
+        branch: "main".into(),
+    };
+    let path = store::cache_path(ctx.store.dir(), "custom-1", &custom_repo);
+    let index = StoreIndex {
+        schema_version: store::INDEX_SCHEMA_VERSION,
+        registry_id: "custom-1".into(),
+        owner: "acme".into(),
+        repo: "design-skills".into(),
+        branch: "main".into(),
+        commit_sha: "def2222".into(),
+        committed_at: NOW.into(),
+        fetched_at: 0,
+        skills: vec![indexed_skill("design-only", Some("赵文浩"))],
+        skipped: Vec::new(),
+        curated: Vec::new(),
+    };
+    store::save_cache(&path, &index).unwrap();
+
+    let mut config = Config::default();
+    // 这条源要真的"配置了",修复前的合并表(`library_attribution`)才查得到它
+    // ——与 `all_repo_refs` 的既有依赖同一份口径,不是本测试特有的前置条件。
+    config.registries.push(RegistryConfig {
+        id: "custom-1".into(),
+        name: "设计部技能库".into(),
+        kind: "gitea".into(),
+        base_url: "http://design.internal".into(),
+        builtin: false,
+        repos: vec![RepoConfig {
+            owner: "acme".into(),
+            repo: "design-skills".into(),
+            branch: "main".into(),
+            name: None,
+        }],
+    });
+    config.identities.insert("custom-1".into(), me());
+
+    let state = State::default();
+    let rows = build(&ctx, &config, &state);
+
+    assert!(
+        rows.iter().all(|r| r.dir_slug != "design-only"),
+        "自定义源里我署名、本地没有本体的技能,不该出现在「我的技能」里(更不该被判成已分享到公司库):{:?}",
+        rows.iter().map(|r| (&r.dir_slug, r.section)).collect::<Vec<_>>()
     );
 }
 

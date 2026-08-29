@@ -302,13 +302,51 @@ fn all_repo_refs(builtin: &registry::BuiltinSource, config: &state::Config) -> V
 /// `owner`/`repo` 必须跟着 `registry_id` 一起存(修复轮 1):第三档(只在库里、
 /// 本地没有本体)靠这份表填 `InstalledRow::source_owner/source_repo`,那是「取回」
 /// 这个动作能不能发出正确请求的前提,不是展示边角料。
+///
+/// 🔴 **判定内核只有一处实现**:这里与 [`builtin_library_attribution`] 共用
+/// [`attribution_from_refs`],差别只在喂给它哪一份 `(registry_id, repo)` 坐标
+/// 列表——前者喂全部已配置库(`all_repo_refs`),后者只喂公司库
+/// (`builtin_repo_refs`)。分头各写一遍正是本项目记录的空转测试模式 #1。
 pub fn library_attribution(
     store: &Store,
     builtin: &registry::BuiltinSource,
     config: &state::Config,
 ) -> ownership::LibraryAttribution {
+    attribution_from_refs(store, all_repo_refs(builtin, config))
+}
+
+/// [`library_attribution`] 的收窄版:只吃公司库坐标(`builtin_repo_refs`),
+/// 不含自定义源与广场。
+///
+/// 🔴 **终审 C-2**:第 4 源(只在库里、这台电脑没有本体)专用——那一档存在的
+/// 唯一理由是「换电脑 / app 数据丢 / 绕过 app 直推 git」这个**相对公司技能库**
+/// 的场景(设计文档「不依赖本地账本」),`relation`/`section` 因此必须只认公司库。
+/// 此前那一档直接吃 [`library_attribution`] 的合并表:一条自定义 Gitea 源里
+/// 我署名的技能,会被判成「已分享到**公司**技能库」——与 `in_builtin_library`/
+/// `unmanaged_row` 早就立好的「三区只认公司库」这条规矩自相矛盾,而且是**批量的**
+/// (命中的每一条自定义源同名技能都会被误判)。
+fn builtin_library_attribution(
+    store: &Store,
+    builtin: &registry::BuiltinSource,
+    config: &state::Config,
+) -> ownership::LibraryAttribution {
+    attribution_from_refs(
+        store,
+        builtin_repo_refs(builtin, config)
+            .into_iter()
+            .map(|repo| (registry::BUILTIN_REGISTRY_ID.to_string(), repo)),
+    )
+}
+
+/// [`library_attribution`]/[`builtin_library_attribution`] 共用的判定内核:
+/// 遍历 `(registry_id, repo)`,命中索引缓存就把技能登记进表(只记"第一次命中",
+/// 见 [`ownership::LibraryAttribution`] 文档)。
+fn attribution_from_refs(
+    store: &Store,
+    refs: impl IntoIterator<Item = (String, RepoRef)>,
+) -> ownership::LibraryAttribution {
     let mut map: ownership::LibraryAttribution = HashMap::new();
-    for (registry_id, repo) in all_repo_refs(builtin, config) {
+    for (registry_id, repo) in refs {
         let path = store::cache_path(store.dir(), &registry_id, &repo);
         let Some(index) = store::load_cache(&path) else {
             continue;
@@ -512,6 +550,8 @@ pub fn build(
     state: &state::State,
 ) -> Result<Vec<InstalledRow>, AppError> {
     let library = library_attribution(store, builtin, config);
+    // 🔴 终审 C-2:第 4 源专用,收窄到只认公司库——理由见函数文档。
+    let builtin_library = builtin_library_attribution(store, builtin, config);
     let lock_entries = lock_entries_by_key(env);
     // 🔴 只读发现,绝不写盘、绝不写账(`scan_all` 自己也有这条承诺)。
     let all = converge::scan_all(registry, env)?;
@@ -682,13 +722,17 @@ pub fn build(
     // ——取回要调 `skill_acquire`,缺坐标不会报错,是**装进来一个同名但完全不同
     // 的技能**。`source_label` 仍然固定 `None`:那是"这台电脑上从哪装来的"个人
     // 历史,这一档从没装过,填了是假话。
-    for (dir_slug, entry) in &library {
+    for (dir_slug, entry) in &builtin_library {
         let key = converge::record_key(installer, dir_slug).unwrap_or_else(|_| dir_slug.clone());
         // 这一档按**记账键**去重(见上面两套集合的说明):它问的是"这台电脑上有没有
         // 本体",而 canonical 上同一个键只有一个位置。
         if seen_keys.contains(&key) {
             continue; // 已经在上面两档里出现过(本地有记账或有本体)
         }
+        // 🔴 终审 C-2:`builtin_library` 现在只装得下公司库坐标,`entry.registry_id`
+        // 恒为 `BUILTIN_REGISTRY_ID`——这里仍然用 `entry.registry_id` 而不是硬编码
+        // 常量,是让这一行在坐标口径变化时(万一将来 `builtin_library_attribution`
+        // 的实现改了)继续自洽,不留一个"看着对、实则依赖隐藏前提"的写法。
         let identity = config.identities.get(&entry.registry_id);
         let relation = ownership::relation(identity, entry.author.as_deref(), true, false);
         if relation != ownership::Relation::Shared {
