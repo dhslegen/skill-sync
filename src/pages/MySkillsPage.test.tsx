@@ -1167,3 +1167,38 @@ describe("新建技能(补充覆盖:CreateSkill 的 UI 通道,不是只断言渲
     await screen.findByText("新建一个技能");
   });
 });
+
+// ---------------------------------------------------------------------------
+// v7 任务 8:「项目里」页签(页签壳本身在任务 7 就已经建好——TabsRow + 默认
+// general + projects 档渲染 ProjectSections,这里只补 brief Step 1 那条
+// 之前没有测试覆盖过的集成用例)。
+// ---------------------------------------------------------------------------
+
+describe("v7 任务 8:项目里页签", () => {
+  it("两个页签:通用 / 项目里,默认通用;切到项目里能看到项目", async () => {
+    seed([mk("a", "installedFrom")]);
+    // 🔴 `ProjectSections` 挂载即 `useProjects().load()`,那会整体覆盖 groups
+    // ——数据必须从 mock 的 IPC 里来,不能事后 `setState` 手喂(本项目记着的
+    // 既有教训:挂载的 load() 会把手喂的数据冲掉,绿的那次什么都没证明)。
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return stripFixtureOnly([mk("a", "installedFrom")]);
+      if (cmd === "agents_detected") return AGENT_LIST;
+      if (cmd === "store_index") return companyIndex([mk("a", "installedFrom")]);
+      if (cmd === "project_list") {
+        return [
+          { path: "/w/erp-backend", folderName: "erp-backend", missing: false, readOnly: false, skills: [] },
+        ];
+      }
+      return null;
+    });
+
+    render(<MySkillsPage />);
+    expect(await screen.findByRole("tab", { name: "通用" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "项目里" })).toHaveAttribute("aria-selected", "false");
+
+    await userEvent.click(screen.getByRole("tab", { name: "项目里" }));
+    expect(await screen.findByText("erp-backend")).toBeInTheDocument();
+    // 切到项目里之后,「通用」区的行不该还摆在页面上
+    expect(screen.queryByText("a")).toBeNull();
+  });
+});

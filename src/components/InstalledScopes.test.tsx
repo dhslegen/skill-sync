@@ -23,7 +23,7 @@ function projectWith(dirSlug: string | null, path = "/w/我的项目", folderNam
           {
             key: "k", displayName: "周报生成", description: "",
             source: "skills/skills", sourceType: "git", dirSlug,
-            registryId: "company", repo: "skills/skills", updatable: true,
+            registryId: "company", repo: "skills/skills", updatable: true, agents: [],
           },
         ]
       : [],
@@ -81,7 +81,7 @@ describe("详情面板的「已装到」", () => {
               key: "vercel-react-best-practices", displayName: "React 最佳实践", description: "",
               source: "vercel-labs/agent-skills", sourceType: "github",
               dirSlug: "react-best-practices", registryId: "plaza",
-              repo: "vercel-labs/agent-skills", updatable: true,
+              repo: "vercel-labs/agent-skills", updatable: true, agents: [],
             },
           ],
         },

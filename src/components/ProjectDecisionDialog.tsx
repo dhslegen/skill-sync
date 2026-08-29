@@ -61,7 +61,6 @@ export function ProjectDecisionDialog() {
         projectPath: decision.projectPath,
         key: decision.key,
         dirSlug: decision.dirSlug,
-        agentIds: decision.agentIds,
         registryId: decision.registryId,
         repo: decision.repo,
         discardLocalEdits: true,

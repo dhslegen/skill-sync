@@ -935,6 +935,17 @@ export interface ProjectSkillView {
    * ——不摆比摆一个必然报错的按钮好(M6「绑不上就不摆」同款)。
    */
   updatable: boolean;
+  /**
+   * 这个技能眼下实际链接到了哪些工具(内部 agent 名,上屏前必须换成展示名)。
+   *
+   * 🔴 事后改选 picker 的初始勾选**唯一**来源——不能自己猜。`project_skill_set_agents`
+   * 收的是完整目标集,不是增量:picker 若从"全不勾"起步,用户点一个勾就会把
+   * 这里没显示出来的其余真实关联一并摘掉。提交时必须以这份全量列表为基底
+   * (当前集 ∪/∖ 这一次翻转),不能只发"这次勾选框里能看到的"那几个
+   * ——与 `ToolChecks`(全局版)"提交名单从全量 tools 派生,不是从收窄后的
+   * shown"同一条纪律。
+   */
+  agents: string[];
 }
 
 /** 一个项目及它里面的技能。 */
@@ -984,13 +995,22 @@ export const projectSkillInstall = (args: {
   force?: boolean;
 }) => call<ProjectInstallOutcome>("project_skill_install", { args });
 
+/**
+ * 更新一个已装进项目的技能。
+ *
+ * 🔴 **没有 `agentIds`——v7 任务 3 已把 `project_skill_update` 改成从磁盘反推
+ * 当初关联的那批工具(`project::current_agents`),不再吃前端传的探测/禁用状态**
+ * (任务 3 修复的正是"用现场重建的默认值覆盖用户当初选的那批"这个缺陷)。
+ * `ProjectUpdateArgs` 那个字段已经删了,这里跟着清掉——不删的话前端每次调用都在
+ * 拼一个 Rust 不认的死参数(serde 忽略未知键,发出去不报错,但读代码的人会
+ * 以为它还在起作用)。
+ */
 export const projectSkillUpdate = (args: {
   projectPath: string;
   key: string;
   dirSlug: string;
   registryId?: string;
   repo?: string;
-  agentIds: string[];
   discardLocalEdits?: boolean;
 }) => call<ProjectUpdateOutcome>("project_skill_update", { args });
 
@@ -1005,3 +1025,19 @@ export const projectSkillRemove = (projectPath: string, key: string, confirmed: 
  * 项目根不符合。这条的守卫是"必须在项目清单里"——同样不接受任意路径。
  */
 export const projectReveal = (path: string) => call<void>("project_reveal", { path });
+
+/** 装完之后事后改选「这个技能在这个项目里对哪些工具生效」的回报。 */
+export interface ProjectSetAgentsDone {
+  /** 新建了链接的 agent 名单(内部标识,上屏前必须换成展示名)。 */
+  linked: string[];
+  /** 摘掉了链接的 agent 名单。 */
+  unlinked: string[];
+  /**
+   * 该建/该摘的位置被一个内容不同的东西占着,一个字节没动、原样留下(铁律 7)。
+   * 界面必须有渲染点——这一档不是"没做成",是"停下来问你"。
+   */
+  kept: string[];
+}
+
+export const projectSkillSetAgents = (args: { projectPath: string; key: string; agentIds: string[] }) =>
+  call<ProjectSetAgentsDone>("project_skill_set_agents", { args });

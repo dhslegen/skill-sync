@@ -14,6 +14,7 @@ import {
   projectPick,
   projectSkillInstall,
   projectSkillRemove,
+  projectSkillSetAgents,
   projectSkillUpdate,
   type AppError,
   type DetectedAgent,
@@ -72,10 +73,16 @@ interface InstallingState {
   dirSlug: string;
 }
 
-/** 需要用户拍板的两种情形。 */
+/**
+ * 需要用户拍板的两种情形。
+ *
+ * 🔴 `localEdits`(更新路径)**没有** `agentIds`——`project_skill_update` 已经
+ * 不吃这个参数了(见 `update` 的文档)。`replace`(安装路径)的 `agentIds` 还活着,
+ * 别一起删:那一档最终会走到 `project_skill_install`,那条 IPC 仍然需要它。
+ */
 export type ProjectDecision =
   | { kind: "replace"; projectPath: string; dirSlug: string; agentIds: string[]; registryId?: string; repo?: string }
-  | { kind: "localEdits"; projectPath: string; key: string; dirSlug: string; agentIds: string[]; registryId?: string; repo?: string };
+  | { kind: "localEdits"; projectPath: string; key: string; dirSlug: string; registryId?: string; repo?: string };
 
 interface ProjectState {
   groups: ProjectGroupView[];
@@ -90,6 +97,27 @@ interface ProjectState {
   /** 选完文件夹、等用户点「装到这里」。null = 没有待确认的。 */
   confirm: ProjectConfirm | null;
 
+  /** agent 内部名 → 展示名。界面绝不露内部标识,渲染前一律经这份 map。 */
+  agentNames: Map<string, string>;
+  /**
+   * 这台机器上装了、且不是 universal 的 agent 名单——事后改选 picker 的候选列表。
+   * universal agent(如 cursor/codex)不摆:项目级 `current_agents`/`link_dirs`
+   * 都跳过它们(它们的 `skillsDir` 落在 `.agents/skills`,与本体同一处,
+   * 点了也没有效果),摆出来就是一个死勾。
+   * `null` = 探测失败,这时**不收窄**(拿"不知道"当"没有"是另一种撒谎)。
+   */
+  pickableAgents: DetectedAgent[] | null;
+
+  setAgentsBusy: string | null;
+  setAgentsError: AppError | null;
+  /**
+   * 上一次事后改选里,内容不同的位置一个字节没动、原样留下的 agent 名单
+   * (铁律 7)。**必须有渲染点**——这一档不是"没做成",是"停下来问你"。
+   */
+  toolFailures: string[] | null;
+  /** `toolFailures`/`setAgentsError` 归属的那个技能键,渲染时用来对应到具体是哪一行。 */
+  toolFailuresFor: string | null;
+
   load: () => Promise<void>;
 
   pick: () => Promise<string | null>;
@@ -102,15 +130,29 @@ interface ProjectState {
     confirmedReplace?: boolean;
     force?: boolean;
   }) => Promise<void>;
+  /**
+   * 更新一个已装进项目的技能。
+   *
+   * 🔴 **没有 `agentIds` 参数**——`project_skill_update` 早在 v7 任务 3 就改成从
+   * 磁盘反推当初关联的那批工具(`project::current_agents`),不再吃前端传的
+   * 探测/禁用状态现场重建的默认值。这里跟着删,免得调用方以为传了就会生效。
+   */
   update: (args: {
     projectPath: string;
     key: string;
     dirSlug: string;
-    agentIds: string[];
     registryId?: string;
     repo?: string;
     discardLocalEdits?: boolean;
   }) => Promise<void>;
+  /**
+   * 事后改选「这个技能在这个项目里对哪些工具生效」(v7 任务 8,补上 v5 留下的
+   * 缺口——装完之后此前没有任何入口能改)。`agentIds` 是**完整目标集**,
+   * 不是增量:调用方必须自己算好"当前全量集 ∪/∖ 这一次翻转"再传进来
+   * ——picker 组件自己负责这件事,这个方法只是薄壳。
+   */
+  setAgents: (projectPath: string, key: string, agentIds: string[]) => Promise<void>;
+  dismissToolFailures: () => void;
   /**
    * 进入待确认态。不给 `projectPath` 就弹选择框让用户选一个。
    *
@@ -160,6 +202,12 @@ export const useProjects = create<ProjectState>((set, get) => ({
   decision: null,
   busyKey: null,
   confirm: null,
+  agentNames: new Map(),
+  pickableAgents: null,
+  setAgentsBusy: null,
+  setAgentsError: null,
+  toolFailures: null,
+  toolFailuresFor: null,
 
   load: async () => {
     set({ loading: true, error: null });
@@ -171,6 +219,17 @@ export const useProjects = create<ProjectState>((set, get) => ({
       set({ groups: Array.isArray(groups) ? groups : [], loading: false });
     } catch (e) {
       set({ error: toAppError(e), loading: false });
+    }
+    try {
+      const detected = await agentsDetected();
+      set({
+        agentNames: new Map(detected.agents.map((a) => [a.name, a.displayName])),
+        pickableAgents: detected.agents.filter((a) => a.installed && !a.isUniversal),
+      });
+    } catch {
+      // 拿不到就先用内部名顶着、也不收窄 picker:探测失败不该让整页挂掉,
+      // 更不该让能改选的工具凭空消失(与 `useMySkills.load` 同一姿态)。
+      set({ pickableAgents: null });
     }
   },
 
@@ -262,14 +321,13 @@ export const useProjects = create<ProjectState>((set, get) => ({
     }
   },
 
-  update: async ({ projectPath, key, dirSlug, agentIds, registryId, repo, discardLocalEdits }) => {
+  update: async ({ projectPath, key, dirSlug, registryId, repo, discardLocalEdits }) => {
     set({ busyKey: key, error: null, notice: null });
     try {
       const outcome = await projectSkillUpdate({
         projectPath,
         key,
         dirSlug,
-        agentIds,
         registryId,
         repo,
         discardLocalEdits,
@@ -277,7 +335,7 @@ export const useProjects = create<ProjectState>((set, get) => ({
       if (outcome.status === "hasLocalEdits") {
         set({
           busyKey: null,
-          decision: { kind: "localEdits", projectPath, key, dirSlug, agentIds, registryId, repo },
+          decision: { kind: "localEdits", projectPath, key, dirSlug, registryId, repo },
         });
         return;
       }
@@ -319,6 +377,24 @@ export const useProjects = create<ProjectState>((set, get) => ({
       set({ error: toAppError(e) });
     }
   },
+
+  setAgents: async (projectPath, key, agentIds) => {
+    // 归属在动作一开始就落定(与 `useMySkills.setAgents` 同一姿态):不管这一轮
+    // 成功还是失败,只要 toolFailures/setAgentsError 之后被写入非空值,
+    // 它们说的都是这个 key。
+    set({ setAgentsBusy: key, setAgentsError: null, toolFailures: null, toolFailuresFor: key });
+    try {
+      const done = await projectSkillSetAgents({ projectPath, key, agentIds });
+      set({ toolFailures: done.kept.length > 0 ? done.kept : null });
+      await get().load();
+    } catch (e) {
+      set({ setAgentsError: toAppError(e) });
+    } finally {
+      set({ setAgentsBusy: null });
+    }
+  },
+
+  dismissToolFailures: () => set({ toolFailures: null, setAgentsError: null, toolFailuresFor: null }),
 
   dismissDecision: () => set({ decision: null }),
   dismissNotice: () => set({ notice: null }),

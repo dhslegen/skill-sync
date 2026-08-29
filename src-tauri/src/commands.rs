@@ -2600,6 +2600,15 @@ pub struct ProjectSkillView {
     /// 能不能"更新"。要同时满足:推得出仓库目录名 + 还原得出取数去处。
     /// 差任何一样都**不摆按钮**——不摆比摆一个必然报错的按钮好。
     pub updatable: bool,
+    /// 🔴 **假设(v7 任务 8,偏离原计划"本任务不动 src-tauri/")**:任务 3 留下的
+    /// `project::current_agents` 一直只在 `project_skill_update` 内部被调用,
+    /// 没有任何 IPC 把"这个技能眼下在哪些工具里生效"读给前端——事后改选的 picker
+    /// 若不知道当前状态,只能"全部方框都从未勾选"起步,用户勾一个就会把
+    /// `project_skill_set_agents` 的目标集发成只有这一个,静默摘掉其余真实关联
+    /// (那个 IPC 收的是完整目标集,不是增量)。这与铁律 7 冲突,比"不动
+    /// src-tauri"这条更优先。补的是最小只读字段,不新增 command:
+    /// `project_group` 里对每条记账调一次已有的纯函数 `project::current_agents`。
+    pub agents: Vec<String>,
 }
 
 /// 从 lock 的 `skillPath` 推仓库目录名:`skills/react-best-practices/SKILL.md`
@@ -2717,6 +2726,9 @@ fn project_group(
             .and_then(|raw| crate::core::skills::parse_skill_md(&raw).ok());
             let dir_slug = dir_slug_from_skill_path(e.skill_path.as_deref());
             let target = project::update_target(&e, sources);
+            // 读不出来(本体不在了/IO 失败)就给空名单,不拦整个列表——这只是
+            // 事后改选 picker 的初始勾选,读不到就从"全不勾"起步,不算错误。
+            let agents = project::current_agents(root, &key).unwrap_or_default();
             ProjectSkillView {
                 display_name: parsed
                     .as_ref()
@@ -2729,6 +2741,7 @@ fn project_group(
                 dir_slug,
                 source: e.source,
                 source_type: e.source_type,
+                agents,
                 key,
             }
         })
@@ -3084,6 +3097,47 @@ mod tests {
             serde_json::to_value(ProjectInstallOutcome::NeedsDecision { key: "x".into() }).unwrap();
         assert_eq!(keys(&needs), vec!["key".to_string(), "status".to_string()]);
         assert_eq!(needs["status"], "needsDecision");
+    }
+
+    /// 🔴 假设(v7 任务 8):`ProjectSkillView.agents` 是这份报告里唯一的
+    /// src-tauri 偏离——`project_group` 从 `project::current_agents`(任务 3
+    /// 已经测过的纯函数)取值,这里只钉住"接线接上了"与"序列化键是驼峰的
+    /// `agents`"这两件事,不重复 `tests/project_flow.rs` 已经覆盖的建链/摘链逻辑。
+    #[test]
+    fn project_group_view_carries_the_currently_linked_agents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let payload = crate::core::installer::SkillPayload::new().with_file(
+            "SKILL.md",
+            "---\nname: weekly-report\ndescription: 测试用\n---\n\n正文\n".to_string(),
+        );
+        let entry = crate::core::project_lock::LocalEntry {
+            source: "skills/skills".into(),
+            source_url: None,
+            git_ref: None,
+            source_type: "git".into(),
+            skill_path: Some("skills/weekly-report/SKILL.md".into()),
+            computed_hash: "x".into(),
+        };
+        project::install(root, "weekly-report", &payload, &["claude-code".to_string()], &entry)
+            .unwrap();
+
+        let sources = acquire::BindingSources {
+            builtin_base_url: None,
+            builtin_repo: None,
+            builtin_extra: &[],
+            custom: &[],
+            plaza_repos: &[],
+        };
+        let group = project_group(root, &sources);
+
+        assert_eq!(group.skills.len(), 1);
+        assert_eq!(group.skills[0].agents, vec!["claude-code".to_string()]);
+
+        // 前端 ipc.ts 按 `agents`(驼峰,单个单词不变形)读这个字段——正面断言键名,
+        // 不只是断言值(本项目记着的空转模式②:只查"存在"拦不住拼错)。
+        let json = serde_json::to_value(&group.skills[0]).unwrap();
+        assert_eq!(json["agents"][0], "claude-code");
     }
 
         /// `skillPath` → 仓库目录名的推导。

@@ -111,11 +111,12 @@ describe("更新", () => {
       return null;
     });
 
+    // 🔴 没有 agentIds:`project_skill_update` 早在任务 3 就不吃这个参数了
+    // (从磁盘反推当初关联的那批工具),任务 8 顺手把前端那半死参数删掉。
     await useProjects.getState().update({
       projectPath: "/w/a",
       key: "x",
       dirSlug: "x",
-      agentIds: [],
     });
 
     expect(useProjects.getState().decision).toMatchObject({ kind: "localEdits" });
@@ -234,6 +235,7 @@ describe("装到项目前的确认", () => {
               registryId: "plaza",
               repo: "o/r",
               updatable: true,
+              agents: [],
             },
           ],
         }),
