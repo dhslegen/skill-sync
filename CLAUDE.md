@@ -515,11 +515,11 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 
 **v7 的终态与欠账(2026-08-29 任务 9 收尾时实测,别照抄下一份文档)**:9 个任务
 (`75952d8..` 起,逐任务提交 + 若干修复轮,详见 `.superpowers/sdd/v7-任务分解/
-progress.md`,本地记录不进版本控制)。本机 Rust **883**(基线,含本任务新增的
-`tests/e2e_sections.rs` 一条端到端;⚠️ **这是按项目口径 `cargo test --workspace
---tests` 推算的数字,不是本任务亲自跑出的全量结果**——本任务只前台跑了直接相关的
-定向测试与 `cargo clippy --all-targets`,全量由控制者复核,数字如有出入以控制者
-复核为准)、前端 **795 passed / 52 files**(本任务亲自跑出,较任务 8 完成时不变
+progress.md`,本地记录不进版本控制)。本机 Rust **基线 883**(Task 3 完成时的口径)
+**+ 本任务新增的 `tests/e2e_sections.rs` 一条端到端**;⚠️ **883 这个数字是沿用旧口径的
+占位,不是本任务亲自跑出的全量结果**——本任务只前台跑了直接相关的定向测试与
+`cargo clippy --all-targets`,全量(含 Task 8 新增的 1 条 Rust 单测)由控制者复核,
+准确总数以控制者复核结果为准)、前端 **795 passed / 52 files**(本任务亲自跑出,较任务 8 完成时不变
 ——本任务未改动任何 `src/` 文件),`pnpm lint` / `pnpm build:web` /
 `cargo clippy --all-targets -- -D warnings` 三闸本机全部 EXIT=0。
 - 🔴 **任务书叙述与已拍板设计有两处对不上,本任务按设计文档走,证据链写进了
@@ -2365,7 +2365,8 @@ universal 双切片、minos、动态库依赖、下载文件 sha256 全验过一
 - 🔴 **`cargo test --test a --test b` 是 fail-fast 的**(v7 任务 1 复审实测,
   2026-08-27):前一个测试二进制里有用例失败,**后面列的二进制根本不会跑**——
   "另一个文件全绿"完全可能只是"它没跑到"而不是真的通过。**注入验证时一律加
-  `--no-fail-fast`**(`cargo test --test a --test b -- --no-fail-fast` 语法不对,
-  `--no-fail-fast` 是 `cargo test` 自己的参数,要放在 `--test` 之后、`--` 之前,
-  例如 `cargo test --workspace --no-fail-fast`),否则"改坏了却只看到一条红"
+  `--no-fail-fast`**(实测确认 `cargo test --test a --test b -- --no-fail-fast`
+  这个写法不对——它是 `cargo test` 自己的参数,不是传给测试二进制的,放在 `--`
+  之后会被当成不认识的选项拒掉;放在 `--` 之前才对,例如
+  `cargo test --workspace --no-fail-fast`),否则"改坏了却只看到一条红"
   可能只是编译期或前一个二进制拦下的假象,不是真的只影响一条。
