@@ -180,23 +180,46 @@ interface MySkillsState {
   /**
    * 「可分享到」区里,有外部来源(GitHub/plaza/自定义源,不是公司库)的行——
    * 它自己那个来源的索引(v7 任务 7)。键是 {@link shareableSourceKey}。
-   *
-   * 🔴 **每个来源每次会话只取一次**,不在 `load()` 每次调用时都探:
-   * `useLocalRefresh` 让这一页在窗口每次重获焦点时都 `load()`,`storeIndex`
-   * 即便命中服务端缓存也要探一次 `branch_head`——plaza 源就是一次 GitHub 匿名
-   * 请求(配额 60 次/时,M9 刻意不记 head sha 就是为了省它)。装了几个广场技能、
-   * 爱切窗口的用户会把配额烧穿,连广场浏览一起废掉。见 {@link ensureShareableIndexes}。
    */
   shareableIndexes: Map<string, StoreIndexView>;
-  /** 本次会话已经尝试过的 {@link shareableSourceKey}(成功或失败都算)——即使
-   *  失败也不重试,失败的后果只是那一行的「外源有没有新版」答不上来(见下)。 */
-  shareableIndexesAttempted: Set<string>;
   /**
-   * 给 `list` 里「可分享到」且有外部来源的行,各自去探一次自己来源的索引。
+   * 每个来源(`shareableSourceKey`)**上一次真的发出过请求**的时间戳(ms)。
+   *
+   * 🔴 **v7 任务 7 修复轮 1(I3,用户拍板)**:最初版本按"每个来源每次会话只取
+   * 一次"节流(一个永久的已尝试集合),被现场叫停——`ensureShareableIndexes`
+   * 是一条**新增的对外网络行为**,而它挂在 `load()` 里意味着这一页**每次窗口
+   * 重获焦点都会触发**(`useLocalRefresh` 的既有机制)。`storeIndex` 即便命中
+   * 服务端缓存也要探一次 `branch_head`;缓存未命中时是整个仓的 zipball
+   * (CLAUDE.md 实测过 `wshobson/agents` 3.1 MB / 50 s)。按会话节流治标不治本
+   * ——挡得住"同一次打开反复刷"，挡不住"这一次打开开一整天"这种长会话里
+   * 数据始终陈旧的问题。
+   *
+   * 现在的模型是**点击立即查 + 每源每小时最多一次的被动兜底**:
+   * - `ensureShareableIndexes(forceDirSlugs)` 传了 `forceDirSlugs` 时,那几个
+   *   技能对应的来源**无视节流、立即发请求**——这是"用户点了一下"这个动作
+   *   本身的信号,克制没有意义;
+   * - 不传时是被动扫一遍,**只碰上次请求距今 ≥ 1 小时的来源**
+   *   ({@link SHAREABLE_INDEX_STALE_MS})——这条路径接在
+   *   `hooks/useLocalRefresh.ts` 的**窗口重获焦点**那一级,不接在 `load()`
+   *   本身,所以**翻开这一页这个动作本身不发任何请求**(`load()` 已经不再
+   *   调用 `ensureShareableIndexes`)。
+   *
+   * 节流状态**只存内存,不落盘**:它只是"最近探过没有"这一件事,跨会话没有
+   * 保真的必要,重启应用后重新探一遍是可接受的代价(比持久化的复杂度换来的
+   * 收益小)。
+   */
+  shareableIndexesLastFetchedAt: Map<string, number>;
+  /**
+   * 给 `list` 里「可分享到」且有外部来源的行,去探一次自己来源的索引。
+   *
+   * @param forceDirSlugs 传了就是"用户点了一下、要这几个技能的来源立即查"
+   *   (比如打开了它的详情)——那几个来源无视节流。不传就是被动兜底扫描,
+   *   见上面字段文档的完整取舍。
    *
    * 🔴 **单个来源探测失败一律静默降级**:那一行仍然主动作是「分享」,不摆错误
    * 横幅——这是刻意的**漏报不误报**,与 `hasUpdate`/`WhereBlocks` 的
-   * `LibraryBlock`"拿不准就不摆"是同一档既定取舍,不是没处理异常。
+   * `LibraryBlock`"拿不准就不摆"是同一档既定取舍,不是没处理异常。失败同样
+   * 盖上时间戳(不是只有成功才算),避免对一个持续连不上的来源反复重试刷屏。
    *
    * 🔴 **绝不顺手挂仓**:plaza 源没挂过的仓,`storeIndex` 会报
    * `REPO_UNKNOWN_REPO`——同样归入静默降级,**不会**去调
@@ -204,7 +227,7 @@ interface MySkillsState {
    * (`plaza_ensure_repo`/`project_skill_install` 两处,见 `CLAUDE.md`),
    * 翻开「我的技能」页看一眼不该有这个副作用。
    */
-  ensureShareableIndexes: () => Promise<void>;
+  ensureShareableIndexes: (forceDirSlugs?: string[]) => Promise<void>;
 
   /** 「全部更新」批量结果的正在跑 / 部分失败(v7 任务 7 页头总览)。 */
   updateAllBusy: boolean;
@@ -248,7 +271,6 @@ interface MySkillsState {
 
   /** 把改过的已装技能推回来源(「我安装的」区块与 `localAhead` 档共用一条编排)。 */
   shareChanges: (dirSlug: string) => Promise<void>;
-  shareUpdate: (dirSlug: string) => Promise<void>;
 
   /**
    * 取回这一版(`notHere`/`remoteAhead`/`both` 的主动作)。
@@ -400,6 +422,9 @@ export function collectRemoveFailures(report: UninstallReport): ToolBlocked[] {
   return out;
 }
 
+/** 「可分享到」外源索引被动兜底的节流窗口:1 小时(v7 任务 7 修复轮 1,I3)。 */
+export const SHAREABLE_INDEX_STALE_MS = 60 * 60 * 1000;
+
 export const useMySkills = create<MySkillsState>((set, get) => ({
   list: null,
   loadError: null,
@@ -424,7 +449,7 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   shareError: null,
   shareConflict: null,
   shareableIndexes: new Map(),
-  shareableIndexesAttempted: new Set(),
+  shareableIndexesLastFetchedAt: new Map(),
   updateAllBusy: false,
   updateAllError: null,
   updateAllFailures: null,
@@ -434,9 +459,10 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     try {
       const list = await installedList();
       set({ list, loading: false });
-      // 不 await:探外部来源是这一页的锦上添花(「外源有新版」那颗按钮),
-      // 不该让整页的"读到列表"晚于它。见 ensureShareableIndexes 的静默降级说明。
-      void get().ensureShareableIndexes();
+      // 🔴 v7 任务 7 修复轮 1(I3):这里**刻意不再触发**
+      // `ensureShareableIndexes`——翻开这一页本身不该产生对外网络请求。
+      // 点击触发挂在 `Row` 的 `onOpenDetail`;被动的每小时兜底挂在
+      // `hooks/useLocalRefresh.ts` 的窗口重获焦点那一级。两条路都不在这里。
     } catch (raw) {
       // 读不到就说读不到,保留上次的列表;绝不把失败画成"你还没装任何技能"
       set({ loadError: toAppError(raw), loading: false });
@@ -625,10 +651,6 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     await runShareChanges(dirSlug, forceReview, set, get);
   },
 
-  shareUpdate: async (dirSlug) => {
-    await runShareChanges(dirSlug, false, set, get);
-  },
-
   pull: async (dirSlug) => {
     const skill = get().list?.find((s) => s.dirSlug === dirSlug);
     if (!skill) return;
@@ -657,21 +679,33 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
 
   cancelShareConflict: () => set({ shareConflict: null }),
 
-  ensureShareableIndexes: async () => {
+  ensureShareableIndexes: async (forceDirSlugs) => {
     const list = get().list ?? [];
-    const attempted = get().shareableIndexesAttempted;
+    const lastFetchedAt = get().shareableIndexesLastFetchedAt;
+    const now = Date.now();
+    const forceKeys = new Set(
+      (forceDirSlugs ?? [])
+        .map((slug) => list.find((s) => s.dirSlug === slug))
+        .map((s) => (s ? shareableSourceKey(s) : null))
+        .filter((k): k is string => k !== null),
+    );
     const targets = new Map<string, { registryId: string; owner: string; repo: string }>();
     for (const skill of list) {
       const key = shareableSourceKey(skill);
-      if (key && !attempted.has(key)) {
+      if (!key) continue;
+      const last = lastFetchedAt.get(key);
+      const stale = last === undefined || now - last >= SHAREABLE_INDEX_STALE_MS;
+      // 点击触发的那几个来源无视节流;其余按"距上次请求 ≥ 1 小时"的被动兜底。
+      if (forceKeys.has(key) || stale) {
         targets.set(key, { registryId: skill.registryId, owner: skill.sourceOwner, repo: skill.sourceRepo });
       }
     }
     if (targets.size === 0) return;
-    // 先标记为"已尝试"再发请求:并发的 load()(窗口重获焦点)不会对同一个来源
-    // 重复发起探测——即便这一轮还没回来,下一轮 ensureShareableIndexes 也会
-    // 因为 attempted 已经含有这些键而跳过它们。
-    set({ shareableIndexesAttempted: new Set([...attempted, ...targets.keys()]) });
+    // 先盖时间戳再发请求:并发调用(比如打开详情的同时窗口也重获了焦点)
+    // 不会对同一个来源重复发起探测。失败也盖(见字段文档),不是只有成功才算。
+    const stamped = new Map(lastFetchedAt);
+    for (const key of targets.keys()) stamped.set(key, now);
+    set({ shareableIndexesLastFetchedAt: stamped });
     await Promise.all(
       [...targets].map(async ([key, { registryId, owner, repo }]) => {
         try {
@@ -837,6 +871,58 @@ export function remoteChangedForShareable(
   const index = shareableIndexes.get(key);
   if (!index) return false;
   return remoteContentDiffers(skill, index);
+}
+
+/**
+ * 「本体此刻的内容」与「公司库里那一版」一不一样——**只在没有安装基线时**才有
+ * 意义的问法(v7 任务 7 修复轮 1,C3:恢复 v6 二期 `localEqualsRemote` 曾经
+ * 回答过的这个问题,那个函数被删的时候没有东西接手它)。
+ *
+ * # 为什么这一档不能靠 `remoteContentDiffers`/`hasUpdate` 回答
+ *
+ * `remoteContentDiffers` 比的是 `contentHash`(安装那一刻的基线)与远端指纹
+ * ——**核心库对没有 `state.installed` 记账的行恒填 `contentHash: ""`**
+ * (作者绕过 app 直接 git 推库,又在本地改了本体,是 v6 立项时的原始动机场景)。
+ * 这类行的 `localModified` 也恒是 `false`(core 侧同一个理由),于是
+ * `rowAction` 在 `sharedTo`/`installedFrom` 分支里全部落进 `{kind:"none"}`
+ * ——库里已经不是本地这一份了,页面却一个字都不说。
+ *
+ * 这一档不问"谁动过"(没有基线,这件事本来就答不上来),只问"现在是不是
+ * 一样"——两方的**实时**指纹直接比:`localHash`(本体现在长什么样)与索引里
+ * 的 `contentHash`(库里那一版现在长什么样)。
+ *
+ * # 只接进「更多」菜单,不接进 `rowAction`(design §8 给的两个选项里选了更轻的那个)
+ *
+ * `rowAction` 的判定表是 Task 4 已审过的契约,这里不新开一档主按钮
+ * ——`MySkillsPage.tsx` 的 `Row` 在算出这个布尔量为真时,往「更多」菜单里加一条
+ * 「改用库里的版本」,点击复用**既有的** `pull`(等价 `beginUpdate`):core 的
+ * precheck 会把这类"本体与账不一致"的行判成需要拍板的那一档,自然弹出
+ * `ConflictDialog` 的"本地被改过"变体——这个函数不需要自己再造一层确认。
+ *
+ * @param index 与 `hasUpdate` 同一份公司库索引(即便技能属于 `shareable` 区、
+ *   走的是 `shareableIndexes`,这个函数目前只服务 `installedFrom`/`sharedTo`
+ *   ——`shareable` 区的行 `in_library` 本来就是 `false`,索引里查不到自己,
+ *   函数会自然返回 `false`,不需要额外分支)。
+ */
+export function localDiffersNoBaseline(
+  skill: Pick<InstalledSkillView, "registryId" | "sourceOwner" | "sourceRepo" | "dirSlug" | "contentHash" | "localHash" | "sourceRemoved" | "libraryRemoved">,
+  index: Parameters<typeof hasUpdate>[1],
+): boolean {
+  // 有基线的话该信 localModified/remoteChanged——它们分得清"哪边动的",
+  // 这个函数只回答分不清的那一半,渗进有基线的行会有反效果(见模块头教训)。
+  if (skill.contentHash) return false;
+  if (!index || skill.sourceRemoved || skill.libraryRemoved) return false;
+  if (
+    skill.registryId !== index.registryId ||
+    skill.sourceOwner !== index.owner ||
+    skill.sourceRepo !== index.repo
+  ) {
+    return false;
+  }
+  const remote = remoteHashOf(index, skill.dirSlug);
+  // 拿不到任一侧指纹就是"不知道",不能猜——诚实地不摆这一项,不是摆错一项。
+  if (!remote || !skill.localHash) return false;
+  return remote !== skill.localHash;
 }
 
 /**

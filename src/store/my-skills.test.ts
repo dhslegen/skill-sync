@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   hasUpdate,
+  localDiffersNoBaseline,
   remoteChangedForShareable,
   sections,
   shareableSourceKey,
@@ -92,7 +93,7 @@ function reset() {
     shareError: null,
     shareConflict: null,
     shareableIndexes: new Map(),
-    shareableIndexesAttempted: new Set(),
+    shareableIndexesLastFetchedAt: new Map(),
     updateAllBusy: false,
     updateAllError: null,
     updateAllFailures: null,
@@ -1077,21 +1078,6 @@ describe("更新判定与更新动作", () => {
     expect(call?.[1].args.agentIds).toEqual(["claude-code"]);
   });
 
-  it("分享更新(shareUpdate):走的是 skill_share_changes,与「我安装的」区块的分享改动同一条编排", async () => {
-    useMySkills.setState({ list: [view({ relation: "shared", localModified: true })] });
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "skill_share_changes")
-        return { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null };
-      if (cmd === "installed_list") return [view({ relation: "shared", localModified: true })];
-      return AGENTS;
-    });
-
-    await useMySkills.getState().shareUpdate("weekly-report");
-
-    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
-    expect(call?.[1].args.dirSlug).toBe("weekly-report");
-    expect(useMySkills.getState().shareDone).toEqual({ dirSlug: "weekly-report", mode: "pushed" });
-  });
 });
 
 describe("shareChanges 的 forceReview(v7):安装自那一区恒走评审,已分享到不强制", () => {
@@ -1222,6 +1208,62 @@ describe("updateCount 改按 rowAction 数(v7):冲突行不计入「全部更新
   });
 });
 
+describe("localDiffersNoBaseline(v7 任务 7 修复轮 1,C3:恢复「本地和库里不一样」这一档)", () => {
+  const index = (remoteHash: string, over: Record<string, unknown> = {}) => ({
+    registryId: "company",
+    owner: "skills",
+    repo: "skills",
+    skills: [{ dirSlug: "weekly-report", contentHash: remoteHash }],
+    ...over,
+  });
+
+  it("🔴 没有基线 + 两方指纹不同 → true(v6 立项的原始动机场景:作者绕过 app 直推又改了本体)", () => {
+    expect(
+      localDiffersNoBaseline(view({ contentHash: "", localHash: "h-local" }), index("h-remote")),
+    ).toBe(true);
+  });
+
+  it("没有基线 + 两方指纹相同 → false", () => {
+    expect(localDiffersNoBaseline(view({ contentHash: "", localHash: "h1" }), index("h1"))).toBe(
+      false,
+    );
+  });
+
+  it("有基线时恒 false —— 这一档只回答无基线时答不上来的问题,不渗进有基线的行", () => {
+    expect(
+      localDiffersNoBaseline(
+        view({ contentHash: "sha256:baseline", localHash: "h-local" }),
+        index("h-remote"),
+      ),
+    ).toBe(false);
+  });
+
+  it("没有索引 / 来源已移除 / 坐标不对 → false(不知道就不摆,不猜)", () => {
+    expect(localDiffersNoBaseline(view({ contentHash: "", localHash: "h1" }), null)).toBe(false);
+    expect(
+      localDiffersNoBaseline(
+        view({ contentHash: "", localHash: "h1", sourceRemoved: true }),
+        index("h2"),
+      ),
+    ).toBe(false);
+    expect(
+      localDiffersNoBaseline(
+        view({ contentHash: "", localHash: "h1", registryId: "custom-1" }),
+        index("h2"),
+      ),
+    ).toBe(false);
+  });
+
+  it("任一侧指纹缺失 → false", () => {
+    expect(localDiffersNoBaseline(view({ contentHash: "", localHash: "" }), index("h1"))).toBe(
+      false,
+    );
+    expect(
+      localDiffersNoBaseline(view({ contentHash: "", localHash: "h1" }), index("", {})),
+    ).toBe(false);
+  });
+});
+
 describe("shareableSourceKey / remoteChangedForShareable(v7 任务 7:外源有新版)", () => {
   it("非 shareable 区一律 null(哪怕坐标齐全)", () => {
     expect(shareableSourceKey(view({ section: "installedFrom", relation: "shared" }))).toBeNull();
@@ -1319,7 +1361,7 @@ describe("shareableSourceKey / remoteChangedForShareable(v7 任务 7:外源有�
   });
 });
 
-describe("ensureShareableIndexes(v7 任务 7):每个外部来源每次会话只探一次", () => {
+describe("ensureShareableIndexes(v7 任务 7 修复轮 1,I3):点击立即查 + 每源每小时最多一次的被动兜底", () => {
   beforeEach(reset);
 
   function shareableSkill(dirSlug: string) {
@@ -1364,7 +1406,7 @@ describe("ensureShareableIndexes(v7 任务 7):每个外部来源每次会话只�
     expect(call?.[1].args).toMatchObject({ registryId: "plaza", repo: "vercel-labs/agent-skills" });
   });
 
-  it("🔴 同一个来源第二次调用不再发请求(已尝试过,即便上次失败)", async () => {
+  it("🔴 同一个来源在节流窗口内第二次调用不再发请求(1 小时内,即便上次失败)", async () => {
     let calls = 0;
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "store_index") {
@@ -1376,14 +1418,107 @@ describe("ensureShareableIndexes(v7 任务 7):每个外部来源每次会话只�
     useMySkills.setState({ list: [shareableSkill("a"), shareableSkill("b")] });
 
     // 两个 shareable 行指向同一个来源(同 registryId/owner/repo),应当只发一次;
-    // 失败也不阻止"已尝试"标记生效
+    // 失败也照样盖时间戳(不是只有成功才算)
     await useMySkills.getState().ensureShareableIndexes();
     expect(calls).toBe(1);
     expect(useMySkills.getState().shareableIndexes.size).toBe(0);
 
-    // 再调一次(模拟窗口重获焦点触发的第二次 load()):不该再发请求
+    // 立刻再调一次(模拟窗口重获焦点触发的被动兜底):还在 1 小时节流窗口内,
+    // 不该再发请求
     await useMySkills.getState().ensureShareableIndexes();
     expect(calls).toBe(1);
+  });
+
+  it("🔴 超过节流窗口(1 小时)后,被动兜底会重新发请求", async () => {
+    let calls = 0;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "store_index") {
+        calls += 1;
+        return {
+          registryId: "plaza",
+          owner: "vercel-labs",
+          repo: "agent-skills",
+          branch: "main",
+          commitSha: "x",
+          committedAt: "",
+          fetchedAt: 0,
+          skipped: [],
+          fromCache: false,
+          offline: false,
+          curated: [],
+          skills: [],
+        };
+      }
+      return AGENTS;
+    });
+    useMySkills.setState({ list: [shareableSkill("a")] });
+
+    const realNow = Date.now;
+    let now = realNow();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      await useMySkills.getState().ensureShareableIndexes();
+      expect(calls).toBe(1);
+
+      // 还没到 1 小时:不重发
+      now += 59 * 60 * 1000;
+      await useMySkills.getState().ensureShareableIndexes();
+      expect(calls).toBe(1);
+
+      // 过了 1 小时:被动兜底重新发一次
+      now += 2 * 60 * 1000;
+      await useMySkills.getState().ensureShareableIndexes();
+      expect(calls).toBe(2);
+    } finally {
+      vi.spyOn(Date, "now").mockRestore();
+    }
+  });
+
+  it("🔴 点击触发(传 forceDirSlugs)无视节流,立即发请求", async () => {
+    let calls = 0;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "store_index") {
+        calls += 1;
+        return {
+          registryId: "plaza",
+          owner: "vercel-labs",
+          repo: "agent-skills",
+          branch: "main",
+          commitSha: "x",
+          committedAt: "",
+          fetchedAt: 0,
+          skipped: [],
+          fromCache: false,
+          offline: false,
+          curated: [],
+          skills: [],
+        };
+      }
+      return AGENTS;
+    });
+    useMySkills.setState({ list: [shareableSkill("a")] });
+
+    // 第一次(点击触发)
+    await useMySkills.getState().ensureShareableIndexes(["a"]);
+    expect(calls).toBe(1);
+
+    // 紧接着又点了一次(比如再次打开详情):同样立即发请求,不受节流影响
+    // ——这是"用户点了一下"这个动作本身的信号,不该被"1 小时内不重发"拦下。
+    await useMySkills.getState().ensureShareableIndexes(["a"]);
+    expect(calls).toBe(2);
+  });
+
+  it("load() 不再触发 ensureShareableIndexes——翻开页面本身不发请求(I3)", async () => {
+    let calls = 0;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "store_index") calls += 1;
+      if (cmd === "installed_list") return [shareableSkill("a")];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().load();
+
+    expect(calls).toBe(0);
   });
 
   it("非 shareable / 无外部来源的行不触发任何请求", async () => {

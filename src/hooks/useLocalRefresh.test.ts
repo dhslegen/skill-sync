@@ -53,6 +53,45 @@ describe("按页刷新", () => {
     await vi.waitFor(() => expect(sent()).toContain("installed_list"));
   });
 
+  it("🔴 我的技能页顺带触发「可分享到」外源索引的被动兜底(v7 任务 7 修复轮 1,I3)", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") {
+        return [
+          {
+            dirSlug: "a",
+            commitSha: "sha",
+            contentHash: "sha256:old",
+            agents: [],
+            installedAt: "2026-08-01T00:00:00.000Z",
+            updatedAt: "2026-08-01T00:00:00.000Z",
+            localModified: false,
+            sourceOwner: "vercel-labs",
+            sourceRepo: "agent-skills",
+            registryId: "plaza",
+            sourceRemoved: false,
+            libraryRemoved: false,
+            relation: "draft",
+            localPresent: true,
+            sourceLabel: "vercel-labs/agent-skills",
+            body: "/h/a",
+            localHash: "sha256:old",
+            tools: [],
+            versions: [],
+            shareBlocked: null,
+            section: "shareable",
+            review: null,
+          },
+        ];
+      }
+      if (cmd === "agents_detected") return { agents: [], canonicalDir: "" };
+      return null;
+    });
+
+    refreshLocalFor("mine");
+
+    await vi.waitFor(() => expect(sent()).toContain("store_index"));
+  });
+
   it("设置页不展示技能,一个请求都不该发", async () => {
     refreshLocalFor("settings");
     // 给足够的机会让异步请求发出来

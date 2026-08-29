@@ -84,7 +84,11 @@ describe("rowAction(判定表)", () => {
 
   it("不合格的可分享到:动作是 shareBlocked 且带上原因", () => {
     const s: RowSkill = { ...rowBase, section: "shareable", shareBlocked: "nameMismatch" };
-    expect(rowAction(s, false)).toEqual({ kind: "shareBlocked", reason: "nameMismatch" });
+    expect(rowAction(s, false)).toEqual({
+      kind: "shareBlocked",
+      reason: "nameMismatch",
+      blockedAction: "share",
+    });
   });
 
   it("审核中压过 share 与 shareBlocked", () => {
@@ -108,6 +112,76 @@ describe("rowAction(判定表)", () => {
 
   it("可分享到 · 不合格 + 外源有新版:shareBlocked 优先——先说清为什么不能分享", () => {
     const s: RowSkill = { ...rowBase, section: "shareable", shareBlocked: "descriptionMissing" };
-    expect(rowAction(s, true)).toEqual({ kind: "shareBlocked", reason: "descriptionMissing" });
+    expect(rowAction(s, true)).toEqual({
+      kind: "shareBlocked",
+      reason: "descriptionMissing",
+      blockedAction: "share",
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // 🔴 C1(v7 任务 7 修复轮 1):shareBlocked 此前只在 shareable 区判——
+  // installedFrom(贡献更改)/sharedTo(分享改动)同样会把本地内容推去评审
+  // (skill_share_changes),同一道闸必须在三个区都生效。
+  // ---------------------------------------------------------------------
+
+  it("安装自 · 本地改了但标准校验不过 → shareBlocked,blockedAction 是 contribute", () => {
+    const s: RowSkill = {
+      ...rowBase,
+      section: "installedFrom",
+      localModified: true,
+      shareBlocked: "nameFormat",
+    };
+    expect(rowAction(s, false)).toEqual({
+      kind: "shareBlocked",
+      reason: "nameFormat",
+      blockedAction: "contribute",
+    });
+  });
+
+  it("已分享到 · 本地改了但标准校验不过 → shareBlocked,blockedAction 是 shareChanges", () => {
+    const s: RowSkill = {
+      ...rowBase,
+      section: "sharedTo",
+      localModified: true,
+      shareBlocked: "descriptionTooLong",
+    };
+    expect(rowAction(s, false)).toEqual({
+      kind: "shareBlocked",
+      reason: "descriptionTooLong",
+      blockedAction: "shareChanges",
+    });
+  });
+
+  it("对照组:安装自区标准校验通过时照常是 contribute,不受 shareBlocked 字段存在与否影响", () => {
+    const s: RowSkill = { ...rowBase, section: "installedFrom", localModified: true, shareBlocked: null };
+    expect(rowAction(s, false).kind).toBe("contribute");
+  });
+
+  it("对照组:已分享到区标准校验通过时照常是 shareChanges", () => {
+    const s: RowSkill = { ...rowBase, section: "sharedTo", localModified: true, shareBlocked: null };
+    expect(rowAction(s, false).kind).toBe("shareChanges");
+  });
+
+  it("无分享入口时 shareBlocked 不摆:安装自区没改过本地,哪怕 shareBlocked 有值也是 none(不是要拦的动作)", () => {
+    const s: RowSkill = { ...rowBase, section: "installedFrom", localModified: false, shareBlocked: "nameFormat" };
+    expect(rowAction(s, false).kind).toBe("none");
+  });
+
+  it("无分享入口时 shareBlocked 不摆:已分享到区没改过本地,同理是 none", () => {
+    const s: RowSkill = { ...rowBase, section: "sharedTo", localModified: false, shareBlocked: "nameFormat" };
+    expect(rowAction(s, false).kind).toBe("none");
+  });
+
+  it("conflict 压过 shareBlocked:库新 + 本地改 + 不合格,仍先弹冲突框(拍板之后才轮到分享合格性)", () => {
+    const s: RowSkill = {
+      ...rowBase,
+      section: "installedFrom",
+      localModified: true,
+      shareBlocked: "nameFormat",
+    };
+    // remoteChanged=true 时 installedFrom 分支第一条判据(localModified&&remoteChanged)
+    // 直接短路成 conflict,shareBlocked 那一层代码根本没机会跑到。
+    expect(rowAction(s, true).kind).toBe("conflict");
   });
 });

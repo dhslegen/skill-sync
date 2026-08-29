@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { ToolPicker, orderForPicker, type ToolPickerItem } from "@/components/ToolPicker";
+import { LIST_ROW_EXTRA, ToolPicker, orderForPicker, type ToolPickerItem } from "@/components/ToolPicker";
 import type { ToolState } from "@/lib/ipc";
 
 // M1(修复轮 1):label 与 agent 刻意不同源(不是简单大写首字母),避免这批
@@ -116,5 +116,12 @@ describe("ToolPicker", () => {
     render(<ToolPicker items={[i("junie", "off")]} onToggle={onToggle} />);
     await userEvent.click(screen.getByRole("checkbox"));
     expect(onToggle).toHaveBeenCalledWith("junie", true);
+  });
+
+  it("🔴 M8 补漏:LIST_ROW_EXTRA 的字面量内容本身要过一道正面断言,不能只靠两处一致", () => {
+    // `ToolPicker.consistency.test.tsx` 只比较"两处消费者算出来的 className
+    // 是否互相一致",守不住"这批 token 本身写对了没有"——`border-t`/`px-3 py-2`/
+    // `hover:bg-surface-2` 缺一个,那条测试照样绿。这里直接断言常量内容。
+    expect(LIST_ROW_EXTRA).toBe("border-t border-border px-3 py-2 first:border-t-0 hover:bg-surface-2");
   });
 });

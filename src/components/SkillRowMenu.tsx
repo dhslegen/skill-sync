@@ -37,6 +37,12 @@ export interface SkillRowMenuItem {
   label: string;
   onClick: () => void;
   disabled?: boolean;
+  /** 原生 `title`(悬浮提示)。目前只有「改用库里的版本」用它说明后果
+   *  (本地改动会去哪),不是每一项都需要。 */
+  title?: string;
+  /** 在这一项**上方**画一条分隔线。只用在「移除」这类破坏性动作前面,
+   *  与其余"能做的事"分开,防止手滑。 */
+  separatorBefore?: boolean;
 }
 
 export function SkillRowMenu({ items }: { items: SkillRowMenuItem[] }) {
@@ -46,10 +52,15 @@ export function SkillRowMenu({ items }: { items: SkillRowMenuItem[] }) {
 
   useEffect(() => {
     if (!open) return;
+    // 🔴 这里**不是**捕获阶段监听(修复轮 1 订正:上一版注释这么写但代码没这么
+    // 做,是一处说谎的注释)。真正生效的机制是:`wrapRef` 同时包着触发按钮
+    // *和*下拉菜单本身,所以点在菜单项上的 `mousedown` 命中的是
+    // `wrapRef.current.contains(e.target)` 为真那一支,这个监听器直接跳过、
+    // 不会抢先关掉菜单;真正把菜单关掉的是那一项自己 `onClick` 里的
+    // `setOpen(false)`。这个监听器只负责"点在 `wrapRef` 外面"的那一种情况。
     const onDown = (e: MouseEvent) => {
       if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
     };
-    // 捕获阶段监听:菜单内部按钮的 onClick 先跑完再关,不会被抢先。
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
@@ -98,11 +109,15 @@ export function SkillRowMenu({ items }: { items: SkillRowMenuItem[] }) {
               type="button"
               role="menuitem"
               disabled={item.disabled}
+              title={item.title}
               onClick={() => {
                 setOpen(false);
                 item.onClick();
               }}
-              className="block w-full px-3 py-1.5 text-left text-[12.5px] text-text hover:bg-surface-2 disabled:pointer-events-none disabled:text-text-3"
+              className={
+                "block w-full px-3 py-1.5 text-left text-[12.5px] text-text hover:bg-surface-2 disabled:pointer-events-none disabled:text-text-3" +
+                (item.separatorBefore ? " mt-1 border-t border-border pt-1.5" : "")
+              }
             >
               {item.label}
             </button>

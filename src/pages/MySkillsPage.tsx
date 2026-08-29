@@ -5,7 +5,7 @@ import { ProjectSections } from "@/components/ProjectSections";
 import { SkillIcon } from "@/components/SkillIcon";
 import { SkillRowMenu, type SkillRowMenuItem } from "@/components/SkillRowMenu";
 import { t } from "@/i18n";
-import { skillReveal, type InstalledSkillView } from "@/lib/ipc";
+import { isAppError, openLibraryUrl, skillReveal, type InstalledSkillView } from "@/lib/ipc";
 import { rowAction, type RowAction } from "@/lib/ownership";
 import { SHARE_BLOCK_LABEL } from "@/lib/share-block";
 import { useInstall } from "@/store/install";
@@ -13,6 +13,7 @@ import { useLocalDetail } from "@/store/local-detail";
 import { matchesMineQuery, useMineSearch } from "@/store/mine-search";
 import {
   hasUpdate,
+  localDiffersNoBaseline,
   remoteChangedForShareable,
   sections,
   shareableCardFor,
@@ -79,6 +80,7 @@ export function MySkillsPage() {
     beginShare,
     pull,
     shareableIndexes,
+    ensureShareableIndexes,
     updateAll,
     updateAllBusy,
     updateAllError,
@@ -178,13 +180,19 @@ export function MySkillsPage() {
 
   return (
     <div>
-      <TabsRow tab={tab} onChange={setTab} />
+      {/* 🔴 M2(复审):页头不再多摆一行「N 个技能」计数——四块画板都没有这一行,
+          「新建技能」搬进 TabsRow 自己那一条(design #16 那句"新建技能"紧跟在
+          "项目里"之后的顺序)。空态那一档不同:它自己的 CTA 行已经有「新建技能」,
+          TabsRow 不重复摆一份。 */}
+      <TabsRow tab={tab} onChange={setTab} showCreate={tab === "general" && list.length > 0} />
+      {tab === "general" && <CreateSkillPanel />}
 
       {tab === "projects" ? (
         <ProjectSections />
       ) : list.length === 0 ? (
         <div className="py-6">
           <p className="text-[12.5px] text-text-2">{t("mine.empty")}</p>
+          <p className="mt-1 text-[12.5px] text-text-3">{t("mine.emptyHint")}</p>
           <div className="mt-2.5 flex items-center gap-2">
             <button
               type="button"
@@ -195,18 +203,19 @@ export function MySkillsPage() {
             </button>
             <CreateSkillButton />
           </div>
-          <div className="mt-2.5">
-            <CreateSkillPanel />
-          </div>
         </div>
       ) : (
         <div>
-          <div className="flex items-center gap-3.5 py-2.5 text-[12.5px] text-text-2">
-            <span>{t("mine.count", { count: filteredList.length })}</span>
-            <CreateSkillButton />
-          </div>
-          <CreateSkillPanel />
-
+          {/* 🔴 M7(复审,记录不改):这个横幅与 WhereBlocks.tsx(详情面板)的
+              EachToolBlock 各自渲染一份"勾选失败"——不是漏删的重复。design §13
+              把这类反馈挪进了详情面板,但那个前提是"用户点开了详情"；
+              `confirmRemove`/`keepVersion` 两条路的失败(`toolFailuresFor` 恒
+              为 null)**没有**对应的详情面板入口——它们是"移除"/"留哪一份"
+              这两个页面级动作的失败,不是某个技能详情里的事。如果只留详情面板
+              那一份,这两类失败会回到终审 C-1/I-1 修过的"零渲染点"状态。
+              所以这里保留双份:有 `toolFailuresFor`(setAgents 来源)时两处都会
+              显示同一件事(轻微冗余,但用户从哪条路径看到都不奇怪);无归属时
+              只有这里显示。 */}
           {/* 🔴 勾选的部分失败必须有渲染点(见 my-skills.ts 模块头)。 */}
           {toolFailures && (
             <ToolFailuresBanner
@@ -291,22 +300,30 @@ export function MySkillsPage() {
             </div>
           )}
 
-          {sessionStatus !== "signedIn" && (
-            <p className="pb-2 text-[11.5px] text-text-3">{t("mine.signedOutHint")}</p>
-          )}
-
           {filteredList.length === 0 ? (
             <p className="py-6 text-[12.5px] text-text-3">{t("mine.searchEmpty", { query })}</p>
           ) : (
-            secs.map((sec) => (
+            secs.map((sec, secIndex) => (
               <section key={sec.key} className="mt-3 first-of-type:mt-0">
                 <h3 className="pb-1.5 text-[11.5px] font-medium text-text-3">{sec.title}</h3>
+                {/* 🔴 M5(复审):未登录提示紧跟在**第一个**区标题旁边,不是摆在
+                    整个区列表的最上面——画布里它就贴在「安装自技能库」标题下方。
+                    「已分享到」区未登录时天然不会出现(core 的 relation 决定,
+                    这里不需要按登录态过滤 sec),所以固定挂在 secIndex===0 那一区
+                    就等价于"第一个真正渲染出来的区"。 */}
+                {secIndex === 0 && sessionStatus !== "signedIn" && (
+                  <p className="pb-1.5 text-[11.5px] text-text-3">{t("mine.signedOutHint")}</p>
+                )}
                 <div className="overflow-hidden rounded-card border border-border bg-surface-1">
                   {sec.items.map((skill) => {
                     const remoteChanged =
                       skill.section === "shareable"
                         ? remoteChangedForShareable(skill, shareableIndexes)
                         : hasUpdate(skill, index);
+                    // 🔴 C3 修复(v7 任务 7 修复轮 1):没有安装基线的行,
+                    // `rowAction` 从不读 `localHash`——两方指纹直接比,只影响
+                    // 「更多」菜单要不要多一条「改用库里的版本」,不进判定表。
+                    const noBaselineDiffers = localDiffersNoBaseline(skill, index);
                     return (
                       <Row
                         key={skill.dirSlug}
@@ -315,6 +332,7 @@ export function MySkillsPage() {
                         description={cardOf(skill)?.description ?? null}
                         action={rowAction(skill, remoteChanged)}
                         remoteChanged={remoteChanged}
+                        noBaselineDiffers={noBaselineDiffers}
                         pulling={activeSlug === skill.dirSlug && installPhase === "running"}
                         sharing={shareBusy === skill.dirSlug}
                         onPull={() => void pull(skill.dirSlug)}
@@ -322,11 +340,17 @@ export function MySkillsPage() {
                         onShare={() => beginShare(skill.dirSlug)}
                         onRemove={() => askRemove(skill.dirSlug)}
                         onReveal={revealOrExplain}
-                        onOpenDetail={() =>
+                        onOpenDetail={() => {
                           void useLocalDetail
                             .getState()
-                            .open(skill.body ? { path: skill.body } : { dirSlug: skill.dirSlug })
-                        }
+                            .open(skill.body ? { path: skill.body } : { dirSlug: skill.dirSlug });
+                          // 🔴 I3(用户拍板):点击是"立即查"这一半的触发点
+                          // ——只对这一行自己的外部来源发请求,不碰其余行、
+                          // 不无视其余来源的节流。shareableSourceKey 为 null
+                          // (非 shareable 区/纯本地草稿)时 ensureShareableIndexes
+                          // 自己会跳过,这里不必先判一遍。
+                          void ensureShareableIndexes([skill.dirSlug]);
+                        }}
                       />
                     );
                   })}
@@ -343,21 +367,25 @@ export function MySkillsPage() {
 function TabsRow({
   tab,
   onChange,
+  showCreate,
 }: {
   tab: "general" | "projects";
   onChange: (tab: "general" | "projects") => void;
+  /** 只在「通用」且列表非空时给 true——空态自己的 CTA 行已经有「新建技能」,
+   *  这里不重复摆一份(design #16:「新建技能」紧跟在「项目里」之后)。 */
+  showCreate: boolean;
 }) {
   return (
-    <div
-      role="tablist"
-      className="mb-2.5 flex items-center gap-1 border-b border-border pb-2.5"
-    >
-      <TabButton active={tab === "general"} onClick={() => onChange("general")}>
-        {t("mine.tabGeneral")}
-      </TabButton>
-      <TabButton active={tab === "projects"} onClick={() => onChange("projects")}>
-        {t("mine.tabProjects")}
-      </TabButton>
+    <div className="mb-2.5 flex items-center justify-between border-b border-border pb-2.5">
+      <div role="tablist" className="flex items-center gap-1">
+        <TabButton active={tab === "general"} onClick={() => onChange("general")}>
+          {t("mine.tabGeneral")}
+        </TabButton>
+        <TabButton active={tab === "projects"} onClick={() => onChange("projects")}>
+          {t("mine.tabProjects")}
+        </TabButton>
+      </div>
+      {showCreate && <CreateSkillButton />}
     </div>
   );
 }
@@ -500,6 +528,7 @@ function Row({
   description,
   action,
   remoteChanged,
+  noBaselineDiffers,
   pulling,
   sharing,
   onPull,
@@ -514,6 +543,8 @@ function Row({
   description: string | null;
   action: RowAction;
   remoteChanged: boolean;
+  /** C3 修复:没有安装基线,但本体现在的内容与库里那一版不一样。 */
+  noBaselineDiffers: boolean;
   pulling: boolean;
   sharing: boolean;
   onPull: () => void;
@@ -530,8 +561,16 @@ function Row({
   if (skill.body) {
     menuItems.push({ key: "reveal", label: t("mine.openFolder"), onClick: () => onReveal(skill.body) });
   }
-  if (skill.localPresent && action.kind !== "chooseVersion") {
-    menuItems.push({ key: "remove", label: t("mine.remove"), onClick: onRemove });
+  // 🔴 I1 修复:`conflict` 压过主按钮之后,「贡献更改」/「分享改动」这两个
+  // 动作不会消失——用户可能就是想直接把本地内容推去评审,不想先经过
+  // `ConflictDialog` 那条"要不要保留本地"的三选一。两个区共用同一个判据
+  // (`localModified`),只是文案不同。
+  if (action.kind === "conflict" && skill.localModified) {
+    menuItems.push({
+      key: "contributeOrShareChanges",
+      label: skill.section === "installedFrom" ? t("mine.contribute") : t("mine.shareChanges"),
+      onClick: onShareChanges,
+    });
   }
   // 被压过一头、暂时不是主按钮的动作,不会丢失,退进这里(见 RowAction 的判定表文档)。
   if (skill.section === "shareable") {
@@ -540,6 +579,27 @@ function Row({
     } else if (action.kind === "update") {
       menuItems.push({ key: "share", label: t("mine.share"), onClick: onShare });
     }
+  }
+  // 🔴 C3 修复:没有安装基线时,「改用库里的版本」是这一档**唯一**的出口
+  // ——点击复用既有 `pull`(等价 `beginUpdate`),core 的预检会把它判成需要
+  // 拍板的那一档,自然弹出既有的 `ConflictDialog`,这里不用再造一层确认。
+  if (noBaselineDiffers) {
+    menuItems.push({
+      key: "useLibraryVersion",
+      label: t("mine.useLibraryVersion"),
+      title: t("mine.useLibraryVersionHint"),
+      onClick: onPull,
+    });
+  }
+  if (skill.localPresent && action.kind !== "chooseVersion") {
+    // 破坏性动作放最后,并与上面"能做的事"用一条分隔线隔开,防止手滑
+    // (I1:此前"移除"混在中间,没有视觉上的"这条不一样"提示)。
+    menuItems.push({
+      key: "remove",
+      label: t("mine.remove"),
+      onClick: onRemove,
+      separatorBefore: menuItems.length > 0,
+    });
   }
 
   const explainShareBlocked = action.kind === "shareBlocked";
@@ -679,15 +739,59 @@ function PrimaryAction({
           {t("mine.share")}
         </SolidButton>
       );
-    case "shareBlocked":
+    case "shareBlocked": {
+      // 🔴 C1:三个区都可能落进这一档,按钮文案要说对被拦下的是哪个动作
+      // ——不是每次都说「分享」(那句话对 installedFrom/sharedTo 是错的)。
+      const label =
+        action.blockedAction === "contribute"
+          ? t("mine.contribute")
+          : action.blockedAction === "shareChanges"
+            ? t("mine.shareChanges")
+            : t("mine.share");
+      const Btn = action.blockedAction === "share" ? SolidButton : OutlineButton;
       return (
-        <SolidButton disabled onClick={() => {}}>
-          {t("mine.share")}
-        </SolidButton>
+        <Btn disabled onClick={() => {}}>
+          {label}
+        </Btn>
       );
+    }
     case "underReview":
-      return <span className="px-1.5 text-[11.5px] text-text-3">{t("detail.whereReviewPending")}</span>;
+      return <ReviewPendingText url={action.url} />;
   }
+}
+
+/**
+ * 「审核中」+(有链接时)「在技能库里查看」——`RowAction.underReview.url` 此前
+ * 只在算出来就没有任何渲染点用过(I1 修复:v7 任务 7 修复轮 1)。
+ *
+ * 自己开一份局部错误状态,不复用页面级的 `revealError`——那个字段说的是
+ * "打开文件夹"失败,这里是"打开外部链接"失败,是两件不同的事,合并成一个
+ * 字段只会在两种失败同时发生时互相覆盖。与 `WhereBlocks.tsx` 的 `ReviewLink`
+ * 是同一个模式的两处独立实现(那边服务详情面板,这边服务列表行,两处场景
+ * 不同不共用状态,但都遵守"失败要有渲染点"这条硬规则)。
+ */
+function ReviewPendingText({ url }: { url: string | null }) {
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <span className="flex items-center gap-1.5 px-1.5 text-[11.5px] text-text-3">
+      {t("detail.whereReviewPending")}
+      {url && (
+        <button
+          type="button"
+          onClick={() => {
+            setError(null);
+            openLibraryUrl(url).catch((raw: unknown) =>
+              setError(isAppError(raw) ? raw.message : t("error.generic")),
+            );
+          }}
+          className="text-accent underline decoration-dotted underline-offset-2 hover:opacity-80"
+        >
+          {t("mine.reviewLink")}
+        </button>
+      )}
+      {error && <span className="text-[#c0392b] dark:text-[#e0705f]">{error}</span>}
+    </span>
+  );
 }
 
 function SolidButton({

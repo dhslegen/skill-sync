@@ -27,7 +27,21 @@ import { useUi, type PageId } from "@/store/ui";
 export function refreshLocalFor(page: PageId): void {
   switch (page) {
     case "mine":
-      void useMySkills.getState().load();
+      // 🔴 v7 任务 7 修复轮 1(I3,用户拍板):「可分享到」外源索引的**被动
+      // 每小时兜底**接在这里(级别 1 窗口重获焦点 / 级别 3 文件监听),刻意
+      // **不**接在 `load()` 本身——`MySkillsPage` 挂载/切页(级别 2)只直接调
+      // `load()`,不经过这个函数,所以"翻开这一页"这个动作本身不产生任何
+      // `ensureShareableIndexes` 请求。
+      //
+      // 🔴 **必须 `await load()` 之后再调,不能两个都 `void` 平行发出**:
+      // `ensureShareableIndexes` 读的是 `get().list` 这份**同步快照**,如果
+      // 跟 `load()` 同一拍触发,读到的是上一轮的旧列表(`installed_list` 还没
+      // 返回),新出现的 shareable 行这一轮会被漏掉、要等下一次刷新才追上
+      // ——这里链式等待,保证喂给它的 `list` 是这一轮刚读到的那份。
+      void (async () => {
+        await useMySkills.getState().load();
+        await useMySkills.getState().ensureShareableIndexes();
+      })();
       break;
     case "store":
       // 已装技能可能在外部被删掉了,回来该显示「获取」而不是「已启用」

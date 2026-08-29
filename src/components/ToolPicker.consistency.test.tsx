@@ -62,6 +62,15 @@ beforeEach(() => {
  * 这条测试守的意图没变(两处不许各自悄悄漂回一套手搓标记),只是把"完全相同"
  * 换成了"共享同一份基础 + 一份已知的、有文档的差异"。
  *
+ * 🔴 **M8(复审):这条测试挡不住的东西**——它只比较"两处消费者算出来的
+ * className 是否互相一致",不检查 `LIST_ROW_EXTRA` 这个常量本身的**内容**
+ * 对不对。如果有人把 `LIST_ROW_EXTRA` 改成一个错误但自洽的字符串(比如手滑删掉
+ * `border-t`),`ToolChecks`/`AgentChooser` 两处仍然会算出相同的 className,
+ * 这条测试照样绿——它守的是"两处不漂",不是"这批 token 本身是对的"。
+ * `ToolPicker.test.tsx` 补了一条正面断言直接锁定 `LIST_ROW_EXTRA` 的字面量
+ * 内容,两条测试合起来才是完整的护栏:那条管"内容对不对",这条管"两处
+ * 用不用的是同一份"。
+ *
  * 🔴 修复轮 1 之前这条测试是**全量空转**:两次 `render` 都往 `document.body`
  * 追加内容(RTL 的 `cleanup` 只在 `afterEach`),用全局 `screen.getAllByRole
  * ("checkbox")[0]` 取到的其实是文档序上第一次 render(`ToolChecks`)自己的

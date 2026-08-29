@@ -41,7 +41,17 @@ export type RowAction =
   | { kind: "contribute" } // 安装自 · 本地改(浅底,恒走评审)
   | { kind: "shareChanges" } // 已分享到 · 本地改
   | { kind: "share" } // 可分享到 · 合格、未提交过
-  | { kind: "shareBlocked"; reason: ShareBlock }
+  /**
+   * 分享前的标准校验没过(A-2 拍板不复议的硬规则:分享前按 Agent Skills 标准
+   * 全量校验,不合格不让分享)。🔴 **v7 任务 7 修复轮 1(C1)**:这一档以前
+   * 只在 `shareable` 区判——`installedFrom`(贡献更改)与 `sharedTo`(分享改动)
+   * 同样会把本地内容推去评审(`skill_share_changes`),同一道闸必须在三个区
+   * 都生效,否则用户在 Claude Code 里把 name 改成不合规的值,点一下就直推
+   * 进公司技能库,是终审 C-3 明确点名要堵住的旗舰场景。`blockedAction` 记着
+   * 这一档本来该是哪个动作,界面据此选对按钮文案(「分享」/「贡献更改」/
+   * 「分享改动」),不是每次都说「分享」。
+   */
+  | { kind: "shareBlocked"; reason: ShareBlock; blockedAction: "share" | "contribute" | "shareChanges" }
   | { kind: "underReview"; url: string | null }
   | { kind: "chooseVersion" }; // 压过一切
 
@@ -89,7 +99,9 @@ export function rowAction(
 
   if (skill.section === "shareable") {
     if (skill.review) return { kind: "underReview", url: skill.review.url };
-    if (skill.shareBlocked) return { kind: "shareBlocked", reason: skill.shareBlocked };
+    if (skill.shareBlocked) {
+      return { kind: "shareBlocked", reason: skill.shareBlocked, blockedAction: "share" };
+    }
     if (remoteChanged) return { kind: "update" };
     return { kind: "share" };
   }
@@ -97,12 +109,24 @@ export function rowAction(
   if (skill.section === "installedFrom") {
     if (skill.localModified && remoteChanged) return { kind: "conflict" };
     if (remoteChanged) return { kind: "update" };
-    if (skill.localModified) return { kind: "contribute" };
+    if (skill.localModified) {
+      // 🔴 C1:贡献更改一样要过标准校验这道闸,不是 shareable 区的专利。
+      if (skill.shareBlocked) {
+        return { kind: "shareBlocked", reason: skill.shareBlocked, blockedAction: "contribute" };
+      }
+      return { kind: "contribute" };
+    }
     return { kind: "none" };
   }
 
   // sharedTo
   if (remoteChanged) return { kind: "conflict" };
-  if (skill.localModified) return { kind: "shareChanges" };
+  if (skill.localModified) {
+    // 🔴 C1:分享改动同样要过标准校验这道闸。
+    if (skill.shareBlocked) {
+      return { kind: "shareBlocked", reason: skill.shareBlocked, blockedAction: "shareChanges" };
+    }
+    return { kind: "shareChanges" };
+  }
   return { kind: "none" };
 }

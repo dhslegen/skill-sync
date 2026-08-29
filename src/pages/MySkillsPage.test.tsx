@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -7,10 +7,12 @@ import type { InstalledSkillView, Section, StoreIndexView } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { useMineSearch } from "@/store/mine-search";
+import { useCreate } from "@/store/create";
 import { useMySkills } from "@/store/my-skills";
 import { useSession } from "@/store/session";
 import { useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
+import { useUi } from "@/store/ui";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args: unknown) => invoke(cmd, args) }));
@@ -201,11 +203,12 @@ function resetStores() {
     shareError: null,
     shareConflict: null,
     shareableIndexes: new Map(),
-    shareableIndexesAttempted: new Set(),
+    shareableIndexesLastFetchedAt: new Map(),
     updateAllBusy: false,
     updateAllError: null,
     updateAllFailures: null,
   });
+  useCreate.setState({ phase: "closed" });
 }
 
 beforeEach(resetStores);
@@ -221,6 +224,18 @@ describe("v7 任务 7:DoD 六条", () => {
     expect(await screen.findByText("a")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /更新|分享|贡献/ })).toBeNull();
     expect(screen.queryByText(/已同步/)).toBeNull();
+  });
+
+  it("🔴 M2:页头不摆「N 个技能」计数,「新建技能」在 tabs 那一行,不是单独一行", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    expect(screen.queryByText(/个技能$/)).toBeNull();
+    const tabs = screen.getByRole("tablist");
+    const createButton = screen.getByRole("button", { name: "新建技能" });
+    // 「新建技能」与 tablist 是同一个父容器下的兄弟节点(design #16:紧跟在
+    // 「项目里」之后),不是散落在页面别处。
+    expect(tabs.parentElement).toBe(createButton.parentElement);
   });
 
   it("有事要做时:页头给总览与「全部更新」,只覆盖库有新版且本地没改的", async () => {
@@ -259,11 +274,45 @@ describe("v7 任务 7:DoD 六条", () => {
   });
 
   it("未登录:没有「已分享到」区,区标题旁写明原因", async () => {
-    seedSignedOut([mk("a", "installedFrom")]);
+    // 🔴 I5 订正:原用例的 fixture 只有 installedFrom 行,"已分享到技能库"
+    // 这个断言本来就不会出现(区标题走空区自动过滤,与登录态无关)——把页面
+    // 改坏(比如删掉隐藏 sharedTo 区的逻辑,如果真有这种逻辑的话)这条用例也不会
+    // 变红,是一次空转。这里补一条 sharedTo 行,**如实说明**:这一档的隐藏是
+    // core 的 `ownership::relation` 决定的(未登录时 `relation` 恒不是
+    // `Shared`,数据里天然不会有 sharedTo 行)——页面自己不做任何按登录态过滤
+    // 分区的逻辑,`sections()` 只按 `section` 字段分组。所以这条测试真正要盯的
+    // 是下一条:提示文案本身是不是真的由登录态控制。
+    seedSignedOut([mk("a", "installedFrom"), mk("b", "sharedTo")]);
     render(<MySkillsPage />);
     await screen.findByText("a");
-    expect(screen.queryByText("已分享到技能库")).toBeNull();
+    // sharedTo 区照样渲染——页面不隐藏它,fixture 里硬塞一条 sharedTo 行
+    // 只是不符合真实场景(未登录时 core 不会产出这种行),不代表页面在拦它。
+    expect(screen.getByText("已分享到技能库")).toBeInTheDocument();
     expect(screen.getByText(/登录后能区分哪些是你分享的/)).toBeInTheDocument();
+  });
+
+  it("🔴 I5:提示文案本身由登录态控制——同一份数据切换 session 状态,提示跟着出现/消失", async () => {
+    // 这才是页面代码真正管的那个量(`sessionStatus !== "signedIn"`),
+    // 数据全程不变,只翻 useSession 的状态,注入验证时把这一行判据删掉,
+    // 这条测试必须变红。
+    seed([mk("a", "installedFrom")]);
+    const { rerender } = render(<MySkillsPage />);
+    await screen.findByText("a");
+    expect(screen.queryByText(/登录后能区分哪些是你分享的/)).toBeNull();
+
+    act(() => {
+      useSession.setState({ status: "signedOut" });
+    });
+    rerender(<MySkillsPage />);
+    expect(await screen.findByText(/登录后能区分哪些是你分享的/)).toBeInTheDocument();
+
+    act(() => {
+      useSession.setState({ status: "signedIn" });
+    });
+    rerender(<MySkillsPage />);
+    await vi.waitFor(() => {
+      expect(screen.queryByText(/登录后能区分哪些是你分享的/)).toBeNull();
+    });
   });
 });
 
@@ -309,6 +358,22 @@ describe("三区排列与判定表接线", () => {
     const btn = await screen.findByRole("button", { name: "分享" });
     expect(btn).toBeDisabled();
     expect(screen.getByText(/团队标准要求两者相同/)).toBeInTheDocument();
+  });
+
+  it("🔴 C1:安装自区本地改了但标准校验不过 → 禁用的「贡献更改」+ 说明,不能直推不合规内容", async () => {
+    seed([mk("a", "installedFrom", { localModified: true, shareBlocked: "nameFormat" })]);
+    render(<MySkillsPage />);
+    const btn = await screen.findByRole("button", { name: "贡献更改" });
+    expect(btn).toBeDisabled();
+    expect(screen.getByText(/只能用英文小写字母、数字和短横线/)).toBeInTheDocument();
+  });
+
+  it("🔴 C1:已分享到区本地改了但标准校验不过 → 禁用的「分享改动」+ 说明", async () => {
+    seed([mk("a", "sharedTo", { localModified: true, shareBlocked: "descriptionMissing" })]);
+    render(<MySkillsPage />);
+    const btn = await screen.findByRole("button", { name: "分享改动" });
+    expect(btn).toBeDisabled();
+    expect(screen.getByText(/分享前请在 SKILL\.md 里补上 description/)).toBeInTheDocument();
   });
 
   it("shareable:审核中 → 没有按钮,只有「审核中」文字", async () => {
@@ -362,13 +427,51 @@ describe("三区排列与判定表接线", () => {
     });
     render(<MySkillsPage />);
 
+    // 🔴 I3(用户拍板):翻开页面本身不发请求——这一行的外源指纹还没探过,
+    // 主按钮此刻只能是「分享」,展示名也只能退回 dirSlug。
+    expect(await screen.findByRole("button", { name: "分享" })).toBeInTheDocument();
+    expect(screen.queryByText("React 最佳实践")).toBeNull();
+
+    // 点开详情是"点击立即查"那一半的触发点,查完这一行的主按钮才会变成「更新」。
+    await userEvent.click(screen.getByTestId("row-a-body"));
+
     expect(await screen.findByRole("button", { name: "更新" })).toBeInTheDocument();
     expect(screen.getByText("React 最佳实践")).toBeInTheDocument();
     expect(screen.getByText("Vercel 出品的性能与写法指南。")).toBeInTheDocument();
+    // 🔴 I4:展示名与 dirSlug 刻意不同值,查完之后内部目录名不该再上屏
+    // ——本项目已经踩过两次"internal id 漏给用户"(安装结果文案、冲突弹窗标题)。
+    expect(screen.queryByText("a")).toBeNull();
 
     const row = screen.getByTestId("row-a");
     await userEvent.click(within(row).getByRole("button", { name: "更多" }));
     expect(screen.getByRole("menuitem", { name: "分享" })).toBeInTheDocument();
+  });
+});
+
+describe("I4:展示名与 dirSlug 刻意取不同值,内部目录名不许漏到界面上", () => {
+  it("installedFrom/sharedTo 区同样按公司库索引的展示名渲染,不是 dirSlug 本身", async () => {
+    // 🔴 复审指出的真实缺口:此前 companyIndex() 的 fixture 让 `name` 恒等于
+    // `dirSlug`("a" 展示出来也是"a"),这条守卫因此测不出"万一哪天不小心把
+    // dirSlug 当展示名渲染"这类回归——两个概念取同值,它们的差别就测没了。
+    const skill = mk("weekly-report", "installedFrom");
+    const index = {
+      ...companyIndex([skill]),
+      skills: [{ ...companyIndex([skill]).skills[0]!, name: "周报生成" }],
+    };
+    useStoreIndex.setState({ index });
+    invoke.mockReset();
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return [skill];
+      if (cmd === "agents_detected") return AGENT_LIST;
+      if (cmd === "store_index") return index;
+      return null;
+    });
+    render(<MySkillsPage />);
+
+    await screen.findByText("周报生成");
+    expect(screen.queryByText("weekly-report")).toBeNull();
+    // data-testid 走 dirSlug 是内部寻址,不是给用户看的,不受这条约束
+    expect(screen.getByTestId("row-weekly-report")).toBeInTheDocument();
   });
 });
 
@@ -448,5 +551,535 @@ describe("移除只在本体在这台电脑上时才摆", () => {
     const row = await screen.findByTestId("row-a");
     await userEvent.click(within(row).getByRole("button", { name: "更多" }));
     expect(screen.getByRole("menuitem", { name: "移除" })).toBeInTheDocument();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// C2(复审打回):错误 / 结果的渲染点。这批测试在整页重写那一笔提交里连同旧的
+// ToolFailuresBanner 内联代码一起被删掉了,复审指出"重写一段代码同时删掉它
+// 全部行为测试"本身就是危险信号——R30(`skill_reveal` 被守卫拒掉的沉默缺陷)
+// 是这个项目已经吃过一次亏、明确记名要守住的场景,新抽出的 `ToolFailuresBanner`
+// 组件此前是**零测试**地上线的。
+// ---------------------------------------------------------------------------
+
+describe("勾选工具的失败必须看得见(C2 补充覆盖)", () => {
+  it("core 报的部分失败逐条摆出来,agent 名换成展示名,不漏内部标识", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    act(() => {
+      useMySkills.setState({
+        agentNames: new Map([["claude-code", "Claude Code"], ["trae", "Trae"]]),
+        toolFailures: [
+          { kind: "failed", agent: "claude-code", message: "那个位置已有同名文件夹" },
+          { kind: "failed", agent: null, message: "统一目录没能收敛" },
+        ],
+      });
+    });
+
+    await screen.findByText(/有 2 处没能完成/);
+    expect(screen.getByText(/Claude Code：那个位置已有同名文件夹/)).toBeInTheDocument();
+    expect(screen.getByText("统一目录没能收敛")).toBeInTheDocument();
+    expect(screen.queryByText(/claude-code：/)).toBeNull();
+  });
+
+  it("🔴 differs 说的是另一句话(占位不是失败),并给出「打开文件夹」这条出口", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    act(() => {
+      useMySkills.setState({
+        agentNames: new Map([["trae", "Trae"]]),
+        toolFailures: [{ kind: "differs", agent: "trae", existing: "/h/.trae/skills/a" }],
+      });
+    });
+
+    await screen.findByText(/Trae 那个位置上已经有一份内容不同的技能,没有覆盖它。/);
+    await userEvent.click(screen.getByRole("button", { name: "打开 Trae 那个位置的文件夹" }));
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_reveal");
+    expect(call?.[1].args).toEqual({ path: "/h/.trae/skills/a" });
+  });
+
+  it("🔴 R30:打开文件夹被守卫拒掉时必须说出来,绝不静默", async () => {
+    // `skill_reveal` 的守卫是「必须是目录、且目录下有 SKILL.md」,而 differs 给的
+    // `existing` 两条都不保证——吞掉失败的话用户点了什么反应都没有,是这个项目
+    // 记过名的「前端全对却没反应」那一类,零痕迹、最难排查。
+    const skill = mk("a", "installedFrom");
+    invoke.mockReset();
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return [skill];
+      if (cmd === "agents_detected") return AGENT_LIST;
+      if (cmd === "skill_reveal")
+        throw { code: "FS_NOT_A_SKILL", message: "这个文件夹不是技能,或技能描述文件缺失" };
+      return null;
+    });
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    act(() => {
+      useMySkills.setState({
+        agentNames: new Map([["trae", "Trae"]]),
+        toolFailures: [{ kind: "differs", agent: "trae", existing: "/h/.trae/skills/a" }],
+      });
+    });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "打开 Trae 那个位置的文件夹" }),
+    );
+
+    await screen.findByText(/打不开那个文件夹/);
+    expect(screen.getByText(/这个文件夹不是技能,或技能描述文件缺失/)).toBeInTheDocument();
+  });
+
+  it("失败框里的「打开文件夹」带工具名,与行内那个区分得开(不同的可访问名)", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    act(() => {
+      useMySkills.setState({
+        agentNames: new Map([["trae", "Trae"]]),
+        toolFailures: [{ kind: "differs", agent: "trae", existing: "/h/.trae/skills/a" }],
+      });
+    });
+
+    await screen.findByRole("button", { name: "打开 Trae 那个位置的文件夹" });
+    // 行内那个走「更多」菜单,menuitem 是朴素的「打开文件夹」,两者不同名
+    const row = screen.getByTestId("row-a");
+    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    expect(screen.getByRole("menuitem", { name: "打开文件夹" })).toBeInTheDocument();
+  });
+
+  it("🔴 标题分流:全是 differs 说「需要你看一下」,含真失败说「没能完成」", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+
+    act(() => {
+      useMySkills.setState({
+        agentNames: new Map([["trae", "Trae"]]),
+        toolFailures: [{ kind: "differs", agent: "trae", existing: "/x" }],
+      });
+    });
+    await screen.findByText(/有 1 处需要你看一下/);
+
+    act(() => {
+      useMySkills.setState({
+        toolFailures: [
+          { kind: "differs", agent: "trae", existing: "/x" },
+          { kind: "failed", agent: "cursor", message: "cursor 没配上" },
+        ],
+      });
+    });
+    await screen.findByText(/有 2 处没能完成/);
+  });
+
+  it("按位置报的失败:路径与原因都摆出来,标题算「没能完成」(location 档)", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    act(() => {
+      useMySkills.setState({
+        toolFailures: [
+          { kind: "location", path: "/h/.trae/skills/a", message: "移到废纸篓失败" },
+        ],
+      });
+    });
+
+    await screen.findByText(/有 1 处没能完成/);
+    expect(screen.getByText("/h/.trae/skills/a")).toBeInTheDocument();
+    expect(screen.getByText(/移到废纸篓失败/)).toBeInTheDocument();
+  });
+
+  it("统一目录那一档没有 agent 名,用一句人话顶上,不留空", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    act(() => {
+      useMySkills.setState({
+        toolFailures: [{ kind: "differs", agent: null, existing: "/h/.agents/skills/a" }],
+      });
+    });
+    await screen.findByText(/统一技能目录 那个位置上已经有一份内容不同的技能/);
+  });
+
+  it("有归属(setAgents 来源)时,横幅点名是哪个技能", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    act(() => {
+      useMySkills.setState({
+        agentNames: new Map([["trae", "Trae"]]),
+        toolFailures: [{ kind: "differs", agent: "trae", existing: "/x" }],
+        toolFailuresFor: "a",
+      });
+    });
+    await screen.findByText(/「a」有 1 处需要你看一下/);
+  });
+
+  it("setAgentsError 同样点名归属技能", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    act(() => {
+      useMySkills.setState({
+        setAgentsError: { code: "FS_LINK_FAILED", message: "统一目录那一处没配上" },
+        toolFailuresFor: "a",
+      });
+    });
+    await screen.findByText(/没能改动「a」的 AI 工具启用状态/);
+  });
+
+  it("没有归属(remove/keepVersion 来源,toolFailuresFor 为 null)时不点名,零回归", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    act(() => {
+      useMySkills.setState({
+        toolFailures: [
+          { kind: "location", path: "/h/.trae/skills/a", message: "移到废纸篓失败" },
+        ],
+        toolFailuresFor: null,
+      });
+    });
+    await screen.findByText(/有 1 处没能完成/);
+    expect(screen.queryByText(/「a」/)).not.toBeInTheDocument();
+  });
+});
+
+describe("「取回」与「以本地为准分享」失败必须在这一页看得见(C2 补充覆盖)", () => {
+  it("🔴 pullFailed:取回失败不能转一下就没了下文", async () => {
+    const skill = mk("a", "sharedTo", { localPresent: false, body: "", agents: [] });
+    invoke.mockReset();
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return [skill];
+      if (cmd === "agents_detected") return AGENT_LIST;
+      if (cmd === "skill_install")
+        throw { code: "NET_TIMEOUT", message: "连不上公司技能库,请确认已接入内网" };
+      return null;
+    });
+    render(<MySkillsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "取回" }));
+
+    expect(await screen.findByText(/连不上公司技能库/)).toBeInTheDocument();
+  });
+
+  it("installShareResult:失败要看得见——那条路的结果只写进 useInstall.shareResult", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    act(() => {
+      useInstall.setState({
+        shareResult: { error: { code: "NET_TIMEOUT", message: "连不上公司技能库" } },
+      });
+    });
+    await screen.findByText(/连不上公司技能库/);
+  });
+
+  it("installShareResult:成功时同样有回执", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    act(() => {
+      useInstall.setState({ shareResult: { mode: "reviewRequested" } });
+    });
+    await screen.findByText("改动已提交审核,审核通过后生效。");
+  });
+
+  it("拍板框已经关掉之后再失败,keepError 也要有落点(M-2)", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    act(() => {
+      useMySkills.setState({
+        versionChoice: null,
+        keepError: { code: "FS_TASK", message: "保留所选版本失败,请重试" },
+      });
+    });
+    expect(await screen.findByText(/保留所选版本失败/)).toBeInTheDocument();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// 补充覆盖(复审列出的 22 条覆盖丢失里价值较高的几条):空列表 CTA、读取失败
+// 重试、「打开文件夹」的参数形状、chooseVersion 档、两个徽标、CreateSkill 的
+// 真实 UI 通道。
+// ---------------------------------------------------------------------------
+
+describe("空列表与读取失败(补充覆盖)", () => {
+  it("空列表:「去技能商店」真的切页,不是摆设", async () => {
+    useUi.setState({ page: "mine" });
+    seed([]);
+    render(<MySkillsPage />);
+    await screen.findByText("这台电脑上还没有技能");
+
+    await userEvent.click(screen.getByRole("button", { name: "去技能商店" }));
+
+    expect(useUi.getState().page).toBe("store");
+  });
+
+  it("🔴 读取失败要正面说,不能画成空状态;重试按钮真的重新发请求", async () => {
+    let calls = 0;
+    invoke.mockReset();
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") {
+        calls += 1;
+        if (calls === 1) throw { code: "IO_FAILED", message: "磁盘读取失败" };
+        return [];
+      }
+      if (cmd === "agents_detected") return AGENT_LIST;
+      return null;
+    });
+    render(<MySkillsPage />);
+
+    expect(await screen.findByText(/读取已获取的技能失败/)).toBeInTheDocument();
+    expect(screen.getByText(/磁盘读取失败/)).toBeInTheDocument();
+    // 失败不能被画成"你还没装任何技能"那句空状态文案
+    expect(screen.queryByText("这台电脑上还没有技能")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "重试" }));
+
+    await screen.findByText("这台电脑上还没有技能");
+    expect(calls).toBe(2);
+  });
+});
+
+describe("「打开文件夹」传 body 绝对路径,不传 dirSlug(补充覆盖)", () => {
+  it("行内「更多」菜单的打开文件夹带的是 skill.body,不是 dirSlug", async () => {
+    const skill = mk("a", "installedFrom", { body: "/h/.claude/skills/a" });
+    invoke.mockReset();
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return [skill];
+      if (cmd === "agents_detected") return AGENT_LIST;
+      if (cmd === "skill_reveal") return null;
+      return null;
+    });
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-a");
+    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "打开文件夹" }));
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_reveal");
+    expect(call?.[1].args).toEqual({ path: "/h/.claude/skills/a" });
+    expect(call?.[1].args).not.toHaveProperty("dirSlug");
+  });
+});
+
+describe("C3(v7 任务 7 修复轮 1):「改用库里的版本」——没有安装基线时的唯一出口", () => {
+  it("🔴 没有基线 + 本体与库里内容不同 → 「更多」菜单里有「改用库里的版本」,点击复用既有 pull", async () => {
+    // 典型场景:作者绕过 app 直接 git 推库,又在本地(比如 Claude Code 里)改了
+    // 本体——core 对这种行恒填 contentHash: ""(没有安装基线),rowAction 因此
+    // 判成 none,页面此前一个字都不说。
+    const skill = mk("weekly-report", "sharedTo", {
+      contentHash: "",
+      localHash: "sha256:local-now",
+    });
+    const index = {
+      registryId: "company",
+      owner: "skills",
+      repo: "skills",
+      branch: "main",
+      commitSha: "x",
+      committedAt: "",
+      fetchedAt: 0,
+      skipped: [],
+      fromCache: false,
+      offline: false,
+      curated: [],
+      skills: [
+        {
+          name: "weekly-report",
+          dirSlug: "weekly-report",
+          description: "",
+          path: "",
+          hasScripts: false,
+          fileCount: 1,
+          contentHash: "sha256:library-now",
+          tags: [],
+          author: null,
+        },
+      ],
+    };
+    useStoreIndex.setState({ index });
+    invoke.mockReset();
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return [skill];
+      if (cmd === "agents_detected") return AGENT_LIST;
+      if (cmd === "skill_install")
+        return { outcome: "installed", report: { dirName: "weekly-report", canonicalDir: "/c", links: [] }, localKept: false, lock: "written" };
+      return null;
+    });
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-weekly-report");
+
+    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "改用库里的版本" }));
+
+    // 复用既有 pull(beginUpdate):不新造一层确认,core 的预检自己会拦下来问用户
+    await vi.waitFor(() =>
+      expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_install")).toBe(true),
+    );
+  });
+
+  it("没有基线但两方内容其实一样 → 不摆这一项", async () => {
+    const skill = mk("weekly-report", "sharedTo", {
+      contentHash: "",
+      localHash: "sha256:same",
+    });
+    const index = {
+      registryId: "company",
+      owner: "skills",
+      repo: "skills",
+      branch: "main",
+      commitSha: "x",
+      committedAt: "",
+      fetchedAt: 0,
+      skipped: [],
+      fromCache: false,
+      offline: false,
+      curated: [],
+      skills: [
+        {
+          name: "weekly-report",
+          dirSlug: "weekly-report",
+          description: "",
+          path: "",
+          hasScripts: false,
+          fileCount: 1,
+          contentHash: "sha256:same",
+          tags: [],
+          author: null,
+        },
+      ],
+    };
+    useStoreIndex.setState({ index });
+    invoke.mockReset();
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return [skill];
+      if (cmd === "agents_detected") return AGENT_LIST;
+      return null;
+    });
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-weekly-report");
+    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    expect(screen.queryByRole("menuitem", { name: "改用库里的版本" })).toBeNull();
+  });
+});
+
+describe("chooseVersion 档(补充覆盖:此前整页零测试覆盖)", () => {
+  it("有几份版本时,主按钮是「选择保留哪一份」,点击开出版本拍板框、不摆其余动作", async () => {
+    const V = (path: string) => ({
+      path,
+      modifiedAt: "2026-08-01T00:00:00.000Z",
+      files: 1,
+      contentHash: `h-${path}`,
+    });
+    seed([
+      mk("a", "installedFrom", {
+        versions: [V("/p1"), V("/p2")],
+        localModified: true, // 即便同时满足别的判据,versions 也压过一切
+      }),
+    ]);
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-a");
+
+    const button = within(row).getByRole("button", { name: "选择保留哪一份" });
+    expect(button).toBeInTheDocument();
+    // 其余按 localModified 本该出现的「贡献更改」不该同时出现
+    expect(within(row).queryByRole("button", { name: "贡献更改" })).toBeNull();
+
+    await userEvent.click(button);
+
+    expect(useMySkills.getState().versionChoice).toEqual({
+      dirSlug: "a",
+      versions: [V("/p1"), V("/p2")],
+    });
+  });
+
+  it("有几份版本时,「更多」菜单里不摆「移除」——拿哪一份去移无从谈起", async () => {
+    const V = (path: string) => ({
+      path,
+      modifiedAt: "2026-08-01T00:00:00.000Z",
+      files: 1,
+      contentHash: `h-${path}`,
+    });
+    seed([mk("a", "installedFrom", { versions: [V("/p1"), V("/p2")] })]);
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-a");
+    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    expect(screen.queryByRole("menuitem", { name: "移除" })).toBeNull();
+  });
+});
+
+describe("两个徽标(补充覆盖)", () => {
+  it("来源已移除:徽标 + 悬浮说明", async () => {
+    seed([mk("a", "installedFrom", { sourceRemoved: true })]);
+    render(<MySkillsPage />);
+    const badge = await screen.findByText("来源已移除");
+    expect(badge).toHaveAttribute("title", expect.stringContaining("这个技能的来源已不在来源列表中"));
+  });
+
+  it("技能库不在列表中:徽标 + 悬浮说明", async () => {
+    seed([mk("a", "installedFrom", { libraryRemoved: true })]);
+    render(<MySkillsPage />);
+    const badge = await screen.findByText("技能库不在列表中");
+    expect(badge).toHaveAttribute("title", expect.stringContaining("来源服务器还在"));
+  });
+
+  it("正常行没有任何徽标", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+    expect(screen.queryByText("来源已移除")).toBeNull();
+    expect(screen.queryByText("技能库不在列表中")).toBeNull();
+  });
+});
+
+describe("新建技能(补充覆盖:CreateSkill 的 UI 通道,不是只断言渲染了)", () => {
+  it("🔴 真的点得开、填得完、提交得出去", async () => {
+    const skill = mk("a", "installedFrom");
+    invoke.mockReset();
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "installed_list") return [skill];
+      if (cmd === "agents_detected") return AGENT_LIST;
+      if (cmd === "skill_create") return { dirSlug: "my-notes", path: "/h/.agents/skills/my-notes" };
+      return null;
+    });
+    render(<MySkillsPage />);
+    await screen.findByText("a");
+
+    await userEvent.click(screen.getByRole("button", { name: "新建技能" }));
+    await screen.findByText("新建一个技能");
+    expect(screen.queryByRole("button", { name: "新建技能" })).toBeNull();
+
+    const create = screen.getByRole("button", { name: "创建" });
+    expect(create).toBeDisabled();
+
+    const boxes = screen.getAllByRole("textbox");
+    await userEvent.type(boxes[0], "我的笔记");
+    await userEvent.type(boxes[1], "记点东西");
+    await userEvent.type(boxes[2], "my-notes");
+    expect(create).toBeEnabled();
+
+    await userEvent.click(create);
+
+    await vi.waitFor(() => {
+      const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_create");
+      expect(call?.[1].args).toEqual({
+        dirSlug: "my-notes",
+        displayName: "我的笔记",
+        description: "记点东西",
+      });
+    });
+    await screen.findByText("/h/.agents/skills/my-notes");
+  });
+
+  it("空态也有「新建技能」,同样点得开", async () => {
+    seed([]);
+    render(<MySkillsPage />);
+    await screen.findByText("这台电脑上还没有技能");
+    await userEvent.click(screen.getByRole("button", { name: "新建技能" }));
+    await screen.findByText("新建一个技能");
   });
 });
