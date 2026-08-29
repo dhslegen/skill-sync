@@ -2,15 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   hasUpdate,
-  librarySections,
-  localEqualsRemote,
+  remoteChangedForShareable,
   sections,
+  shareableSourceKey,
   updateCount,
   useMySkills,
 } from "./my-skills";
 import { t } from "@/i18n";
 import { useInstall } from "@/store/install";
 import { useShare } from "@/store/share";
+import { useStoreIndex } from "@/store/store-index";
 import type { InstalledSkillView, Section } from "@/lib/ipc";
 
 const invoke = vi.fn();
@@ -90,6 +91,11 @@ function reset() {
     shareDone: null,
     shareError: null,
     shareConflict: null,
+    shareableIndexes: new Map(),
+    shareableIndexesAttempted: new Set(),
+    updateAllBusy: false,
+    updateAllError: null,
+    updateAllFailures: null,
   });
 }
 
@@ -280,78 +286,6 @@ describe("移除流程", () => {
     useMySkills.getState().cancelRemove();
     expect(useMySkills.getState().removePhase).toBe("idle");
     expect(useMySkills.getState().removeTarget).toBeNull();
-  });
-});
-
-describe("localEqualsRemote:第 4 档唯一的判据", () => {
-  beforeEach(reset);
-
-  // ⚠️ 这个函数此前**一条测试都没走过**(本任务链路上第七次撞见"那条路根本没人测")。
-  // 它是六态机第 4 档(无安装基线)分 synced / differs 的唯一依据,判错的后果是
-  // 对着两份逐字节相同的技能说「本地和库里不一样」,或者反过来。
-  const index = (remoteHash: string, over: Record<string, unknown> = {}) => ({
-    registryId: "company",
-    owner: "skills",
-    repo: "skills",
-    skills: [{ dirSlug: "weekly-report", contentHash: remoteHash }],
-    ...over,
-  });
-
-  it("两方指纹相同 → true", () => {
-    expect(localEqualsRemote(view({ localHash: "h1" }), index("h1"))).toBe(true);
-  });
-
-  it("两方指纹不同 → false", () => {
-    expect(localEqualsRemote(view({ localHash: "h1" }), index("h2"))).toBe(false);
-  });
-
-  it("没有索引 → null(不知道就说不知道)", () => {
-    expect(localEqualsRemote(view({ localHash: "h1" }), null)).toBeNull();
-  });
-
-  it("🔴 本地指纹为空 → null,绝不让空串相等冒充「已同步」", () => {
-    // `"" === ""` 会把"两边都读不出来"判成"已同步",那是编的。
-    expect(localEqualsRemote(view({ localHash: "" }), index(""))).toBeNull();
-    expect(localEqualsRemote(view({ localHash: "" }), index("h1"))).toBeNull();
-  });
-
-  it("库里没有这个技能(远端指纹取不到) → null", () => {
-    expect(
-      localEqualsRemote(view({ localHash: "h1" }), index("h1", { skills: [] })),
-    ).toBeNull();
-  });
-
-  // ---- 坐标闸:三个字段各一条,防止"少判一个也照样绿" ----
-
-  it("registryId 不同 → null(拿另一个源的索引比出来的结论不算数)", () => {
-    expect(
-      localEqualsRemote(view({ localHash: "h1", registryId: "custom-1" }), index("h1")),
-    ).toBeNull();
-  });
-
-  it("owner 不同 → null", () => {
-    expect(
-      localEqualsRemote(view({ localHash: "h1", sourceOwner: "design" }), index("h1")),
-    ).toBeNull();
-  });
-
-  it("repo 不同 → null(一源多仓:同源两库的同名技能是两个东西)", () => {
-    expect(
-      localEqualsRemote(view({ localHash: "h1", sourceRepo: "design-skills" }), index("h1")),
-    ).toBeNull();
-  });
-
-  it("🔴 坐标为空串时同样落 null —— R27 之前 core 就是这么填的", () => {
-    // 这正是修复轮 2 在 core 侧修掉的那条:无记账行的三个坐标是空串,
-    // 于是坐标闸必然不等、`synced` 出口永远走不到。这条测试钉住**前端这一侧的
-    // 判定是对的**(空坐标就是不知道),core 那一侧由
-    // `installed_list.rs::a_row_without_an_account_still_carries_the_library_coordinates` 钉住。
-    expect(
-      localEqualsRemote(
-        view({ localHash: "h1", registryId: "", sourceOwner: "", sourceRepo: "" }),
-        index("h1"),
-      ),
-    ).toBeNull();
   });
 });
 
@@ -1209,7 +1143,7 @@ describe("shareChanges 的 forceReview(v7):安装自那一区恒走评审,已分
   });
 });
 
-describe("librarySections(v7 三区)", () => {
+describe("sections(v7 三区)", () => {
   const noneAction = () => ({ kind: "none" as const });
 
   it("三区顺序固定,空区不出现", () => {
@@ -1217,7 +1151,7 @@ describe("librarySections(v7 三区)", () => {
       view({ dirSlug: "a", section: "shareable" }),
       view({ dirSlug: "b", section: "installedFrom" }),
     ];
-    expect(librarySections(list, noneAction).map((s) => s.key)).toEqual([
+    expect(sections(list, noneAction).map((s) => s.key)).toEqual([
       "installedFrom",
       "shareable",
     ]);
@@ -1231,7 +1165,7 @@ describe("librarySections(v7 三区)", () => {
     ];
     const act = (s: InstalledSkillView) =>
       s.dirSlug === "zeta" ? ({ kind: "update" as const }) : noneAction();
-    expect(librarySections(list, act)[0]?.items.map((s) => s.dirSlug)).toEqual([
+    expect(sections(list, act)[0]?.items.map((s) => s.dirSlug)).toEqual([
       "zeta",
       "alpha",
       "beta",
@@ -1244,7 +1178,7 @@ describe("librarySections(v7 三区)", () => {
       view({ dirSlug: "b", section: "sharedTo" }),
       view({ dirSlug: "c", section: "shareable" }),
     ];
-    const secs = librarySections(list, noneAction);
+    const secs = sections(list, noneAction);
     expect(secs.map((s) => [s.key, s.items.map((i) => i.dirSlug)])).toEqual([
       ["installedFrom", ["a"]],
       ["sharedTo", ["b"]],
@@ -1254,7 +1188,7 @@ describe("librarySections(v7 三区)", () => {
 
   it("标题走 i18n,不是拼出来的英文 key", () => {
     const list = [view({ dirSlug: "a", section: "installedFrom" })];
-    expect(librarySections(list, noneAction)[0]?.title).toBe(t("mine.sectionInstalledFrom"));
+    expect(sections(list, noneAction)[0]?.title).toBe(t("mine.sectionInstalledFrom"));
   });
 });
 
@@ -1288,26 +1222,332 @@ describe("updateCount 改按 rowAction 数(v7):冲突行不计入「全部更新
   });
 });
 
-describe("sections(两分区)", () => {
-  it("shared 与 draft 落同一区,installed 落另一区", () => {
-    const list = [
-      view({ dirSlug: "a", relation: "shared" }),
-      view({ dirSlug: "b", relation: "draft" }),
-      view({ dirSlug: "c", relation: "installed" }),
-    ];
-
-    const secs = sections(list);
-
-    expect(secs).toHaveLength(2);
-    expect(secs[0].key).toBe("shared");
-    expect(secs[0].items.map((s) => s.dirSlug)).toEqual(["a", "b"]);
-    expect(secs[1].key).toBe("installed");
-    expect(secs[1].items.map((s) => s.dirSlug)).toEqual(["c"]);
+describe("shareableSourceKey / remoteChangedForShareable(v7 任务 7:外源有新版)", () => {
+  it("非 shareable 区一律 null(哪怕坐标齐全)", () => {
+    expect(shareableSourceKey(view({ section: "installedFrom", relation: "shared" }))).toBeNull();
   });
 
-  it("空分区不出现在结果里", () => {
-    const secs = sections([view({ relation: "installed" })]);
-    expect(secs.map((s) => s.key)).toEqual(["installed"]);
+  it("来源已移除(sourceRemoved/libraryRemoved)不给键", () => {
+    expect(
+      shareableSourceKey(
+        view({ relation: "draft", section: "shareable", sourceRemoved: true }),
+      ),
+    ).toBeNull();
+    expect(
+      shareableSourceKey(
+        view({ relation: "draft", section: "shareable", libraryRemoved: true }),
+      ),
+    ).toBeNull();
+  });
+
+  it("坐标任一段缺失(纯本地草稿,或 lock 第 3 源来的空 registryId)不给键", () => {
+    expect(
+      shareableSourceKey(
+        view({ relation: "draft", section: "shareable", registryId: "" }),
+      ),
+    ).toBeNull();
+    expect(
+      shareableSourceKey(
+        view({ relation: "draft", section: "shareable", sourceOwner: "" }),
+      ),
+    ).toBeNull();
+    expect(
+      shareableSourceKey(
+        view({ relation: "draft", section: "shareable", sourceRepo: "" }),
+      ),
+    ).toBeNull();
+  });
+
+  it("坐标齐全时给出 `registryId::owner/repo`", () => {
+    expect(
+      shareableSourceKey(
+        view({
+          relation: "draft",
+          section: "shareable",
+          registryId: "plaza",
+          sourceOwner: "vercel-labs",
+          sourceRepo: "agent-skills",
+        }),
+      ),
+    ).toBe("plaza::vercel-labs/agent-skills");
+  });
+
+  it("remoteChangedForShareable:拿到对应索引且内容不同 → true", () => {
+    const skill = view({
+      relation: "draft",
+      section: "shareable",
+      registryId: "plaza",
+      sourceOwner: "vercel-labs",
+      sourceRepo: "agent-skills",
+      contentHash: "sha256:old",
+    });
+    const indexes = new Map([
+      [
+        "plaza::vercel-labs/agent-skills",
+        {
+          registryId: "plaza",
+          owner: "vercel-labs",
+          repo: "agent-skills",
+          branch: "main",
+          commitSha: "x",
+          committedAt: "",
+          fetchedAt: 0,
+          skipped: [],
+          fromCache: false,
+          offline: false,
+          curated: [],
+          skills: [{ dirSlug: "weekly-report", contentHash: "sha256:new" } as never],
+        },
+      ],
+    ]);
+    expect(remoteChangedForShareable(skill, indexes)).toBe(true);
+  });
+
+  it("🔴 拿不到那份索引(还没抓到 / 没有外部来源)→ false,静默降级不误报", () => {
+    const skill = view({
+      relation: "draft",
+      section: "shareable",
+      registryId: "plaza",
+      sourceOwner: "vercel-labs",
+      sourceRepo: "agent-skills",
+    });
+    expect(remoteChangedForShareable(skill, new Map())).toBe(false);
+    // 纯本地草稿(没有外部来源)同样 false,不是因为查不到,而是压根没有键可查
+    expect(remoteChangedForShareable(view({ relation: "draft", section: "shareable" }), new Map())).toBe(
+      false,
+    );
+  });
+});
+
+describe("ensureShareableIndexes(v7 任务 7):每个外部来源每次会话只探一次", () => {
+  beforeEach(reset);
+
+  function shareableSkill(dirSlug: string) {
+    return view({
+      dirSlug,
+      relation: "draft",
+      section: "shareable",
+      registryId: "plaza",
+      sourceOwner: "vercel-labs",
+      sourceRepo: "agent-skills",
+    });
+  }
+
+  it("给 shareable 且有外部来源的行去探它自己的 store_index,写进 shareableIndexes", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "store_index") {
+        return {
+          registryId: "plaza",
+          owner: "vercel-labs",
+          repo: "agent-skills",
+          branch: "main",
+          commitSha: "x",
+          committedAt: "",
+          fetchedAt: 0,
+          skipped: [],
+          fromCache: false,
+          offline: false,
+          curated: [],
+          skills: [],
+        };
+      }
+      return AGENTS;
+    });
+    useMySkills.setState({ list: [shareableSkill("a")] });
+
+    await useMySkills.getState().ensureShareableIndexes();
+
+    expect(useMySkills.getState().shareableIndexes.has("plaza::vercel-labs/agent-skills")).toBe(
+      true,
+    );
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "store_index");
+    expect(call?.[1].args).toMatchObject({ registryId: "plaza", repo: "vercel-labs/agent-skills" });
+  });
+
+  it("🔴 同一个来源第二次调用不再发请求(已尝试过,即便上次失败)", async () => {
+    let calls = 0;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "store_index") {
+        calls += 1;
+        throw new Error("boom");
+      }
+      return AGENTS;
+    });
+    useMySkills.setState({ list: [shareableSkill("a"), shareableSkill("b")] });
+
+    // 两个 shareable 行指向同一个来源(同 registryId/owner/repo),应当只发一次;
+    // 失败也不阻止"已尝试"标记生效
+    await useMySkills.getState().ensureShareableIndexes();
+    expect(calls).toBe(1);
+    expect(useMySkills.getState().shareableIndexes.size).toBe(0);
+
+    // 再调一次(模拟窗口重获焦点触发的第二次 load()):不该再发请求
+    await useMySkills.getState().ensureShareableIndexes();
+    expect(calls).toBe(1);
+  });
+
+  it("非 shareable / 无外部来源的行不触发任何请求", async () => {
+    let calls = 0;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "store_index") calls += 1;
+      return AGENTS;
+    });
+    useMySkills.setState({
+      list: [
+        view({ dirSlug: "a", section: "installedFrom" }),
+        // 纯本地草稿:从没有过任何来源,三个坐标字段都是空串
+        view({
+          dirSlug: "b",
+          relation: "draft",
+          section: "shareable",
+          registryId: "",
+          sourceOwner: "",
+          sourceRepo: "",
+        }),
+      ],
+    });
+
+    await useMySkills.getState().ensureShareableIndexes();
+
+    expect(calls).toBe(0);
+  });
+});
+
+describe("updateAll(v7 任务 7:页头「全部更新」)", () => {
+  beforeEach(() => {
+    reset();
+    useStoreIndex.setState({
+      index: {
+        registryId: "company",
+        owner: "skills",
+        repo: "skills",
+        branch: "main",
+        commitSha: "x",
+        committedAt: "",
+        fetchedAt: 0,
+        skipped: [],
+        fromCache: false,
+        offline: false,
+        curated: [],
+        skills: [
+          { dirSlug: "a", contentHash: "sha256:new-a" } as never,
+          { dirSlug: "b", contentHash: "sha256:same-b" } as never,
+          { dirSlug: "c", contentHash: "sha256:new-c" } as never,
+        ],
+      },
+    });
+  });
+
+  it("只带 rowAction 判 update 的那些 dirSlug —— conflict/none 都不进批量", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_install_batch") return [];
+      if (cmd === "installed_list") return useMySkills.getState().list ?? [];
+      return AGENTS;
+    });
+    useMySkills.setState({
+      list: [
+        // a:库有新版、本地没改 → update,进批量
+        view({ dirSlug: "a", section: "installedFrom", contentHash: "sha256:old-a", agents: ["claude-code"] }),
+        // b:内容指纹相同 → none,不进批量
+        view({ dirSlug: "b", section: "installedFrom", contentHash: "sha256:same-b" }),
+        // 🔴 c:库有新版 + 本地也改过 → conflict,不进批量(注入验证抓到过这一档
+        // 单独缺失:改成裸 `hasUpdate` 过滤时,前两行的组合恰好测不出差别,
+        // 只有页面级测试的 fixture 撞上了这一档才会变红——这条补在源头)
+        view({
+          dirSlug: "c",
+          section: "installedFrom",
+          contentHash: "sha256:old-c",
+          localModified: true,
+        }),
+      ],
+    });
+
+    await useMySkills.getState().updateAll();
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_install_batch");
+    expect(call?.[1].args.dirSlugs).toEqual(["a"]);
+    expect(call?.[1].args.registryId).toBe("company");
+    expect(call?.[1].args.repo).toBe("skills/skills");
+  });
+
+  it("agentIds 是这批技能各自已启用工具的并集,不是「这台机器检测到的全部工具」", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_install_batch") return [];
+      if (cmd === "installed_list") return useMySkills.getState().list ?? [];
+      return AGENTS;
+    });
+    useMySkills.setState({
+      list: [
+        view({
+          dirSlug: "a",
+          section: "installedFrom",
+          contentHash: "sha256:old-a",
+          agents: ["claude-code", "trae"],
+        }),
+      ],
+    });
+
+    await useMySkills.getState().updateAll();
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_install_batch");
+    expect(call?.[1].args.agentIds).toEqual(["claude-code", "trae"]);
+  });
+
+  it("没有任何 update 档时不发请求", async () => {
+    let called = false;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_install_batch") called = true;
+      return AGENTS;
+    });
+    useMySkills.setState({ list: [view({ dirSlug: "b", section: "installedFrom", contentHash: "sha256:same-b" })] });
+
+    await useMySkills.getState().updateAll();
+
+    expect(called).toBe(false);
+  });
+
+  it("🔴 部分失败要收进 updateAllFailures,不能静默吞掉", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_install_batch") {
+        return [
+          { dirSlug: "a", outcome: "installed", report: {} },
+          { dirSlug: "c", outcome: "failed", error: { code: "NET_TIMEOUT", message: "网络超时" } },
+        ];
+      }
+      if (cmd === "installed_list") return useMySkills.getState().list ?? [];
+      return AGENTS;
+    });
+    useMySkills.setState({
+      list: [
+        view({ dirSlug: "a", section: "installedFrom", contentHash: "sha256:old-a" }),
+        view({ dirSlug: "c", section: "installedFrom", contentHash: "sha256:old-c" }),
+      ],
+    });
+    useStoreIndex.setState({
+      index: {
+        registryId: "company",
+        owner: "skills",
+        repo: "skills",
+        branch: "main",
+        commitSha: "x",
+        committedAt: "",
+        fetchedAt: 0,
+        skipped: [],
+        fromCache: false,
+        offline: false,
+        curated: [],
+        skills: [
+          { dirSlug: "a", contentHash: "sha256:new-a" } as never,
+          { dirSlug: "c", contentHash: "sha256:new-c" } as never,
+        ],
+      },
+    });
+
+    await useMySkills.getState().updateAll();
+
+    expect(useMySkills.getState().updateAllFailures).toEqual([
+      { dirSlug: "c", message: "网络超时" },
+    ]);
   });
 });
 

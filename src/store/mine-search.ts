@@ -28,22 +28,29 @@ export const useMineSearch = create<MineSearchState>((set) => ({
 /**
  * 「我的技能」搜索的子串匹配。
  *
- * 🔴 **只匹配 `dirSlug` 与 `sourceLabel`,不匹配"名字"/"描述"**——这两样与商店
- * 卡片(`StoreSkillCard`)不同,`InstalledSkillView` 这份 DTO 里根本没有它们
- * (它是"这台电脑上有什么"的记账视图,不是"这个技能长什么样"的展示视图)。
- * `MySkillsPage.tsx` 今天靠额外查一次 `useStoreIndex` 的索引把 `dirSlug` 换成
- * 展示名(`nameOf`),但那份索引只覆盖"当前浏览的那个技能库",覆盖不了「我的
- * 技能」列表里可能来自多个不同来源的行——拿它做搜索的匹配依据,会让搜索结果
- * 随"商店页最后开着哪个库"变来变去,是一个会漂的判据。`dirSlug` 是这份 DTO
- * 里唯一保证存在、且对用户有辨识度的字符串(公司技能库全是 ASCII kebab-case,
- * 就是调用名本身,见 `CLAUDE.md`"命名与目录"一节)。
+ * 🔴 **v7 任务 7 订正**:任务 4 当时的判断("只匹配 dirSlug/sourceLabel,不匹配
+ * 名字")留了一个真实缺陷——页面每行显示的是**展示名**
+ * (`nameOf(skill.dirSlug)`,公司库技能显示成「接口脚本生成」这类中文名),
+ * 而搜索只匹配 `dirSlug`,用户搜他在屏幕上看得见的那串字,一条都搜不到。
+ * `InstalledSkillView` 这份 DTO 本身确实没有展示名字段(它是"这台电脑上有什么"
+ * 的记账视图,不是"这个技能长什么样"的展示视图)这条观察没有错;错在解法
+ * ——不该"不匹配",该"调用方把它已经解析好的展示名传进来"。
+ *
+ * 🔴 **`displayName` 是必填参数,不是可选**:写成必填,忘了接这条搜索就过不了
+ * `tsc`,而不是留一句注释指望"调用方记得传"——本项目的既有教训是"约定会被
+ * 下一个人无声打破,类型不会"。调用方(`MySkillsPage.tsx`)按与既有 `nameOf`
+ * 相同的口径解析(`useStoreIndex().index` 查得到就用展示名,查不到退回
+ * `dirSlug` 本身——那份索引只覆盖"当前浏览的那个技能库"这条既有局限没有变,
+ * 只是不再让搜索完全放弃这个字段)。`sourceLabel` 仍然匹配,不撤销。
  */
 export function matchesMineQuery(
   skill: Pick<InstalledSkillView, "dirSlug" | "sourceLabel">,
+  displayName: string,
   query: string,
 ): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
+  if (displayName.toLowerCase().includes(q)) return true;
   if (skill.dirSlug.toLowerCase().includes(q)) return true;
   return skill.sourceLabel?.toLowerCase().includes(q) ?? false;
 }

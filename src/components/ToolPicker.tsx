@@ -77,7 +77,22 @@ export function orderForPicker(items: ToolPickerItem[]): ToolPickerItem[] {
  * 自身的 className **两种布局逐字相同**,只有外层容器与路径那一段的对齐方式
  * 随 `layout` 变化——这才是"一副骨架"的实质,
  * `ToolPicker.consistency.test.tsx` 断言的正是这一点,不是整棵 DOM 逐字相同。
+ *
+ * # `list` 档的点击命中区(v7 任务 7 修复)
+ *
+ * 🔴 修复前 `list` 档在 `<label>` 外面包了一层带 `border-t`/`px-3 py-2`/
+ * `hover:bg-surface-2` 的 `<div>`——`<label>` 关联 checkbox 的可点区域只是
+ * **它自己的盒子**,不含外层 `<div>` 的 padding,于是那圈视觉上明明在这一行里的
+ * 8–12px 边缘点不动。现在把这批 class 直接挪到 `<label>` 自己身上
+ * (`LIST_ROW_EXTRA`),外层 `<div>` 整个删掉——`<label>` 现在就是这一行唯一的
+ * 元素,点它的边框、padding、内容,哪里都能触发。**只在 `list` 档追加**,
+ * `inline` 档(chip 流)不需要这圈点击区扩展,`labelClassName` 因此按 `layout`
+ * 分叉——一致性测试相应改成"list 档 = inline 档 + `LIST_ROW_EXTRA`"的精确串
+ * 断言,不再要求两档完全相同(那从来不是这段代码想守住的东西,checkbox 与
+ * label 的基础结构仍然逐字共用,只是 list 档多了一圈自己的点击区)。
  */
+export const LIST_ROW_EXTRA = "border-t border-border px-3 py-2 first:border-t-0 hover:bg-surface-2";
+
 export function ToolPicker({
   items,
   onToggle,
@@ -120,11 +135,14 @@ export function ToolPicker({
         const labelClassName = [
           "flex items-center gap-1.5 text-[11.5px]",
           isBody || disabled ? "text-text-3" : "text-text-2",
-        ].join(" ");
+          layout === "list" ? LIST_ROW_EXTRA : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
 
-        const label = (
+        return (
           <label
-            key={layout === "list" ? undefined : item.agent}
+            key={item.agent}
             title={isBody ? t("mine.toolBodyHint") : undefined}
             className={labelClassName}
           >
@@ -156,18 +174,6 @@ export function ToolPicker({
             {item.state === "copy" && <span className="text-text-3">{t("mine.toolCopy")}</span>}
           </label>
         );
-
-        if (layout === "list") {
-          return (
-            <div
-              key={item.agent}
-              className="border-t border-border px-3 py-2 first:border-t-0 hover:bg-surface-2"
-            >
-              {label}
-            </div>
-          );
-        }
-        return label;
       })}
     </div>
   );

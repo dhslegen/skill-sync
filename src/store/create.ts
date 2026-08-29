@@ -74,8 +74,8 @@ export const useCreate = create<CreateState>((set, get) => ({
         description: form.description,
       });
       set({ phase: "done", createdPath: report.path });
-      // 新技能立刻出现在「我的技能」的「我分享的 · 尚未分享」里,列表要跟上
-      // ——不刷新的话用户看不到自己刚建的东西。
+      // 新技能立刻出现在「我的技能」的「可分享到技能库」区(v7 任务 7 起的三区
+      // 模型,主按钮是「分享」),列表要跟上——不刷新的话用户看不到自己刚建的东西。
       // (分享候选那条路已随分享页一并撤销,新建的技能靠 core 的目录扫描出现。)
       await useMySkills.getState().load();
     } catch (raw) {

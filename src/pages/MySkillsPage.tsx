@@ -1,40 +1,64 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { CreateSkillButton, CreateSkillPanel } from "@/components/CreateSkill";
 import { ProjectSections } from "@/components/ProjectSections";
 import { SkillIcon } from "@/components/SkillIcon";
-import { ToolChecks } from "@/components/ToolChecks";
-import { t, type MessageKey } from "@/i18n";
-import { relativeTimeFromIso } from "@/lib/format";
+import { SkillRowMenu, type SkillRowMenuItem } from "@/components/SkillRowMenu";
+import { t } from "@/i18n";
 import { skillReveal, type InstalledSkillView } from "@/lib/ipc";
-import { sharedState, type SharedState } from "@/lib/ownership";
+import { rowAction, type RowAction } from "@/lib/ownership";
 import { SHARE_BLOCK_LABEL } from "@/lib/share-block";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
-import { hasUpdate, localEqualsRemote, sections, useMySkills } from "@/store/my-skills";
+import { matchesMineQuery, useMineSearch } from "@/store/mine-search";
+import {
+  hasUpdate,
+  remoteChangedForShareable,
+  sections,
+  shareableCardFor,
+  updateCount,
+  useMySkills,
+} from "@/store/my-skills";
+import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
 
 /**
- * 「我的技能」页(v6 二期任务 7 重画)。
+ * 「我的技能」页(v7 任务 7 整页重画)。
  *
- * # 一行只讲三件事:一个技能,三个「在哪」
+ * # 三区 + 每行至多一颗主按钮
  *
- * 1. **这台电脑上**——`body`,本体住在哪、永不搬动。「打开文件夹」直接去那里;
- * 2. **各个工具里**——`<ToolChecks/>`,每个工具一个勾,点一下就启用/停用;
- * 3. **技能库里**——状态文案(`sharedState` 的八档)+ 一个主动作。
+ * 按公司技能库分:安装自 / 已分享到 / 可分享到(`core::ownership::Section`,
+ * v7 任务 1-4 已埋好)。每一行**只讲一句"该做什么"**——判定表在
+ * `src/lib/ownership.ts` 的 `rowAction`,十一档穷尽,`kind !== "none"` 时
+ * 摆一颗主按钮,其余能做但不是当务之急的事(打开文件夹/移除/被压过一头的
+ * 分享或更新)收进行尾的「更多」菜单(`SkillRowMenu`)。
  *
- * # 撤掉的东西,以及为什么
+ * # 不再有状态字
  *
- * - **「修复」按钮**:它缺的不是实现,是概念错了——"修复关联"这件事本身就是
- *   "在某某工具里启用它"这个勾。断链的位置现在显示成没启用,再点一次即自愈。
- * - **「N 处关联异常」徽标**:同一件事已经由勾的状态如实说了,徽标是第二遍。
- * - **「已启用:A、B」那行文字**:勾组把它讲得更清楚,而且能点。
+ * v6 二期那版每行都有一句「已同步」「库里有新版」这类状态文案——同一件事
+ * 主按钮已经说得更清楚(有更新就摆「更新」,没有就什么都不摆),状态字是
+ * 重复的第二遍。这一版整页删掉了它,连同支撑它的 `sharedState`/`SharedState`
+ * 判定(v6 二期两分区页专用,唯一消费者就是这个旧页面)。
  *
- * # 两个分区的判据仍是 core 的 `relation`
+ * # 两个页头信号
  *
- * `shared`/`draft` 归「我分享的」,`installed` 归「我安装的」——归属不靠本地
- * 记录猜测,库里的作者文件才是权威。
+ * 「N 个有更新」只数**能被「全部更新」一键处理的行**(`rowAction.kind ===
+ * "update"`,与侧栏角标 `updateCount` 同一个集合)——不含需要拍板的冲突行,
+ * 也不含「可分享到」区"外源有新版"那颗自己的更新按钮(那颗按钮走
+ * per-row `pull`,`skill_install_batch` 一次只吃一对 `registryId`/`repo`,
+ * 协议上表达不出跨源批量,见 `my-skills.ts::updateAll` 的文档)。
+ * 「M 个有改动未分享」数 `localModified === true` 且不在「可分享到」区的行
+ * ——那个区的技能本来就没有"分享给库"这件事的进度可言。
+ *
+ * # 🔴 行内不再摆工具勾组(与视觉基准对齐,不是遗漏)
+ *
+ * 设计画布的四块相关画板(`Main`/`Quiet`/`Empty`/`LoggedOut`)逐行核对过
+ * ——没有一处渲染 checkbox。v6 二期版本每行都摆一份 `ToolChecks`("各个工具里"
+ * 那一块),这一版把它整段收回详情面板:点开一行就是`一个技能,三个在哪`的完整
+ * 三块(`WhereBlocks`,v7 任务 6 已经做好),含"各个工具里"那一份可勾选的
+ * `ToolChecks`。列表行因此只回答"这一行现在该不该做点什么",不重复展示
+ * "启用到了哪些工具"这件事——那件事仍然可达,只是要点进详情看。
  */
 export function MySkillsPage() {
   const {
@@ -45,51 +69,46 @@ export function MySkillsPage() {
     agentNames,
     askRemove,
     shareChanges,
-    shareUpdate,
     shareBusy,
     shareDone,
     shareError,
-    setAgentsBusy,
     setAgentsError,
     toolFailures,
     toolFailuresFor,
     dismissToolFailures,
     beginShare,
     pull,
+    shareableIndexes,
+    updateAll,
+    updateAllBusy,
+    updateAllError,
+    updateAllFailures,
+    dismissUpdateAllFailures,
   } = useMySkills();
   const index = useStoreIndex((s) => s.index);
   const installPhase = useInstall((s) => s.phase);
   const activeSlug = useInstall((s) => s.dirSlug);
-  // 「以本地为准,分享更新」(冲突弹窗里那一条)走的是 useInstall 的
-  // keepLocalAndShareMine,结果只写进 useInstall.shareResult——而它此前唯一的
-  // 渲染点在 InstallPanel 的装完那一屏,从这一页点进去时那个面板根本不在场:
-  // 弹窗一消失就什么都没有,**分享失败也静默**。这里接到本页既有的提示位上。
   const installShareResult = useInstall((s) => s.shareResult);
-  // 🔴 **「取回 / 更新」失败此前在这一页是完全静默的**(v6 二期任务 8 补):
-  // 两个按钮走的都是 `useInstall.beginUpdate`,失败只写进 `useInstall.error`,
-  // 而它唯一的渲染点是 `InstallPanel` 的 `ErrorFooter`——从这一页点进去时那个
-  // 面板根本不在场。用户看到的是:转了一下、不转了、什么都没变、没有一个字。
-  // 与上面 `installShareResult` 是**同一处病根的另一个字段**(那一处已修)。
-  //
-  // 文案刻意是中性的「这次没能完成」而不是「没能取回」:同一份 `useInstall.error`
-  // 也可能来自商店页那次获取(用户没关掉错误就切了过来),写死一个动词就会
-  // 在那种情形下说假话。真正的原因由后面那句 core 的 message 说清楚。
   const installError = useInstall((s) => s.error);
   const installPhaseIsError = installPhase === "error";
-  // M-2:`keepError` 的**唯一**渲染点是 `VersionChooser`,而 `keepVersion` 在
-  // `set({ versionChoice: null })`(拍板框就此关掉)**之后**还要走 `load()` /
-  // `setAgents()` / `run()` 三步——那三步里任何一个改成会抛,错误就再也没人摆得出来。
-  // 当下不可达(三者都自己捕获),所以这不是修缺陷,是**把一条潜在的静默提前堵上**:
-  // 拍板框在场时它自己显示,不在场时落到这里。
   const keepError = useMySkills((s) => s.keepError);
   const versionChoiceOpen = useMySkills((s) => s.versionChoice !== null);
   const setPage = useUi((s) => s.setPage);
-  // 🔴 「打开文件夹」的失败必须有落点(R30)。`skill_reveal` 的守卫是
-  // 「必须是目录、且目录下有 SKILL.md」,而 `differs` 给的 `existing` **两条都不保证**
-  // ——占位物完全可能是一个普通文件、或一个不含 SKILL.md 的目录(`converge` 对
-  // `!target.is_dir()` 同样返回 `Differs`)。守卫会返 `FS_NOT_A_SKILL`,
-  // 而那正是这个项目有专门记忆的那一类:**前端全对却没反应**,零痕迹、最难排查。
-  // `ShareConfirm` 里的同款出口一直是把错误摆出来的,这里此前反而吞掉了。
+  const sessionStatus = useSession((s) => s.status);
+  const query = useMineSearch((s) => s.query);
+  const [tab, setTab] = useState<"general" | "projects">("general");
+
+  // 三级刷新的级别 2(切页):页面组件挂载时 load 一次。级别 1(窗口重获焦点)
+  // 与级别 3(文件监听)是 `useLocalRefresh()` 的活,全局挂在 App.tsx,这里不重复。
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // 更新流程结束后(done)刷新列表,状态才跟得上
+  useEffect(() => {
+    if (installPhase === "done") void load();
+  }, [installPhase, load]);
+
   const [revealError, setRevealError] = useState<string | null>(null);
   const revealOrExplain = (path: string) => {
     setRevealError(null);
@@ -102,19 +121,20 @@ export function MySkillsPage() {
     );
   };
 
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  // 更新流程结束后(done)刷新列表,状态才跟得上
-  useEffect(() => {
-    if (installPhase === "done") void load();
-  }, [installPhase, load]);
-
-  const nameOf = useMemo(() => {
-    const map = new Map(index?.skills.map((s) => [s.dirSlug, s.name]) ?? []);
-    return (slug: string) => map.get(slug) ?? slug;
-  }, [index]);
+  // 展示名 / 描述:安装自/已分享到走当前浏览的公司库索引(与既有 nameOf 同一个
+  // 局限——那份索引只覆盖"当前浏览的那个库",见 CLAUDE.md);可分享到且有外部
+  // 来源的行走它自己那个来源的索引(shareableIndexes,同一趟请求也用来判定
+  // 「外源有没有新版」);纯本地草稿没有数据源,展示名退回 dirSlug、描述不摆
+  // ——不编一个不存在的字段。
+  const cardOf = (skill: InstalledSkillView) =>
+    skill.section === "shareable"
+      ? shareableCardFor(skill, shareableIndexes)
+      : (index?.skills.find((s) => s.dirSlug === skill.dirSlug) ?? null);
+  const nameOf = (dirSlug: string) => {
+    const skill = list?.find((s) => s.dirSlug === dirSlug);
+    if (!skill) return index?.skills.find((s) => s.dirSlug === dirSlug)?.name ?? dirSlug;
+    return cardOf(skill)?.name ?? dirSlug;
+  };
 
   if (!list && loading) {
     return <p className="py-6 text-[12.5px] text-text-3">{t("mine.loading")}</p>;
@@ -140,546 +160,575 @@ export function MySkillsPage() {
   }
   if (!list) return null;
 
-  if (list.length === 0) {
-    return (
-      <div className="py-6">
-        <p className="text-[12.5px] text-text-2">{t("mine.empty")}</p>
-        <div className="mt-2.5 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setPage("store")}
-            className="h-7 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
-          >
-            {t("mine.emptyCta")}
-          </button>
-          {/* 空态也要有「新建技能」:一个技能都没有的人,恰恰最可能是想自己写一个 */}
-          <CreateSkillButton />
-        </div>
-        {/* 展开态是整卡宽度,必须摆在那条 flex 行**外面**(见 CreateSkill 模块头) */}
-        <div className="mt-2.5">
-          <CreateSkillPanel />
-        </div>
-      </div>
-    );
-  }
+  // 判定用**全量** list(搜索只影响展示,不影响"有没有事要做"这件事本身)
+  const secAction = (skill: InstalledSkillView): RowAction => {
+    const remoteChanged =
+      skill.section === "shareable"
+        ? remoteChangedForShareable(skill, shareableIndexes)
+        : hasUpdate(skill, index);
+    return rowAction(skill, remoteChanged);
+  };
+  const updatesCount = updateCount(list, index);
+  const unsyncedCount = list.filter(
+    (s) => s.section !== "shareable" && s.localModified,
+  ).length;
+
+  const filteredList = list.filter((s) => matchesMineQuery(s, nameOf(s.dirSlug), query));
+  const secs = sections(filteredList, secAction);
 
   return (
     <div>
-      <div className="flex items-center gap-3.5 py-2.5 text-[12.5px] text-text-2">
-        <span>{t("mine.count", { count: list.length })}</span>
-        <CreateSkillButton />
-      </div>
-      {/* 展开态是整卡宽度,必须摆在那条 flex 行**外面**(见 CreateSkill 模块头) */}
-      <CreateSkillPanel />
-      {/* 🔴 勾选的部分失败必须有渲染点:收集了不摆出来,就等于把"报错中断"换成了
-          "静默撒谎"——用户看到勾变了、以为成了,那个工具里其实什么都没发生。 */}
-      {toolFailures && (
-        <div className="mb-2 rounded-card border border-[#c0392b]/40 px-2.5 py-2 dark:border-[#e0705f]/40">
-          <p className="text-[12px] font-medium text-[#c0392b] dark:text-[#e0705f]">
-            {/* 按内容分流:全是"停下来问你"时说「需要你看一下」,
-                只要有一条是真失败就得说「没能完成」——只读标题的人不该把
-                一屏真失败当成温和的提示。 */}
-            {/* 判据是「有没有真的失败」,所以写成 `!== "differs"` 而不是列举失败档:
-                新增一档失败(终审 C-1/I-1 的 `location` 就是)时,列举式会**默认把
-                它算成温和提示**——那正是这一批修复要消灭的形状。 */}
-            {/* 🔴 v7 任务 6 修复轮 2(R19):这条横幅是全局的,用户对 A 打勾失败后
-                滚到别的技能那一行,横幅仍挂在页顶——不点名归属技能的话,读者会以为
-                说的是眼前这一行。**不能靠"没有归属就不显示"来解决**:`confirmRemove`
-                清空记账后那一行本身就从这一页消失了(见 `my-skills.ts` 模块注释,
-                这正是终审 C-1/I-1 修的那条"没删掉的东西要如实回报"),`toolFailuresFor`
-                对 remove/keepVersion 恒为 `null`——藏掉 `toolFailuresFor` 为空的
-                这条,等于把那两条修复过的失败又变回零渲染点。所以这里只**加名字**,
-                不加隐藏条件:有归属(`toolFailuresFor` 非空,只有 `setAgents` 会写)
-                就点名是哪个技能;没有归属(remove/keepVersion)照旧渲染,零回归。 */}
-            {toolFailuresFor
-              ? toolFailures.some((f) => f.kind !== "differs")
-                ? t("mine.toolsPartialFailedFor", {
-                    name: nameOf(toolFailuresFor),
-                    count: toolFailures.length,
-                  })
-                : t("mine.toolsNeedLookFor", {
-                    name: nameOf(toolFailuresFor),
-                    count: toolFailures.length,
-                  })
-              : toolFailures.some((f) => f.kind !== "differs")
-                ? t("mine.toolsPartialFailed", { count: toolFailures.length })
-                : t("mine.toolsNeedLook", { count: toolFailures.length })}
-          </p>
-          <ul className="mt-1 flex flex-col gap-1">
-            {toolFailures.map((f, i) => (
-              <li
-                key={`${f.kind === "location" ? f.path : (f.agent ?? "-")}-${i}`}
-                className="text-[11.5px] text-text-2"
-              >
-                {/* 🔴 `differs` 与真正的失败说**不同的话**:它不是"没做成",
-                    是"停下来问你"——那个位置上已经有一份内容不同的东西,
-                    core 按铁律 7 绝不覆盖。再给一个「打开文件夹」让用户去看看
-                    那是什么;没有这个出口的话,他点几次勾都只会看到勾弹回去。 */}
-                {f.kind === "differs" ? (
-                  (() => {
-                    const tool = f.agent
-                      ? (agentNames.get(f.agent) ?? f.agent)
-                      : t("mine.toolCanonical");
-                    return (
-                      <>
-                        <span>{t("mine.toolOccupied", { tool })}</span>
-                        {/* 页面上可能同时有好几个「打开文件夹」(行内的、失败框里的),
-                            可访问名一样的话屏幕阅读器与真机扫视都分不出指向哪个位置
-                            ——所以这一个带上工具名。 */}
-                        <button
-                          type="button"
-                          aria-label={t("mine.openFolderOf", { tool })}
-                          onClick={() => revealOrExplain(f.existing)}
-                          className="ml-1.5 underline decoration-dotted underline-offset-2 hover:text-text"
-                        >
-                          {t("mine.openFolder")}
-                        </button>
-                      </>
-                    );
-                  })()
-                ) : f.kind === "location" ? (
-                  /* 「留哪一份」与「移除」按**位置**报失败:没有工具名可说,那条
-                     路径就是全部信息量。等宽字体与 `VersionChooser` 摆版本路径
-                     同款——它要能被逐字符看清(UI 规范 §2)。 */
-                  <>
-                    <span className="break-all font-mono text-[11px]" title={f.path}>
-                      {f.path}
-                    </span>
+      <TabsRow tab={tab} onChange={setTab} />
+
+      {tab === "projects" ? (
+        <ProjectSections />
+      ) : list.length === 0 ? (
+        <div className="py-6">
+          <p className="text-[12.5px] text-text-2">{t("mine.empty")}</p>
+          <div className="mt-2.5 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPage("store")}
+              className="h-7 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+            >
+              {t("mine.emptyCta")}
+            </button>
+            <CreateSkillButton />
+          </div>
+          <div className="mt-2.5">
+            <CreateSkillPanel />
+          </div>
+        </div>
+      ) : (
+        <div>
+          <div className="flex items-center gap-3.5 py-2.5 text-[12.5px] text-text-2">
+            <span>{t("mine.count", { count: filteredList.length })}</span>
+            <CreateSkillButton />
+          </div>
+          <CreateSkillPanel />
+
+          {/* 🔴 勾选的部分失败必须有渲染点(见 my-skills.ts 模块头)。 */}
+          {toolFailures && (
+            <ToolFailuresBanner
+              failures={toolFailures}
+              failuresFor={toolFailuresFor}
+              agentNames={agentNames}
+              nameOf={nameOf}
+              onDismiss={dismissToolFailures}
+              onReveal={revealOrExplain}
+            />
+          )}
+          {revealError && <ErrorLine label={t("mine.openFolderFailed")} detail={revealError} />}
+          {setAgentsError && (
+            <ErrorLine
+              label={toolFailuresFor ? t("mine.toolsFailedFor", { name: nameOf(toolFailuresFor) }) : t("mine.toolsFailed")}
+              detail={setAgentsError.message}
+            />
+          )}
+          {shareError && <ErrorLine label={t("mine.shareChangesFailed")} detail={shareError.message} />}
+          {shareDone && (
+            <p className="pb-2 text-[12px] text-text-2">
+              {shareDone.mode === "pushed" ? t("mine.shareChangesDone") : t("mine.shareChangesReview")}
+            </p>
+          )}
+          {keepError && !versionChoiceOpen && (
+            <ErrorLine label={t("mine.keepFailed")} detail={keepError.message} />
+          )}
+          {installPhaseIsError && installError && activeSlug && (
+            <ErrorLine label={t("mine.pullFailed", { name: nameOf(activeSlug) })} detail={installError.message} />
+          )}
+          {installShareResult &&
+            ("error" in installShareResult ? (
+              <ErrorLine label={t("mine.shareChangesFailed")} detail={installShareResult.error.message} />
+            ) : (
+              <p className="pb-2 text-[12px] text-text-2">
+                {installShareResult.mode === "pushed" ? t("mine.shareChangesDone") : t("mine.shareChangesReview")}
+              </p>
+            ))}
+          {updateAllError && <ErrorLine label={t("mine.updateAllFailed")} detail={updateAllError.message} />}
+          {updateAllFailures && (
+            <div className="mb-2 rounded-card border border-[#c0392b]/40 px-2.5 py-2 dark:border-[#e0705f]/40">
+              <p className="text-[12px] font-medium text-[#c0392b] dark:text-[#e0705f]">
+                {t("mine.updateAllPartialFailed", { count: updateAllFailures.length })}
+              </p>
+              <ul className="mt-1 flex flex-col gap-1">
+                {updateAllFailures.map((f) => (
+                  <li key={f.dirSlug} className="text-[11.5px] text-text-2">
+                    {nameOf(f.dirSlug)}
                     {t("punct.labelSeparator")}
                     {f.message}
-                  </>
-                ) : f.agent ? (
-                  `${agentNames.get(f.agent) ?? f.agent}${t("punct.labelSeparator")}${f.message}`
-                ) : (
-                  f.message
-                )}
-              </li>
-            ))}
-          </ul>
-          <button
-            type="button"
-            onClick={dismissToolFailures}
-            className="mt-1.5 h-6 rounded-ctl border border-border px-2 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
-          >
-            {t("mine.dismiss")}
-          </button>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                onClick={dismissUpdateAllFailures}
+                className="mt-1.5 h-6 rounded-ctl border border-border px-2 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+              >
+                {t("mine.dismiss")}
+              </button>
+            </div>
+          )}
+
+          {/* 页头总览:只在"有事要做"时出现(design 的「一切正常」板完全没有这一块)。 */}
+          {(updatesCount > 0 || unsyncedCount > 0) && (
+            <div className="mb-2.5 flex items-center gap-3 rounded-card border border-border bg-surface-1 px-3.5 py-2.5">
+              <p className="flex-1 text-[12.5px] text-text-2">
+                {updatesCount > 0 && t("mine.overviewUpdates", { count: updatesCount })}
+                {updatesCount > 0 && unsyncedCount > 0 && <span className="mx-1.5">·</span>}
+                {unsyncedCount > 0 && t("mine.overviewUnsynced", { count: unsyncedCount })}
+              </p>
+              {updatesCount > 0 && (
+                <button
+                  type="button"
+                  disabled={updateAllBusy}
+                  onClick={() => void updateAll()}
+                  className="h-7 flex-none rounded-ctl bg-accent px-2.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+                >
+                  {updateAllBusy ? t("mine.updating") : t("mine.updateAll")}
+                </button>
+              )}
+            </div>
+          )}
+
+          {sessionStatus !== "signedIn" && (
+            <p className="pb-2 text-[11.5px] text-text-3">{t("mine.signedOutHint")}</p>
+          )}
+
+          {filteredList.length === 0 ? (
+            <p className="py-6 text-[12.5px] text-text-3">{t("mine.searchEmpty", { query })}</p>
+          ) : (
+            secs.map((sec) => (
+              <section key={sec.key} className="mt-3 first-of-type:mt-0">
+                <h3 className="pb-1.5 text-[11.5px] font-medium text-text-3">{sec.title}</h3>
+                <div className="overflow-hidden rounded-card border border-border bg-surface-1">
+                  {sec.items.map((skill) => {
+                    const remoteChanged =
+                      skill.section === "shareable"
+                        ? remoteChangedForShareable(skill, shareableIndexes)
+                        : hasUpdate(skill, index);
+                    return (
+                      <Row
+                        key={skill.dirSlug}
+                        skill={skill}
+                        name={nameOf(skill.dirSlug)}
+                        description={cardOf(skill)?.description ?? null}
+                        action={rowAction(skill, remoteChanged)}
+                        remoteChanged={remoteChanged}
+                        pulling={activeSlug === skill.dirSlug && installPhase === "running"}
+                        sharing={shareBusy === skill.dirSlug}
+                        onPull={() => void pull(skill.dirSlug)}
+                        onShareChanges={() => void shareChanges(skill.dirSlug)}
+                        onShare={() => beginShare(skill.dirSlug)}
+                        onRemove={() => askRemove(skill.dirSlug)}
+                        onReveal={revealOrExplain}
+                        onOpenDetail={() =>
+                          void useLocalDetail
+                            .getState()
+                            .open(skill.body ? { path: skill.body } : { dirSlug: skill.dirSlug })
+                        }
+                      />
+                    );
+                  })}
+                </div>
+              </section>
+            ))
+          )}
         </div>
       )}
-      {/* 「打开文件夹」的失败摆在页面级,不挂在失败框里:行内与「有几个版本」那两档
-          的同款按钮也走 `revealOrExplain`,挂进失败框的话它们失败时又没有渲染点了。 */}
-      {revealError && (
-        <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
-          {t("mine.openFolderFailed")}
-          {t("punct.labelSeparator")}
-          {revealError}
-        </p>
-      )}
-      {setAgentsError && (
-        <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
-          {/* setAgentsError 只由 setAgents 写(唯一写点见 my-skills.ts),
-              toolFailuresFor 与它同一次 set() 落地,理论上恒非空;
-              仍留 nameOf 缺省(退回 dirSlug 本身)防御 index 里查不到的边界情况。 */}
-          {toolFailuresFor
-            ? t("mine.toolsFailedFor", { name: nameOf(toolFailuresFor) })
-            : t("mine.toolsFailed")}
-          {t("punct.labelSeparator")}
-          {setAgentsError.message}
-        </p>
-      )}
-      {shareError && (
-        <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
-          {t("mine.shareChangesFailed")}
-          {t("punct.labelSeparator")}
-          {shareError.message}
-        </p>
-      )}
-      {shareDone && (
-        <p className="pb-2 text-[12px] text-text-2">
-          {shareDone.mode === "pushed"
-            ? t("mine.shareChangesDone")
-            : t("mine.shareChangesReview")}
-        </p>
-      )}
-      {keepError && !versionChoiceOpen && (
-        <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
-          {t("mine.keepFailed")}
-          {t("punct.labelSeparator")}
-          {keepError.message}
-        </p>
-      )}
-      {installPhaseIsError && installError && activeSlug && (
-        <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
-          {t("mine.pullFailed", { name: nameOf(activeSlug) })}
-          {t("punct.labelSeparator")}
-          {installError.message}
-        </p>
-      )}
-      {installShareResult &&
-        ("error" in installShareResult ? (
-          <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
-            {t("mine.shareChangesFailed")}
-            {t("punct.labelSeparator")}
-            {installShareResult.error.message}
-          </p>
-        ) : (
-          <p className="pb-2 text-[12px] text-text-2">
-            {installShareResult.mode === "pushed"
-              ? t("mine.shareChangesDone")
-              : t("mine.shareChangesReview")}
-          </p>
-        ))}
-      {sections(list).map((sec) => (
-        <section key={sec.key} className="mt-3 first-of-type:mt-0">
-          <h3 className="pb-1.5 text-[11.5px] font-medium text-text-3">{sec.title}</h3>
-          <div className="overflow-hidden rounded-card border border-border bg-surface-1">
-            {sec.items.map((skill) => (
-              <Row
-                key={skill.dirSlug}
-                skill={skill}
-                name={nameOf(skill.dirSlug)}
-                agentNames={agentNames}
-                state={sharedState(
-                  skill,
-                  hasUpdate(skill, index),
-                  localEqualsRemote(skill, index),
-                )}
-                busy={setAgentsBusy === skill.dirSlug}
-                pulling={activeSlug === skill.dirSlug && installPhase === "running"}
-                sharing={shareBusy === skill.dirSlug}
-                onPull={() => void pull(skill.dirSlug)}
-                onShareUpdate={() =>
-                  // 有安装基线才走得通 share_installed;没有基线的走确认屏
-                  skill.contentHash
-                    ? void shareUpdate(skill.dirSlug)
-                    : beginShare(skill.dirSlug)
-                }
-                onShareChanges={() => void shareChanges(skill.dirSlug)}
-                onShare={() => beginShare(skill.dirSlug)}
-                onUpdate={() =>
-                  // 更新带账上的来源坐标(M4 多仓):缺省会打到该源主库,
-                  // 追加库的技能就更新错了库
-                  void useInstall
-                    .getState()
-                    .beginUpdate(
-                      skill.dirSlug,
-                      skill.agents,
-                      skill.registryId,
-                      `${skill.sourceOwner}/${skill.sourceRepo}`,
-                    )
-                }
-                onRemove={() => askRemove(skill.dirSlug)}
-                onReveal={revealOrExplain}
-              />
-            ))}
-          </div>
-        </section>
-      ))}
-      {/* 第三区:装在项目里的。按项目分组,与上面两区的扁平列表结构不同,
-          所以是独立组件(数据源也不同:项目级真相在各项目自己的文件里)。 */}
-      <ProjectSections />
     </div>
   );
 }
 
-const STATE_LABEL: Record<SharedState, MessageKey> = {
-  versions: "mine.stateVersions",
-  draft: "mine.stateDraft",
-  notHere: "mine.stateNotHere",
-  differs: "mine.stateDiffers",
-  both: "mine.stateBoth",
-  localAhead: "mine.stateLocalAhead",
-  remoteAhead: "mine.stateRemoteAhead",
-  synced: "mine.stateSynced",
-};
+function TabsRow({
+  tab,
+  onChange,
+}: {
+  tab: "general" | "projects";
+  onChange: (tab: "general" | "projects") => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      className="mb-2.5 flex items-center gap-1 border-b border-border pb-2.5"
+    >
+      <TabButton active={tab === "general"} onClick={() => onChange("general")}>
+        {t("mine.tabGeneral")}
+      </TabButton>
+      <TabButton active={tab === "projects"} onClick={() => onChange("projects")}>
+        {t("mine.tabProjects")}
+      </TabButton>
+    </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={
+        active
+          ? "h-7 rounded-ctl bg-[rgba(194,65,12,.08)] px-2.5 text-[12.5px] font-[550] text-accent"
+          : "h-7 rounded-ctl px-2.5 text-[12.5px] font-[450] text-text-2 hover:text-text"
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+function ErrorLine({ label, detail }: { label: string; detail: string }) {
+  return (
+    <p className="pb-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+      {label}
+      {t("punct.labelSeparator")}
+      {detail}
+    </p>
+  );
+}
+
+/** 勾选工具的部分失败横幅(逐字沿用 v6 二期任务 6/9 的既有渲染,只是从组件正文
+ *  抽了出来,减少 MySkillsPage 正文的长度)。 */
+function ToolFailuresBanner({
+  failures,
+  failuresFor,
+  agentNames,
+  nameOf,
+  onDismiss,
+  onReveal,
+}: {
+  failures: NonNullable<ReturnType<typeof useMySkills.getState>["toolFailures"]>;
+  failuresFor: string | null;
+  agentNames: Map<string, string>;
+  nameOf: (dirSlug: string) => string;
+  onDismiss: () => void;
+  onReveal: (path: string) => void;
+}) {
+  const isRealFailure = failures.some((f) => f.kind !== "differs");
+  const title = failuresFor
+    ? isRealFailure
+      ? t("mine.toolsPartialFailedFor", { name: nameOf(failuresFor), count: failures.length })
+      : t("mine.toolsNeedLookFor", { name: nameOf(failuresFor), count: failures.length })
+    : isRealFailure
+      ? t("mine.toolsPartialFailed", { count: failures.length })
+      : t("mine.toolsNeedLook", { count: failures.length });
+
+  return (
+    <div className="mb-2 rounded-card border border-[#c0392b]/40 px-2.5 py-2 dark:border-[#e0705f]/40">
+      <p className="text-[12px] font-medium text-[#c0392b] dark:text-[#e0705f]">{title}</p>
+      <ul className="mt-1 flex flex-col gap-1">
+        {failures.map((f, i) => (
+          <li
+            key={`${f.kind === "location" ? f.path : (f.agent ?? "-")}-${i}`}
+            className="text-[11.5px] text-text-2"
+          >
+            {f.kind === "differs" ? (
+              (() => {
+                const tool = f.agent ? (agentNames.get(f.agent) ?? f.agent) : t("mine.toolCanonical");
+                return (
+                  <>
+                    <span>{t("mine.toolOccupied", { tool })}</span>
+                    <button
+                      type="button"
+                      aria-label={t("mine.openFolderOf", { tool })}
+                      onClick={() => onReveal(f.existing)}
+                      className="ml-1.5 underline decoration-dotted underline-offset-2 hover:text-text"
+                    >
+                      {t("mine.openFolder")}
+                    </button>
+                  </>
+                );
+              })()
+            ) : f.kind === "location" ? (
+              <>
+                <span className="break-all font-mono text-[11px]" title={f.path}>
+                  {f.path}
+                </span>
+                {t("punct.labelSeparator")}
+                {f.message}
+              </>
+            ) : f.agent ? (
+              `${agentNames.get(f.agent) ?? f.agent}${t("punct.labelSeparator")}${f.message}`
+            ) : (
+              f.message
+            )}
+          </li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="mt-1.5 h-6 rounded-ctl border border-border px-2 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+      >
+        {t("mine.dismiss")}
+      </button>
+    </div>
+  );
+}
 
 /**
  * 「我的技能」的一行。
  *
- * # 主动作按状态分派(每一档只摆一个,不让用户在同一行里做选择题)
+ * # 主按钮由 `rowAction.kind` 唯一决定
  *
- * | 状态 | 主动作 |
- * |---|---|
- * | `versions` | 「选择保留哪一份」——**其余动作一概不渲染** |
- * | `draft` | 「分享」(打开确认屏) |
- * | `notHere` / `remoteAhead` / `both` | 「取回」(**仅「我分享的」**) |
- * | `localAhead` | 「分享更新」(**仅「我分享的」**) |
- * | `differs` | **两个都摆**:「改用库里的版本」与「分享更新」 |
- * | `synced` | 无 |
+ * 判定表在 `src/lib/ownership.ts`;这里只管把每一档翻译成一颗按钮(或者
+ * `underReview` 那档:一句文字,没有按钮可点——审核结果不由用户这一步决定)。
+ * 🔴 **主按钮永远不带 `aria-label`**(靠自己的可见文字当可访问名),
+ * 「更多」的触发按钮永远带 `aria-label`——`MySkillsPage.test.tsx` 那条
+ * "每行至多一颗主按钮"测试按这条规则过滤,写错了测试会连带失真。
  *
- * ⚠️ **上表说的是「我分享的」那一区**。「我安装的」(`relation === "installed"`)
- * 走另一套动作,因为那些技能不是我分享的、「分享更新」对它们没有意义:
+ * # 名称区整块可点开详情,动作按钮在它外面
  *
- * | 条件 | 动作 |
- * |---|---|
- * | `remoteAhead` **或** `both` | 「更新」 |
- * | `localModified` 且来源还在 | 「分享改动」(把改动推回来源) |
- *
- * 🔴 `both` 在两区**都要有出口**:漏掉「我安装的」那一半,状态文案写着
- * 「库里有新版」、角标照样计数,而页面上一个能点的更新入口都没有。
- *
- * 🔴 **`versions` 那一档必须把其余动作全部收起来**:磁盘上有几份内容不同的实体时,
- * 「取回」「分享更新」这些动作的主语是不确定的(拿哪一份去比?去推?),
- * 摆出来就是让用户在一个没有确定答案的问题上做决定。先拍板,再谈其余。
- *
- * 🔴 **`differs` 那一档刻意两个都摆、不默认谁**:这一档没有安装基线,
- * app **确实不知道**是用户改了本地、还是别人更新了库里那一版。挑一个当主动作
- * 就是在猜,而两个方向的代价完全不对称(猜错一次就覆盖掉一边的成果)。
- * 摆两个、让用户自己看,是这里唯一诚实的做法。
- *
- * # 「移除」只在本体确实在这台电脑上时才摆
- *
- * `localPresent` 为假时本体根本不在,`skill_remove` 也没什么可移的;
- * 摆一个点了必然报错的按钮,不如不摆(项目既定取舍)。
+ * 两组按钮是**兄弟节点**,不是嵌套关系——点开详情的按钮不包含任何动作按钮,
+ * 天然不存在"点动作按钮会不会也触发详情"的冒泡问题,不需要 `stopPropagation`
+ * 这类容易被遗漏的防御。
  */
 function Row({
   skill,
   name,
-  agentNames,
-  state,
-  busy,
+  description,
+  action,
+  remoteChanged,
   pulling,
   sharing,
   onPull,
-  onShareUpdate,
   onShareChanges,
   onShare,
-  onUpdate,
   onRemove,
   onReveal,
+  onOpenDetail,
 }: {
   skill: InstalledSkillView;
   name: string;
-  agentNames: Map<string, string>;
-  state: SharedState;
-  busy: boolean;
+  description: string | null;
+  action: RowAction;
+  remoteChanged: boolean;
   pulling: boolean;
   sharing: boolean;
   onPull: () => void;
-  onShareUpdate: () => void;
   onShareChanges: () => void;
   onShare: () => void;
-  onUpdate: () => void;
   onRemove: () => void;
-  /** 「打开文件夹」。**失败要摆出来**,不能吞——见页面组件里 `revealOrExplain` 的说明。 */
   onReveal: (path: string) => void;
+  onOpenDetail: () => void;
 }) {
   const openVersions = useMySkills((s) => s.versionChoice);
   const setVersionChoice = useMySkills.setState;
-  const acquiredAt = relativeTimeFromIso(skill.updatedAt);
-  // 「我安装的」那一区讲的是"库里有没有新版",不是"我和库里谁新"——
-  // 那一区的技能不是我分享的,「分享更新」对它没有意义。
-  const isInstalled = skill.relation === "installed";
-  // 🔴 **`both` 必须和 `remoteAhead` 一样摆「更新」**(R29,修复轮 2 修的真回归)。
-  // 只判 `remoteAhead` 的话,「我安装的」技能在 `both`(本地改过 + 库里也有新版)
-  // 这一档**一个更新入口都没有**:取回按钮有 `!isInstalled` 闸、更新按钮判不到,
-  // 于是状态文案写着「库里有新版」、而页面上点不到任何东西
-  // ——正是 CLAUDE.md 记着的「角标说 3、点进去只有 1」那个缺陷(写这段注释时,
-  // 侧边栏角标走的是 v6 的 `hasUpdate` 口径,`both` 恒计入)。
-  // ⚠️ **v7 任务 4 起这句"角标照样在计数"已不成立**:`updateCount` 改用
-  // `rowAction`,`installedFrom` 区的 `both`(本地改过 + 库里有新版)判的是
-  // `conflict`,不是 `update`,角标不再计入这一档。于是眼下(任务 7 整页重写
-  // 之前)反而是**另一种**分歧:这里仍摆着「更新」按钮、状态文案仍写「库里有新版,
-  // 本地也有改动」,侧边栏角标却是 0——方向是漏报(比误报安全),
-  // 任务 7 统一两边口径后这条分歧随之消失,见 `Sidebar.tsx` 同款注释。
-  // 本地也改过时不必在这里分流:`skill_install` 的预检会返回"需要拍板",
-  // 自然落进全局挂载的 `ConflictDialog` 走三选。
-  const showUpdate = isInstalled && (state === "remoteAhead" || state === "both");
-  const showShareChanges =
-    isInstalled && skill.localModified && !skill.sourceRemoved && !skill.libraryRemoved;
-  // 🔴 **三颗分享按钮都要过这道闸**(终审 C-3)。A-2 是拍板不复议的硬规则:
-  // 「分享前按 Agent Skills 标准全量校验,不合格不让分享」。此前只有 `ShareConfirm`
-  // 读过 `shareBlocked`,而「分享更新」在有安装基线时**根本不经过那一屏**
-  // (`skill.contentHash ? shareUpdate() : beginShare()`)、「分享改动」也直接走
-  // `share_installed` —— 于是本期的旗舰场景整个漏了:在 Claude Code 里迭代时把
-  // frontmatter 改得不合标准,点一下就直推进公司技能库。
-  //
-  // 形状按 A-5 的既定三件套:**照常显示技能 + 按钮不可用 + 一句人话说清哪不合格**,
-  // 出路是行上本来就有的「打开文件夹」——用户自己改好就能分享,不给出路才是死路。
-  const shareBlocked = skill.shareBlocked;
-  const showShare = state === "draft";
-  const showShareUpdate =
-    (state === "localAhead" || state === "differs") &&
-    !skill.sourceRemoved &&
-    !skill.libraryRemoved &&
-    !isInstalled;
-  // 理由**只在这一行确实摆着分享按钮时**才说:没有分享入口的行(比如已同步的
-  // 已装技能)配上一句「分享前请补上 name」纯属噪音。摆了一颗点不动的按钮,
-  // 才欠用户一句"为什么点不动"。
-  const explainShareBlocked =
-    shareBlocked !== null && (showShare || showShareUpdate || showShareChanges);
+
+  const menuItems: SkillRowMenuItem[] = [];
+  if (skill.body) {
+    menuItems.push({ key: "reveal", label: t("mine.openFolder"), onClick: () => onReveal(skill.body) });
+  }
+  if (skill.localPresent && action.kind !== "chooseVersion") {
+    menuItems.push({ key: "remove", label: t("mine.remove"), onClick: onRemove });
+  }
+  // 被压过一头、暂时不是主按钮的动作,不会丢失,退进这里(见 RowAction 的判定表文档)。
+  if (skill.section === "shareable") {
+    if (action.kind === "shareBlocked" && remoteChanged) {
+      menuItems.push({ key: "update", label: t("mine.update"), onClick: onPull });
+    } else if (action.kind === "update") {
+      menuItems.push({ key: "share", label: t("mine.share"), onClick: onShare });
+    }
+  }
+
+  const explainShareBlocked = action.kind === "shareBlocked";
 
   return (
-    <div className="border-t border-border px-3.5 py-2.5 first:border-t-0">
+    <div data-testid={`row-${skill.dirSlug}`} className="border-t border-border px-3.5 py-2.5 first:border-t-0">
       <div className="flex items-center gap-3">
-        {/* 名称区整块可点开详情;右侧动作按钮在这块外面,不会误触 */}
         <button
           type="button"
-          onClick={() =>
-            void useLocalDetail
-              .getState()
-              // 本体不在统一目录里也要打得开:优先按本体绝对路径查
-              .open(skill.body ? { path: skill.body } : { dirSlug: skill.dirSlug })
-          }
+          data-testid={`row-${skill.dirSlug}-body`}
+          // 🔴 必须带 aria-label,不能靠可见文字(名字)当可访问名:
+          // 屏幕阅读器用户点一个只念得出技能名字的按钮,分不清它是"打开详情"
+          // 还是别的动作。这也是"每行至多一颗**不带 aria-label** 的按钮"这条
+          // 测试契约的另一半——主按钮靠可见文字当可访问名,这颗靠 aria-label,
+          // 两者不能都不带、也不能都带,否则那条测试数不出"恰好一颗主按钮"。
+          aria-label={t("mine.openDetail", { name })}
+          onClick={onOpenDetail}
           className="group flex min-w-0 flex-1 items-center gap-3 text-left"
         >
           <SkillIcon name={name} className="size-[26px] rounded-[6px] text-[12px]" />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="truncate text-[13px] font-[550] group-hover:text-accent">
-                {name}
-              </span>
+              <span className="truncate text-[13px] font-[550] group-hover:text-accent">{name}</span>
               {skill.sourceRemoved && (
-                <Badge title={t("mine.badgeSourceRemovedHint")}>
-                  {t("mine.badgeSourceRemoved")}
-                </Badge>
+                <Badge title={t("mine.badgeSourceRemovedHint")}>{t("mine.badgeSourceRemoved")}</Badge>
               )}
               {skill.libraryRemoved && (
-                <Badge title={t("mine.badgeLibraryRemovedHint")}>
-                  {t("mine.badgeLibraryRemoved")}
-                </Badge>
+                <Badge title={t("mine.badgeLibraryRemovedHint")}>{t("mine.badgeLibraryRemoved")}</Badge>
               )}
             </div>
-            <div className="mt-0.5 flex items-center gap-2 text-[11.5px] text-text-3">
-              <span>{t(STATE_LABEL[state])}</span>
-              {skill.sourceLabel && (
-                <>
-                  <span>·</span>
-                  <span>{t("mine.sourceLabel", { label: skill.sourceLabel })}</span>
-                </>
-              )}
-              {acquiredAt && (
-                <>
-                  <span>·</span>
-                  <span>{t("mine.acquiredAt", { when: acquiredAt })}</span>
-                </>
-              )}
-            </div>
+            {skill.section === "shareable" && skill.sourceLabel && (
+              <div className="mt-0.5 truncate text-[11px] text-text-3">
+                {t("mine.sourceLabel", { label: skill.sourceLabel })}
+              </div>
+            )}
+            {description && <div className="mt-0.5 truncate text-[11.5px] text-text-3">{description}</div>}
           </div>
         </button>
 
         <div className="flex flex-none items-center gap-1.5">
-          {state === "versions" ? (
-            <button
-              type="button"
-              onClick={() =>
-                setVersionChoice({
-                  versionChoice: { dirSlug: skill.dirSlug, versions: skill.versions },
-                  keepError: null,
-                })
-              }
-              disabled={openVersions !== null}
-              className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
-            >
-              {t("mine.chooseVersion")}
-            </button>
-          ) : (
-            <>
-              {showShare && (
-                <button
-                  type="button"
-                  disabled={shareBlocked !== null}
-                  onClick={onShare}
-                  className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
-                >
-                  {t("mine.share")}
-                </button>
-              )}
-              {(state === "notHere" || state === "remoteAhead" || state === "both") &&
-                !isInstalled && (
-                  <button
-                    type="button"
-                    disabled={pulling}
-                    onClick={onPull}
-                    className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
-                  >
-                    {pulling ? t("mine.pulling") : t("mine.pull")}
-                  </button>
-                )}
-              {/* differs:两个方向都摆,不默认谁——见组件文档 */}
-              {state === "differs" && (
-                <button
-                  type="button"
-                  disabled={pulling}
-                  onClick={onPull}
-                  title={t("mine.useLibraryConfirm")}
-                  className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50"
-                >
-                  {pulling ? t("mine.pulling") : t("mine.useLibrary")}
-                </button>
-              )}
-              {showShareUpdate && (
-                  <button
-                    type="button"
-                    disabled={sharing || shareBlocked !== null}
-                    onClick={onShareUpdate}
-                    className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
-                  >
-                    {sharing ? t("mine.sharingChanges") : t("mine.shareUpdate")}
-                  </button>
-                )}
-              {showShareChanges && (
-                <button
-                  type="button"
-                  disabled={sharing || shareBlocked !== null}
-                  onClick={onShareChanges}
-                  className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50"
-                >
-                  {sharing ? t("mine.sharingChanges") : t("mine.shareChanges")}
-                </button>
-              )}
-              {showUpdate && (
-                <button
-                  type="button"
-                  disabled={pulling}
-                  onClick={onUpdate}
-                  className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
-                >
-                  {pulling ? t("mine.updating") : t("mine.update")}
-                </button>
-              )}
-            </>
-          )}
-          {/* 「打开文件夹」在每一档都摆(含 versions):它是只读动作,而且恰恰是
-              用户拍板/改名/改 SKILL.md 时最需要的那个出口。本体不在就没有目标。 */}
-          {skill.body && (
-            <button
-              type="button"
-              onClick={() => onReveal(skill.body)}
-              className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
-            >
-              {t("mine.openFolder")}
-            </button>
-          )}
-          {state !== "versions" && skill.localPresent && (
-            <button
-              type="button"
-              onClick={onRemove}
-              className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
-            >
-              {t("mine.remove")}
-            </button>
-          )}
+          <PrimaryAction
+            action={action}
+            pulling={pulling}
+            sharing={sharing}
+            openVersions={openVersions !== null}
+            onPull={onPull}
+            onShareChanges={onShareChanges}
+            onShare={onShare}
+            onChooseVersion={() =>
+              setVersionChoice({
+                versionChoice: { dirSlug: skill.dirSlug, versions: skill.versions },
+                keepError: null,
+              })
+            }
+          />
+          <SkillRowMenu items={menuItems} />
         </div>
       </div>
 
-      {/* 「为什么分享按钮点不动」(A-5:显示 + 说明 + 出口)。出口是上面那颗
-          「打开文件夹」,不另摆第二个——同一行两个同名按钮反而分不清指向哪里。 */}
-      {explainShareBlocked && shareBlocked && (
+      {explainShareBlocked && action.kind === "shareBlocked" && (
         <p className="mt-1.5 rounded-card border border-[#b8860b]/40 px-2.5 py-1.5 text-[11.5px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
-          {t(SHARE_BLOCK_LABEL[shareBlocked])}
+          {t(SHARE_BLOCK_LABEL[action.reason])}
         </p>
       )}
-
-      {/* 「各个工具里」。versions 那一档不摆:还没决定留哪份,"启用哪一份"无从谈起。 */}
-      {state !== "versions" && skill.localPresent && (
-        <ToolChecks
-          dirSlug={skill.dirSlug}
-          tools={skill.tools}
-          agentNames={agentNames}
-          disabled={busy}
-        />
-      )}
     </div>
+  );
+}
+
+/** 每一档 `RowAction.kind` 翻成一颗按钮(或者一句没有按钮的话)。 */
+function PrimaryAction({
+  action,
+  pulling,
+  sharing,
+  openVersions,
+  onPull,
+  onShareChanges,
+  onShare,
+  onChooseVersion,
+}: {
+  action: RowAction;
+  pulling: boolean;
+  sharing: boolean;
+  openVersions: boolean;
+  onPull: () => void;
+  onShareChanges: () => void;
+  onShare: () => void;
+  onChooseVersion: () => void;
+}) {
+  switch (action.kind) {
+    case "none":
+      return null;
+    case "chooseVersion":
+      return (
+        <SolidButton disabled={openVersions} onClick={onChooseVersion}>
+          {t("mine.chooseVersion")}
+        </SolidButton>
+      );
+    case "pull":
+      return (
+        <SolidButton disabled={pulling} onClick={onPull}>
+          {pulling ? t("mine.pulling") : t("mine.pull")}
+        </SolidButton>
+      );
+    case "update":
+      return (
+        <SolidButton disabled={pulling} onClick={onPull}>
+          {pulling ? t("mine.updating") : t("mine.update")}
+        </SolidButton>
+      );
+    case "conflict":
+      // 浅色文字链形态:这一档不是"点了就做完",是"点了会先问你"。
+      return (
+        <button
+          type="button"
+          disabled={pulling}
+          onClick={onPull}
+          className="h-6 rounded-ctl px-1.5 text-[11.5px] font-medium text-text-2 underline decoration-dotted underline-offset-2 hover:text-text disabled:opacity-50"
+        >
+          {pulling ? t("mine.updating") : t("mine.conflictPending")}
+        </button>
+      );
+    case "contribute":
+      return (
+        <OutlineButton disabled={sharing} onClick={onShareChanges}>
+          {sharing ? t("mine.contributing") : t("mine.contribute")}
+        </OutlineButton>
+      );
+    case "shareChanges":
+      return (
+        <OutlineButton disabled={sharing} onClick={onShareChanges}>
+          {sharing ? t("mine.sharingChanges") : t("mine.shareChanges")}
+        </OutlineButton>
+      );
+    case "share":
+      return (
+        <SolidButton disabled={sharing} onClick={onShare}>
+          {t("mine.share")}
+        </SolidButton>
+      );
+    case "shareBlocked":
+      return (
+        <SolidButton disabled onClick={() => {}}>
+          {t("mine.share")}
+        </SolidButton>
+      );
+    case "underReview":
+      return <span className="px-1.5 text-[11.5px] text-text-3">{t("detail.whereReviewPending")}</span>;
+  }
+}
+
+function SolidButton({
+  disabled,
+  onClick,
+  children,
+}: {
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+    >
+      {children}
+    </button>
+  );
+}
+
+function OutlineButton({
+  disabled,
+  onClick,
+  children,
+}: {
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50"
+    >
+      {children}
+    </button>
   );
 }
 

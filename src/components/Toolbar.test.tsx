@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Toolbar } from "./Toolbar";
+import { useMineSearch } from "@/store/mine-search";
 import { usePlaza } from "@/store/plaza";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
@@ -18,6 +19,7 @@ function reset() {
   useStoreIndex.setState({ activeRegistry: "company", activeRepo: null, query: "", status: "ready" });
   usePlaza.setState({ query: "", submittedQuery: "", status: "idle", results: [], error: null });
   usePlaza.setState({ submitSearch: realSubmitSearch });
+  useMineSearch.setState({ query: "" });
 }
 
 describe("Toolbar 搜索框在技能广场搜索态的接线(M9 任务 5)", () => {
@@ -122,5 +124,34 @@ describe("Toolbar 搜索框在技能广场搜索态的接线(M9 任务 5)", () =
     render(<Toolbar />);
     const refresh = screen.getByRole("button", { name: "重新获取" });
     expect(refresh.querySelector("svg")?.getAttribute("class")).toContain("animate-spin");
+  });
+});
+
+describe("Toolbar 的「我的技能」页搜索框(v7 任务 7)", () => {
+  beforeEach(reset);
+
+  it("「我的技能」页也渲染搜索框(brief DoD)", () => {
+    useUi.setState({ page: "mine" });
+    render(<Toolbar />);
+    expect(screen.getByPlaceholderText(/搜索/)).toBeInTheDocument();
+  });
+
+  it("输入进 useMineSearch,不碰商店/广场的 query", () => {
+    useUi.setState({ page: "mine" });
+    render(<Toolbar />);
+    fireEvent.change(screen.getByTestId("store-search"), { target: { value: "周报" } });
+    expect(useMineSearch.getState().query).toBe("周报");
+    expect(useStoreIndex.getState().query).toBe("");
+    expect(usePlaza.getState().query).toBe("");
+  });
+
+  it("回车没有额外副作用(纯本地过滤,不传 onSubmit)", () => {
+    useUi.setState({ page: "mine" });
+    render(<Toolbar />);
+    const input = screen.getByTestId("store-search");
+    fireEvent.change(input, { target: { value: "周报" } });
+    // 不抛错、不改变任何其他 store 的状态即为通过
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(useMineSearch.getState().query).toBe("周报");
   });
 });

@@ -1,9 +1,10 @@
-// 「我的技能」页的状态(v6 二期任务 7 重写)。
+// 「我的技能」页的状态(v6 二期任务 7 重写;v7 任务 7 三区重画)。
 //
 // # 这一页现在只讲三件事:一个技能,三个「在哪」
 //
 // 这台电脑上(`body`,本体住在哪、永不搬动)/ 各个工具里(`tools`,每个工具一个勾)/
-// 技能库里(`relation` + `sharedState` 的状态文案)。
+// 技能库里(按公司技能库分的三区:安装自 / 已分享到 / 可分享到,见下面的
+// `sections`/`rowAction`)。
 // 「链接」「关联」「修复关联」「收编」「记账」「占位」这些实现层的词整体从产品层消失
 // ——它们说的是 app 怎么做到的,而用户要知道的只是东西在不在、能不能用、一不一样。
 //
@@ -28,12 +29,15 @@ import {
   agentsDetected,
   installedList,
   isAppError,
+  skillInstallBatch,
   skillKeepVersion,
   skillRemove,
   skillSetAgents,
   skillShare,
   skillShareChanges,
+  storeIndex,
   type AppError,
+  type BatchItem,
   type InstalledSkillView,
   type Converged,
   type KeepReport,
@@ -42,6 +46,7 @@ import {
   type SetAgentsOutcome,
   type ShareMode,
   type SkillVersion,
+  type StoreIndexView,
   type ToolView,
   type UninstallReport,
 } from "@/lib/ipc";
@@ -171,6 +176,51 @@ interface MySkillsState {
    * 等用户拍板:提交审核 / 先不动。没有「强行覆盖」——覆盖别人的成果不该是一个按钮。
    */
   shareConflict: { dirSlug: string; historyUrl: string | null } | null;
+
+  /**
+   * 「可分享到」区里,有外部来源(GitHub/plaza/自定义源,不是公司库)的行——
+   * 它自己那个来源的索引(v7 任务 7)。键是 {@link shareableSourceKey}。
+   *
+   * 🔴 **每个来源每次会话只取一次**,不在 `load()` 每次调用时都探:
+   * `useLocalRefresh` 让这一页在窗口每次重获焦点时都 `load()`,`storeIndex`
+   * 即便命中服务端缓存也要探一次 `branch_head`——plaza 源就是一次 GitHub 匿名
+   * 请求(配额 60 次/时,M9 刻意不记 head sha 就是为了省它)。装了几个广场技能、
+   * 爱切窗口的用户会把配额烧穿,连广场浏览一起废掉。见 {@link ensureShareableIndexes}。
+   */
+  shareableIndexes: Map<string, StoreIndexView>;
+  /** 本次会话已经尝试过的 {@link shareableSourceKey}(成功或失败都算)——即使
+   *  失败也不重试,失败的后果只是那一行的「外源有没有新版」答不上来(见下)。 */
+  shareableIndexesAttempted: Set<string>;
+  /**
+   * 给 `list` 里「可分享到」且有外部来源的行,各自去探一次自己来源的索引。
+   *
+   * 🔴 **单个来源探测失败一律静默降级**:那一行仍然主动作是「分享」,不摆错误
+   * 横幅——这是刻意的**漏报不误报**,与 `hasUpdate`/`WhereBlocks` 的
+   * `LibraryBlock`"拿不准就不摆"是同一档既定取舍,不是没处理异常。
+   *
+   * 🔴 **绝不顺手挂仓**:plaza 源没挂过的仓,`storeIndex` 会报
+   * `REPO_UNKNOWN_REPO`——同样归入静默降级,**不会**去调
+   * `plaza_ensure_repo`/`plazaEnsureRepo`。挂仓只属于"用户按下了装"这个动作
+   * (`plaza_ensure_repo`/`project_skill_install` 两处,见 `CLAUDE.md`),
+   * 翻开「我的技能」页看一眼不该有这个副作用。
+   */
+  ensureShareableIndexes: () => Promise<void>;
+
+  /** 「全部更新」批量结果的正在跑 / 部分失败(v7 任务 7 页头总览)。 */
+  updateAllBusy: boolean;
+  updateAllError: AppError | null;
+  updateAllFailures: { dirSlug: string; message: string }[] | null;
+  /**
+   * 页头「全部更新」。**只覆盖公司库 index 的 `hasUpdate` 判「有更新」的行**
+   * (`rowAction(..).kind === "update"`)——`shareable` 区"外源有新版"的行
+   * 也摆着自己的「更新」按钮,但那颗按钮走的是 per-row `pull`,不进这个批量:
+   * `skill_install_batch` 一次只收一对 `registryId`/`repo`,`shareable` 行
+   * 各自可能来自不同的外部源,批量 IPC 在协议上就表达不出"跨源批量"。
+   * 这条分歧写在这里,不是遗漏——页头计数、侧栏角标、这个函数三者故意
+   * 用同一个集合(见 `updateCount` 与页面里的 `updatableCount`)。
+   */
+  updateAll: () => Promise<void>;
+  dismissUpdateAllFailures: () => void;
 
   load: () => Promise<void>;
 
@@ -373,12 +423,20 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   shareDone: null,
   shareError: null,
   shareConflict: null,
+  shareableIndexes: new Map(),
+  shareableIndexesAttempted: new Set(),
+  updateAllBusy: false,
+  updateAllError: null,
+  updateAllFailures: null,
 
   load: async () => {
     set({ loading: true, loadError: null });
     try {
       const list = await installedList();
       set({ list, loading: false });
+      // 不 await:探外部来源是这一页的锦上添花(「外源有新版」那颗按钮),
+      // 不该让整页的"读到列表"晚于它。见 ensureShareableIndexes 的静默降级说明。
+      void get().ensureShareableIndexes();
     } catch (raw) {
       // 读不到就说读不到,保留上次的列表;绝不把失败画成"你还没装任何技能"
       set({ loadError: toAppError(raw), loading: false });
@@ -598,6 +656,72 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   },
 
   cancelShareConflict: () => set({ shareConflict: null }),
+
+  ensureShareableIndexes: async () => {
+    const list = get().list ?? [];
+    const attempted = get().shareableIndexesAttempted;
+    const targets = new Map<string, { registryId: string; owner: string; repo: string }>();
+    for (const skill of list) {
+      const key = shareableSourceKey(skill);
+      if (key && !attempted.has(key)) {
+        targets.set(key, { registryId: skill.registryId, owner: skill.sourceOwner, repo: skill.sourceRepo });
+      }
+    }
+    if (targets.size === 0) return;
+    // 先标记为"已尝试"再发请求:并发的 load()(窗口重获焦点)不会对同一个来源
+    // 重复发起探测——即便这一轮还没回来,下一轮 ensureShareableIndexes 也会
+    // 因为 attempted 已经含有这些键而跳过它们。
+    set({ shareableIndexesAttempted: new Set([...attempted, ...targets.keys()]) });
+    await Promise.all(
+      [...targets].map(async ([key, { registryId, owner, repo }]) => {
+        try {
+          const index = await storeIndex(false, registryId, `${owner}/${repo}`);
+          set({ shareableIndexes: new Map(get().shareableIndexes).set(key, index) });
+        } catch {
+          // 静默降级(见字段文档):这一档"外源有没有新版"答不上来,主按钮仍是
+          // 「分享」,不摆错误横幅——宁可漏报,不为一次锦上添花的探测打扰用户。
+        }
+      }),
+    );
+  },
+
+  updateAll: async () => {
+    const { list } = get();
+    const index = useStoreIndex.getState().index;
+    if (!list || !index) return;
+    const targets = list.filter((s) => rowAction(s, hasUpdate(s, index)).kind === "update");
+    if (targets.length === 0) return;
+    const dirSlugs = targets.map((s) => s.dirSlug);
+    // 批量 IPC 只吃一份统一的 agentIds(BatchAgents::Uniform,core 侧硬编码,
+    // 见 skill_install_batch 的实现)——「全部更新」不该趁机悄悄改变某个技能
+    // 启用到了哪些工具,所以取这批技能各自已经启用过的工具的**并集**,
+    // 不用"这台机器检测到的全部工具"(那是 Wizard 首次安装那一套"全选"语义,
+    // 搬到更新动作上会凭空新增关联)。并集意味着某个技能可能因此多出一个
+    // 它本来没有的工具(如果同批里另一个技能启用了它)——这是并集写法本身的
+    // 已知局限,比"重置成系统全部工具"更接近用户原意,不是完美解。
+    const agentIds = [...new Set(targets.flatMap((s) => s.agents))];
+    set({ updateAllBusy: true, updateAllError: null, updateAllFailures: null });
+    try {
+      const results = await skillInstallBatch({
+        dirSlugs,
+        agentIds,
+        registryId: index.registryId,
+        repo: `${index.owner}/${index.repo}`,
+      });
+      const failures = results
+        .filter((r): r is BatchItem & { outcome: "failed" } => r.outcome === "failed")
+        .map((r) => ({ dirSlug: r.dirSlug, message: r.error.message }));
+      set({ updateAllFailures: failures.length > 0 ? failures : null });
+      await get().load();
+      await useInstall.getState().refreshInstalled();
+    } catch (raw) {
+      set({ updateAllError: toAppError(raw) });
+    } finally {
+      set({ updateAllBusy: false });
+    }
+  },
+
+  dismissUpdateAllFailures: () => set({ updateAllFailures: null, updateAllError: null }),
 }));
 
 async function runShareChanges(
@@ -633,6 +757,25 @@ async function runShareChanges(
   }
 }
 
+/** `hasUpdate` 与 `remoteChangedForShareable` 共用的坐标 + 内容指纹比对
+ *  ——两者的差别只在"喂哪份索引",判据本身只有这一处实现。 */
+function remoteContentDiffers(
+  skill: Pick<InstalledSkillView, "registryId" | "sourceOwner" | "sourceRepo" | "dirSlug" | "contentHash">,
+  index: { registryId: string; owner: string; repo: string; skills: { dirSlug: string; contentHash: string }[] },
+): boolean {
+  if (
+    skill.registryId !== index.registryId ||
+    skill.sourceOwner !== index.owner ||
+    skill.sourceRepo !== index.repo
+  ) {
+    return false;
+  }
+  const remote = remoteHashOf(index, skill.dirSlug);
+  // 拿不到任一侧的指纹就说"没有更新":宁可漏报,也不能凭空催所有人去更新
+  if (!remote || !skill.contentHash) return false;
+  return remote !== skill.contentHash;
+}
+
 /**
  * 与商店页同口径:**逐技能**比内容指纹。
  *
@@ -645,6 +788,11 @@ async function runShareChanges(
  * (M4 任务 1)同一个源下有多份索引,商店切到设计部技能库时它的内容说明不了
  * 主库装的技能;两库有同名技能时按源比会直接比出错误结论。
  * 来源已移除的技能没有更新去处,永不亮"有新版本"。
+ *
+ * 🔴 **`relation === "draft"` 恒 `false`**:这个函数比的是**当前浏览的公司
+ * 技能库**索引,而 draft(v7 的 `shareable` 区)行的"真正来源"可能是它自己的
+ * 外部源——那件事由 {@link remoteChangedForShareable} 另外回答(喂一份不同的
+ * 索引,复用同一套 `remoteContentDiffers`,不是重新发明判定)。
  */
 export function hasUpdate(
   skill: InstalledSkillView,
@@ -663,44 +811,67 @@ export function hasUpdate(
   // 草稿压根没有来源,同理——**显式判掉,不靠"空串恰好对不上 index"碰运气**。
   if (!index || skill.sourceRemoved || skill.libraryRemoved) return false;
   if (skill.relation === "draft") return false;
-  if (
-    skill.registryId !== index.registryId ||
-    skill.sourceOwner !== index.owner ||
-    skill.sourceRepo !== index.repo
-  ) {
-    return false;
-  }
-  const remote = remoteHashOf(index, skill.dirSlug);
-  // 拿不到任一侧的指纹就说"没有更新":宁可漏报,也不能凭空催所有人去更新
-  if (!remote || !skill.contentHash) return false;
-  return remote !== skill.contentHash;
+  return remoteContentDiffers(skill, index);
 }
 
 /**
- * 「本体此刻的内容」与「库里那一版」一不一样(v6 二期任务 7)。
+ * 「可分享到」区,有外部来源(不是公司库)的行,它自己那个来源有没有新版
+ * (v7 任务 7)。
  *
- * 这是**没有安装基线那一档**唯一能问的问题:两方直接比指纹,不需要"安装那一刻
- * 长什么样"这个中间量。`sharedState` 的第 4 档吃它。
+ * `hasUpdate` 对 `relation === "draft"` 恒返回 `false`——它比的是**当前浏览的
+ * 那个公司技能库**索引,而这一档行的"真正来源"是它自己的外部源(GitHub/plaza/
+ * 自定义源),不是公司库。这里换一份索引(那个来源自己的,来自
+ * {@link MySkillsState.shareableIndexes}),复用同一套 `remoteContentDiffers`,
+ * 不重新发明判定。
  *
- * 🔴 **任一侧指纹缺失一律返回 `null`,不返回 `false` 也不让空串相等冒充 `true`**:
- * `"" === ""` 会把"两边都读不出来"判成"已同步",那是编的。`null` 在
- * `sharedState` 里落进 `differs`——两个动作都摆、不默认谁,是诚实的降级。
+ * 🔴 拿不到那份索引(还没抓到 / 抓失败 / 没有外部来源)时返回 `false`:
+ * 这是刻意的**漏报不误报**,主按钮仍是「分享」、不摆错误横幅——与
+ * `hasUpdate`/`WhereBlocks` 的 `LibraryBlock`"拿不准就不摆"是同一档既定取舍。
  */
-export function localEqualsRemote(
+export function remoteChangedForShareable(
   skill: InstalledSkillView,
-  index: Parameters<typeof hasUpdate>[1],
-): boolean | null {
-  if (!index) return null;
-  if (
-    skill.registryId !== index.registryId ||
-    skill.sourceOwner !== index.owner ||
-    skill.sourceRepo !== index.repo
-  ) {
-    return null;
-  }
-  const remote = remoteHashOf(index, skill.dirSlug);
-  if (!remote || !skill.localHash) return null;
-  return remote === skill.localHash;
+  shareableIndexes: Map<string, StoreIndexView>,
+): boolean {
+  const key = shareableSourceKey(skill);
+  if (!key) return false;
+  const index = shareableIndexes.get(key);
+  if (!index) return false;
+  return remoteContentDiffers(skill, index);
+}
+
+/**
+ * `shareable` 区里"这一行有没有一个值得去探的外部来源"的判据 + 探测用的键
+ * (`{@link MySkillsState.shareableIndexes}` 的键)。
+ *
+ * 只对 `section === "shareable"` 判;来源已不可用(`sourceRemoved`/
+ * `libraryRemoved`)或坐标任一段缺失(纯本地草稿,或 lock 第 3 源来的行
+ * `registryId` 是空串)时返回 `null` —— 没有坐标就没有索引可探。
+ */
+export function shareableSourceKey(
+  skill: Pick<
+    InstalledSkillView,
+    "section" | "registryId" | "sourceOwner" | "sourceRepo" | "sourceRemoved" | "libraryRemoved"
+  >,
+): string | null {
+  if (skill.section !== "shareable") return null;
+  if (skill.sourceRemoved || skill.libraryRemoved) return null;
+  if (!skill.registryId || !skill.sourceOwner || !skill.sourceRepo) return null;
+  return `${skill.registryId}::${skill.sourceOwner}/${skill.sourceRepo}`;
+}
+
+/**
+ * `shareable` 区、有外部来源的行,从它自己来源的索引里取回展示用的卡片
+ * (名字/描述——`InstalledSkillView` 本身没有这两个字段)。取不到就是
+ * `null`,调用方按"这一行没有可展示的名字/描述"处理,不编。
+ */
+export function shareableCardFor(
+  skill: InstalledSkillView,
+  shareableIndexes: Map<string, StoreIndexView>,
+) {
+  const key = shareableSourceKey(skill);
+  if (!key) return null;
+  const index = shareableIndexes.get(key);
+  return index?.skills.find((s) => s.dirSlug === skill.dirSlug) ?? null;
 }
 
 /**
@@ -726,47 +897,15 @@ export function updateCount(
     .length;
 }
 
+// ---------------------------------------------------------------------------
+// v7 任务 7:「我的技能」重设计的三区(按公司技能库分:安装自 / 已分享到 /
+// 可分享到),取代 v6 任务 4 的两分区(「我分享的」/「我安装的」)。旧实现与
+// `MySkillsPage.tsx` 的旧页面一起删除(唯一消费者),这一套顺势改回原名
+// `sections`/`MySkillsSection`——任务 4 当时因为占名叫 `librarySections`/
+// `LibrarySection`,这里是那条"任务 7 重写整页时顺手改回来"的承诺的执行。
+// ---------------------------------------------------------------------------
+
 export interface MySkillsSection {
-  key: "shared" | "installed";
-  title: string;
-  items: InstalledSkillView[];
-}
-
-/**
- * 「我的技能」页的两分区(v6 任务 4)。
- *
- * `relation === "draft"` 归并进「我分享的」——它是"还没分享出去的草稿",
- * 与"库里记的分享者是我"共享同一个心智:这两档都是"这是我的技能",
- * 只是有没有已经进库的区别,分区标题即区分,不需要再拆一档。
- * 空分区被滤掉,调用方不用再判。
- */
-export function sections(list: InstalledSkillView[]): MySkillsSection[] {
-  const all: MySkillsSection[] = [
-    {
-      key: "shared",
-      title: t("mine.sectionShared"),
-      items: list.filter((s) => s.relation === "shared" || s.relation === "draft"),
-    },
-    {
-      key: "installed",
-      title: t("mine.sectionInstalled"),
-      items: list.filter((s) => s.relation === "installed"),
-    },
-  ];
-  return all.filter((sec) => sec.items.length > 0);
-}
-
-// ---------------------------------------------------------------------------
-// v7:「我的技能」重设计的三区(按公司技能库分:安装自 / 已分享到 / 可分享到)。
-//
-// 🔴 **按 R1 裁定,本任务不删上面的两分区 `sections`/`MySkillsSection`**
-// ——`MySkillsPage.tsx:306` 至今仍在调用它(v6 二期的旧页面)。两套实现同名会撞,
-// 所以新的这一套改叫 `librarySections`/`LibrarySection`,任务 7 重写整页时把
-// 旧的删掉、把这一套的调用方接上、也可以顺手把名字改回 brief 给的
-// `sections`/`MySkillsSection`(那时旧实现的唯一消费者已经不存在了)。
-// ---------------------------------------------------------------------------
-
-export interface LibrarySection {
   key: Section;
   title: string;
   items: InstalledSkillView[];
@@ -774,14 +913,14 @@ export interface LibrarySection {
 
 /** 三区固定顺序(design 根决策 #2,用户拍板的理由:"原创必然少于安装;
  *  从商店跳过来的心流是先看装了些啥")。 */
-const LIBRARY_SECTION_TITLES: { key: Section; title: MessageKey }[] = [
+const SECTION_TITLES: { key: Section; title: MessageKey }[] = [
   { key: "installedFrom", title: "mine.sectionInstalledFrom" },
   { key: "sharedTo", title: "mine.sectionSharedTo" },
   { key: "shareable", title: "mine.sectionShareable" },
 ];
 
 /**
- * 「我的技能」v7 三区(按公司技能库分,取代上面的两分区)。
+ * 「我的技能」v7 三区(按公司技能库分)。
  *
  * 顺序固定:安装自 → 已分享到 → 可分享到,空区不出现(调用方不用再判)。
  *
@@ -794,19 +933,19 @@ const LIBRARY_SECTION_TITLES: { key: Section; title: MessageKey }[] = [
  * 排,但"置顶"那一组若不给出一个确定顺序,同一份数据在两次渲染之间就可能跳动
  * ——用同一把尺子排序,而不是留一个未定义的相对顺序)。
  */
-export function librarySections(
+export function sections(
   list: InstalledSkillView[],
   action: (skill: InstalledSkillView) => RowAction,
-): LibrarySection[] {
+): MySkillsSection[] {
   const byName = (a: InstalledSkillView, b: InstalledSkillView) =>
     a.dirSlug.localeCompare(b.dirSlug);
-  // `action` 每行只算一次,在三个分区之外算好(M4 复审建议):任务 7 传的 action
+  // `action` 每行只算一次,在三个分区之外算好(M4 复审建议):调用方传的 action
   // 很可能是"部分应用了 remoteChanged"的闭包(见 rowAction 文档),原先在每个分区
   // 各自的两个 filter 里各调一次,三区下来一行最多被算两次;算在分区循环*里面*
   // 更划不来(会变成按分区数重算整个 list,不是省事反而更贵)。这里改成对整份
   // list 只算一轮,分区循环只做筛选与排序,不再触碰 action。
   const rows = list.map((skill) => ({ skill, hasAction: action(skill).kind !== "none" }));
-  const all: LibrarySection[] = LIBRARY_SECTION_TITLES.map(({ key, title }) => {
+  const all: MySkillsSection[] = SECTION_TITLES.map(({ key, title }) => {
     const inSection = rows.filter((r) => r.skill.section === key);
     const withAction = inSection.filter((r) => r.hasAction).sort((a, b) => byName(a.skill, b.skill));
     const rest = inSection.filter((r) => !r.hasAction).sort((a, b) => byName(a.skill, b.skill));

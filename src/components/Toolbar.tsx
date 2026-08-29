@@ -12,6 +12,7 @@ import {
   useAppearance,
   type Accent,
 } from "@/store/appearance";
+import { useMineSearch } from "@/store/mine-search";
 import { usePlaza } from "@/store/plaza";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi, type PageId } from "@/store/ui";
@@ -49,6 +50,12 @@ export function Toolbar() {
   const setPlazaQuery = usePlaza((s) => s.setQuery);
   const submitPlazaSearch = usePlaza((s) => s.submitSearch);
   const plazaStatus = usePlaza((s) => s.status);
+  // 「我的技能」页(v7 任务 7):同一个 SearchBox 单例,按 page 切换喂哪份
+  // query/setQuery——与上面 store/广场那对 isPlazaSearch 分支同一个先例
+  // (`store/mine-search.ts` 模块头)。纯本地过滤,零网络,不传 onSubmit
+  // (回车没有额外副作用,与公司技能库那一档同款)。
+  const mineQuery = useMineSearch((s) => s.query);
+  const setMineQuery = useMineSearch((s) => s.setQuery);
 
   return (
     <div
@@ -65,6 +72,7 @@ export function Toolbar() {
           kbdHint="⌘K"
         />
       )}
+      {page === "mine" && <SearchBox value={mineQuery} onChange={setMineQuery} kbdHint="⌘K" />}
 
       <div className="flex-1" />
 
