@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Sidebar } from "./Sidebar";
-import type { InstalledSkillView } from "@/lib/ipc";
+import type { InstalledSkillView, Section } from "@/lib/ipc";
 import { useMySkills } from "@/store/my-skills";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
@@ -10,6 +10,20 @@ import { useUpdatePrompt } from "@/store/update-prompt";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
+
+/** core::ownership::section(relation) 的镜像(v7 任务 4 修复轮 1 I2 同款处置):
+ *  section 不能是与 relation 无关的独立常量,否则 view({relation:"x"}) 会静默
+ *  构造出生产上不可能出现的组合。 */
+function sectionOfRelation(relation: InstalledSkillView["relation"]): Section {
+  switch (relation) {
+    case "shared":
+      return "sharedTo";
+    case "draft":
+      return "shareable";
+    default:
+      return "installedFrom";
+  }
+}
 
 const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   dirSlug: "weekly-report",
@@ -32,7 +46,7 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   tools: [],
   versions: [],
   shareBlocked: null,
-  section: "installedFrom",
+  section: sectionOfRelation(over.relation ?? "installed"),
   review: null,
   ...over,
 });

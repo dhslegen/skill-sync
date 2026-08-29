@@ -11,11 +11,34 @@ import {
 import { t } from "@/i18n";
 import { useInstall } from "@/store/install";
 import { useShare } from "@/store/share";
-import type { InstalledSkillView } from "@/lib/ipc";
+import type { InstalledSkillView, Section } from "@/lib/ipc";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args: unknown) => invoke(cmd, args) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
+
+/**
+ * `core::ownership::section(relation)` 的镜像(v7 任务 4 修复轮 1 I2):
+ * Shared → sharedTo / Installed → installedFrom / Draft → shareable。
+ *
+ * 🔴 **`section` 不能是 `view()` 里一个与 `relation` 无关的独立常量**——core 侧
+ * `section` 恒等于 `relation` 的这个 1:1 映射,`relation:"shared" +
+ * section:"installedFrom"` 这类组合在生产上永不存在。此前 `view()` 把两者当成
+ * 两个各自独立的字段,覆盖 `relation` 而不覆盖 `section` 时会静默构造出这种不可能
+ * 组合,让依赖 `section` 的判定(`rowAction`/`updateCount`)在一个假前提下跑,
+ * 测试却因为凑巧算对了答案而绿——空转模式③的镜像(fixture 让两个互相决定的概念
+ * 取了矛盾值)。改成从 `relation` 推导,把"不可能组合"从约定升级成代码。
+ */
+function sectionOfRelation(relation: InstalledSkillView["relation"]): Section {
+  switch (relation) {
+    case "shared":
+      return "sharedTo";
+    case "draft":
+      return "shareable";
+    default:
+      return "installedFrom";
+  }
+}
 
 const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   dirSlug: "weekly-report",
@@ -38,7 +61,7 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   tools: [],
   versions: [],
   shareBlocked: null,
-  section: "installedFrom",
+  section: sectionOfRelation(over.relation ?? "installed"),
   review: null,
   ...over,
 });
@@ -914,14 +937,24 @@ describe("更新判定与更新动作", () => {
     expect(updateCount(null, index)).toBe(0);
   });
 
-  it("relation === shared 且远端指纹不等时照常计入角标(v6:角标与页内 sharedState 同一份判定)", () => {
+  it("relation === shared 的技能被库里其他人改过时不计入角标 —— section 恒是 sharedTo,主按钮是三选一冲突框,不是「更新」", () => {
+    // 🔴 v7 任务 4 修复轮 1 I2:这条测试原先断言"照常计入角标"(标题写的是
+    // v6 的口径,那时 updateCount 逐条走 hasUpdate,不看 section)。但它当年的
+    // fixture `view({ relation: "shared" })` 与 `view()` 的静态默认值
+    // `section: "installedFrom"` 拼在一起,构造出了一个**生产上永不存在的组合**
+    // ——core 侧 `section` 恒是 `ownership::section(relation)` 的 1:1 映射,
+    // `relation:"shared"` 只可能对应 `section:"sharedTo"`。用真实组合重算:
+    // sharedTo + remoteChanged 恒判 `conflict`(design「库被别人改过,不论本地」,
+    // 见 `rowAction` 判定表),不是 `update`——「全部更新」那颗批量按钮根本不会
+    // 碰这一行,摆进角标就是撒谎。`view()` 的 `section` 默认值现在从 `relation`
+    // 推导(`sectionOfRelation`),这个组合已经不可能再被静默构造出来。
     const index = {
       registryId: "company",
       owner: "skills",
       repo: "skills",
       skills: [{ dirSlug: "weekly-report", contentHash: "sha256:newer" }],
     };
-    expect(updateCount([view({ relation: "shared" })], index)).toBe(1);
+    expect(updateCount([view({ relation: "shared" })], index)).toBe(0);
   });
 
   it("角标必须比到技能库,不能按源比(同源两库有同名技能)", () => {

@@ -510,7 +510,13 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     // ——那不是我的技能,即便我有直推权限,作者也该先看一眼。「已分享到」
     // 那一区不强制,走正常的权限分流(与既有回推权限矩阵一致)。
     const skill = get().list?.find((s) => s.dirSlug === dirSlug);
-    const forceReview = skill?.section === "installedFrom";
+    // 🔴 查不到这一行就不发请求(与 `pull` 同款防护,M2 修复轮 1):
+    // "恒走评审"是这个函数唯一要守住的安全属性,`skill` 缺席时
+    // `skill?.section === "installedFrom"` 会静默落回 `false`,让理论上不该
+    // 发生的异常路径悄悄绕过它。今天的入口(界面按行渲染按钮)保证 `skill` 存在,
+    // 这条闸是防将来的调用方(比如批量入口)传一个不在 `list` 里的 dirSlug。
+    if (!skill) return;
+    const forceReview = skill.section === "installedFrom";
     await runShareChanges(dirSlug, forceReview, set, get);
   },
 
@@ -747,11 +753,17 @@ export function librarySections(
 ): LibrarySection[] {
   const byName = (a: InstalledSkillView, b: InstalledSkillView) =>
     a.dirSlug.localeCompare(b.dirSlug);
+  // `action` 每行只算一次,在三个分区之外算好(M4 复审建议):任务 7 传的 action
+  // 很可能是"部分应用了 remoteChanged"的闭包(见 rowAction 文档),原先在每个分区
+  // 各自的两个 filter 里各调一次,三区下来一行最多被算两次;算在分区循环*里面*
+  // 更划不来(会变成按分区数重算整个 list,不是省事反而更贵)。这里改成对整份
+  // list 只算一轮,分区循环只做筛选与排序,不再触碰 action。
+  const rows = list.map((skill) => ({ skill, hasAction: action(skill).kind !== "none" }));
   const all: LibrarySection[] = LIBRARY_SECTION_TITLES.map(({ key, title }) => {
-    const rows = list.filter((s) => s.section === key);
-    const withAction = rows.filter((s) => action(s).kind !== "none").sort(byName);
-    const rest = rows.filter((s) => action(s).kind === "none").sort(byName);
-    return { key, title: t(title), items: [...withAction, ...rest] };
+    const inSection = rows.filter((r) => r.skill.section === key);
+    const withAction = inSection.filter((r) => r.hasAction).sort((a, b) => byName(a.skill, b.skill));
+    const rest = inSection.filter((r) => !r.hasAction).sort((a, b) => byName(a.skill, b.skill));
+    return { key, title: t(title), items: [...withAction, ...rest].map((r) => r.skill) };
   });
   return all.filter((sec) => sec.items.length > 0);
 }

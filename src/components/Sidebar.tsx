@@ -28,8 +28,14 @@ const NAV: { group: MessageKey; items: { id: PageId; label: MessageKey; icon: ty
 export function Sidebar({ version }: { version: string }) {
   const page = useUi((s) => s.page);
   const setPage = useUi((s) => s.setPage);
-  // 「我的技能」角标:与页内逐条徽标同一份判定(updateCount 内部走 hasUpdate),
-  // 免得出现"角标说 3、点进去只有 1"
+  // 「我的技能」角标:updateCount 内部走 rowAction,只数 kind === "update" 的行
+  // (v7 任务 4)。
+  // ⚠️ **在任务 7 落地前,这与页内(仍是 v6 两分区)的状态文案有一档已知分歧**:
+  // installedFrom + 本地改过 + 库里有新版的技能,v6 页面按 `both` 摆着「更新」按钮、
+  // 状态文案写着「库里有新版,本地也有改动」,而这里的 rowAction 判它是 `conflict`
+  // (三选一冲突框,不是「全部更新」批量按钮能处理的行),角标不计。方向是漏报
+  // (比误报安全:角标说 0、点进去发现还有 1 个要处理,不会引诱用户点一个必然
+  // 报错的批量按钮)。任务 7 重写整页后两边口径统一,这条分歧随之消失。
   const list = useMySkills((s) => s.list);
   const index = useStoreIndex((s) => s.index);
   const updates = updateCount(list, index);

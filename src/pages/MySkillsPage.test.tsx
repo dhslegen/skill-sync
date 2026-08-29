@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MySkillsPage } from "./MySkillsPage";
-import type { InstalledSkillView, SkillVersion } from "@/lib/ipc";
+import type { InstalledSkillView, Section, SkillVersion } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { useCreate } from "@/store/create";
@@ -17,6 +17,20 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args: unknown) =>
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 
 const BODY = "/h/.claude/skills/weekly-report";
+
+/** core::ownership::section(relation) 的镜像(v7 任务 4 修复轮 1 I2 同款处置):
+ *  section 不能是与 relation 无关的独立常量,否则本文件里大量 view({relation:"shared"})
+ *  /view({relation:"draft"}) 的既有用例会静默构造出生产上不可能出现的组合。 */
+function sectionOfRelation(relation: InstalledSkillView["relation"]): Section {
+  switch (relation) {
+    case "shared":
+      return "sharedTo";
+    case "draft":
+      return "shareable";
+    default:
+      return "installedFrom";
+  }
+}
 
 const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   dirSlug: "weekly-report",
@@ -39,7 +53,7 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   tools: [{ agent: "claude-code", state: "linked" }],
   versions: [],
   shareBlocked: null,
-  section: "installedFrom",
+  section: sectionOfRelation(over.relation ?? "installed"),
   review: null,
   ...over,
 });
