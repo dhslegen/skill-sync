@@ -7,12 +7,18 @@ import type { InstalledSkillView, Section } from "@/lib/ipc";
 import { useMySkills } from "@/store/my-skills";
 import { useStoreIndex } from "@/store/store-index";
 
-const invoke = vi.fn(async (cmd: string, args?: unknown): Promise<unknown> => {
+async function defaultInvoke(cmd: string, args?: unknown): Promise<unknown> {
   void args;
   if (cmd === "skill_reveal") return undefined;
   if (cmd === "open_library_url") return undefined;
+  // setAgents 落地后会重刷 installed_list/agents_detected(useMySkills.load()
+  // 与 useInstall.refreshInstalled()),给最小可用形状,不然那两次调用会抛异常
+  // 把 setAgentsBusy/toolFailures 带偏。
+  if (cmd === "installed_list") return [];
+  if (cmd === "agents_detected") return { agents: [], canonicalDir: "" };
   return null;
-});
+}
+const invoke = vi.fn(defaultInvoke);
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (cmd: string, args: unknown) => invoke(cmd, args),
 }));
@@ -115,11 +121,18 @@ function mk(
 }
 
 beforeEach(() => {
-  invoke.mockClear();
+  // 有的用例会用 invoke.mockImplementation(...) 整个换掉实现(测 skill_set_agents
+  // 的 Differs 结果),mockClear 只清调用记录、不清实现——不 mockReset 的话
+  // 下一条用例会带着上一条的假实现跑。
+  invoke.mockReset();
+  invoke.mockImplementation(defaultInvoke);
   useMySkills.setState({
     canonicalDir: CANONICAL,
     toolDirs: TOOL_DIRS,
     installedAgents: null,
+    setAgentsBusy: null,
+    toolFailures: null,
+    setAgentsError: null,
   });
   useStoreIndex.setState({ index: null });
 });
@@ -194,6 +207,85 @@ describe("WhereBlocks", () => {
     );
     expect(screen.getByText("这台电脑上没有本体,暂时没有工具在用它")).toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  // 修复轮 1 Critical-1:setAgents 的失败此前只写进 store,详情面板里没有渲染点
+  // ——点一个勾遇到 Differs(位置被一份内容不同的东西占着),用户看到的是勾自己
+  // 弹回未选中、零错误、零提示。这几条钉住"这里必须有自己的渲染点"这件事。
+  describe("块 2:setAgents 的失败必须有渲染点(修复轮 1 Critical-1)", () => {
+    it("点勾遇到 Differs 时,显示「需要你看一下」+ 占用说明,且「打开文件夹」能点开占用的位置", async () => {
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === "skill_set_agents") {
+          return {
+            outcome: "done",
+            homeBody: `${CANONICAL}/weekly-report`,
+            canonical: { Ok: { kind: "unchanged" } },
+            results: [
+              [
+                "zed",
+                { Ok: { kind: "differs", existing: "/h/.zed/skills/weekly-report" } },
+              ],
+            ],
+            unlinked: [],
+            unlinkFailed: [],
+          };
+        }
+        if (cmd === "installed_list") return [];
+        if (cmd === "agents_detected") return { agents: [], canonicalDir: "" };
+        return null;
+      });
+      const user = userEvent.setup();
+      render(
+        <WhereBlocks
+          skill={mk("weekly-report", "installedFrom", {
+            tools: [
+              { agent: "claude-code", state: "linked" },
+              { agent: "zed", state: "off" },
+            ],
+          })}
+          agentNames={NAMES}
+        />,
+      );
+      await user.click(screen.getByRole("checkbox", { name: /Zed/ }));
+      expect(await screen.findByText("有 1 处需要你看一下")).toBeInTheDocument();
+      expect(screen.getByText(/Zed 那个位置上已经有一份内容不同的技能/)).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "打开 Zed 那个位置的文件夹" }));
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith(
+          "skill_reveal",
+          expect.objectContaining({ args: { path: "/h/.zed/skills/weekly-report" } }),
+        ),
+      );
+    });
+
+    it("勾选中的动作正在处理时,ToolChecks 的 checkbox 整体禁用(不传 disabled 会连点打架)", () => {
+      useMySkills.setState({ setAgentsBusy: "weekly-report" });
+      render(
+        <WhereBlocks
+          skill={mk("weekly-report", "installedFrom", {
+            tools: [{ agent: "claude-code", state: "linked" }],
+          })}
+          agentNames={NAMES}
+        />,
+      );
+      expect(screen.getByRole("checkbox", { name: /Claude Code/ })).toBeDisabled();
+    });
+
+    it("请求本身失败(抛错)时也要有渲染点,与 Differs 是不同的量", () => {
+      useMySkills.setState({
+        setAgentsError: { code: "FS_LINK_FAILED", message: "统一目录那一处没配上" },
+      });
+      render(
+        <WhereBlocks
+          skill={mk("weekly-report", "installedFrom", {
+            tools: [{ agent: "claude-code", state: "linked" }],
+          })}
+          agentNames={NAMES}
+        />,
+      );
+      expect(screen.getByText(/没能改动 AI 工具的启用状态/)).toBeInTheDocument();
+      expect(screen.getByText(/统一目录那一处没配上/)).toBeInTheDocument();
+    });
   });
 
   it("块 3:显示这个技能在公司技能库里的分区与来源", () => {

@@ -145,8 +145,21 @@ function ThisComputerBlock({
   );
 }
 
-/** 块 2:各个工具里。直接委托 `ToolChecks`——R21 收窄与"提交名单从全量 tools
- *  派生"两条不变量都活在那一层,这里裸拼 `ToolPicker` 会把两条护栏各抄一份。 */
+/**
+ * 块 2:各个工具里。直接委托 `ToolChecks`——R21 收窄与"提交名单从全量 tools
+ * 派生"两条不变量都活在那一层,这里裸拼 `ToolPicker` 会把两条护栏各抄一份。
+ *
+ * 🔴 **`setAgents` 的失败必须有渲染点(修复轮 1 Critical-1)**:`ToolChecks`
+ * 只管把点击翻成 `skill_set_agents` 请求,失败结果(`toolFailures`/
+ * `setAgentsError`)只写进 `useMySkills` 这个 store——它唯一的既有渲染点在
+ * `MySkillsPage.tsx`,而这个块可能出现在 `MySkillsPage` 根本没挂载的地方
+ * (从商店页打开详情),或者被详情面板的遮罩层盖住(从「我的技能」页打开时,
+ * `MySkillsPage` 渲染在遮罩背后)。两种情况下,用户点一个勾遇到 `Ok(Differs)`
+ * (那个位置已经有一份内容不同的东西,core 刻意不动它、也不写记录)时看到的
+ * 就是:勾自己弹回未选中、零错误、零提示,再点还是一样——所以这里**复用**
+ * `MySkillsPage` 那一套失败分流与文案键(不新增文案、不重写判据),自己开一份
+ * 渲染点。`disabled={busy}` 同理:不传的话连点会跟正在处理的那次请求打架。
+ */
 function EachToolBlock({
   skill,
   agentNames,
@@ -155,22 +168,125 @@ function EachToolBlock({
   agentNames: Map<string, string>;
 }) {
   const installedAgents = useMySkills((s) => s.installedAgents);
+  const busy = useMySkills((s) => s.setAgentsBusy) === skill.dirSlug;
+  const failures = useMySkills((s) => s.toolFailures);
+  const setAgentsError = useMySkills((s) => s.setAgentsError);
+  const dismissToolFailures = useMySkills((s) => s.dismissToolFailures);
+  // 这里裸算一遍 visibleTools 只是为了决定"有没有工具可显示",与 ToolChecks
+  // 内部同一次调用结论必然一致(同一个函数、同一份输入)——耦合是隐式的:
+  // ToolChecks 的 `if (shown.length === 0) return null` 哪天改了判据,
+  // 这里也要跟着改,否则会渲染出一片"标题在、内容空"的空白。
   const shown = visibleTools(skill.tools, installedAgents);
+  const [revealError, setRevealError] = useState<string | null>(null);
+
+  const revealOrExplain = (path: string) => {
+    setRevealError(null);
+    skillReveal({ path }).catch((raw: unknown) =>
+      setRevealError(isAppError(raw) ? raw.message : t("error.generic")),
+    );
+  };
 
   return (
     <BlockShell icon={Wrench} title={t("detail.whereTitle2")}>
       {shown.length === 0 ? (
         t("detail.whereToolsNone")
       ) : (
-        <ToolChecks dirSlug={skill.dirSlug} tools={skill.tools} agentNames={agentNames} />
+        <ToolChecks
+          dirSlug={skill.dirSlug}
+          tools={skill.tools}
+          agentNames={agentNames}
+          disabled={busy}
+        />
+      )}
+      {setAgentsError && (
+        <p className="mt-1.5 text-[11px] text-[#c0392b] dark:text-[#e0705f]">
+          {t("mine.toolsFailed")}
+          {t("punct.labelSeparator")}
+          {setAgentsError.message}
+        </p>
+      )}
+      {failures && (
+        <div className="mt-1.5 rounded-card border border-[#c0392b]/40 px-2 py-1.5 dark:border-[#e0705f]/40">
+          <p className="text-[11px] font-medium text-[#c0392b] dark:text-[#e0705f]">
+            {/* 按内容分流,与 MySkillsPage 同一份判据:全是"停下来问你"(differs)
+                时说「需要你看一下」,只要有一条是真失败就得说「没能完成」。 */}
+            {failures.some((f) => f.kind !== "differs")
+              ? t("mine.toolsPartialFailed", { count: failures.length })
+              : t("mine.toolsNeedLook", { count: failures.length })}
+          </p>
+          <ul className="mt-1 flex flex-col gap-1">
+            {failures.map((f, i) => (
+              <li
+                key={`${f.kind === "location" ? f.path : (f.agent ?? "-")}-${i}`}
+                className="text-[11px] text-text-2"
+              >
+                {f.kind === "differs" ? (
+                  (() => {
+                    const tool = f.agent
+                      ? (agentNames.get(f.agent) ?? f.agent)
+                      : t("mine.toolCanonical");
+                    return (
+                      <>
+                        <span>{t("mine.toolOccupied", { tool })}</span>
+                        <button
+                          type="button"
+                          aria-label={t("mine.openFolderOf", { tool })}
+                          onClick={() => revealOrExplain(f.existing)}
+                          className="ml-1.5 underline decoration-dotted underline-offset-2 hover:text-text"
+                        >
+                          {t("mine.openFolder")}
+                        </button>
+                      </>
+                    );
+                  })()
+                ) : f.kind === "location" ? (
+                  <>
+                    <span className="break-all font-mono text-[11px]" title={f.path}>
+                      {f.path}
+                    </span>
+                    {t("punct.labelSeparator")}
+                    {f.message}
+                  </>
+                ) : f.agent ? (
+                  `${agentNames.get(f.agent) ?? f.agent}${t("punct.labelSeparator")}${f.message}`
+                ) : (
+                  f.message
+                )}
+              </li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            onClick={dismissToolFailures}
+            className="mt-1 h-6 rounded-ctl border border-border px-2 text-[11px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+          >
+            {t("mine.dismiss")}
+          </button>
+          {revealError && (
+            <p className="mt-1 text-[11px] text-[#c0392b] dark:text-[#e0705f]">
+              {t("mine.openFolderFailed")}
+              {t("punct.labelSeparator")}
+              {revealError}
+            </p>
+          )}
+        </div>
       )}
     </BlockShell>
   );
 }
 
-/** 块 3:技能库里。只用 `InstalledSkillView` 上确实有的字段——作者字段这个类型
- *  上没有,不编;"有没有更新"只在能确定为真时才说(复用既有唯一判定 `hasUpdate`),
- *  拿不准就不摆这一行,不去重建整套 `sharedState` 抢任务 7 的活。 */
+/**
+ * 块 3:技能库里。只用 `InstalledSkillView` 上确实有的字段——作者字段这个类型
+ * 上没有,不编;"有没有更新"只在能确定为真时才说,复用既有唯一判定 `hasUpdate`,
+ * **不用** `lib/ownership.ts` 的 `sharedState`/`localEqualsRemote`。
+ *
+ * 🔴 不是"那是任务 7 的活、这里不方便重建"——真实理由是这个组件手上的 `index`
+ * (`useStoreIndex().index`)是**当前商店页正浏览的那个库**,不一定是这个技能
+ * 真正的来源库(从「我的技能」页之外的地方打开详情时尤其常见)。`hasUpdate`
+ * 自己会比对 `registryId`/`sourceOwner`/`sourceRepo`,库不对就返回 `false`,
+ * 顶多是这一行不出现;而 `localEqualsRemote` 库不对时返回 `null`,喂给
+ * `sharedState` 会落进 `differs`「本地和库里不一样」——对一个其实已经同步的
+ * 技能撒谎。所以块 3 只摆"确定为真"的那一半判定,拿不准就不摆这一行。 */
 function LibraryBlock({ skill }: { skill: InstalledSkillView }) {
   const index = useStoreIndex((s) => s.index);
   const remoteChanged = hasUpdate(skill, index);
