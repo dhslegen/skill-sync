@@ -1,16 +1,19 @@
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { CreateSkillButton, CreateSkillPanel } from "@/components/CreateSkill";
+import { Icon } from "@/components/Icon";
 import { ProjectSections } from "@/components/ProjectSections";
 import { PrimaryAction, rowMenuHandler } from "@/components/RowActionControls";
 import { SkillIcon } from "@/components/SkillIcon";
 import { SkillRowMenu, type SkillRowMenuItem } from "@/components/SkillRowMenu";
 import { t } from "@/i18n";
-import { skillReveal, type InstalledSkillView } from "@/lib/ipc";
-import { buildRowMenuItems, rowAction, type RowAction } from "@/lib/ownership";
+import { skillReveal, type InstalledSkillView, type Section } from "@/lib/ipc";
+import { buildRowMenuItems, needsAttention, rowAction, type RowAction } from "@/lib/ownership";
 import { SHARE_BLOCK_LABEL, SHARE_DONE_LABEL, SHARE_FAILED_LABEL } from "@/lib/share-block";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
+import { useMineCollapse } from "@/store/mine-collapse";
 import { matchesMineQuery, useMineSearch } from "@/store/mine-search";
 import {
   hasUpdate,
@@ -102,6 +105,8 @@ export function MySkillsPage() {
   const sessionStatus = useSession((s) => s.status);
   const query = useMineSearch((s) => s.query);
   const [tab, setTab] = useState<"general" | "projects">("general");
+  const collapsed = useMineCollapse((s) => s.collapsed);
+  const toggleCollapsed = useMineCollapse((s) => s.toggle);
 
   // 三级刷新的级别 2(切页):页面组件挂载时 load 一次。级别 1(窗口重获焦点)
   // 与级别 3(文件监听)是 `useLocalRefresh()` 的活,全局挂在 App.tsx,这里不重复。
@@ -178,8 +183,30 @@ export function MySkillsPage() {
     (s) => s.section !== "shareable" && s.localModified,
   ).length;
 
+  // 每行的 `rowAction` 对**全量** list 只算一轮,渲染、分区排序与折叠头的计数
+  // 共用这一份——分开各算一遍就是本项目记录的空转模式 #1(同一条规则查两遍)。
+  const actionOf = new Map(list.map((s) => [s.dirSlug, secAction(s)] as const));
+  const actionFor = (skill: InstalledSkillView): RowAction =>
+    actionOf.get(skill.dirSlug) ?? secAction(skill);
+
   const filteredList = list.filter((s) => matchesMineQuery(s, nameOf(s.dirSlug), query));
-  const secs = sections(filteredList, secAction);
+  const secs = sections(filteredList, actionFor);
+
+  // 🔴 折叠头的两个数走**全量** list,不走 filteredList:搜索只影响展示,
+  // 头上写的"这个区一共有多少 / 其中几个要处理"是这个区的事实,搜索时按筛选后
+  // 的条数报数就成了假话(与页头总览 band 同一个口径,见上面那两个计数)。
+  const statsOf = (key: Section) => {
+    const rows = list.filter((s) => s.section === key);
+    return {
+      total: rows.length,
+      attention: rows.filter((s) => needsAttention(actionFor(s))).length,
+    };
+  };
+
+  // 🔴 搜索必须穿透折叠:`query` 非空时折叠整体失效(展示态恒为展开),否则
+  // "搜到了但那个区折着"在用户看来就是**搜索坏了**。存储态不受影响——搜索期间
+  // 点折叠头照常写进 localStorage,清空搜索后生效。
+  const searching = query.trim() !== "";
 
   return (
     <div>
@@ -316,9 +343,20 @@ export function MySkillsPage() {
           {filteredList.length === 0 ? (
             <p className="py-6 text-[12.5px] text-text-3">{t("mine.searchEmpty", { query })}</p>
           ) : (
-            secs.map((sec, secIndex) => (
+            secs.map((sec, secIndex) => {
+              const stats = statsOf(sec.key);
+              const expanded = searching || !collapsed.includes(sec.key);
+              const bodyId = `mine-section-${sec.key}`;
+              return (
               <section key={sec.key} className="mt-3 first-of-type:mt-0">
-                <h3 className="pb-1.5 text-[11.5px] font-medium text-text-3">{sec.title}</h3>
+                <SectionHeader
+                  title={sec.title}
+                  total={stats.total}
+                  attention={stats.attention}
+                  expanded={expanded}
+                  bodyId={bodyId}
+                  onToggle={() => toggleCollapsed(sec.key)}
+                />
                 {/* 🔴 M5(复审):未登录提示紧跟在**第一个**区标题旁边,不是摆在
                     整个区列表的最上面——画布里它就贴在「安装自技能库」标题下方。
                     「已分享到」区未登录时天然不会出现(core 的 relation 决定,
@@ -331,10 +369,20 @@ export function MySkillsPage() {
                     结构性必空(design 决策 #4),所以第一区要么是
                     `installedFrom`(该摆)要么是 `shareable`(不该摆),这一条
                     判据就够穷尽两种情形。 */}
+                {/* 🔴 **刻意不跟随折叠**(下一个人多半会有"折起来就该一起收"的
+                    直觉,所以把理由写在这里):这句话解释的是**三个区标题为什么
+                    长这样**(登录后才区分得出哪些是你分享的),它是**标题的**注解,
+                    不是行的注解。而区标题恰恰是折叠之后唯一还看得见的东西——
+                    折起来时用户只剩三个标题,正是最可能纳闷"这几个区按什么分的"
+                    的时刻,这句话那时反而更需要在场。 */}
                 {secIndex === 0 && secs[0]?.key === "installedFrom" && sessionStatus !== "signedIn" && (
                   <p className="pb-1.5 text-[11.5px] text-text-3">{t("mine.signedOutHint")}</p>
                 )}
-                <div className="overflow-hidden rounded-card border border-border bg-surface-1">
+                <div
+                  id={bodyId}
+                  hidden={!expanded}
+                  className="overflow-hidden rounded-card border border-border bg-surface-1"
+                >
                   {sec.items.map((skill) => {
                     const remoteChanged =
                       skill.section === "shareable"
@@ -381,11 +429,81 @@ export function MySkillsPage() {
                   })}
                 </div>
               </section>
-            ))
+              );
+            })
           )}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * 分区的折叠头(用户真机反馈:条目一多就得一路滚)。
+ *
+ * # 吸顶
+ *
+ * `sticky top-0`——参照系是 `App.tsx` 那个 `overflow-y-auto` 容器,而 `Toolbar`
+ * (`h-11 flex-none`)在它**外面**是 flex 兄弟,所以不需要任何偏移。`z-10` 压在
+ * 行卡片之上、又在「更多」下拉(`SkillRowMenu` 的 `z-20`)与详情面板
+ * (`z-50`)之下,三者都实测读过类名。**必须给一个不透明的页面地色**
+ * (`bg-bg` = `--bg`,`body` 用的同一个 token;不是 `bg-surface-1`——那是行卡片
+ * 的色,用它吸顶条会像一根悬空的卡片),否则滚动时行会从字底下透出来。
+ * UI 规范禁毛玻璃,这里就是纯不透明底色。
+ *
+ * # 计数
+ *
+ * 「安装自技能库 · 12 · 2 个要处理」,后半段只在 > 0 时出现。判据是
+ * `lib/ownership.ts` 的 {@link needsAttention}——**不是**页头总览那两个数
+ * (它们漏掉 conflict/chooseVersion/shareBlocked/underReview 四档,拿它们做
+ * 折叠头会让折叠打穿 v7「只写例外」的承诺)。
+ *
+ * # 可访问性
+ *
+ * 折叠头是 `<button>`,可访问名就是它的可见文字(区名 + 计数),**刻意不加
+ * `aria-label`**;`aria-expanded` 跟**实际展示态**走(搜索期间恒 true),
+ * `aria-controls` 指向下面那个行容器的 `id`。
+ * ⚠️ 它在 `row-*` 之外,不进「每行至多一颗不带 aria-label 的按钮」那条既有
+ * 测试契约的统计范围(那条只在 `within(row)` 里数)。
+ */
+function SectionHeader({
+  title,
+  total,
+  attention,
+  expanded,
+  bodyId,
+  onToggle,
+}: {
+  title: string;
+  total: number;
+  attention: number;
+  expanded: boolean;
+  bodyId: string;
+  onToggle: () => void;
+}) {
+  return (
+    // 仍然是 `<h3>`(区标题的语义没变,屏幕阅读器的标题导航照旧),里面套一颗
+    // 全宽按钮——吸顶与地色挂在 h3 上,可点区域是整条。
+    <h3 className="sticky top-0 z-10 -mx-1 bg-bg px-1 pb-1.5 pt-1 text-[11.5px] font-medium">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={bodyId}
+        onClick={onToggle}
+        className="flex w-full items-center gap-1.5 text-left text-text-3 hover:text-text-2"
+      >
+        <Icon icon={expanded ? ChevronDown : ChevronRight} size={13} />
+        <span>{title}</span>
+        <span aria-hidden className="text-text-3">·</span>
+        <span>{total}</span>
+        {attention > 0 && (
+          <>
+            <span aria-hidden className="text-text-3">·</span>
+            <span className="text-accent">{t("mine.sectionAttention", { count: attention })}</span>
+          </>
+        )}
+      </button>
+    </h3>
   );
 }
 

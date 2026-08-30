@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { InstalledSkillView, Section, SkillVersion } from "@/lib/ipc";
-import { rowAction, type RowAction } from "./ownership";
+import { needsAttention, rowAction, type RowAction } from "./ownership";
 
 // ---------------------------------------------------------------------------
 // v7 任务 7:`sharedState`/`SharedState`(v6 二期两分区页用的八态机)已随旧页面
@@ -185,5 +185,47 @@ describe("rowAction(判定表)", () => {
     // remoteChanged=true 时 installedFrom 分支第一条判据(localModified&&remoteChanged)
     // 直接短路成 conflict,shareBlocked 那一层代码根本没机会跑到。
     expect(rowAction(s, true).kind).toBe("conflict");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 分区折叠头的「N 个要处理」判据
+// ---------------------------------------------------------------------------
+
+describe("needsAttention:折起来会不会藏掉一件事", () => {
+  // 逐档钉住,而不是只测两三个代表——这个函数的全部价值就在"一档都不能漏"
+  // (漏一档 = 那一档的行折起来之后彻底消失,打穿 v7「只写例外」)。
+  const cases: [RowAction, boolean][] = [
+    [{ kind: "none" }, false],
+    // 「可分享到」区的默认态:每个健康草稿都是它,计进去该区计数恒等于总数。
+    [{ kind: "share" }, false],
+    [{ kind: "pull" }, true],
+    [{ kind: "update" }, true],
+    [{ kind: "conflict" }, true],
+    [{ kind: "contribute" }, true],
+    [{ kind: "shareChanges" }, true],
+    [{ kind: "shareBlocked", reason: "nameFormat", blockedAction: "share" }, true],
+    // 没有按钮可点,但"有一条正在审"是折起来会丢失的感知,所以计入。
+    [{ kind: "underReview", url: null }, true],
+    [{ kind: "chooseVersion" }, true],
+  ];
+  for (const [action, expected] of cases) {
+    it(`${action.kind} → ${expected ? "要处理" : "不算"}`, () => {
+      expect(needsAttention(action)).toBe(expected);
+    });
+  }
+
+  it("十档全覆盖:上面的表把 RowAction 的每一种 kind 都点过名", () => {
+    expect(new Set(cases.map(([a]) => a.kind)).size).toBe(10);
+  });
+
+  it("页头总览漏掉的四档在这里都算数(这正是不能复用那两个数的理由)", () => {
+    const missedByHeaderBand: RowAction[] = [
+      { kind: "conflict" },
+      { kind: "chooseVersion" },
+      { kind: "shareBlocked", reason: "nameFormat", blockedAction: "share" },
+      { kind: "underReview", url: null },
+    ];
+    expect(missedByHeaderBand.every(needsAttention)).toBe(true);
   });
 });

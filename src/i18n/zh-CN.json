@@ -208,6 +208,7 @@
   "mine.sectionInstalledFrom": "安装自技能库",
   "mine.sectionSharedTo": "已分享到技能库",
   "mine.sectionShareable": "可分享到技能库",
+  "mine.sectionAttention": "{count} 个要处理",
   "mine.stateSynced": "已同步",
   "mine.pull": "取回",
   "mine.pulling": "正在取回…",

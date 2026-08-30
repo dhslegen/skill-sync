@@ -6,6 +6,7 @@ import { MySkillsPage } from "./MySkillsPage";
 import type { InstalledSkillView, Section, StoreIndexView } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
+import { useMineCollapse } from "@/store/mine-collapse";
 import { useMineSearch } from "@/store/mine-search";
 import { useCreate } from "@/store/create";
 import { useMySkills } from "@/store/my-skills";
@@ -209,6 +210,12 @@ function resetStores() {
     updateAllFailures: null,
   });
   useCreate.setState({ phase: "closed" });
+  useMineCollapse.setState({ collapsed: [] });
+  try {
+    localStorage.clear();
+  } catch {
+    // 隐私模式等场景,清不掉也不该拖垮测试
+  }
 }
 
 beforeEach(resetStores);
@@ -221,8 +228,11 @@ describe("v7 任务 7:DoD 六条", () => {
   it("一切正常时:没有按钮、没有状态字", async () => {
     seed([mk("a", "installedFrom"), mk("b", "sharedTo")]);
     render(<MySkillsPage />);
-    expect(await screen.findByText("a")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /更新|分享|贡献/ })).toBeNull();
+    const row = await screen.findByTestId("row-a");
+    // 🔴 范围收在**行内**:区标题("已分享到技能库"/"可分享到技能库")本身就带
+    // 「分享」二字,而它是折叠头不是动作按钮——不收窄的话这条断言会被区名误伤,
+    // 测的就不再是"行上没有动作按钮"这件事了。
+    expect(within(row).queryByRole("button", { name: /更新|分享|贡献/ })).toBeNull();
     expect(screen.queryByText(/已同步/)).toBeNull();
   });
 
@@ -336,8 +346,12 @@ describe("三区排列与判定表接线", () => {
     seed([mk("a", "shareable"), mk("b", "installedFrom")]);
     render(<MySkillsPage />);
     await screen.findByText("a");
-    const titles = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
-    expect(titles).toEqual(["安装自技能库", "可分享到技能库"]);
+    // 区标题现在是折叠头(区名 + 计数),所以比"以区名开头",不比全等
+    const titles = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent ?? "");
+    expect(titles.map((x) => x.replace(/\s+/g, ""))).toEqual([
+      "安装自技能库·1",
+      "可分享到技能库·1",
+    ]);
   });
 
   it("installedFrom:本地改过但库没变 → 「贡献更改」", async () => {
@@ -1211,5 +1225,135 @@ describe("v7 任务 8:项目里页签", () => {
     expect(await screen.findByText("erp-backend")).toBeInTheDocument();
     // 切到项目里之后,「通用」区的行不该还摆在页面上
     expect(screen.queryByText("a")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 分区折叠 + 区标题吸顶(用户真机反馈:条目一多就得一路滚)
+// ---------------------------------------------------------------------------
+
+describe("分区折叠", () => {
+  /** 折叠头是 `<button>`,可访问名 = 它的可见文字(区名 + 计数),所以按区名
+   *  的子串去找。 */
+  const header = (name: RegExp) => screen.getByRole("button", { name });
+
+  it("默认全部展开,头上写着这个区一共几条", async () => {
+    seed([mk("a", "installedFrom"), mk("b", "installedFrom"), mk("c", "sharedTo")]);
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-a")).toBeInTheDocument();
+    const h = header(/安装自技能库/);
+    expect(h).toHaveAttribute("aria-expanded", "true");
+    expect(h).toHaveTextContent("2");
+  });
+
+  it("点区标题折起来,行不再显示;再点一次回来", async () => {
+    seed([mk("a", "installedFrom"), mk("c", "sharedTo")]);
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-a")).toBeInTheDocument();
+
+    await userEvent.click(header(/安装自技能库/));
+    expect(header(/安装自技能库/)).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByTestId("row-a")).not.toBeVisible();
+    // 只折这一个区,别的区不受影响
+    expect(screen.getByTestId("row-c")).toBeVisible();
+
+    await userEvent.click(header(/安装自技能库/));
+    expect(screen.getByTestId("row-a")).toBeVisible();
+  });
+
+  it("折叠状态跨重新挂载还在(落 localStorage,不落 config.ui)", async () => {
+    seed([mk("a", "installedFrom")]);
+    const first = render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-a")).toBeInTheDocument();
+    await userEvent.click(header(/安装自技能库/));
+    expect(screen.getByTestId("row-a")).not.toBeVisible();
+    // 🔴 落点必须是 localStorage:config.ui 的 None 有独立语义,往里写第一个值
+    // 会把用户存在 localStorage 里的主题物化掉(CLAUDE.md 记的 M11 教训)。
+    expect(JSON.parse(localStorage.getItem("skillsync.mineCollapsed") ?? "null")).toEqual([
+      "installedFrom",
+    ]);
+    expect(lastInvoke("ui_prefs_set")).toBeUndefined();
+
+    first.unmount();
+    render(<MySkillsPage />);
+    expect(await screen.findByRole("button", { name: /安装自技能库/ })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(screen.getByTestId("row-a")).not.toBeVisible();
+  });
+
+  it("🔴 搜索穿透折叠:区折着时搜到的行照样显示出来", async () => {
+    seed([mk("alpha", "installedFrom"), mk("beta", "installedFrom")]);
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-alpha")).toBeInTheDocument();
+    await userEvent.click(header(/安装自技能库/));
+    expect(screen.getByTestId("row-alpha")).not.toBeVisible();
+
+    act(() => useMineSearch.getState().setQuery("alpha"));
+    // 折着也要显示——否则"搜到了但那个区折着"在用户看来就是搜索坏了
+    expect(screen.getByTestId("row-alpha")).toBeVisible();
+    expect(screen.queryByTestId("row-beta")).toBeNull();
+    // 展示态恒为展开,aria-expanded 跟展示态走
+    expect(header(/安装自技能库/)).toHaveAttribute("aria-expanded", "true");
+
+    // 清空搜索后,原来折着的状态回来(存储态没被搜索改掉)
+    act(() => useMineSearch.getState().setQuery(""));
+    expect(screen.getByTestId("row-alpha")).not.toBeVisible();
+    expect(header(/安装自技能库/)).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("🔴 折叠头数出「几个要处理」,含页头总览数不到的档(冲突 / 留哪一份)", async () => {
+    seed([
+      mk("a", "installedFrom"), // none
+      mk("b", "installedFrom", { remote: "NEW" }), // update
+      mk("c", "installedFrom", { remote: "NEW", localModified: true }), // conflict
+      mk("d", "installedFrom", {
+        versions: [
+          { path: "/h/.claude/skills/d", modifiedAt: "2026-08-01T00:00:00Z", files: 1, contentHash: "sha256:x" },
+          { path: "/h/.agents/skills/d", modifiedAt: "2026-08-01T00:00:00Z", files: 1, contentHash: "sha256:y" },
+        ],
+      }), // chooseVersion
+    ]);
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-a")).toBeInTheDocument();
+    // 页头总览只认得出 1 个「有更新」,而这个区实际有 3 行需要用户动手
+    expect(screen.getByText(/1 个有更新/)).toBeInTheDocument();
+    expect(header(/安装自技能库/)).toHaveTextContent("3 个要处理");
+  });
+
+  it("「可分享到」区的草稿不算「要处理」(那是该区的常态,不是折叠会藏掉的例外)", async () => {
+    seed([mk("draft", "shareable"), mk("other", "shareable")]);
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-draft")).toBeInTheDocument();
+    const h = header(/可分享到技能库/);
+    expect(h).toHaveTextContent("2");
+    expect(h).not.toHaveTextContent(/个要处理/);
+  });
+
+  it("计数走全量 list,不受搜索影响(搜索时头上的数不能说谎)", async () => {
+    seed([mk("alpha", "installedFrom"), mk("beta", "installedFrom", { remote: "NEW" })]);
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-alpha")).toBeInTheDocument();
+    act(() => useMineSearch.getState().setQuery("alpha"));
+    expect(screen.queryByTestId("row-beta")).toBeNull();
+    const h = header(/安装自技能库/);
+    expect(h).toHaveTextContent("2");
+    expect(h).toHaveTextContent("1 个要处理");
+  });
+
+  it("区标题吸顶(sticky),且不带 aria-label(可访问名就是可见文字)", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    const h = await screen.findByRole("button", { name: /安装自技能库/ });
+    // 吸顶挂在外层 `<h3>` 上(区标题的语义保留),按钮是它里面的整条可点区
+    const heading = h.closest("h3");
+    expect(heading?.className).toContain("sticky");
+    expect(heading?.className).toContain("top-0");
+    expect(h).not.toHaveAttribute("aria-label");
+    // aria-controls 指向下面那个行容器
+    const bodyId = h.getAttribute("aria-controls");
+    expect(bodyId).toBeTruthy();
+    expect(document.getElementById(bodyId!)).toContainElement(screen.getByTestId("row-a"));
   });
 });

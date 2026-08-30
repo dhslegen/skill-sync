@@ -204,3 +204,55 @@ export function buildRowMenuItems(
   }
   return items;
 }
+
+// ---------------------------------------------------------------------------
+// v7 追加(分区折叠):折叠头上的「N 个要处理」判定。
+// ---------------------------------------------------------------------------
+
+/**
+ * 这一行有没有「需要用户看一眼或动手」的事——分区折叠头上那个计数的唯一判据。
+ *
+ * # 为什么必须有它,而不是复用页头 band 的两个数
+ *
+ * 页头总览只报 `updatesCount`(可一键更新的行)与 `unsyncedCount`(有改动未分享),
+ * 而 `rowAction` 还有 `conflict` / `chooseVersion` / `shareBlocked` / `underReview`
+ * 这些既不算"有更新"也不算"有改动未分享"的档。折叠一旦把这些行藏进收起来的区里,
+ * 而头上又没把它们数出来,v7「只写例外」这条承诺就被折叠打穿了——用户折起来
+ * 就再也看不见那件事。所以这里按**每行真实算出的 `rowAction`** 判,不抄那两个数。
+ *
+ * # 🔴 与 `sections()` 的 `hasAction` 是**两把刻意不同的尺子**,别"统一"掉
+ *
+ * `sections()` 里的 `hasAction`(`kind !== "none"`)问的是"这一行有没有主按钮"
+ * ——用来把有按钮的行排到区内前面,所以它**包含** `share`。
+ * 本函数问的是"折起来会不会藏掉一件事"——所以它**排除** `share`。
+ * 最根本的理由是 v7 的产品原则「**只写例外**」:「可分享到」区里一个健康草稿
+ * **能**被分享,是那个区的**常态**,不是例外——把常态计成"要处理",等于把这条
+ * 原则反过来用。附带的后果也确实难看:该区的计数会恒等于总数
+ * (「可分享到技能库 · 12 · 12 个要处理」),纯噪音,还会把「安装自」区里真正的
+ * 两条冲突淹掉。
+ *
+ * 反过来 `underReview` **要计入**:它虽然没有按钮可点(审核结果不由用户这一步
+ * 决定),但"有一条正在审"是用户折起来之后会丢失的感知,正是「只写例外」要保住的。
+ *
+ * # 穷尽 switch,不留 `default`
+ *
+ * 将来往 {@link RowAction} 加新档时,这里会当场 `tsc` 报错要求表态——本项目的既有
+ * 教训:"约定会被下一个人无声打破,类型不会"。
+ */
+export function needsAttention(action: RowAction): boolean {
+  switch (action.kind) {
+    // `share` =「可分享到」区的默认态,不是例外(见上面的文档)。
+    case "none":
+    case "share":
+      return false;
+    case "pull":
+    case "update":
+    case "conflict":
+    case "contribute":
+    case "shareChanges":
+    case "shareBlocked":
+    case "underReview":
+    case "chooseVersion":
+      return true;
+  }
+}
