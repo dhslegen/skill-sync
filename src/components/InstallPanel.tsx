@@ -487,18 +487,32 @@ function DoneFooter({
         {/* design §18:商店装完那一屏加「在我的技能里查看」,切页并直接打开
             那一行的详情——此前装完只能自己去「我的技能」页里找。用 dirSlug
             打开(不是 body 路径):`skill_local_detail` 的 dirSlug 分支走
-            `converge::home_of` 从账上解析本体位置,装完这一刻账已经写好了,
-            不需要现算 body。 */}
-        <button
-          type="button"
-          onClick={() => {
-            useUi.getState().setPage("mine");
-            void useLocalDetail.getState().open({ dirSlug });
-          }}
-          className="h-6 flex-none rounded-ctl px-1.5 text-[11.5px] font-medium text-text-2 underline decoration-dotted underline-offset-2 hover:text-text"
-        >
-          {t("install.viewInMine")}
-        </button>
+            `converge::home_of` 从账上解析本体位置。
+
+            🔴 **`localDiffers` 那一档不摆这颗按钮**(终审复审轮 1,I-C)。
+            这里原先写着"装完这一刻账已经写好了",对**这一档是假话**:
+            `LocalDiffers + KeepLocal` 时 `acquire` 早退返回 `Kept`,
+            **磁盘、账、启用状态全都零变化**(CLAUDE.md 的「本体与位置模型」
+            一节写明它刻意不记账)。没有记账时 `converge::home_of` 回落
+            canonical,而这一档的本体多半住在某个工具目录里(用户自己写的
+            那一份)、canonical 上什么都没有——点下去打开的是一个
+            "这个文件夹不是技能"的报错面板。按本项目已拍板的
+            **「不摆比摆一个必然报错的按钮好」**处理:这一档不摆它,
+            出路由紧邻的 `install.localDiffersKept` 那句话给出
+            (「到『我的技能』里勾一下」)。
+            `mine` 那一档不受影响——它有记账,`home_of` 解析得到本体。 */}
+        {mineKept?.kind !== "localDiffers" && (
+          <button
+            type="button"
+            onClick={() => {
+              useUi.getState().setPage("mine");
+              void useLocalDetail.getState().open({ dirSlug });
+            }}
+            className="h-6 flex-none rounded-ctl px-1.5 text-[11.5px] font-medium text-text-2 underline decoration-dotted underline-offset-2 hover:text-text"
+          >
+            {t("install.viewInMine")}
+          </button>
+        )}
         {/* 装完那一屏也要留出口(2026-08-22 用户反馈:"这时候也没有更多操作空间")。
             与「已启用」终态同一形态:结果是状态,「装到项目…」是动作,并排摆。 */}
         <InstallScopeMenu

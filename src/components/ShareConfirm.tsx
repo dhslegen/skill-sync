@@ -39,7 +39,10 @@ export function ShareConfirm() {
   const shareTarget = useMySkills((s) => s.shareTarget);
   const list = useMySkills((s) => s.list);
   const shareBusy = useMySkills((s) => s.shareBusy);
-  const shareError = useMySkills((s) => s.shareError);
+  // 归属过滤(终审复审轮 1,C-A):`shareError` 现在带 dirSlug。这个确认屏只该
+  // 说自己这一个技能的事——`beginShare` 已经把它清空,过滤更多是防"另一条路
+  // (行上的「贡献更改」)在确认屏开着时失败"这种交叠。
+  const rawShareError = useMySkills((s) => s.shareError);
   const confirmShare = useMySkills((s) => s.confirmShare);
   const cancelShare = useMySkills((s) => s.cancelShare);
   const preview = useShare((s) => s.preview);
@@ -51,6 +54,7 @@ export function ShareConfirm() {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const open = shareTarget !== null;
   const skill = list?.find((s) => s.dirSlug === shareTarget?.dirSlug);
+  const shareError = rawShareError?.dirSlug === shareTarget?.dirSlug ? rawShareError : null;
 
   useEffect(() => {
     if (open) cancelRef.current?.focus();
@@ -135,7 +139,7 @@ export function ShareConfirm() {
           <p className="mt-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
             {t("mine.shareFailed")}
             {t("punct.labelSeparator")}
-            {shareError.message}
+            {shareError.error.message}
           </p>
         )}
         {revealError && (

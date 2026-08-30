@@ -240,7 +240,13 @@ describe("确认与取消", () => {
     useMySkills.setState({
       list: [view()],
       shareTarget: { dirSlug: "weekly-report" },
-      shareError: { code: "REPO_NAME_TAKEN", message: "库里已经有同名技能了" },
+      // 终审复审轮 1,C-A:`shareError` 现在带归属(与 `shareDone` 对称),
+      // dirSlug 必须与 shareTarget 相同,否则这一屏按设计就不该显示它。
+      shareError: {
+        dirSlug: "weekly-report",
+        error: { code: "REPO_NAME_TAKEN", message: "库里已经有同名技能了" },
+        flow: "share",
+      },
     });
     render(<ShareConfirm />);
     expect(await screen.findByText(/库里已经有同名技能了/)).toBeInTheDocument();

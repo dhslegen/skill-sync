@@ -1,9 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { contributorsText, DetailPanel, revealLabel, stripFrontmatter } from "./DetailPanel";
-import type { InstalledSkillView, LocalSkillDetail, SkillDetail } from "@/lib/ipc";
+import type { InstalledSkillView, LocalSkillDetail, Section, SkillDetail } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { useMySkills } from "@/store/my-skills";
@@ -312,6 +312,24 @@ function openLocal(over: Partial<LocalSkillDetail> = {}) {
   return d;
 }
 
+/**
+ * `section` 与 `relation` 在 core 侧是 1:1 映射(`ownership::section`)。fixture 里
+ * 各写各的,就能静默构造出**生产上不可能的组合**(比如 `relation:"shared"` 配
+ * `section:"installedFrom"`),让吃 `section` 的判定在假前提下跑
+ * ——`my-skills.test.ts` / `ShareConfirm.test.tsx` / `Sidebar.test.tsx` 已统一改成
+ * 从 `relation` 推导,这里跟上(终审复审轮 1,M-1)。
+ */
+function sectionOfRelation(relation: InstalledSkillView["relation"]): Section {
+  switch (relation) {
+    case "shared":
+      return "sharedTo";
+    case "draft":
+      return "shareable";
+    default:
+      return "installedFrom";
+  }
+}
+
 const installedView = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   dirSlug: "weekly-report",
   commitSha: "a1b2c3d",
@@ -333,13 +351,16 @@ const installedView = (over: Partial<InstalledSkillView> = {}): InstalledSkillVi
   tools: [{ agent: "claude-code", state: "linked" }],
   versions: [],
   shareBlocked: null,
-  section: "installedFrom",
+  section: sectionOfRelation(over.relation ?? "installed"),
   review: null,
   ...over,
 });
 
 describe("DetailPanel(本地详情模式)", () => {
   beforeEach(() => {
+    // 取回失败那两条会把 useInstall 置成 error 档;不复位就会泄漏进后面的用例
+    // ——今天靠归属过滤恰好看不出来,而"绿的那次什么都没证明"正是这么来的。
+    useInstall.setState({ phase: "idle", dirSlug: null, error: null });
     useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
     useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
     // 每条用例都显式给出这一份数据,不依赖上一条用例残留的 useMySkills 全局状态。
@@ -370,6 +391,38 @@ describe("DetailPanel(本地详情模式)", () => {
     // 本体在统一目录:界面必须说「统一技能目录」,不点名任何工具
     // ——修的就是"Zed 本体在这里"那个真实缺陷。
     expect(screen.getByText(/统一技能目录/)).toBeInTheDocument();
+  });
+
+  // 终审复审轮 1,C-A:动作区的「更新」/「取回」走 `useMySkills.pull` →
+  // `useInstall.beginUpdate`,失败只写进 `useInstall.error`。商店那条路
+  // (`PanelBody`)下方挂着 `InstallPanel`,它的 `ErrorFooter` 会说出来;
+  // **本地详情这条路没有 `InstallPanel`**,不自己接一处就是零反馈。
+  it("取回失败时,本地详情面板自己摆出原因(这条路没有 InstallPanel 兜着)", () => {
+    useMySkills.setState({ list: [installedView()], agentNames: new Map() });
+    openLocal();
+    render(<DetailPanel />);
+    act(() =>
+      useInstall.setState({
+        dirSlug: "weekly-report",
+        phase: "error",
+        error: { code: "NET_TIMEOUT", message: "连不上公司技能库" },
+      }),
+    );
+    expect(screen.getByText(/连不上公司技能库/)).toBeInTheDocument();
+  });
+
+  it("取回失败属于另一个技能时,这一屏一个字都不显示(跨技能归属)", () => {
+    useMySkills.setState({ list: [installedView()], agentNames: new Map() });
+    openLocal();
+    render(<DetailPanel />);
+    act(() =>
+      useInstall.setState({
+        dirSlug: "other-skill",
+        phase: "error",
+        error: { code: "NET_TIMEOUT", message: "连不上公司技能库" },
+      }),
+    );
+    expect(screen.queryByText(/连不上公司技能库/)).not.toBeInTheDocument();
   });
 
   it("这个技能不在 useMySkills().list 里时,「在哪」三块整体不出现,面板其余部分照常打开", () => {

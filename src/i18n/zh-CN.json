@@ -268,6 +268,8 @@
   "wizard.later": "稍后再说",
   "mine.shareChanges": "分享改动",
   "mine.sharingChanges": "正在分享…",
+  "mine.shareDone": "已分享到公司技能库。",
+  "mine.shareReview": "已提交审核,审核通过后生效。",
   "mine.shareChangesDone": "改动已分享到公司技能库。",
   "mine.shareChangesReview": "改动已提交审核,审核通过后生效。",
   "mine.shareChangesFailed": "分享改动没能完成",

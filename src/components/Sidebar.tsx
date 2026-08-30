@@ -30,10 +30,24 @@ export function Sidebar({ version }: { version: string }) {
   const setPage = useUi((s) => s.setPage);
   // 「我的技能」角标:updateCount 内部走 rowAction,只数 kind === "update" 的行
   // (v7 任务 4)。`MySkillsPage.tsx` 自任务 7 起对每一行的主按钮用的是**同一个**
-  // rowAction 判定(见 secAction/Row),两边口径完全一致——installedFrom + 本地
-  // 改过 + 库里有新版的技能,页面摆的是「库里有新版…」三选一冲突框(`conflict`),
-  // 不是「全部更新」批量按钮能处理的行,角标同样不计入。角标说的是"「全部更新」
-  // 这颗批量按钮能一键处理几条",需要拍板的冲突行不在其列,这不是漏报,是定义本身。
+  // rowAction 判定(见 secAction/Row)——installedFrom + 本地改过 + 库里有新版的
+  // 技能,页面摆的是「库里有新版…」三选一冲突框(`conflict`),不是「全部更新」
+  // 批量按钮能处理的行,角标同样不计入。角标说的是"「全部更新」这颗批量按钮能
+  // 一键处理几条",需要拍板的冲突行不在其列,这不是漏报,是定义本身。
+  //
+  // 🔴 **但"两边口径完全一致"这句话是假的,别照抄**(终审复审轮 1,I-B)。
+  // 判定函数确实同一个,喂给它的 `remoteChanged` 却**对「可分享到」区不同源**:
+  // - 这里的 `updateCount` 与「全部更新」(`my-skills.ts::updateAll`)**恒用**
+  //   `hasUpdate(skill, index)`——比的是当前商店索引那个库;
+  // - 页面(`MySkillsPage` 的 `secAction` 与行内)对 `section === "shareable"`
+  //   改用 `remoteChangedForShareable`——比的是那一行**自己那个外部来源**的索引。
+  //
+  // 方向是**漏报**:从广场/GitHub 装来、还没分享过的技能(落 `shareable`)其
+  // 外部来源出了新版时,页面上那一行摆得出「更新」,而这个角标数不到它、
+  // 「全部更新」也不会处理它。反过来不会发生(角标永远不会多报)。
+  // 让 `updateAll` 覆盖外源 shareable 行是**新行为**(批量 IPC 一次只吃一对
+  // `registryId`/`repo`,跨源批量协议上表达不出来,见 `updateAll` 的文档),
+  // 已拍板不在终审修复里做——如实记着这条分歧,不要把它写成"一致"。
   const list = useMySkills((s) => s.list);
   const index = useStoreIndex((s) => s.index);
   const updates = updateCount(list, index);

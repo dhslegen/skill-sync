@@ -8,7 +8,7 @@ import { SkillRowMenu, type SkillRowMenuItem } from "@/components/SkillRowMenu";
 import { t } from "@/i18n";
 import { skillReveal, type InstalledSkillView } from "@/lib/ipc";
 import { buildRowMenuItems, rowAction, type RowAction } from "@/lib/ownership";
-import { SHARE_BLOCK_LABEL } from "@/lib/share-block";
+import { SHARE_BLOCK_LABEL, SHARE_DONE_LABEL, SHARE_FAILED_LABEL } from "@/lib/share-block";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { matchesMineQuery, useMineSearch } from "@/store/mine-search";
@@ -237,10 +237,17 @@ export function MySkillsPage() {
               detail={setAgentsError.message}
             />
           )}
-          {shareError && <ErrorLine label={t("mine.shareChangesFailed")} detail={shareError.message} />}
+          {/* 文案按 `flow` 分流:首次分享说不带"改动"的那句,推回改动才说"改动"
+              (终审复审轮 1 #3;判据与详情面板动作区共用同一张表,不各写一份)。 */}
+          {shareError && (
+            <ErrorLine
+              label={t(SHARE_FAILED_LABEL[shareError.flow])}
+              detail={shareError.error.message}
+            />
+          )}
           {shareDone && (
             <p className="pb-2 text-[12px] text-text-2">
-              {shareDone.mode === "pushed" ? t("mine.shareChangesDone") : t("mine.shareChangesReview")}
+              {t(SHARE_DONE_LABEL[shareDone.flow][shareDone.mode])}
             </p>
           )}
           {keepError && !versionChoiceOpen && (
@@ -249,6 +256,9 @@ export function MySkillsPage() {
           {installPhaseIsError && installError && activeSlug && (
             <ErrorLine label={t("mine.pullFailed", { name: nameOf(activeSlug) })} detail={installError.message} />
           )}
+          {/* ⚠️ 这一份**不带 flow**,也不需要:`useInstall.shareResult` 的两条写入
+              路径都走 `skill_share_changes`(「保留并分享」的前提就是"库里有新版、
+              你改过本体"),恒是"推回改动"那一档。别顺手"统一"成上面那张表。 */}
           {installShareResult &&
             ("error" in installShareResult ? (
               <ErrorLine label={t("mine.shareChangesFailed")} detail={installShareResult.error.message} />

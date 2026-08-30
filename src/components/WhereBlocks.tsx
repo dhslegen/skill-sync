@@ -286,16 +286,27 @@ function EachToolBlock({
 
 /**
  * 块 3:技能库里。只用 `InstalledSkillView` 上确实有的字段——作者字段这个类型
- * 上没有,不编;"有没有更新"只在能确定为真时才说,复用既有唯一判定 `hasUpdate`,
- * **不用** `lib/ownership.ts` 的 `sharedState`/`localEqualsRemote`。
+ * 上没有,不编;"有没有更新"只在能确定为真时才说,判据是既有的唯一实现
+ * `hasUpdate`(`store/my-skills.ts`)。
  *
- * 🔴 不是"那是任务 7 的活、这里不方便重建"——真实理由是这个组件手上的 `index`
+ * 🔴 **这一行是"只在确定为真时才说"的单向判定,不是一个双向状态字**
+ * (终审复审轮 1,I-A:这段注释原先拿 `sharedState`/`localEqualsRemote` 当活物
+ * 讲权衡,而那两个函数已随 v7 任务 7 的旧两分区页一起删除;下面写的是同一条
+ * 道理在今天的落点上的说法)。理由是这个组件手上的 `index`
  * (`useStoreIndex().index`)是**当前商店页正浏览的那个库**,不一定是这个技能
  * 真正的来源库(从「我的技能」页之外的地方打开详情时尤其常见)。`hasUpdate`
- * 自己会比对 `registryId`/`sourceOwner`/`sourceRepo`,库不对就返回 `false`,
- * 顶多是这一行不出现;而 `localEqualsRemote` 库不对时返回 `null`,喂给
- * `sharedState` 会落进 `differs`「本地和库里不一样」——对一个其实已经同步的
- * 技能撒谎。所以块 3 只摆"确定为真"的那一半判定,拿不准就不摆这一行。 */
+ * 自己会比对 `registryId`/`sourceOwner`/`sourceRepo`,库不对就返回 `false`
+ * ——**代价只是"这一行不出现"(漏报),不会说错**。
+ *
+ * 反过来,凡是"库不对时会给出一个具体状态"的判定,喂给这一块就会**对一个其实
+ * 已经同步的技能撒谎**(说它"和库里不一样")。所以块 3 只摆确定为真的那一半,
+ * 拿不准就不摆这一行。今天这一页真正的状态判定在
+ * `src/lib/ownership.ts::rowAction`(三区十档,吃 core 给的 `section` +
+ * 调用方算好的 `remoteChanged`),它是给**行上那颗主按钮**用的,不是给这一块
+ * 用的——别为了"信息更全"把它搬过来:`rowAction` 的 `remoteChanged` 由调用方
+ * 负责喂对源(`MySkillsPage`/`SkillActionsBlock` 各自分流 `hasUpdate` 与
+ * `remoteChangedForShareable`),这一块手上没有那份分流所需的 `shareableIndexes`
+ * 语境。 */
 function LibraryBlock({ skill }: { skill: InstalledSkillView }) {
   const index = useStoreIndex((s) => s.index);
   const remoteChanged = hasUpdate(skill, index);

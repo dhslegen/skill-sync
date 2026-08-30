@@ -494,11 +494,33 @@ describe("「保留本地的」装完那一屏不能是死路", () => {
 
     const text = document.body.textContent ?? "";
     expect(text).toMatch(/已保留你的本地内容,未做其他改动/);
-    // 🔴 不能再断言"整段文字里没有「我的技能」四个字"——设计 §18 加的
-    // 「在我的技能里查看」按钮在**两档都会**渲染(它是 `DoneFooter` 通用的出口,
-    // 不是 `localDiffers` 专属文案的一部分)。这里真正要钉的是"两档不混":
+    // 🔴 不能断言"整段文字里没有「我的技能」四个字"——设计 §18 加的
+    // 「在我的技能里查看」按钮在 `mine` 这一档照常渲染(它有记账,
+    // `converge::home_of` 解析得到本体)。这里真正要钉的是"两档不混":
     // `mine` 档不该说出 `localDiffers` 专属的那句"到「我的技能」里勾一下"。
     expect(text).not.toMatch(/到「我的技能」里勾一下/);
+  });
+
+  // 终审复审轮 1,I-C:「在我的技能里查看」按 dirSlug 打开本地详情,而
+  // `skill_local_detail` 的 dirSlug 分支走 `converge::home_of` 从**账上**解析本体。
+  // `LocalDiffers + KeepLocal` 那一档 `acquire` 早退返回 `Kept`,**一条账都没写**
+  // ——`home_of` 回落 canonical,而这一档的本体多半住在某个工具目录里,canonical
+  // 上什么都没有,点下去打开的是一个报错面板。按「不摆比摆一个必然报错的按钮好」
+  // 处理。
+  it("localDiffers 档不摆「在我的技能里查看」——那一档没有记账,点了必然报错", () => {
+    render(<InstallPanel dirSlug="weekly-report" />);
+    act(() => seedKept("localDiffers"));
+
+    expect(screen.queryByRole("button", { name: "在我的技能里查看" })).toBeNull();
+    // 出路没有消失:这一档自己那句话里就带着「到「我的技能」里勾一下」
+    expect(document.body.textContent ?? "").toMatch(/到「我的技能」里勾一下/);
+  });
+
+  it("mine 档照常摆「在我的技能里查看」——它有记账,解析得到本体", () => {
+    render(<InstallPanel dirSlug="weekly-report" />);
+    act(() => seedKept("mine"));
+
+    expect(screen.getByRole("button", { name: "在我的技能里查看" })).toBeTruthy();
   });
 });
 

@@ -20,6 +20,7 @@ import {
   type LocalSkillDetail,
   type SkillDetail,
 } from "@/lib/ipc";
+import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { useMySkills } from "@/store/my-skills";
 import { locatePlazaSkill, usePlaza } from "@/store/plaza";
@@ -159,6 +160,17 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
   const { close, reveal, revealError } = useLocalDetail();
   const [tab, setTab] = useState<"readme" | "files">("readme");
   const { skill, agentNames } = useWhereSkill(detail.dirSlug);
+  // 🔴 取回/更新失败的渲染点(终审复审轮 1,C-A)。`SkillActionsBlock` 的
+  // 「更新」/「取回」走 `useMySkills.pull` → `useInstall.beginUpdate`,失败只写进
+  // `useInstall.error`。商店/广场那条路(`PanelBody`)下方挂着 `InstallPanel`,
+  // 它的 `ErrorFooter` 会把这件事说出来;**本地详情这条路没有 `InstallPanel`**
+  // ——不在这里接一处,用户点了「更新」看到的就是"什么都没发生",与 CLAUDE.md
+  // 记的「错误被写进某个状态,但没有渲染点」逐字同形。
+  // 归属按 `dirSlug` 校验:`useInstall` 是全局单例,不校验的话这一屏会显示
+  // 另一个技能上一次失败的话。
+  const pullError = useInstall((s) =>
+    s.dirSlug === detail.dirSlug && s.phase === "error" ? s.error : null,
+  );
 
   return (
     <>
@@ -196,6 +208,13 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
           这一屏本来就有的"打开本体所在文件夹"这一个动作,动作区是"这一行原本
           该有的其余动作"整套补齐——两者并存,不是互相替代。 */}
       {skill && <SkillActionsBlock skill={skill} />}
+      {pullError && (
+        <p className="px-5 pt-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+          {t("mine.pullFailed", { name: detail.name })}
+          {t("punct.labelSeparator")}
+          {pullError.message}
+        </p>
+      )}
 
       <div className="flex gap-0.5 px-5 pt-2.5" role="tablist">
         <Tab selected={tab === "readme"} onClick={() => setTab("readme")}>

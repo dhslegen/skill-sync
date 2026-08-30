@@ -668,9 +668,13 @@ describe("分享确认屏(零编辑)", () => {
       registryId: "company",
       repo: "design/skills",
     });
+    // flow 必须是 "share"(终审复审轮 1 #3):确认屏这条路是**首次分享**,
+    // 界面据此说「已分享到公司技能库」而不是「**改动**已分享」——记错了就直接
+    // 变成一句假话,而渲染那一刻已经无从反推(成功后这一行的 section 就换档了)。
     expect(useMySkills.getState().shareDone).toEqual({
       dirSlug: "weekly-report",
       mode: "pushed",
+      flow: "share",
     });
     // 成功后确认屏要关掉,否则用户会对着同一屏再点一次
     expect(useMySkills.getState().shareTarget).toBeNull();
@@ -780,7 +784,10 @@ describe("分享确认屏(零编辑)", () => {
     await useMySkills.getState().confirmShare();
 
     expect(useMySkills.getState().shareTarget).not.toBeNull();
-    expect(useMySkills.getState().shareError?.message).toContain("同名");
+    // 归属必须落在这一个技能上(终审复审轮 1,C-A):详情面板的动作区按它过滤,
+    // 写空/写错就会让另一个技能的面板显示这条失败。
+    expect(useMySkills.getState().shareError?.dirSlug).toBe("weekly-report");
+    expect(useMySkills.getState().shareError?.error.message).toContain("同名");
     expect(useMySkills.getState().shareBusy).toBeNull();
   });
 });
@@ -828,7 +835,7 @@ describe("分享改动的冲突档(M5 任务 1)", () => {
     expect((call?.[1] as { args: { forceReview?: boolean } }).args.forceReview).toBe(true);
     const s = useMySkills.getState();
     expect(s.shareConflict).toBeNull();
-    expect(s.shareDone).toEqual({ dirSlug: "weekly-report", mode: "reviewRequested" });
+    expect(s.shareDone).toEqual({ dirSlug: "weekly-report", mode: "reviewRequested", flow: "changes" });
   });
 
   it("提交瞬间被人抢先(CONFLICT_STALE)进同一个冲突档", async () => {
@@ -847,6 +854,26 @@ describe("分享改动的冲突档(M5 任务 1)", () => {
     const s = useMySkills.getState();
     expect(s.shareConflict).toEqual({ dirSlug: "weekly-report", historyUrl: null });
     expect(s.shareError).toBeNull();
+  });
+
+  // 终审复审轮 1,C-A:「贡献更改」这条路的失败也要带归属——详情面板的动作区
+  // 按 dirSlug 过滤才敢显示,归属丢了就退化成"技能 B 的面板显示技能 A 的失败"。
+  it("贡献更改失败:错误带着它属于哪个技能一起记下来", async () => {
+    useMySkills.setState({ list: [modified()] });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_share_changes")
+        throw { code: "REPO_FORBIDDEN", message: "你对这个技能库没有写权限" };
+      if (cmd === "installed_list") return [modified()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().shareChanges("weekly-report");
+
+    expect(useMySkills.getState().shareError).toEqual({
+      dirSlug: "weekly-report",
+      error: { code: "REPO_FORBIDDEN", message: "你对这个技能库没有写权限" },
+      flow: "changes",
+    });
   });
 
   it("取消冲突档:不发第二跳,改动留在本地", async () => {

@@ -51,6 +51,7 @@ import {
   type UninstallReport,
 } from "@/lib/ipc";
 import { rowAction, type RowAction } from "@/lib/ownership";
+import type { ShareFlow } from "@/lib/share-block";
 import { remoteHashOf } from "@/lib/update";
 import { defaultSelectedAgents, useInstall } from "@/store/install";
 import { useShare } from "@/store/share";
@@ -169,8 +170,22 @@ interface MySkillsState {
 
   /** 「分享改动」/「分享更新」/「分享」:正在推的技能 / 刚推完的结果 / 错误。 */
   shareBusy: string | null;
-  shareDone: { dirSlug: string; mode: ShareMode } | null;
-  shareError: AppError | null;
+  shareDone: { dirSlug: string; mode: ShareMode; flow: ShareFlow } | null;
+  /**
+   * 分享失败。**带归属**(终审复审轮 1,C-A):形状与 `shareDone` 对称。
+   *
+   * 🔴 原先是裸 `AppError`,唯一渲染点是 `MySkillsPage` 的页面级横幅——页面只有
+   * 一份、紧跟用户刚做的动作,不带归属勉强成立。§12 把「贡献更改」「分享」这些
+   * 动作搬进了详情面板的动作区(`SkillActionsBlock`),而那个块明确针对**某一个**
+   * `skill.dirSlug`:不带归属的话,对技能 A 分享失败后不关面板去开技能 B 的详情,
+   * B 会显示 A 的失败——从"零反馈"变成"错误的反馈",对用户撒谎的是"哪个技能
+   * 出了问题"(与 `toolFailuresFor` 修的是同一类,见那个字段的文档)。
+   *
+   * **刻意做成带 dirSlug 的形状,而不是再加一个平行的 `shareErrorFor` 字段**:
+   * 平行字段靠"下一个人记得同步写"维系,而类型逼着每一个写点当场给出归属
+   * ——本项目的既有结论是"约定会被下一个人无声打破,类型不会"。
+   */
+  shareError: { dirSlug: string; error: AppError; flow: ShareFlow } | null;
   /**
    * 冲突档(M5 任务 1):库里那一版在获取之后被别人改过,core 一个字节没动就退了回来。
    * 等用户拍板:提交审核 / 先不动。没有「强行覆盖」——覆盖别人的成果不该是一个按钮。
@@ -664,7 +679,10 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
         ...(registryId ? { registryId } : {}),
         ...(repo ? { repo } : {}),
       });
-      set({ shareTarget: null, shareDone: { dirSlug: target.dirSlug, mode: result.mode } });
+      set({
+        shareTarget: null,
+        shareDone: { dirSlug: target.dirSlug, mode: result.mode, flow: "share" },
+      });
       // 分享成功后要刷新的不止这一页:商店索引(库里多了一个技能)、
       // 已装记录(商店卡片的按钮档位据它决定)、本页(直推进库的技能会被 core
       // 当场记进账,状态从「尚未分享」变成「已同步」)。
@@ -672,7 +690,7 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
       void useStoreIndex.getState().load(true);
       void useInstall.getState().refreshInstalled();
     } catch (raw) {
-      set({ shareError: toAppError(raw) });
+      set({ shareError: { dirSlug: target.dirSlug, error: toAppError(raw), flow: "share" } });
     } finally {
       set({ shareBusy: null });
     }
@@ -827,7 +845,7 @@ async function runShareChanges(
       set({ shareConflict: { dirSlug, historyUrl: outcome.historyUrl } });
       return;
     }
-    set({ shareDone: { dirSlug, mode: outcome.mode } });
+    set({ shareDone: { dirSlug, mode: outcome.mode, flow: "changes" } });
     // 直推成功后 core 已更新记录,「有改动未分享」随刷新消失;
     // 走了评审则记录没动,状态留着——改动确实还没进库
     await get().load();
@@ -839,7 +857,7 @@ async function runShareChanges(
       set({ shareConflict: { dirSlug, historyUrl: null } });
       return;
     }
-    set({ shareError: err });
+    set({ shareError: { dirSlug, error: err, flow: "changes" } });
   } finally {
     set({ shareBusy: null });
   }
