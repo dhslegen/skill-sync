@@ -160,7 +160,8 @@ body {
 }
 
 /* SKILL.md 渲染。技能内容来自技能库,是不可信输入:react-markdown 默认不渲染裸 HTML,
-   这里也不引 rehype-raw。样式对齐 UI-Demo 的 .md 区块。 */
+   这里也不引 rehype-raw。remark-gfm 只加语法(表格/删除线/任务列表/自动链接/脚注),
+   不产出 HTML 节点,不影响这条安全前提。样式对齐 UI-Demo 的 .md 区块。 */
 .md > :first-child {
   margin-top: 0;
 }
@@ -219,9 +220,14 @@ body {
   margin: 8px 0;
   color: var(--text-3);
 }
+/* 详情面板定宽,而 SKILL.md 是任意作者写的,宽表格必须有自己的横向滚动容器,
+   不能让它撑破面板或被裁掉。 */
+.md-table-wrap {
+  overflow-x: auto;
+  margin: 8px 0;
+}
 .md table {
   border-collapse: collapse;
-  margin: 8px 0;
   font-size: 12.5px;
 }
 .md th,
