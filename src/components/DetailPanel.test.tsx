@@ -353,6 +353,7 @@ const installedView = (over: Partial<InstalledSkillView> = {}): InstalledSkillVi
   shareBlocked: null,
   section: sectionOfRelation(over.relation ?? "installed"),
   review: null,
+  canonicalReaders: null,
   ...over,
 });
 

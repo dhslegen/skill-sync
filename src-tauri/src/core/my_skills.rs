@@ -172,6 +172,83 @@ pub struct InstalledRow {
     /// 「可分享到」区的审核态(v7 任务 2)。`build` 里恒 `None`——由
     /// `commands::installed_list` 在 `build` 之后异步补查,见 [`ReviewView`]。
     pub review: Option<ReviewView>,
+    /// 本体住在**统一技能目录**(canonical)时,这台电脑上正读着那个目录的工具
+    /// **展示名**;本体不在 canonical 时是 `None`(v7.1 任务 1)。
+    ///
+    /// 🔴 它与 [`Self::tools`] 是**互补**的两半,不是重复:本体在 canonical 时,
+    /// 共用那个目录的 6 个 agent(cline/dexto/kimi-code-cli/loaf/warp/zed)恒
+    /// `Body`——**不可勾也不可取消**,摆进可勾清单只会让用户以为自己该做点什么。
+    /// 所以那一档从 `tools` 里拿掉,换成这一份"顺带告诉你谁在读"的名单
+    /// (界面摆进「…」里展开,不占主视线)。本体住某个**工具目录**时行为完全不变:
+    /// 那一个工具仍标 `Body`、仍在 `tools` 里,这个字段为 `None`。
+    ///
+    /// ⚠️ **这份名单 core 已经按"这台机器上装没装那个工具"收窄过**,与 `tools`
+    /// "core 不收窄、前端按 `agents_detected` 收窄"的哲学**刻意不同**
+    /// (理由见 [`canonical_reader_names`])——前端拿到就直接显示,**别再收窄一次**。
+    pub canonical_readers: Option<Vec<String>>,
+}
+
+/// 本体是不是就住在**统一技能目录**(canonical)里。
+///
+/// 🔴 **这是 v7.1 任务 1 的唯一判据**:`tools_of` 要不要摆那组恒 `Body` 的勾、
+/// [`InstalledRow::canonical_readers`] 填不填,吃的都是这一个 bool。分两处各判
+/// 一遍的话,两个行为迟早漂移,而且注入验证没有唯一靶点。
+///
+/// 前端 `WhereBlocks.tsx` 的 `bodyLocationText` 早就有一条同款护栏(先比 canonical,
+/// 命中就说"统一技能目录",压过逐工具反查);那条判据这次落进 core,同一件事
+/// 不再只修一半——用户实测到的「本体在 `~/.agents/skills/x` 时 Zed 被标成
+/// 『本体在这里』且不可取消」正是它缺席的后果。
+///
+/// 比的是 **`body` 的父目录**与 canonical 目录,不是 `body` 与 `canonical/<dir_name>`
+/// (即 `SkillHome::body_is_canonical`):后者要求叶子名也相等,而
+/// `~/.agents/skills/Weekly Report`(清洗名 `weekly-report`)那种大小写/空格
+/// 不同的本体**照样住在 canonical 里**、那 6 个工具照样读得到。这里问的是
+/// "谁能读到这个目录",不是"它是不是我们按记账名建的那个位置"。
+///
+/// 一律走 [`fsops::normalize`],**不按字符串比**:一侧来自模板展开、一侧来自
+/// 账上的字符串,字面写法可能不同而指的是同一处(本项目 Windows 上
+/// `home.join(".agents/skills")` 与分段 join 分隔符不同那条教训的同款落点)。
+/// canonical 目录解析不出来(`canonical_global_dir` 返回 `None`)时按"不在
+/// canonical"处理——那时我们没有依据说它在。
+fn body_in_canonical(body: &Path, canonical: Option<&Path>) -> bool {
+    match (body.parent(), canonical) {
+        (Some(parent), Some(canonical)) => fsops::normalize(parent) == fsops::normalize(canonical),
+        _ => false,
+    }
+}
+
+/// 这台电脑上、**已探测到**且全局技能目录就是 canonical 的那些工具的展示名。
+///
+/// 顺序 = 注册表原序(`agents()` 的遍历顺序),界面上不该因为枚举顺序抖动。
+///
+/// # 为什么这一份在 core 里就收窄,而 [`ToolView`] 那一份不收窄
+///
+/// `tools` 不收窄是因为它要回答"这个技能在各个工具里的启用态",收窄属于展示层
+/// (见 [`tools_of`] 文档末段);而这一份**本身就是一句展示文案的素材**——
+/// 「这台电脑上读这个目录的:Zed」,没装的工具写进去就是假话。
+///
+/// 「探测失败时不收窄」这条既有原则**没有被违反**:那条针对的是前端
+/// `installedAgents === null`,即 `agents_detected` 这次 **IPC 调用失败**,
+/// 前端此时对"装没装"一无所知。core 里不存在这一档——[`AgentRegistry::is_installed`]
+/// 是进程内的确定性路径探测,同一份输入必得同一个答案,没有失败分支可言。
+/// 另一半理由是形状:契约要的是**展示名**,而前端的 `installedAgents` 是一组
+/// **内部名**,把全量名单交给前端收窄反倒要再造一张反向映射。
+fn canonical_reader_names(
+    registry: &AgentRegistry,
+    env: &dyn AgentEnv,
+    canonical: Option<&Path>,
+) -> Vec<String> {
+    let Some(canonical) = canonical else { return Vec::new() };
+    let canonical = fsops::normalize(canonical);
+    registry
+        .agents()
+        .iter()
+        .filter(|a| {
+            registry.global_dir(a, env).is_some_and(|d| fsops::normalize(&d) == canonical)
+        })
+        .filter(|a| registry.is_installed(a, env))
+        .map(|a| a.display_name.clone())
+        .collect()
 }
 
 /// 算出「这个技能在各个工具里的启用态」。
@@ -210,17 +287,33 @@ pub struct InstalledRow {
 /// 拿它当勾的回显,界面会冒出一串用户从没选过的勾(本体住 canonical 时那一组
 /// 就有 cline/dexto/kimi-code-cli/loaf/warp/zed 六个),而**建链失败的目标会显示
 /// 成已启用——那是撒谎**。这里一律现算磁盘状态,失败就显示 `Missing`。
+///
+/// # 🔴 例外:本体住 canonical 时,那 6 个共用 canonical 的 agent 一个都不摆(v7.1)
+///
+/// 上一段最后那句「本体住 canonical 时同理」正是用户真机走查抓到的缺陷:本体在
+/// `~/.agents/skills/x` 时,cline/dexto/kimi-code-cli/loaf/warp/zed 全被标成
+/// 「本体在这里」且不可取消——用户只装了 Zed,于是界面上孤零零一个 Zed 顶着一句
+/// 与他的认知完全对不上的话。R19 的论据("本体所在的那个工具恰恰是用户最需要
+/// 看到的一个")对**工具目录**成立,对 canonical 不成立:canonical 不是任何一个
+/// 工具的地盘,它是统一技能目录,"本体在 Zed 里"是假话。
+///
+/// 所以这一档整组从勾里拿掉,换成 [`InstalledRow::canonical_readers`] 那份
+/// "顺带告诉你谁在读"的名单。判据 = [`body_in_canonical`](**唯一一处**,
+/// 与 `canonical_readers` 吃同一个 bool)。
 fn tools_of(
     targets: &[installer::LinkTarget],
     grouped: &BTreeMap<PathBuf, Vec<String>>,
     home: &installer::SkillHome,
     recorded_links: &[state::LinkRecord],
+    body_in_canonical: bool,
 ) -> Vec<ToolView> {
     let body_dir = home.body.parent().map(fsops::normalize);
     // `BTreeMap` 兼作去重与排序:目录枚举顺序不该影响界面。
     let mut out: BTreeMap<String, ToolState> = BTreeMap::new();
 
     // R19 的那一半:本体所在目录的全部 agent 恒 `Body`,先放进去。
+    // v7.1:本体住 canonical 时**跳过**,见函数文档的例外一节。
+    let body_dir = if body_in_canonical { None } else { body_dir };
     // 用 `fsops::normalize` 比,不按字面 `PathBuf` 比——两侧一个来自模板展开、
     // 一个来自账上的字符串,字面写法可能不同而指的是同一处
     // (本项目「路径按 Path 比、不按字符串比」这条教训的同款落点)。
@@ -559,6 +652,10 @@ pub fn build(
     let grouped = registry.group_by_global_dir(env);
     let all_agents: Vec<String> = grouped.values().flatten().cloned().collect();
     let tool_targets = installer.link_targets(&all_agents)?;
+    // v7.1 任务 1:「本体住统一技能目录」这一档的两件事(勾里不摆那一组、
+    // 改摆「谁在读」的名单)所需的两份材料,整页只算一次。
+    let canonical_dir = registry.canonical_global_dir(env);
+    let canonical_readers = canonical_reader_names(registry, env, canonical_dir.as_deref());
 
     let mut rows: Vec<InstalledRow> = Vec::new();
     // 🔴 **两套去重集合,回答的是两个不同的问题**(修复轮 1 R20):
@@ -646,6 +743,7 @@ pub fn build(
         let identity = config.identities.get(registry::BUILTIN_REGISTRY_ID);
         let relation = ownership::relation(identity, author.as_deref(), in_library, true);
 
+        let in_canonical = body_in_canonical(&home.body, canonical_dir.as_deref());
         let (recorded, _) = remove::state_links_to_recorded(&record.links);
         let (source_removed, library_removed) = reachability_of(builtin, config, record);
         rows.push(InstalledRow {
@@ -672,7 +770,8 @@ pub fn build(
             links: installer.link_health(&home, &recorded)?,
             body: home.body.to_string_lossy().into_owned(),
             local_hash,
-            tools: tools_of(&tool_targets, &grouped, &home, &record.links),
+            tools: tools_of(&tool_targets, &grouped, &home, &record.links, in_canonical),
+            canonical_readers: in_canonical.then(|| canonical_readers.clone()),
             // 只跟**同一个字面目录名**的那些实体比版本:字面名不同的是另一个技能,
             // 把它摆进"留哪个"的选项里就是在诱导用户销毁另一个技能(R20)。
             versions: versions_for(&home.body, literal_group(&all, &home.dir_name, &body_literal)),
@@ -704,6 +803,8 @@ pub fn build(
                 &lock_entries,
                 &tool_targets,
                 &grouped,
+                canonical_dir.as_deref(),
+                &canonical_readers,
                 key,
                 &literal,
                 &group,
@@ -765,6 +866,8 @@ pub fn build(
             share_blocked: None,
             section: ownership::section(relation),
             review: None,
+            // 本地连本体都没有,谈不上"住在统一技能目录里",更没有谁在读它。
+            canonical_readers: None,
         });
     }
 
@@ -832,6 +935,8 @@ fn unmanaged_row(
     lock_entries: &HashMap<String, skill_lock::UpstreamEntry>,
     tool_targets: &[installer::LinkTarget],
     grouped: &BTreeMap<PathBuf, Vec<String>>,
+    canonical_dir: Option<&Path>,
+    canonical_readers: &[String],
     key: &str,
     literal: &str,
     group: &[PathBuf],
@@ -908,8 +1013,12 @@ fn unmanaged_row(
 
     // `link_targets`/`link_health` 都要一个 `SkillHome`;拿不到就只能不摆工具勾
     // (降级行的形状)。这里用 `key` 而不是 `dir_slug`:前者已是记账键口径。
+    let in_canonical = body_in_canonical(&body, canonical_dir);
     let home = installer.home(key, Some(&body)).ok();
-    let tools = home.as_ref().map(|h| tools_of(tool_targets, grouped, h, &[])).unwrap_or_default();
+    let tools = home
+        .as_ref()
+        .map(|h| tools_of(tool_targets, grouped, h, &[], in_canonical))
+        .unwrap_or_default();
 
     InstalledRow {
         dir_slug,
@@ -937,6 +1046,7 @@ fn unmanaged_row(
         body: body.to_string_lossy().into_owned(),
         section: ownership::section(relation),
         review: None,
+        canonical_readers: in_canonical.then(|| canonical_readers.to_vec()),
     }
 }
 

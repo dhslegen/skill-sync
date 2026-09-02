@@ -78,6 +78,7 @@ function mk(dirSlug: string, section: Section, over: Partial<Fixture> = {}): Fix
     shareBlocked: null,
     section,
     review: null,
+    canonicalReaders: null,
     remote,
     ...rest,
   };

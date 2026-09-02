@@ -843,6 +843,7 @@ fn installed_row_serializes_with_camel_case_keys() {
         vec![
             "agents",
             "body",
+            "canonicalReaders",
             "commitSha",
             "contentHash",
             "dirSlug",
@@ -936,6 +937,82 @@ fn the_tool_that_hosts_the_body_is_always_shown_even_if_it_is_universal() {
     assert_eq!(r.tools.iter().filter(|t| t.state == my_skills::ToolState::Body).count(), 1);
 }
 
+/// 🔴 v7.1 任务 1:**本体住统一技能目录(canonical)时,那一组共用它的工具
+/// 一个都不进勾里**,改由 `canonical_readers` 说清"谁在读"。
+///
+/// 用户真机走查抓到的原始缺陷:本体在 `~/.agents/skills/bug-fix-suggestion` 时,
+/// 详情面板「各个工具里」摆着一个 **Zed**、标着「本体在这里」且不可取消
+/// ——本体根本不在 Zed 的地盘里,统一技能目录不是任何一个工具的地盘。
+/// (界面上只剩 Zed 是因为前端按 `agents_detected` 收窄,这台机器上另外五个没装。)
+///
+/// 这条同时钉住第二半:名单**按"这台机器上装没装"收窄过**。fixture 只造 Zed 与
+/// Warp 的探测标记、故意不造 Cline —— 三个概念取同值的话(六个全探测到)
+/// "收窄"这件事就测没了。
+#[test]
+fn body_in_the_shared_skills_dir_lists_no_body_tool_and_names_the_readers_instead() {
+    let ctx = ctx();
+    let body = skill_dir(&ctx.home, ".agents/skills/s", "v1");
+    // 让 Zed(configHome 默认 ~/.config)与 Warp 被探测到;Cline 等刻意不造。
+    std::fs::create_dir_all(ctx.home.join(".config/zed")).unwrap();
+    std::fs::create_dir_all(ctx.home.join(".warp")).unwrap();
+
+    let rows = build(&ctx, &Config::default(), &State::default());
+    let r = row(&rows, "s");
+    assert_eq!(r.body, body.to_string_lossy(), "现场前提:本体就在统一技能目录里");
+
+    for shares_canonical in ["zed", "warp", "cline", "dexto", "loaf", "kimi-code-cli"] {
+        assert_eq!(
+            tool_state(r, shares_canonical),
+            None,
+            "{shares_canonical} 共用统一技能目录,勾了取消不了、也谈不上「本体在这里」,不该进可勾清单"
+        );
+    }
+    assert!(
+        !r.tools.iter().any(|t| t.state == my_skills::ToolState::Body),
+        "统一技能目录不是任何一个工具的地盘,这一行不该有任何「本体在这里」,实际:{:?}",
+        r.tools
+    );
+
+    let readers = r
+        .canonical_readers
+        .as_ref()
+        .expect("本体就在统一技能目录里,必须给得出「谁在读这个目录」");
+    assert!(readers.contains(&"Zed".to_string()), "实际:{readers:?}");
+    assert!(readers.contains(&"Warp".to_string()), "实际:{readers:?}");
+    assert!(
+        !readers.contains(&"Cline".to_string()),
+        "这台机器上没装 Cline,把它写进「正在读」就是假话,实际:{readers:?}"
+    );
+    // 给的是展示名不是内部名(这一份直接进界面文案)
+    assert!(!readers.contains(&"zed".to_string()), "契约是展示名,实际:{readers:?}");
+}
+
+/// 与上一条互为对照:**本体住在某个工具目录里时行为完全不变**——那一个工具仍
+/// 标「本体在这里」、仍在勾里,`canonical_readers` 为 `None`。
+///
+/// 没有这一条,上一条那个 canonical 判据被改成"恒真"也照样绿。
+#[test]
+fn body_in_a_tool_dir_still_marks_that_tool_and_has_no_reader_list() {
+    let ctx = ctx();
+    // 顺带把 Zed 造成"已探测到":它与这一行无关,不该因此冒出一份名单
+    std::fs::create_dir_all(ctx.home.join(".config/zed")).unwrap();
+    let body = skill_dir(&ctx.home, ".claude/skills/s", "v1");
+
+    let rows = build(&ctx, &Config::default(), &State::default());
+    let r = row(&rows, "s");
+    assert_eq!(r.body, body.to_string_lossy());
+    assert_eq!(
+        tool_state(r, "claude-code"),
+        Some(my_skills::ToolState::Body),
+        "本体就住在 Claude Code 的技能目录里,它此刻正读着这个技能"
+    );
+    assert!(
+        r.canonical_readers.is_none(),
+        "本体不在统一技能目录里,说「统一技能目录里谁在读它」是答非所问,实际:{:?}",
+        r.canonical_readers
+    );
+}
+
 /// 🔴 R20(修复轮 1,审查者探针实测):**清洗后撞名、字面名不同的两个文件夹是
 /// 两个技能,各占一行**。
 ///
@@ -1014,7 +1091,7 @@ fn installed_skill_view_serializes_with_the_same_camel_case_keys() {
     let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
     keys.sort();
     assert_eq!(keys, core_keys, "DTO 与 core 行的键必须逐个对应,From 漏搬一个就在这里红");
-    assert_eq!(keys.len(), 23);
+    assert_eq!(keys.len(), 24);
 }
 
 /// R20 的第二半:**有账那一行的 `versions` 也只跟同字面名的实体比**。

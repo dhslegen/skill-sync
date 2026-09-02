@@ -1571,6 +1571,14 @@ pub struct InstalledSkillView {
     /// 按钮,避免重复提交。`None` = 从没分享过,或查询失败又没有本地兜底证据
     /// ——两者在界面上是同一档"可以分享"。
     pub review: Option<my_skills::ReviewView>,
+    /// 本体住在**统一技能目录**时,这台电脑上正读着那个目录的工具展示名(v7.1);
+    /// 本体不在那里时是 `null`。与 `tools` 互补:那一档的工具恒 `Body`、不可勾也
+    /// 不可取消,已从 `tools` 里拿掉,改由界面在「…」里展开这份名单。
+    ///
+    /// ⚠️ **core 已按"这台机器上装没装"收窄过**,与 `tools`(core 不收窄、前端按
+    /// `agents_detected` 收窄)刻意不同——理由见 `my_skills::canonical_reader_names`。
+    /// 前端拿到直接显示,**别再收窄一次**。
+    pub canonical_readers: Option<Vec<String>>,
 }
 
 /// 一个已装技能的来源还通不通(M4 任务 2)。返回 `(source_removed, library_removed)`。
@@ -1624,6 +1632,7 @@ impl From<my_skills::InstalledRow> for InstalledSkillView {
             share_blocked: r.share_blocked,
             section: r.section,
             review: r.review,
+            canonical_readers: r.canonical_readers,
         }
     }
 }

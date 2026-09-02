@@ -116,6 +116,7 @@ function mk(
     shareBlocked: null,
     section,
     review: null,
+    canonicalReaders: null,
     ...over,
   };
 }

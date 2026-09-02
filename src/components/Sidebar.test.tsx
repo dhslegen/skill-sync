@@ -48,6 +48,7 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   shareBlocked: null,
   section: sectionOfRelation(over.relation ?? "installed"),
   review: null,
+  canonicalReaders: null,
   ...over,
 });
 

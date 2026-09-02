@@ -499,6 +499,23 @@ export interface InstalledSkillView {
    * 链接**,按 `null` 判断要不要显示可点的「查看审核」。
    */
   review: ReviewView | null;
+  /**
+   * 本体住在**统一技能目录**(canonical)时,这台电脑上正读着那个目录的工具
+   * **展示名**;本体不在那里时是 `null`(v7.1 任务 1)。
+   *
+   * 🔴 与 {@link InstalledSkillView.tools} 是互补的两半:本体在统一目录时,共用
+   * 那个目录的六个工具(Cline/Dexto/Kimi Code CLI/Loaf/Warp/Zed)恒 `body`——
+   * **不可勾也不可取消**,摆进可勾清单只会让用户以为自己该做点什么,所以 core
+   * 已经把它们从 `tools` 里拿掉,换成这份名单(界面摆进「…」里展开)。
+   * 本体住某个**工具目录**时行为完全不变:那一个工具仍标 `body`、仍在 `tools`
+   * 里,这个字段为 `null`。
+   *
+   * ⚠️ **core 已经按"这台机器上装没装那个工具"收窄过了**,与 `tools`(core 不
+   * 收窄、前端按 `agents_detected` 收窄)刻意不同——拿到直接显示,别再用
+   * `visibleTools` 之类收窄一次。空数组是合法档(本体确实在统一目录,但那六个
+   * 工具一个都没装),它与 `null`(本体不在统一目录)是两件事。
+   */
+  canonicalReaders: string[] | null;
 }
 
 /** 「我的技能」页按公司技能库分的三区(`core::ownership::Section`)。 */
