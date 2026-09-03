@@ -120,8 +120,19 @@ export function orderForPicker(items: ToolPickerItem[]): ToolPickerItem[] {
  * 分叉——一致性测试相应改成"list 档 = inline 档 + `LIST_ROW_EXTRA`"的精确串
  * 断言,不再要求两档完全相同(那从来不是这段代码想守住的东西,checkbox 与
  * label 的基础结构仍然逐字共用,只是 list 档多了一圈自己的点击区)。
+ *
+ * # v7.1 任务 4:`list` 档压成画布上那副紧凑形态
+ *
+ * 🔴 `LIST_ROW_EXTRA` 原先是 `border-t border-border px-3 py-2 first:border-t-0
+ * hover:bg-surface-2`——那是 v7 给获取面板配的一套"清单卡片"观感。v7.1 的设计
+ * 画布(`ToolPicker.dc.html`,四个语境画在同一张板上)把四处统一成了同一副
+ * **无分隔线、无 hover 底、`padding:6px 0`** 的紧凑清单:这一组勾是"位置信息"
+ * 的一部分,不是一张卡片。所以这里改成 `py-1.5`,四个调用方一起变
+ * ——"统一"这件事只有在同一个常量上才成立,给详情面板单开一档密度就等于又分叉。
+ * 点击命中区仍然由 `<label>` 自己承担(block 级 flex,占满整行宽),v7 任务 7
+ * 修的那个"边缘点不动"不会因为去掉 `px-3` 回来:横向留白本来就不属于这一行。
  */
-export const LIST_ROW_EXTRA = "border-t border-border px-3 py-2 first:border-t-0 hover:bg-surface-2";
+export const LIST_ROW_EXTRA = "py-1.5";
 
 export function ToolPicker({
   items,
@@ -163,7 +174,8 @@ export function ToolPicker({
         const checked = isChecked(item.state);
         const itemDisabled = isBody || disabled;
         const labelClassName = [
-          "flex items-center gap-1.5 text-[11.5px]",
+          // 字号/间距照画布(12px / gap 8px),两档共用。
+          "flex items-center gap-2 text-[12px]",
           isBody || disabled ? "text-text-3" : "text-text-2",
           layout === "list" ? LIST_ROW_EXTRA : "",
         ]
@@ -184,9 +196,22 @@ export function ToolPicker({
               // 本体所在的那个勾永远点不动:取消它等于删本体
               disabled={itemDisabled}
               onChange={() => onToggle(item.agent, !checked)}
-              className="size-3 accent-[var(--accent)]"
+              // 形态全在 `.tool-check` 里(`styles/global.css`):未勾空心描边、
+              // 已勾实心强调色 + 白勾,本体那一档走中性灰。理由见那段 CSS 的注释。
+              className="tool-check"
             />
-            <span>{item.label}</span>
+            {/* 工具名照画布用正文色(未勾也一样——"没启用"是勾自己说的事,
+                不该顺带把名字也压暗成读不清);本体/禁用那一档整行退成灰。 */}
+            <span className={itemDisabled ? undefined : "text-text"}>{item.label}</span>
+            {/* 🔴 两句状态标记排在**路径之前**:路径带 `ml-auto` 靠右,摆在它后面的
+                东西会被挤到最右边、与路径连成一串读不出主次(画布 `ToolPicker.dc.html`
+                的次序是 工具名 → 状态标记 → 路径靠右)。 */}
+            {isBody && <span className="text-[11px] text-text-3">{t("mine.toolBodyHint")}</span>}
+            {/* 降级复制的形态如实说出来:那个位置上是一份实体副本,不是同一份文件
+                ——改了本体它不会跟着变,用户有权知道 */}
+            {item.state === "copy" && (
+              <span className="text-[11px] text-text-3">{t("mine.toolCopy")}</span>
+            )}
             {item.path && (
               <span
                 className={
@@ -198,10 +223,6 @@ export function ToolPicker({
                 {item.path}
               </span>
             )}
-            {isBody && <span className="text-text-3">{t("mine.toolBodyHint")}</span>}
-            {/* 降级复制的形态如实说出来:那个位置上是一份实体副本,不是同一份文件
-                ——改了本体它不会跟着变,用户有权知道 */}
-            {item.state === "copy" && <span className="text-text-3">{t("mine.toolCopy")}</span>}
           </label>
         );
       })}

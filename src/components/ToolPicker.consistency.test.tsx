@@ -46,7 +46,10 @@ beforeEach(() => {
  * 现在都是 `ToolPicker` 的薄壳,两处渲染出来的 checkbox 与 label 必须是
  * **同一副 DOM 骨架**(同一批 className),不是各自维护一套标记再凑巧长得像。
  *
- * 🔴 R17 裁定(修复轮 1):**容器排布刻意不要求一致**——`ToolChecks` 用
+ * 🔴 R17 裁定(修复轮 1,**v7.1 任务 4 已部分作废**:设计画布把四个语境画成了
+ * 同一副紧凑竖排清单,`ToolChecks` 因此也改成 `layout="list"`,两处的 label
+ * 重新逐字相同;下面这段保留是因为"容器不同不代表没统一"这条判断仍然成立,
+ * 只是眼下四处恰好都用同一档容器):**容器排布刻意不要求一致**——`ToolChecks` 用
  * `layout="inline"`(chip 流),`AgentChooser` 用 `layout="list"`(竖排清单,
  * 带分隔线/hover/路径靠右对齐)。「三处统一」统一的是同一个组件与同一套
  * checkbox/label token,不是同一种排布方向;安装面板天然要展示"工具名 + 落点
@@ -117,6 +120,10 @@ describe("ToolChecks 与 AgentChooser 共用同一副 checkbox/label 骨架", ()
     // ——这正是修复轮 1 之前被静默退化成的样子。
     expect(installBox).not.toBe(mineBox);
     expect(installBox.className).toBe(mineBox.className);
-    expect(installLabel.className).toBe(`${mineLabel.className} ${LIST_ROW_EXTRA}`);
+    // v7.1 任务 4:`ToolChecks` 也改用 `list` 之后,两处的 label 又回到逐字相同
+    // ——但等式本身证明不了"用的是 list 那一档"(两处一起漂回 inline 也能让它
+    // 成立),所以再正面断言两边都带着 `LIST_ROW_EXTRA`。
+    expect(installLabel.className).toBe(mineLabel.className);
+    expect(mineLabel.className).toContain(LIST_ROW_EXTRA);
   });
 });

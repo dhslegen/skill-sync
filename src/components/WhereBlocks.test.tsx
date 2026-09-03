@@ -448,6 +448,114 @@ describe("whereSummary:折起来之后那一行结论", () => {
   });
 });
 
+/**
+ * v7.1 任务 4:本体住统一技能目录那一档(Q8C+)。
+ *
+ * 这一组是用户最初报告的那个缺陷的终点:「各个工具里」的清单里**不许出现 Zed**
+ * (它不需要单独勾选,任务 1 已经把它从 core 的 `tools` 里拿掉了),它进上面
+ * 那个「…」。⚠️ 负向断言必须**双向**——只断言"哪里都没有 Zed"的话,
+ * `canonicalReaders` 整个不渲染也照样绿(本项目栽过 6 次的
+ * 「core 备好事实却没有渲染点」),所以每一条都配一句"名单里有 Zed"。
+ */
+describe("WhereBlocks · 本体在统一技能目录(canonicalReaders)", () => {
+  const canonical = (over: Partial<InstalledSkillView> = {}) =>
+    mk("api-test-expert", "installedFrom", {
+      tools: [{ agent: "claude-code", state: "linked" }],
+      canonicalReaders: ["Cline", "Zed"],
+      ...over,
+    });
+
+  it("🔴 勾选清单里不出现 Zed,而「…」展开后的名单里有它(双向)", async () => {
+    useMySkills.setState({ installedAgents: new Set(["claude-code", "zed", "cline"]) });
+    render(<WhereBlocks skill={canonical()} agentNames={NAMES} remoteChanged={false} />);
+
+    const toolsBlock = screen.getByTestId("where-block-tools");
+    expect(within(toolsBlock).getByRole("checkbox", { name: /Claude Code/ })).toBeInTheDocument();
+    expect(within(toolsBlock).queryByText("Zed")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "哪些工具" }));
+    const card = screen.getByTestId("where-readers");
+    // M-4:断言这份名单**真的到达了展示层**,不是"函数被调用过"
+    expect(card).toHaveTextContent("Zed");
+    expect(card).toHaveTextContent("Cline");
+  });
+
+  it("「…」默认收起,再点一次收回去", async () => {
+    render(<WhereBlocks skill={canonical()} agentNames={NAMES} remoteChanged={false} />);
+    expect(screen.queryByTestId("where-readers")).not.toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: "哪些工具" });
+    await userEvent.click(toggle);
+    expect(screen.getByTestId("where-readers")).toBeInTheDocument();
+    await userEvent.click(toggle);
+    expect(screen.queryByTestId("where-readers")).not.toBeInTheDocument();
+  });
+
+  it("🔴 名单是空数组(那几个工具一个都没装)时连按钮都不摆 —— 不展开一个空标题", () => {
+    render(<WhereBlocks skill={canonical({ canonicalReaders: [] })} agentNames={NAMES} remoteChanged={false} />);
+    expect(screen.queryByRole("button", { name: "哪些工具" })).not.toBeInTheDocument();
+  });
+
+  it("本体不在统一目录(null)时也不摆按钮", () => {
+    render(
+      <WhereBlocks
+        skill={canonical({ canonicalReaders: null, body: "/h/.claude/skills/api-test-expert" })}
+        agentNames={NAMES}
+        remoteChanged={false}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "哪些工具" })).not.toBeInTheDocument();
+  });
+
+  it("工具清单每行右侧显示那个工具的技能目录(store 里的 toolDirs,零新 IPC)", () => {
+    useMySkills.setState({ installedAgents: new Set(["claude-code"]) });
+    render(<WhereBlocks skill={canonical()} agentNames={NAMES} remoteChanged={false} />);
+    expect(screen.getByText("/h/.claude/skills")).toBeInTheDocument();
+  });
+});
+
+/**
+ * C-1(任务 1 复审转交,Critical):勾选清单为空时那句话必须**按成因**分流。
+ * 任务 1 之后,空列表多了"工具都通过统一目录读它、没有需要单独勾选的"这种全新
+ * 成因,而原来那句「这台电脑上没有本体」在这一档是假话——同屏正上方就写着本体的
+ * 绝对路径。三种成因各钉一条。
+ */
+describe("WhereBlocks · 空勾选清单按成因分流(C-1)", () => {
+  beforeEach(() => {
+    // 收窄到"一个工具都没装",让三档都走到空清单那条分支
+    useMySkills.setState({ installedAgents: new Set<string>() });
+  });
+
+  it("成因一:本体不在这台电脑上 —— 仍然说「没有本体」", () => {
+    const skill = mk("gone", "sharedTo", { localPresent: false, body: "", tools: [], canonicalReaders: null });
+    render(<WhereBlocks skill={skill} agentNames={NAMES} remoteChanged={false} />);
+    expect(screen.getByTestId("where-block-tools")).toHaveTextContent(
+      "这台电脑上没有本体,暂时没有工具在用它",
+    );
+  });
+
+  it("🔴 成因二:本体在统一技能目录 —— 说的是「没有需要单独勾选的工具」,不许说「没有本体」", () => {
+    const skill = mk("x", "installedFrom", { tools: [], canonicalReaders: ["Zed"] });
+    const block = () => screen.getByTestId("where-block-tools");
+    render(<WhereBlocks skill={skill} agentNames={NAMES} remoteChanged={false} />);
+    expect(block()).toHaveTextContent("本体放在统一技能目录,没有需要单独勾选的工具");
+    expect(block()).not.toHaveTextContent(/没有本体/);
+    // 这一句刻意不点名任何工具:readers 可能是空数组,说"都在读它"又是一句假话
+    expect(block()).not.toHaveTextContent("Zed");
+  });
+
+  it("成因三:本体在某个工具目录、但没有可勾的 —— 中性话,不提统一技能目录", () => {
+    const skill = mk("x", "installedFrom", {
+      tools: [],
+      canonicalReaders: null,
+      body: "/h/.claude/skills/x",
+    });
+    render(<WhereBlocks skill={skill} agentNames={NAMES} remoteChanged={false} />);
+    const el = screen.getByTestId("where-block-tools");
+    expect(el).toHaveTextContent("这台电脑上暂时没有可以勾选的工具");
+    expect(el).not.toHaveTextContent(/没有本体|统一技能目录/);
+  });
+});
+
 describe("WhereBlocks 折叠头", () => {
   it("收起时三块都不渲染,只剩路径与结论那一行", () => {
     useDetailCollapse.setState({ whereExpanded: false });

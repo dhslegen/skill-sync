@@ -120,8 +120,10 @@ describe("ToolPicker", () => {
 
   it("🔴 M8 补漏:LIST_ROW_EXTRA 的字面量内容本身要过一道正面断言,不能只靠两处一致", () => {
     // `ToolPicker.consistency.test.tsx` 只比较"两处消费者算出来的 className
-    // 是否互相一致",守不住"这批 token 本身写对了没有"——`border-t`/`px-3 py-2`/
-    // `hover:bg-surface-2` 缺一个,那条测试照样绿。这里直接断言常量内容。
-    expect(LIST_ROW_EXTRA).toBe("border-t border-border px-3 py-2 first:border-t-0 hover:bg-surface-2");
+    // 是否互相一致",守不住"这批 token 本身写对了没有"。这里直接断言常量内容。
+    // v7.1 任务 4 起是画布上那副紧凑清单(`padding:6px 0`,无分隔线、无 hover 底),
+    // 四个调用方共用——原先那套 `border-t px-3 py-2 hover:bg-surface-2` 的
+    // "卡片"观感已撤,理由见 `ToolPicker.tsx` 里 LIST_ROW_EXTRA 上方的注释。
+    expect(LIST_ROW_EXTRA).toBe("py-1.5");
   });
 });

@@ -108,6 +108,19 @@ const SCREENS = [
       await page.waitForTimeout(300);
     },
   },
+  {
+    id: "07-detail-canonical-readers",
+    title: "详情面板 · 本体住统一技能目录 ·「…」展开(这台电脑上读这个目录的工具)",
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      await page.getByTestId("row-api-test-expert-body").click();
+      await page.waitForTimeout(500);
+      await page.getByTestId("where-toggle").click();
+      await page.waitForTimeout(300);
+      await page.getByRole("button", { name: "哪些工具" }).click();
+      await page.getByTestId("where-readers").waitFor({ state: "visible" });
+    },
+  },
 ];
 
 // ---------------------------------------------------------------- 交互小工具

@@ -37,6 +37,10 @@ export function ToolChecks({
 }) {
   const installedAgents = useMySkills((s) => s.installedAgents);
   const setAgents = useMySkills((s) => s.setAgents);
+  // agent 内部名 → 该工具的全局技能目录。`agents_detected` 早就把它带回来了
+  // (`store/my-skills.ts` 的 `toolDirs`),v7.1 任务 4 之前只是没人把它穿到
+  // 这一层——**零新 IPC**。
+  const toolDirs = useMySkills((s) => s.toolDirs);
   const shown = visibleTools(tools, installedAgents);
 
   if (shown.length === 0) return null;
@@ -46,9 +50,9 @@ export function ToolChecks({
   const items: ToolPickerItem[] = shown.map((tool) => ({
     agent: tool.agent,
     label: agentNames.get(tool.agent) ?? tool.agent,
-    // 「我的技能」页目前没有把每个工具的落点路径穿到这一层,留空由 ToolPicker
-    // 诚实地不渲染那一段,不伪造一个空字符串路径。
-    path: "",
+    // 探测不到那个工具的目录时留空,由 ToolPicker 诚实地不渲染那一段
+    // ——不伪造一个空字符串路径。
+    path: toolDirs.get(tool.agent) ?? "",
     state: tool.state,
   }));
 
@@ -60,5 +64,8 @@ export function ToolChecks({
     void setAgents(dirSlug, [...next]);
   };
 
-  return <ToolPicker items={items} onToggle={handleToggle} disabled={disabled} />;
+  // `list`(v7.1 任务 4):竖排一行一个工具、右侧等宽字体显示它的技能目录
+  // ——照设计画布 `DetailWhere.dc.html`。原先是 chip 流(横排、没有路径),
+  // 用户在真机走查时看到的就是一串没有落点的工具名。
+  return <ToolPicker items={items} onToggle={handleToggle} disabled={disabled} layout="list" />;
 }

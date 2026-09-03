@@ -1,4 +1,13 @@
-import { ChevronDown, ChevronRight, ExternalLink, Laptop, Library, Wrench, type LucideIcon } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  Laptop,
+  Library,
+  MoreHorizontal,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
 import { useState } from "react";
 
 import { Icon } from "@/components/Icon";
@@ -69,14 +78,17 @@ const SECTION_TITLE: Record<Section, "mine.sectionInstalledFrom" | "mine.section
 function BlockShell({
   icon,
   title,
+  testId,
   children,
 }: {
   icon: LucideIcon;
   title: string;
+  /** 给测试用的容器钩子(把断言限定在这一块里,别误伤同屏另外两块)。 */
+  testId?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-start gap-2.5 border-t border-border py-3 first:border-t-0">
+    <div data-testid={testId} className="flex items-start gap-2.5 border-t border-border py-3 first:border-t-0">
       <Icon icon={icon} size={15} className="mt-0.5 w-5 shrink-0 text-text-3" />
       <div className="min-w-0 flex-1">
         <div
@@ -109,6 +121,10 @@ function ThisComputerBlock({
 }) {
   const canonicalDir = useMySkills((s) => s.canonicalDir);
   const toolDirs = useMySkills((s) => s.toolDirs);
+  // 「…」默认收起。刻意是组件本地状态、不落 store:它是"我这会儿想多看一眼"
+  // 这种一次性动作,换一个技能就该回到收起态——而详情面板换技能会整体换挂载
+  // (`store/local-detail.ts` 的 `open`),这份 useState 天然跟着重置。
+  const [readersOpen, setReadersOpen] = useState(false);
 
   if (!skill.localPresent || !skill.body) {
     return (
@@ -119,15 +135,92 @@ function ThisComputerBlock({
   }
 
   const text = bodyLocationText(skill.body, canonicalDir, agentNames, toolDirs);
+  const readers = skill.canonicalReaders;
 
   return (
     <BlockShell icon={Laptop} title={t("detail.whereTitle1")}>
-      <p>{text}</p>
-      <p className="mt-1 truncate font-mono text-[12px] text-text-3" title={skill.body}>
+      <p className="truncate font-mono text-[12px] text-text" title={skill.body}>
         {skill.body}
       </p>
+      <div className="mt-0.5 flex items-center gap-1.5">
+        <span className="text-[11.5px] text-text-3">{text}</span>
+        {/* 「…」只在有名单可展开时才摆,判据见 {@link canReveal}。 */}
+        {canReveal(readers) && (
+          <button
+            type="button"
+            aria-label={t("detail.whereReadersToggle")}
+            aria-expanded={readersOpen}
+            onClick={() => setReadersOpen((v) => !v)}
+            className="grid size-5 shrink-0 place-items-center rounded-ctl text-text-3 hover:bg-surface-2 hover:text-text-2"
+          >
+            <Icon icon={MoreHorizontal} size={13} />
+          </button>
+        )}
+      </div>
+      {canReveal(readers) && readersOpen && (
+        <div
+          data-testid="where-readers"
+          className="mt-1 rounded-card border border-border bg-surface-2 px-2.5 py-1.5 text-[11.5px] text-text-2"
+        >
+          {t("detail.whereReaders", { tools: readers.join(t("punct.listSeparator")) })}
+        </div>
+      )}
     </BlockShell>
   );
+}
+
+/**
+ * 「…」该不该摆:本体住在统一技能目录、且那几个共用它的工具这台机器上至少装了
+ * 一个(v7.1 任务 4,Q8C+)。**三档不是两档**:
+ *
+ * - `null` = 本体不在统一目录(住在某个工具自己的目录里)→ 不摆;
+ * - `[]` = 本体确实在统一目录,但那几个共用它的工具**这台机器上一个都没装**
+ *   → 也不摆。展开一个空标题比不摆更糟:用户点开看到一片空白,会以为界面坏了。
+ *   这一档是 core 侧的合法返回值(见 `lib/ipc.ts::canonicalReaders` 的文档),
+ *   不是异常,所以要显式判掉,不能只判 `!== null`;
+ * - 非空 → 摆。
+ *
+ * # 这几个工具为什么不在下面的勾选清单里
+ *
+ * 它们**没有需要用户做的事**:本体就在那个目录里,这些工具天然读得到,勾不掉、
+ * 也不用勾。任务 1 已经把它们从 `tools` 里拿掉、换成 core 直接给的
+ * `canonicalReaders`——摆进可勾清单只会让用户以为自己该做点什么,而那正是
+ * 「Zed 本体在这里」那个真实缺陷的另一半。收进这个默认折起的「…」里:想知道的
+ * 点一下能看到,不想知道的不会被一串点不动的勾挡住。
+ *
+ * 🔴 **名单直接渲染,不过 `agentNames`、不过 `visibleTools`**:core 给的已经是
+ * **展示名**,而且已经按"这台机器上装没装"收窄过了(与 `tools` 刻意相反,见
+ * `lib/ipc.ts::canonicalReaders`)。再过一次 `agentNames.get` 只会对不在那张表
+ * 里的名字拿到 `undefined`。
+ */
+function canReveal(readers: string[] | null): readers is string[] {
+  return readers !== null && readers.length > 0;
+}
+
+/**
+ * 勾选清单为空时说哪句话——**按成因分三支**(v7.1 任务 4,任务 1 复审转交的
+ * C-1)。
+ *
+ * 🔴 任务 1 把那六个共用统一目录的工具移出 `tools` 之后,空列表**多了一种全新
+ * 成因**,而原来那句话一个字没改就变成了假话:本体明明放在统一技能目录(同屏
+ * 正上方就写着绝对路径),这里却说「这台电脑上没有本体」。两句话当场打架,而且
+ * 撒谎的那句正出现在用户最初报告缺陷的那个现场。
+ *
+ * 三支各自对应一种成因,谁也不能兼并谁:
+ * 1. **本体不在这台电脑上**(第 4 源:库里记着是我分享的,本机没有文件)
+ *    → 旧那句话对这一档仍然是真话,原样保留;
+ * 2. **本体在统一技能目录**(`canonicalReaders !== null`)→ 读它的工具不需要
+ *    单独勾选,所以清单是空的。⚠️ 这句话**不点名任何工具**,因为
+ *    `canonicalReaders` 可能是空数组(那六个一个都没装):说"都在读它"就又是
+ *    一句假话。要看名单的从上面那个「…」进;
+ * 3. **本体在某个工具自己的目录里,但收窄后没有可勾的**(那个工具没被
+ *    `agents_detected` 探测到时可达)→ 上面两句都不适用,给一句只说事实、
+ *    不解释成因的中性话。套第 2 句会凭空说出"统一技能目录"这个与它无关的位置。
+ */
+function noToolsText(skill: InstalledSkillView): string {
+  if (!skill.localPresent || !skill.body) return t("detail.whereToolsNone");
+  if (skill.canonicalReaders !== null) return t("detail.whereToolsNoneCanonical");
+  return t("detail.whereToolsNoneOther");
 }
 
 /**
@@ -181,9 +274,9 @@ function EachToolBlock({
   };
 
   return (
-    <BlockShell icon={Wrench} title={t("detail.whereTitle2")}>
+    <BlockShell icon={Wrench} title={t("detail.whereTitle2")} testId="where-block-tools">
       {shown.length === 0 ? (
-        t("detail.whereToolsNone")
+        noToolsText(skill)
       ) : (
         <ToolChecks
           dirSlug={skill.dirSlug}

@@ -134,6 +134,36 @@ body {
  * SKILL.md 的正文排版、滚动条。其余一律用 Tailwind utility。
  */
 
+/* 工具勾选框(ToolPicker,v7.1 任务 4)。照设计画布 `ToolPicker.dc.html`:
+   未勾 = 白底 + 1px 描边的空心方块;已勾 = 强调色实心 + 白色对勾
+   (Q5B「状态一律轻量,可点动作才实心」在这颗勾上的落点)。
+   为什么不能只用 utility:`accent-[var(--accent)]` 交给系统画,各平台形态不同
+   (macOS 上是圆角实心方块、Windows 上又是另一副样子),而那个白色对勾是
+   `:checked` 伪类下的背景图,Tailwind 的 arbitrary value 表达它要塞一整段
+   转义过的 data URI 进 className,读起来比这段 CSS 糟得多。
+   本体所在的那一档(disabled + checked)按画布走中性灰而不是强调色:
+   它是一个状态标记,不是可点的动作。 */
+.tool-check {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border-radius: 3px;
+  border: 1px solid var(--border-strong);
+  background-color: var(--surface1);
+}
+.tool-check:checked {
+  border-color: transparent;
+  background-color: var(--accent);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><path d='M20 6 9 17l-5-5'/></svg>");
+  background-size: 9px 9px;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+.tool-check:checked:disabled {
+  background-color: var(--text-3);
+}
+
 /* 技能图标底色:色相由技能名算出(lib/tint.ts),饱和度与亮度按主题各一档。
    内联样式做不到"跟着主题变",所以色相走自定义属性、成色留在 CSS 里。 */
 .skill-tint {
