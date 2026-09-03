@@ -59,6 +59,12 @@ pnpm verify:lock       # 同上,录制 .skill-lock.json(v3)的真实读写行为
 pnpm verify:project-lock  # 同上,录制项目级 skills-lock.json(v1)与上游 hash 口径(v5 新增)
 ```
 
+🔴 **闸按改动面选,不按仪式跑**(2026-09-03 实测):v7.1 任务 4 一行 Rust 都没改
+(`git status` 里 `src-tauri` 零命中),却差点跑一遍 Rust 测试。省时间的第一步不是让命令
+变快,是先问一句**这条命令跟这次改动有关吗**。判据:`git status --short` 看改动面
+——只动 `src/` 就只跑前端三道闸,只动 `src-tauri/` 就只跑 Rust + clippy;
+**提交信息里要写明"没跑哪一道、为什么与本次改动无关"**,别让读者以为是漏跑。
+
 **提交前的四道闸**:`pnpm test` + `pnpm lint` + **`pnpm build:web`** + `cargo test --workspace`
 + `cargo clippy --all-targets -- -D warnings`。`build:web` 那道最容易漏——vitest **不做类型检查**,
 eslint 也不管,只有 `tsc` 会拦。M2 任务 6 就因为只跑了 test+lint,把一处 `.at(-1)`
