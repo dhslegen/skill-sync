@@ -241,6 +241,7 @@ fn candidate_relation_reflects_library_attribution() {
     library.insert(
         "mine".to_string(),
         LibraryEntry {
+            path: String::new(),
             registry_id: "company".into(),
             owner: "skills".into(),
             repo: "skills".into(),
@@ -250,6 +251,7 @@ fn candidate_relation_reflects_library_attribution() {
     library.insert(
         "someone-elses".to_string(),
         LibraryEntry {
+            path: String::new(),
             registry_id: "company".into(),
             owner: "skills".into(),
             repo: "skills".into(),

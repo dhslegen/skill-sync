@@ -7,7 +7,6 @@ import { t } from "@/i18n";
 import {
   isAppError,
   skillLocalDetail,
-  skillReveal,
   type AppError,
   type LocalSkillDetail,
   type LocalSkillTarget,
@@ -18,13 +17,17 @@ interface LocalDetailState {
   target: LocalSkillTarget | null;
   detail: LocalSkillDetail | null;
   error: AppError | null;
-  revealError: AppError | null;
 
   open: (target: LocalSkillTarget) => Promise<void>;
   close: () => void;
-  /** 在访达/资源管理器中显示当前技能目录。 */
-  reveal: () => Promise<void>;
 }
+
+// 🔴 v7.1 任务 3(Q3):这里原先还有 `reveal()` 与 `revealError`
+// ——「打开文件夹」这个动作在详情面板里此前有两个入口(「这台电脑上」块里一颗、
+// 面板底部一颗「在访达中打开」),Q3 拍板只留页脚那一处,而页脚走的是
+// `SkillActionsBlock` 自己的 `skill_reveal`(传本体绝对路径,不是 target)。
+// 这两个成员因此零生产调用方,只剩测试在养着——本项目的教训是"测试养着的死代码
+// 会兜住本该打红的注入信号",所以连同它们的用例一起删掉。
 
 function toAppError(raw: unknown): AppError {
   return isAppError(raw)
@@ -36,10 +39,9 @@ export const useLocalDetail = create<LocalDetailState>((set, get) => ({
   target: null,
   detail: null,
   error: null,
-  revealError: null,
 
   open: async (target) => {
-    set({ target, detail: null, error: null, revealError: null });
+    set({ target, detail: null, error: null });
     try {
       const detail = await skillLocalDetail(target);
       // 等待期间面板被关掉/换了目标,迟到的结果不能顶掉现状
@@ -49,16 +51,6 @@ export const useLocalDetail = create<LocalDetailState>((set, get) => ({
     }
   },
 
-  close: () => set({ target: null, detail: null, error: null, revealError: null }),
+  close: () => set({ target: null, detail: null, error: null }),
 
-  reveal: async () => {
-    const { target } = get();
-    if (!target) return;
-    set({ revealError: null });
-    try {
-      await skillReveal(target);
-    } catch (raw) {
-      set({ revealError: toAppError(raw) });
-    }
-  },
 }));

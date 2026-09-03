@@ -1,8 +1,24 @@
 import { useState } from "react";
 
 import { t } from "@/i18n";
+import { cn } from "@/lib/cn";
 import { isAppError, openLibraryUrl } from "@/lib/ipc";
 import type { RowAction, RowMenuItemKind } from "@/lib/ownership";
+
+/**
+ * 按钮的两档尺寸(v7.1 任务 3)。设计画布里列表行上的按钮是 24px/11.5px
+ * (`Main.dc.html`),详情面板固定页脚上的是 30px/12.5px(`Detail.dc.html`)
+ * ——同一套控件、两个场景两个尺寸。默认 `row`,所以既有调用方一个字不用改。
+ */
+export type ButtonSize = "row" | "footer";
+
+const SIZE_CLASS: Record<ButtonSize, string> = {
+  row: "h-6 px-2.5 text-[11.5px]",
+  // 🔴 `shrink-0` 照画布(每颗页脚按钮都是 `flex:none`)。没有它,页脚里按钮一多
+  // (`conflict` 档会同时有 主按钮/打开文件夹/贡献更改/在技能库里查看/移除 五颗)
+  // 就会被压扁,文字在按钮里折成两行——真机走查看到的正是这种"挤成一团"。
+  footer: "h-[30px] shrink-0 whitespace-nowrap px-3 text-[12.5px]",
+};
 
 /**
  * 「我的技能」一行主按钮的判定表 → 按钮控件,以及「…」菜单条目的判定结果
@@ -23,6 +39,7 @@ export function PrimaryAction({
   pulling,
   sharing,
   openVersions,
+  size = "row",
   onPull,
   onShareChanges,
   onShare,
@@ -32,6 +49,7 @@ export function PrimaryAction({
   pulling: boolean;
   sharing: boolean;
   openVersions: boolean;
+  size?: ButtonSize;
   onPull: () => void;
   onShareChanges: () => void;
   onShare: () => void;
@@ -42,19 +60,19 @@ export function PrimaryAction({
       return null;
     case "chooseVersion":
       return (
-        <SolidButton disabled={openVersions} onClick={onChooseVersion}>
+        <SolidButton size={size} disabled={openVersions} onClick={onChooseVersion}>
           {t("mine.chooseVersion")}
         </SolidButton>
       );
     case "pull":
       return (
-        <SolidButton disabled={pulling} onClick={onPull}>
+        <SolidButton size={size} disabled={pulling} onClick={onPull}>
           {pulling ? t("mine.pulling") : t("mine.pull")}
         </SolidButton>
       );
     case "update":
       return (
-        <SolidButton disabled={pulling} onClick={onPull}>
+        <SolidButton size={size} disabled={pulling} onClick={onPull}>
           {pulling ? t("mine.updating") : t("mine.update")}
         </SolidButton>
       );
@@ -65,26 +83,31 @@ export function PrimaryAction({
           type="button"
           disabled={pulling}
           onClick={onPull}
-          className="h-6 rounded-ctl px-1.5 text-[11.5px] font-medium text-text-2 underline decoration-dotted underline-offset-2 hover:text-text disabled:opacity-50"
+          className={cn(
+            "rounded-ctl font-medium text-text-2 underline decoration-dotted underline-offset-2 hover:text-text disabled:opacity-50",
+            size === "footer"
+              ? "h-[30px] shrink-0 whitespace-nowrap px-2 text-[12.5px]"
+              : "h-6 px-1.5 text-[11.5px]",
+          )}
         >
           {pulling ? t("mine.updating") : t("mine.conflictPending")}
         </button>
       );
     case "contribute":
       return (
-        <OutlineButton disabled={sharing} onClick={onShareChanges}>
+        <OutlineButton size={size} disabled={sharing} onClick={onShareChanges}>
           {sharing ? t("mine.contributing") : t("mine.contribute")}
         </OutlineButton>
       );
     case "shareChanges":
       return (
-        <OutlineButton disabled={sharing} onClick={onShareChanges}>
+        <OutlineButton size={size} disabled={sharing} onClick={onShareChanges}>
           {sharing ? t("mine.sharingChanges") : t("mine.shareChanges")}
         </OutlineButton>
       );
     case "share":
       return (
-        <SolidButton disabled={sharing} onClick={onShare}>
+        <SolidButton size={size} disabled={sharing} onClick={onShare}>
           {t("mine.share")}
         </SolidButton>
       );
@@ -99,7 +122,7 @@ export function PrimaryAction({
             : t("mine.share");
       const Btn = action.blockedAction === "share" ? SolidButton : OutlineButton;
       return (
-        <Btn disabled onClick={() => {}}>
+        <Btn size={size} disabled onClick={() => {}}>
           {label}
         </Btn>
       );
@@ -145,10 +168,12 @@ export function ReviewPendingText({ url }: { url: string | null }) {
 
 export function SolidButton({
   disabled,
+  size = "row",
   onClick,
   children,
 }: {
   disabled?: boolean;
+  size?: ButtonSize;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -157,7 +182,10 @@ export function SolidButton({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="h-6 rounded-ctl bg-accent px-2.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+      className={cn(
+        "rounded-ctl bg-accent font-medium text-white hover:opacity-90 disabled:opacity-50",
+        SIZE_CLASS[size],
+      )}
     >
       {children}
     </button>
@@ -167,12 +195,14 @@ export function SolidButton({
 export function OutlineButton({
   disabled,
   title,
+  size = "row",
   onClick,
   children,
 }: {
   disabled?: boolean;
   /** 原生 `title`(悬浮提示)。目前只有动作区的「改用库里的版本」用它说明后果。 */
   title?: string;
+  size?: ButtonSize;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -182,7 +212,10 @@ export function OutlineButton({
       disabled={disabled}
       title={title}
       onClick={onClick}
-      className="h-6 rounded-ctl border border-border px-2.5 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50"
+      className={cn(
+        "rounded-ctl border border-border font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50",
+        SIZE_CLASS[size],
+      )}
     >
       {children}
     </button>

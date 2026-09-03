@@ -1033,6 +1033,30 @@ export function shareableCardFor(
 }
 
 /**
+ * 「这一行的展示卡片(名字/描述/作者/标签)从哪份索引里取」的**唯一实现**
+ * (v7.1 任务 3 抽出)。
+ *
+ * `InstalledSkillView` 上没有 name/description/author/tags——它们全部来自技能库
+ * 索引。而"该查哪份索引"分两档:`shareable` 区且有外部来源的行,查它自己来源的
+ * 那份({@link shareableCardFor});其余行查**当前浏览的那个库**的索引。
+ *
+ * 原先这段判定只长在 `MySkillsPage.tsx` 的 `cardOf` 里;v7.1 详情面板的概览行
+ * (作者/更新/标签)要问同一个问题,再抄一份就是本项目记录的空转模式 ①
+ * ——两份判定漂移了,没有任何测试会发现。
+ *
+ * 取不到返回 `null`,调用方按"这一列没有可摆的东西"处理(整列不摆),不编。
+ */
+export function cardFor(
+  skill: InstalledSkillView,
+  index: StoreIndexView | null | undefined,
+  shareableIndexes: Map<string, StoreIndexView>,
+) {
+  return skill.section === "shareable"
+    ? shareableCardFor(skill, shareableIndexes)
+    : (index?.skills.find((s) => s.dirSlug === skill.dirSlug) ?? null);
+}
+
+/**
  * 侧边栏角标的计数(M6 任务 3;v7 改按 `rowAction` 重新定义)。
  *
  * 🔴 **v7 起不再是"逐条走 `hasUpdate`"**:v6 的两分区页只有"有没有更新"这一个

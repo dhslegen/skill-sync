@@ -54,6 +54,7 @@ const SKILLS = [
     slug: "api-test-expert",
     name: "接口测试专家",
     description: "设计接口测试用例并执行接口测试,输出测试文档。",
+    tags: ["测试", "文档"],
     section: "installedFrom",
     body: `${CANONICAL}/api-test-expert`,
     contentHash: "h-api-1",
@@ -66,6 +67,7 @@ const SKILLS = [
     slug: "code-annotator",
     name: "代码注释向导",
     description: "为新接手的代码批量添加详细中文注释,让代码像读母语文章一样流畅。",
+    tags: ["代码", "阅读"],
     section: "installedFrom",
     body: `${CLAUDE_DIR}/code-annotator`, // 本体住在工具目录里(v6 二期的旗舰场景)
     contentHash: "h-anno-1",
@@ -282,6 +284,12 @@ function installedSkill(s) {
     shareBlocked: s.shareBlocked ?? null,
     section: s.section,
     review: s.review ?? null,
+    // 「在技能库里查看」的地址由 core 拼(编译期内网地址 + 索引里的真实 path);
+    // 只有确实在公司技能库里的行才有值。这里照那个形状造。
+    libraryUrl:
+      s.section === "shareable"
+        ? null
+        : `http://gitea.internal.example/skills/skills/src/branch/main/skills/${s.slug}`,
     canonicalReaders: s.canonicalReaders ?? null,
   };
 }
@@ -295,7 +303,7 @@ function card(s, hash) {
     hasScripts: false,
     fileCount: 3,
     contentHash: hash,
-    tags: [],
+    tags: s.tags ?? [],
     author: s.section === "sharedTo" ? "赵文浩" : "李明",
   };
 }

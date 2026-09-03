@@ -1,4 +1,5 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SkillActionsBlock } from "./SkillActionsBlock";
@@ -52,11 +53,16 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   shareBlocked: null,
   section: sectionOfRelation(over.relation ?? "installed"),
   review: null,
+  libraryUrl: null,
   canonicalReaders: null,
   ...over,
 });
 
 beforeEach(() => {
+  // 有用例用 mockImplementation 整个换掉实现(测 skill_reveal 抛错),
+  // mockClear 只清调用记录不清实现——不 reset 的话下一条会带着假实现跑。
+  invoke.mockReset();
+  invoke.mockImplementation(async () => null);
   useStoreIndex.setState({ index: null });
   useMySkills.setState({
     list: null,
@@ -80,7 +86,7 @@ const ERR = { code: "REPO_FORBIDDEN", message: "你对这个技能库没有写�
 describe("SkillActionsBlock:分享的结果必须在动作区里看得见", () => {
   it("分享失败:错误摆在动作区里(不依赖 MySkillsPage 挂载)", () => {
     const skill = view();
-    render(<SkillActionsBlock skill={skill} />);
+    render(<SkillActionsBlock skill={skill} remoteChanged={false} />);
     act(() => useMySkills.setState({ shareError: { dirSlug: skill.dirSlug, error: ERR, flow: "changes" as const } }));
 
     expect(screen.getByText(/分享改动没能完成/)).toBeTruthy();
@@ -89,7 +95,7 @@ describe("SkillActionsBlock:分享的结果必须在动作区里看得见", () =
 
   it("直推成功:说「已分享到公司技能库」", () => {
     const skill = view();
-    render(<SkillActionsBlock skill={skill} />);
+    render(<SkillActionsBlock skill={skill} remoteChanged={false} />);
     act(() => useMySkills.setState({ shareDone: { dirSlug: skill.dirSlug, mode: "pushed", flow: "changes" as const } }));
 
     expect(screen.getByText(/改动已分享到公司技能库/)).toBeTruthy();
@@ -100,7 +106,7 @@ describe("SkillActionsBlock:分享的结果必须在动作区里看得见", () =
   // 内容相同的合并请求(`share.rs::review_branch` 的分支名带时间戳)。
   it("走评审成功:说「已提交审核」,不是静默无事发生", () => {
     const skill = view();
-    render(<SkillActionsBlock skill={skill} />);
+    render(<SkillActionsBlock skill={skill} remoteChanged={false} />);
     act(() => useMySkills.setState({ shareDone: { dirSlug: skill.dirSlug, mode: "reviewRequested", flow: "changes" as const } }));
 
     expect(screen.getByText(/改动已提交审核/)).toBeTruthy();
@@ -111,7 +117,7 @@ describe("SkillActionsBlock:分享的结果必须在动作区里看得见", () =
   // 这些键搬到了首次分享也走得到的落点上,所以这个假话是本波引入的。
   it("首次分享成功:说「已分享到公司技能库」,不冒出「改动」两个字", () => {
     const skill = view({ relation: "draft" });
-    render(<SkillActionsBlock skill={skill} />);
+    render(<SkillActionsBlock skill={skill} remoteChanged={false} />);
     act(() =>
       useMySkills.setState({
         shareDone: { dirSlug: skill.dirSlug, mode: "pushed", flow: "share" },
@@ -124,7 +130,7 @@ describe("SkillActionsBlock:分享的结果必须在动作区里看得见", () =
 
   it("首次分享走评审:说「已提交审核」,同样不带「改动」", () => {
     const skill = view({ relation: "draft" });
-    render(<SkillActionsBlock skill={skill} />);
+    render(<SkillActionsBlock skill={skill} remoteChanged={false} />);
     act(() =>
       useMySkills.setState({
         shareDone: { dirSlug: skill.dirSlug, mode: "reviewRequested", flow: "share" },
@@ -137,7 +143,7 @@ describe("SkillActionsBlock:分享的结果必须在动作区里看得见", () =
 
   it("首次分享失败:说「分享没能完成」,不说「分享改动没能完成」", () => {
     const skill = view({ relation: "draft" });
-    render(<SkillActionsBlock skill={skill} />);
+    render(<SkillActionsBlock skill={skill} remoteChanged={false} />);
     act(() =>
       useMySkills.setState({
         shareError: { dirSlug: skill.dirSlug, error: ERR, flow: "share" },
@@ -152,7 +158,7 @@ describe("SkillActionsBlock:分享的结果必须在动作区里看得见", () =
   // ——补了渲染点却不校验归属,技能 B 的面板会显示技能 A 的失败,撒的谎是
   // "哪个技能出了问题"。
   it("技能 A 分享失败时,技能 B 的动作区一个字都不显示", () => {
-    render(<SkillActionsBlock skill={view({ dirSlug: "other-skill" })} />);
+    render(<SkillActionsBlock skill={view({ dirSlug: "other-skill" })} remoteChanged={false} />);
     act(() => useMySkills.setState({ shareError: { dirSlug: "weekly-report", error: ERR, flow: "changes" as const } }));
 
     expect(screen.queryByText(/分享改动没能完成/)).toBeNull();
@@ -160,9 +166,110 @@ describe("SkillActionsBlock:分享的结果必须在动作区里看得见", () =
   });
 
   it("技能 A 分享成功时,技能 B 的动作区不冒充「已分享」", () => {
-    render(<SkillActionsBlock skill={view({ dirSlug: "other-skill" })} />);
+    render(<SkillActionsBlock skill={view({ dirSlug: "other-skill" })} remoteChanged={false} />);
     act(() => useMySkills.setState({ shareDone: { dirSlug: "weekly-report", mode: "pushed", flow: "changes" as const } }));
 
     expect(screen.queryByText(/改动已分享到公司技能库/)).toBeNull();
+  });
+});
+
+/**
+ * v7.1 任务 3(Q3):详情面板里「打开文件夹」只此一处——它从
+ * `WhereBlocks`「这台电脑上」那一块搬到了这个页脚。下面两条命题是从
+ * `WhereBlocks.test.tsx` **原样搬过来的**(不是新写、也不是放宽),
+ * 搬家的理由见 `SkillActionsBlock.tsx` 的组件文档。
+ */
+describe("打开文件夹(Q3:详情面板里只此一处)", () => {
+  it("传 body(本体绝对路径),绝不传 dirSlug", async () => {
+    const user = userEvent.setup();
+    render(<SkillActionsBlock skill={view()} remoteChanged={false} />);
+    await user.click(screen.getByRole("button", { name: "打开文件夹" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("skill_reveal", expect.anything()));
+    const call = invoke.mock.calls.find((c) => c[0] === "skill_reveal");
+    expect(call?.[1]).toEqual({ args: { path: "/h/.claude/skills/weekly-report" } });
+  });
+
+  it("失败要有渲染点,不能静默吞掉", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_reveal") throw { code: "FS_NOT_A_SKILL", message: "那不是一个技能目录" };
+      return null;
+    });
+    const user = userEvent.setup();
+    render(<SkillActionsBlock skill={view()} remoteChanged={false} />);
+    await user.click(screen.getByRole("button", { name: "打开文件夹" }));
+    expect(await screen.findByText(/那不是一个技能目录/)).toBeInTheDocument();
+  });
+
+  it("页脚里「打开文件夹」只有一个,不是两个入口", () => {
+    render(<SkillActionsBlock skill={view()} remoteChanged={false} />);
+    expect(screen.getAllByRole("button", { name: "打开文件夹" })).toHaveLength(1);
+  });
+
+  it("本体不在这台电脑上(body 为空)时不摆这个按钮", () => {
+    render(
+      <SkillActionsBlock
+        skill={view({ relation: "shared", localPresent: false, body: "" })}
+        remoteChanged={false}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "打开文件夹" })).not.toBeInTheDocument();
+  });
+});
+
+describe("页脚的「在技能库里查看」:core 拼得出地址才摆", () => {
+  const URL = "http://gitea.internal.example/skills/skills/src/branch/main/skills/weekly-report";
+
+  it("core 给了地址就摆出来,点了原样交给 open_library_url", async () => {
+    const user = userEvent.setup();
+    render(<SkillActionsBlock skill={view({ libraryUrl: URL })} remoteChanged={false} />);
+    expect(screen.getAllByRole("button", { name: "在技能库里查看" })).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "在技能库里查看" }));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "open_library_url",
+        expect.objectContaining({ args: { url: URL } }),
+      ),
+    );
+  });
+
+  // 🔴 「拼不出来就不摆」——不摆比摆一个必然报错(404)的按钮好。
+  it("core 拼不出来(libraryUrl 为 null)时整颗不摆", () => {
+    render(<SkillActionsBlock skill={view()} remoteChanged={false} />);
+    expect(screen.queryByRole("button", { name: "在技能库里查看" })).not.toBeInTheDocument();
+  });
+
+  it("打开失败要有渲染点,不能静默吞掉", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "open_library_url") throw { code: "REPO_UNTRUSTED_URL", message: "这个链接不属于任何已配置的技能库" };
+      return null;
+    });
+    const user = userEvent.setup();
+    render(<SkillActionsBlock skill={view({ libraryUrl: URL })} remoteChanged={false} />);
+    await user.click(screen.getByRole("button", { name: "在技能库里查看" }));
+    expect(await screen.findByText(/不属于任何已配置的技能库/)).toBeInTheDocument();
+  });
+
+  // 「审核中」那一档是「可分享到」区(还没进库),core 恒给 null —— 两颗同名按钮
+  // 不会同屏。这一条正面钉住那个前提。
+  it("审核中的行只有 PrimaryAction 里那一颗,不会出现两颗同名按钮", () => {
+    render(
+      <SkillActionsBlock
+        skill={view({ relation: "draft", localModified: false, review: { url: "http://g.local/pulls/9" } })}
+        remoteChanged={false}
+      />,
+    );
+    expect(screen.getByText("审核中")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "在技能库里查看" })).toHaveLength(1);
+  });
+
+  it("审核中但 url 为 null 时,「审核中」照摆、链接不摆(不用空串冒充)", () => {
+    render(
+      <SkillActionsBlock
+        skill={view({ relation: "draft", localModified: false, review: { url: null } })}
+        remoteChanged={false}
+      />,
+    );
+    expect(screen.getByText("审核中")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "在技能库里查看" })).not.toBeInTheDocument();
   });
 });

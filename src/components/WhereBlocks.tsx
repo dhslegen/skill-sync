@@ -1,12 +1,12 @@
-import { ExternalLink, FolderOpen, Laptop, Library, Wrench, type LucideIcon } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Laptop, Library, Wrench, type LucideIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Icon } from "@/components/Icon";
 import { ToolChecks } from "@/components/ToolChecks";
 import { t } from "@/i18n";
 import { isAppError, openLibraryUrl, skillReveal, type InstalledSkillView, type Section } from "@/lib/ipc";
-import { hasUpdate, useMySkills, visibleTools } from "@/store/my-skills";
-import { useStoreIndex } from "@/store/store-index";
+import { useDetailCollapse } from "@/store/detail-collapse";
+import { useMySkills, visibleTools } from "@/store/my-skills";
 
 /**
  * 详情面板「在哪」三块(v7 任务 6):产品语言「一个技能,三个在哪」的落点
@@ -91,7 +91,15 @@ function BlockShell({
   );
 }
 
-/** 块 1:这台电脑上。本体路径 + 「打开文件夹」,失败要有渲染点(不吞)。 */
+/**
+ * 块 1:这台电脑上。本体路径 + 一句"它放在哪一类位置"的说明。
+ *
+ * 🔴 **这里刻意没有「打开文件夹」按钮**(v7.1 任务 3,Q3 拍板):这个动作在
+ * 详情面板里只留**一处**,在固定页脚(`SkillActionsBlock`)。此前是两处——
+ * 这一块里一颗「打开文件夹」,面板底部还浮着一颗「在访达中打开」,同一个动作
+ * 两个入口两种叫法,而后者在 Windows 上说"访达"还是错的。
+ * 失败的渲染点随按钮一起搬去了页脚,不是被删掉了。
+ */
 function ThisComputerBlock({
   skill,
   agentNames,
@@ -101,7 +109,6 @@ function ThisComputerBlock({
 }) {
   const canonicalDir = useMySkills((s) => s.canonicalDir);
   const toolDirs = useMySkills((s) => s.toolDirs);
-  const [revealError, setRevealError] = useState<string | null>(null);
 
   if (!skill.localPresent || !skill.body) {
     return (
@@ -119,28 +126,6 @@ function ThisComputerBlock({
       <p className="mt-1 truncate font-mono text-[12px] text-text-3" title={skill.body}>
         {skill.body}
       </p>
-      <button
-        type="button"
-        onClick={() => {
-          setRevealError(null);
-          // 🔴 传 body(本体的绝对路径),绝不传 dirSlug——后者会被 skill_reveal
-          // 解析成统一目录下的同名目录,本体很可能根本不在那里。
-          skillReveal({ path: skill.body }).catch((raw: unknown) =>
-            setRevealError(isAppError(raw) ? raw.message : t("error.generic")),
-          );
-        }}
-        className="mt-1.5 inline-flex h-6 items-center gap-1.5 rounded-ctl border border-border px-2 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
-      >
-        <Icon icon={FolderOpen} size={12} />
-        {t("mine.openFolder")}
-      </button>
-      {revealError && (
-        <p className="mt-1 text-[11px] text-[#c0392b] dark:text-[#e0705f]">
-          {t("mine.openFolderFailed")}
-          {t("punct.labelSeparator")}
-          {revealError}
-        </p>
-      )}
     </BlockShell>
   );
 }
@@ -289,6 +274,15 @@ function EachToolBlock({
  * 上没有,不编;"有没有更新"只在能确定为真时才说,判据是既有的唯一实现
  * `hasUpdate`(`store/my-skills.ts`)。
  *
+ * 🔴 **`remoteChanged` 由调用方喂进来,这一块自己不再算**(v7.1 任务 3)。
+ * 原先它自己调 `hasUpdate(skill, index)`,而「可分享到」区**外部来源**的行,
+ * "有没有新版"要按它自己那个源的索引判(`remoteChangedForShareable`)——
+ * `hasUpdate` 对那些行恒为 false,于是这一行会静默消失。现在调用方
+ * (`WhereBlocks` ← `DetailPanel`)按 section 分流算好一份,折叠头的结论行、
+ * 这一块、页脚的主按钮**吃的都是同一个布尔量**,不会互相矛盾。
+ *
+ * 下面这段讲的仍然成立,只是"拿不准"的判定现在发生在调用方那一层:
+ *
  * 🔴 **这一行是"只在确定为真时才说"的单向判定,不是一个双向状态字**
  * (终审复审轮 1,I-A:这段注释原先拿 `sharedState`/`localEqualsRemote` 当活物
  * 讲权衡,而那两个函数已随 v7 任务 7 的旧两分区页一起删除;下面写的是同一条
@@ -307,10 +301,13 @@ function EachToolBlock({
  * 负责喂对源(`MySkillsPage`/`SkillActionsBlock` 各自分流 `hasUpdate` 与
  * `remoteChangedForShareable`),这一块手上没有那份分流所需的 `shareableIndexes`
  * 语境。 */
-function LibraryBlock({ skill }: { skill: InstalledSkillView }) {
-  const index = useStoreIndex((s) => s.index);
-  const remoteChanged = hasUpdate(skill, index);
-
+function LibraryBlock({
+  skill,
+  remoteChanged,
+}: {
+  skill: InstalledSkillView;
+  remoteChanged: boolean;
+}) {
   return (
     <BlockShell icon={Library} title={t("detail.whereTitle3")}>
       <p>{t(SECTION_TITLE[skill.section])}</p>
@@ -357,18 +354,104 @@ function ReviewLink({ url }: { url: string }) {
   );
 }
 
+/**
+ * 折叠头上那一句结论的**唯一实现**(v7.1 任务 3,Q2)。
+ *
+ * # 🔴 收起来的东西里"有没有在等我",必须在这一行里说出来
+ *
+ * 这是本项目已经确立的原则(「我的技能」三区折叠那次定的):折叠不得把例外
+ * 藏掉。所以「库里有新版」「审核中」这类**要处理**的信息,收起态下照样出现在
+ * 结论里;能折起来的只是路径清单与勾选这些细节。
+ *
+ * 判据一律复用既有实现,不新写一份:
+ * - 第一段 = 这个技能落在哪个区(`SECTION_TITLE`,与「我的技能」页的区标题
+ *   同一份文案表);
+ * - 「库里有新版」= 调用方按 section 分流算好的 `remoteChanged`
+ *   (`hasUpdate` / `remoteChangedForShareable`,见 {@link LibraryBlock} 的文档);
+ * - 「审核中」= `skill.review`(core 侧算好的,前端不再判一次)。
+ *
+ * 🔴 **刻意不数"几个工具开着"**(v7.1 用户裁定):那个数「容易计算错误还不讨好」
+ * ——`tools` 与 `canonicalReaders` 是互补的两半,合起来数一次、两边口径再漂一次,
+ * 用户拿到的是一个既要维护又没人真的会用的数字。结论行只回答两件事:这个技能
+ * 落在哪个区、有没有事在等你。**"有没有事在等你"这一半绝不能跟着删**:折叠不得
+ * 把例外藏掉,是本项目已确立的原则。
+ *
+ * 本地没有本体的行(第 4 源:库里记着是我分享的,这台电脑上没有文件)整句
+ * 退回「这台电脑上没有这个技能的文件」——对这种行说它落在哪个区没有意义。
+ */
+export function whereSummary(skill: InstalledSkillView, remoteChanged: boolean): string[] {
+  if (!skill.localPresent || !skill.body) return [t("detail.whereNotHere")];
+
+  const parts = [t(SECTION_TITLE[skill.section])];
+  if (remoteChanged) parts.push(t("detail.whereSummaryUpdate"));
+  if (skill.review) parts.push(t("detail.whereReviewPending"));
+  return parts;
+}
+
+/**
+ * 详情面板里的「在哪」:一行折叠头(默认收起)+ 展开后的三块(v7.1 任务 3,Q2)。
+ *
+ * # 为什么默认收起
+ *
+ * Q1A 拍板「md 是主角」。三块位置信息此前恒占首屏一大半,正文被挤到折叠线以下
+ * ——打开一个技能的详情,先看到的却不是它是什么。收起之后正文拿回 `flex:1`,
+ * 位置信息压成一行:等宽路径 + 一句结论。
+ *
+ * 折叠状态记在 localStorage(`store/detail-collapse.ts`),与「我的技能」三区
+ * 的折叠是两个 store、默认值相反,理由见那个文件的文档。
+ *
+ * # 可访问性
+ *
+ * 折叠头是 `<button>`,可访问名就是它的可见文字(路径 + 结论),**刻意不加
+ * `aria-label`**;`aria-expanded` 跟实际展示态走,`aria-controls` 指向下面
+ * 那个三块容器的 `id`(与 `MySkillsPage` 的 `SectionHeader` 同一套写法)。
+ */
 export function WhereBlocks({
   skill,
   agentNames,
+  remoteChanged,
 }: {
   skill: InstalledSkillView;
   agentNames: Map<string, string>;
+  /** 「库里那一版变了没有」——调用方按 section 分流算好,见 {@link LibraryBlock}。 */
+  remoteChanged: boolean;
 }) {
+  const expanded = useDetailCollapse((s) => s.whereExpanded);
+  const toggle = useDetailCollapse((s) => s.toggleWhere);
+  const bodyId = "detail-where-blocks";
+  const summary = whereSummary(skill, remoteChanged).join(t("punct.middleDot"));
+
   return (
     <div className="px-5">
-      <ThisComputerBlock skill={skill} agentNames={agentNames} />
-      <EachToolBlock skill={skill} agentNames={agentNames} />
-      <LibraryBlock skill={skill} />
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={bodyId}
+        onClick={toggle}
+        data-testid="where-toggle"
+        className="grid w-full grid-cols-[20px_minmax(0,1fr)] gap-x-2.5 border-t border-border py-2.5 text-left"
+      >
+        <Icon icon={expanded ? ChevronDown : ChevronRight} size={15} className="mt-0.5 text-text-3" />
+        <span className="min-w-0">
+          {/* 🔴 没有本体时**不摆这一行**:`whereSummary` 对这类行返回的就是
+              「这台电脑上没有这个技能的文件」,这里再拿它兜底就是同一句话上下
+              叠两遍(展开后加上块 1 是三遍)。没有路径可显示时,结论行自己
+              已经把这件事说清楚了。 */}
+          {skill.body && (
+            <span className="block truncate font-mono text-[12px] text-text" title={skill.body}>
+              {skill.body}
+            </span>
+          )}
+          <span className="mt-0.5 block truncate text-[11.5px] text-text-3">{summary}</span>
+        </span>
+      </button>
+      {expanded && (
+        <div id={bodyId} data-testid="where-blocks" className="border-t border-border">
+          <ThisComputerBlock skill={skill} agentNames={agentNames} />
+          <EachToolBlock skill={skill} agentNames={agentNames} />
+          <LibraryBlock skill={skill} remoteChanged={remoteChanged} />
+        </div>
+      )}
     </div>
   );
 }

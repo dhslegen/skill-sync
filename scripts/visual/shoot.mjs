@@ -68,12 +68,43 @@ const SCREENS = [
   },
   {
     id: "03-detail-bottom",
-    title: "详情面板 · 滚到底(现在的动作区与底部「在访达中打开」)",
+    title: "详情面板 · 滚到底(固定页脚;正文滚动不影响它)",
     async run(page, ctx) {
       await ctx.gotoMine(page);
       await page.getByTestId("row-code-annotator-body").click();
       await page.waitForTimeout(500);
       await ctx.scrollPanelToBottom(page);
+      await page.waitForTimeout(300);
+    },
+  },
+  {
+    id: "04-detail-where-expanded",
+    title: "详情面板 ·「在哪」折叠头展开态(本体住在工具目录里)",
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      await page.getByTestId("row-code-annotator-body").click();
+      await page.waitForTimeout(500);
+      await page.getByTestId("where-toggle").click();
+      await page.waitForTimeout(300);
+    },
+  },
+  {
+    id: "05-detail-canonical-collapsed",
+    title: "详情面板 · 本体住统一技能目录(canonicalReaders 那一档)· 收起态",
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      await page.getByTestId("row-api-test-expert-body").click();
+      await page.waitForTimeout(500);
+    },
+  },
+  {
+    id: "06-detail-canonical-expanded",
+    title: "详情面板 · 本体住统一技能目录 · 展开态(任务 4 要改的就是这一屏)",
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      await page.getByTestId("row-api-test-expert-body").click();
+      await page.waitForTimeout(500);
+      await page.getByTestId("where-toggle").click();
       await page.waitForTimeout(300);
     },
   },

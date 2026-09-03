@@ -1,10 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { bodyLocationText, WhereBlocks } from "./WhereBlocks";
+import { bodyLocationText, WhereBlocks, whereSummary } from "./WhereBlocks";
 import type { InstalledSkillView, Section } from "@/lib/ipc";
 import { useMySkills } from "@/store/my-skills";
+import { useDetailCollapse } from "@/store/detail-collapse";
 import { useStoreIndex } from "@/store/store-index";
 
 async function defaultInvoke(cmd: string, args?: unknown): Promise<unknown> {
@@ -116,6 +117,7 @@ function mk(
     shareBlocked: null,
     section,
     review: null,
+    libraryUrl: null,
     canonicalReaders: null,
     ...over,
   };
@@ -137,50 +139,47 @@ beforeEach(() => {
     toolFailuresFor: null,
   });
   useStoreIndex.setState({ index: null });
+  // 折叠头默认收起(v7.1 任务 3)。下面这一大批用例断言的是**展开之后**的三块,
+  // 所以统一先展开——这是给测试补一步交互,不是把断言放宽:"默认收起"这条
+  // 命题由 describe("折叠头") 里自己的用例正面钉住。
+  useDetailCollapse.setState({ whereExpanded: true });
 });
 
 describe("WhereBlocks", () => {
   it("三块都在,顺序是 这台电脑上 → 各个工具里 → 技能库里", () => {
-    render(<WhereBlocks skill={mk("x", "installedFrom")} agentNames={NAMES} />);
+    render(<WhereBlocks skill={mk("x", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
     const titles = screen.getAllByTestId("where-title").map((e) => e.textContent);
     expect(titles).toEqual(["这台电脑上", "各个工具里", "技能库里"]);
   });
 
   it("块 1:本体住统一目录时,「这台电脑上」不点名任何工具,且路径原样展示", () => {
-    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} />);
-    expect(screen.getByText(/统一技能目录/)).toBeInTheDocument();
-    expect(screen.getByText(`${CANONICAL}/weekly-report`)).toBeInTheDocument();
+    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
+    // 路径在折叠头上也有一份,所以断言范围收进展开出来的那三块
+    const blocks = within(screen.getByTestId("where-blocks"));
+    expect(blocks.getByText(/统一技能目录/)).toBeInTheDocument();
+    expect(blocks.getByText(`${CANONICAL}/weekly-report`)).toBeInTheDocument();
     expect(screen.queryByText(/Zed 本体在这里/)).not.toBeInTheDocument();
   });
 
-  it("块 1:「打开文件夹」传 body(本体绝对路径),绝不传 dirSlug", async () => {
-    const user = userEvent.setup();
-    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} />);
-    await user.click(screen.getByRole("button", { name: "打开文件夹" }));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("skill_reveal", expect.anything()));
-    const call = invoke.mock.calls.find((c) => c[0] === "skill_reveal");
-    expect(call?.[1]).toEqual({ args: { path: `${CANONICAL}/weekly-report` } });
-  });
-
-  it("块 1:打开文件夹失败要显示错误,不能静默吞掉", async () => {
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "skill_reveal") throw { code: "FS_NOT_A_SKILL", message: "那不是一个技能目录" };
-      return null;
-    });
-    const user = userEvent.setup();
-    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} />);
-    await user.click(screen.getByRole("button", { name: "打开文件夹" }));
-    expect(await screen.findByText(/那不是一个技能目录/)).toBeInTheDocument();
+  // 🔴 原先这里有两条用例:「打开文件夹」传 body 不传 dirSlug、失败要有渲染点。
+  // Q3 拍板把这个动作收进详情面板的固定页脚(同一个动作此前有两个入口两种叫法),
+  // 所以**那两条命题原样搬去了 `SkillActionsBlock.test.tsx`**(见那边的
+  // describe「打开文件夹(Q3:详情面板里只此一处)」),不是被删掉了。
+  // 这里留一条负向断言,钉住"这一块里不再有第二个入口"。
+  it("块 1:不再摆「打开文件夹」——那个动作只在页脚出现一次(Q3)", () => {
+    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
+    expect(screen.queryByRole("button", { name: "打开文件夹" })).not.toBeInTheDocument();
   });
 
   it("块 1:本体不在这台电脑上时,给出对应文案,不显示路径与打开按钮", () => {
     render(
       <WhereBlocks
         skill={mk("gone", "sharedTo", { localPresent: false, body: "", tools: [] })}
-        agentNames={NAMES}
+        agentNames={NAMES} remoteChanged={false}
       />,
     );
-    expect(screen.getByText("这台电脑上没有这个技能的文件")).toBeInTheDocument();
+    const blocks = within(screen.getByTestId("where-blocks"));
+    expect(blocks.getByText("这台电脑上没有这个技能的文件")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "打开文件夹" })).not.toBeInTheDocument();
   });
 
@@ -193,7 +192,7 @@ describe("WhereBlocks", () => {
             { agent: "zed", state: "off" },
           ],
         })}
-        agentNames={NAMES}
+        agentNames={NAMES} remoteChanged={false}
       />,
     );
     expect(screen.getByRole("checkbox", { name: /Claude Code/ })).toBeChecked();
@@ -204,7 +203,7 @@ describe("WhereBlocks", () => {
     render(
       <WhereBlocks
         skill={mk("gone", "sharedTo", { localPresent: false, body: "", tools: [] })}
-        agentNames={NAMES}
+        agentNames={NAMES} remoteChanged={false}
       />,
     );
     expect(screen.getByText("这台电脑上没有本体,暂时没有工具在用它")).toBeInTheDocument();
@@ -245,7 +244,7 @@ describe("WhereBlocks", () => {
               { agent: "zed", state: "off" },
             ],
           })}
-          agentNames={NAMES}
+          agentNames={NAMES} remoteChanged={false}
         />,
       );
       await user.click(screen.getByRole("checkbox", { name: /Zed/ }));
@@ -267,7 +266,7 @@ describe("WhereBlocks", () => {
           skill={mk("weekly-report", "installedFrom", {
             tools: [{ agent: "claude-code", state: "linked" }],
           })}
-          agentNames={NAMES}
+          agentNames={NAMES} remoteChanged={false}
         />,
       );
       expect(screen.getByRole("checkbox", { name: /Claude Code/ })).toBeDisabled();
@@ -283,7 +282,7 @@ describe("WhereBlocks", () => {
           skill={mk("weekly-report", "installedFrom", {
             tools: [{ agent: "claude-code", state: "linked" }],
           })}
-          agentNames={NAMES}
+          agentNames={NAMES} remoteChanged={false}
         />,
       );
       expect(screen.getByText(/没能改动 AI 工具的启用状态/)).toBeInTheDocument();
@@ -307,7 +306,7 @@ describe("WhereBlocks", () => {
           skill={mk("skill-b", "installedFrom", {
             tools: [{ agent: "claude-code", state: "linked" }],
           })}
-          agentNames={NAMES}
+          agentNames={NAMES} remoteChanged={false}
         />,
       );
       expect(screen.queryByText("有 1 处需要你看一下")).not.toBeInTheDocument();
@@ -326,7 +325,7 @@ describe("WhereBlocks", () => {
           skill={mk("skill-a", "installedFrom", {
             tools: [{ agent: "claude-code", state: "linked" }],
           })}
-          agentNames={NAMES}
+          agentNames={NAMES} remoteChanged={false}
         />,
       );
       expect(screen.getByText("有 1 处需要你看一下")).toBeInTheDocument();
@@ -335,61 +334,36 @@ describe("WhereBlocks", () => {
   });
 
   it("块 3:显示这个技能在公司技能库里的分区与来源", () => {
-    render(<WhereBlocks skill={mk("weekly-report", "sharedTo")} agentNames={NAMES} />);
-    expect(screen.getByText("已分享到技能库")).toBeInTheDocument();
-    expect(screen.getByText("来源 skills/skills")).toBeInTheDocument();
+    render(<WhereBlocks skill={mk("weekly-report", "sharedTo")} agentNames={NAMES} remoteChanged={false} />);
+    // 区名在折叠头的结论行上也有一份,断言范围收进展开出来的三块
+    const blocks = within(screen.getByTestId("where-blocks"));
+    expect(blocks.getByText("已分享到技能库")).toBeInTheDocument();
+    expect(blocks.getByText("来源 skills/skills")).toBeInTheDocument();
   });
 
   it("块 3:草稿(还没分享过)不编造来源,说清还没分享到任何技能库", () => {
     render(
       <WhereBlocks
         skill={mk("draft-x", "shareable", { sourceLabel: null })}
-        agentNames={NAMES}
+        agentNames={NAMES} remoteChanged={false}
       />,
     );
-    expect(screen.getByText("可分享到技能库")).toBeInTheDocument();
-    expect(screen.getByText("还没有分享到任何技能库")).toBeInTheDocument();
+    const blocks = within(screen.getByTestId("where-blocks"));
+    expect(blocks.getByText("可分享到技能库")).toBeInTheDocument();
+    expect(blocks.getByText("还没有分享到任何技能库")).toBeInTheDocument();
   });
 
-  it("块 3:确定库里有新版本时才说「有新版本」,复用既有的唯一判定 hasUpdate", () => {
-    useStoreIndex.setState({
-      index: {
-        registryId: "company",
-        owner: "skills",
-        repo: "skills",
-        branch: "main",
-        commitSha: "z",
-        committedAt: "2026-08-20T00:00:00.000Z",
-        fetchedAt: 1,
-        skills: [{ dirSlug: "weekly-report", contentHash: "sha256:newer" } as never],
-        skipped: [],
-        fromCache: false,
-        offline: false,
-        curated: [],
-      },
-    });
-    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} />);
+  // 「库里那一版变了没有」自 v7.1 任务 3 起由调用方按 section 分流算好后喂进来
+  // (`hasUpdate` / `remoteChangedForShareable`),这一块不再自己算——判定本身
+  // 的护栏在 `store/my-skills.ts` 的单测与 `DetailPanel.test.tsx`(那边从真实的
+  // `useStoreIndex` 索引出发,断言结论行真的说出了「库里有新版」)。
+  it("块 3:确定库里有新版本时才说「有新版本」", () => {
+    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={true} />);
     expect(screen.getByText("技能库里有新版本")).toBeInTheDocument();
   });
 
   it("块 3:内容指纹一致时不显示「有新版本」,不猜", () => {
-    useStoreIndex.setState({
-      index: {
-        registryId: "company",
-        owner: "skills",
-        repo: "skills",
-        branch: "main",
-        commitSha: "z",
-        committedAt: "2026-08-20T00:00:00.000Z",
-        fetchedAt: 1,
-        skills: [{ dirSlug: "weekly-report", contentHash: "sha256:base" } as never],
-        skipped: [],
-        fromCache: false,
-        offline: false,
-        curated: [],
-      },
-    });
-    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} />);
+    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
     expect(screen.queryByText("技能库里有新版本")).not.toBeInTheDocument();
   });
 
@@ -400,7 +374,7 @@ describe("WhereBlocks", () => {
         skill={mk("weekly-report", "shareable", {
           review: { url: "http://gitea.local/skills/skills/pulls/9" },
         })}
-        agentNames={NAMES}
+        agentNames={NAMES} remoteChanged={false}
       />,
     );
     expect(screen.getByText("审核中")).toBeInTheDocument();
@@ -417,7 +391,7 @@ describe("WhereBlocks", () => {
     render(
       <WhereBlocks
         skill={mk("weekly-report", "shareable", { review: { url: null } })}
-        agentNames={NAMES}
+        agentNames={NAMES} remoteChanged={false}
       />,
     );
     expect(screen.getByText("审核中")).toBeInTheDocument();
@@ -426,8 +400,94 @@ describe("WhereBlocks", () => {
 
   it("三块外层左右留白与元信息行一致(px-5)", () => {
     const { container } = render(
-      <WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} />,
+      <WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />,
     );
     expect(container.firstElementChild?.className).toContain("px-5");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v7.1 任务 3(Q2):「在哪」压成一行折叠头,默认收起,结论恒可见。
+// ---------------------------------------------------------------------------
+
+describe("whereSummary:折起来之后那一行结论", () => {
+  // v7.1 用户裁定:结论行**不数"几个工具开着"**(容易算错还不讨好)。
+  // 常态就只有一句区名;"有没有事在等你"那几句照旧(下面几条钉住)。
+  it("常态:只有区名,不数工具", () => {
+    expect(whereSummary(mk("x", "installedFrom"), false)).toEqual(["安装自技能库"]);
+  });
+
+  // 🔴 这是折叠必须过的那道闸:收起来的东西里"有没有在等我",结论行要说出来。
+  it("库里有新版时,结论里必须出现「库里有新版」", () => {
+    expect(whereSummary(mk("x", "installedFrom"), true)).toContain("库里有新版");
+  });
+
+  it("审核中时,结论里必须出现「审核中」", () => {
+    const skill = mk("x", "shareable", { review: { url: null } });
+    expect(whereSummary(skill, false)).toContain("审核中");
+  });
+
+  it("两件事同时成立时两句都在,一件都不许被另一件挤掉", () => {
+    const skill = mk("x", "shareable", { review: { url: null } });
+    const parts = whereSummary(skill, true);
+    expect(parts).toContain("库里有新版");
+    expect(parts).toContain("审核中");
+  });
+
+  it("🔴 无论工具怎么摆,结论行都不出现工具计数", () => {
+    const skill = mk("x", "installedFrom", {
+      tools: [{ agent: "claude-code", state: "linked" }],
+      canonicalReaders: ["Cline", "Cursor", "Zed"],
+    });
+    expect(whereSummary(skill, false).join("|")).not.toMatch(/工具|个/);
+  });
+
+  it("本体不在这台电脑上时整句退回「没有这个技能的文件」,不编工具数", () => {
+    const skill = mk("gone", "sharedTo", { localPresent: false, body: "", tools: [] });
+    expect(whereSummary(skill, false)).toEqual(["这台电脑上没有这个技能的文件"]);
+  });
+});
+
+describe("WhereBlocks 折叠头", () => {
+  it("收起时三块都不渲染,只剩路径与结论那一行", () => {
+    useDetailCollapse.setState({ whereExpanded: false });
+    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
+    expect(screen.queryAllByTestId("where-title")).toHaveLength(0);
+    expect(screen.getByTestId("where-toggle")).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText(`${CANONICAL}/weekly-report`)).toBeInTheDocument();
+  });
+
+  it("🔴 收起状态下,「库里有新版」照样看得见——折叠不得把例外藏掉", () => {
+    useDetailCollapse.setState({ whereExpanded: false });
+    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={true} />);
+    expect(screen.getByTestId("where-toggle").textContent).toMatch(/库里有新版/);
+  });
+
+  // 🔴 复审抓到的回归:折叠头的等宽行原先写成 `skill.body || whereNotHere`,
+  // 而 `whereSummary` 对同一类行返回的**就是**那句话——收起态同一句话上下叠两遍,
+  // 展开后加上块 1 是三遍。可达路径是第 4 源(库里记着是我分享的、本地没有本体)。
+  it("本体不在这台电脑上时,那句话在收起态恰好出现一次(不叠两遍)", () => {
+    useDetailCollapse.setState({ whereExpanded: false });
+    render(
+      <WhereBlocks
+        skill={mk("gone", "sharedTo", { localPresent: false, body: "", tools: [] })}
+        agentNames={NAMES}
+        remoteChanged={false}
+      />,
+    );
+    expect(screen.getAllByText("这台电脑上没有这个技能的文件")).toHaveLength(1);
+  });
+
+  it("点一下折叠头就展开,三块出现", async () => {
+    useDetailCollapse.setState({ whereExpanded: false });
+    const user = userEvent.setup();
+    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
+    await user.click(screen.getByTestId("where-toggle"));
+    expect(screen.getAllByTestId("where-title").map((e) => e.textContent)).toEqual([
+      "这台电脑上",
+      "各个工具里",
+      "技能库里",
+    ]);
+    expect(screen.getByTestId("where-toggle")).toHaveAttribute("aria-expanded", "true");
   });
 });

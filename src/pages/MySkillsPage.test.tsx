@@ -78,6 +78,7 @@ function mk(dirSlug: string, section: Section, over: Partial<Fixture> = {}): Fix
     shareBlocked: null,
     section,
     review: null,
+    libraryUrl: null,
     canonicalReaders: null,
     remote,
     ...rest,
@@ -170,7 +171,7 @@ function resetStores() {
   useMineSearch.setState({ query: "" });
   useStoreIndex.setState({ index: null, activeRegistry: "company", activeRepo: "skills/skills" });
   useShare.setState({ targetRepo: null, preview: "unknown" });
-  useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+  useLocalDetail.setState({ target: null, detail: null, error: null });
   useInstall.setState({
     phase: "idle",
     dirSlug: null,

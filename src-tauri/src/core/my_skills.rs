@@ -172,6 +172,10 @@ pub struct InstalledRow {
     /// 「可分享到」区的审核态(v7 任务 2)。`build` 里恒 `None`——由
     /// `commands::installed_list` 在 `build` 之后异步补查,见 [`ReviewView`]。
     pub review: Option<ReviewView>,
+    /// 「在技能库里查看」那颗按钮要打开的网页地址(v7.1 任务 3)。
+    /// `None` = 拼不出来,界面**不摆这颗按钮**(不摆比摆一个必然报错的按钮好)。
+    /// 判据与拼法见 [`library_url`]。
+    pub library_url: Option<String>,
     /// 本体住在**统一技能目录**(canonical)时,这台电脑上正读着那个目录的工具
     /// **展示名**;本体不在 canonical 时是 `None`(v7.1 任务 1)。
     ///
@@ -449,6 +453,7 @@ fn attribution_from_refs(
                 registry_id: registry_id.clone(),
                 owner: repo.owner.clone(),
                 repo: repo.repo.clone(),
+                path: skill.path.clone(),
                 author: skill.attribution.as_ref().map(|a| a.author.clone()),
             });
         }
@@ -549,6 +554,64 @@ fn in_builtin_library(
     remote_hash: Option<&str>,
 ) -> bool {
     builtin_record || author.is_some() || remote_hash.is_some_and(|h| !h.is_empty() && h == local_hash)
+}
+
+/// 「在技能库里查看」那颗按钮要打开的网页地址(v7.1 任务 3,用户裁定要严格照
+/// 设计稿摆出来)。
+///
+/// # 🔴 为什么拼接必须在 core 侧
+///
+/// 铁律 5:内网 Gitea 地址是编译期常量([`crate::core::builtin`]),**源码里不得
+/// 出现真实地址**。前端只能拿到拼好的 URL,不能自己拿 base_url 去拼——那等于把
+/// 库地址的形状知识搬到前端,而 Gitea 与 GitHub 的浏览路径本来就不一样。
+///
+/// # 判据(缺一不摆)
+///
+/// - 这一行确实**在公司技能库里**(`section` 是 `installedFrom`/`sharedTo`;
+///   「可分享到」区的行不在库里,摆了点开就是 404)——由调用方按 `relation` 收窄;
+/// - 落点确实属于内建源(`registry_id == BUILTIN_REGISTRY_ID`);
+/// - 编译期注入了内网地址,且坐标与库内路径都不为空。
+///
+/// 路径**取自索引的 `path`**(`ownership::LibraryEntry::path`),不拿
+/// `skills/<dir_slug>` 现拼——布局是技能库管理员定的,猜错就是 404。
+///
+/// 拼出来的地址天然与内建 Gitea 同源,所以走既有的 `open_library_url`
+/// (它带同源白名单守卫)是安全的,不需要新开一条通往系统浏览器的通道。
+pub fn library_url(
+    builtin: &registry::BuiltinSource,
+    entry: &ownership::LibraryEntry,
+) -> Option<String> {
+    if entry.registry_id != registry::BUILTIN_REGISTRY_ID {
+        return None;
+    }
+    let base = builtin.base_url?.trim_end_matches('/');
+    let path = entry.path.trim_matches('/');
+    if base.is_empty() || entry.owner.is_empty() || entry.repo.is_empty() || path.is_empty() {
+        return None;
+    }
+    // Gitea 的文件浏览路径形状:/{owner}/{repo}/src/branch/{branch}/{path}
+    Some(format!(
+        "{base}/{}/{}/src/branch/{}/{path}",
+        entry.owner, entry.repo, builtin.branch
+    ))
+}
+
+/// [`library_url`] 的行级包装:**只对确实在公司技能库里的行**给地址。
+///
+/// 🔴 单独抽出来是为了让"「可分享到」区的行不摆这颗按钮"这条判据**有测试走得到**
+/// ——它原先内联在 `build`/`unmanaged_row` 两处的结构体字面量里,而那两处要跑起来
+/// 得铺一整套磁盘与缓存 fixture,结果就是这条判据一行测试都没走过(本项目记的
+/// 空转模式 ⑤:"那条路根本没有测试走过")。判据本身很重要:「可分享到」区的行
+/// **不在库里**,给它一个库地址,用户点开必然 404。
+fn row_library_url(
+    relation: ownership::Relation,
+    builtin: &registry::BuiltinSource,
+    entry: Option<&ownership::LibraryEntry>,
+) -> Option<String> {
+    if relation == ownership::Relation::Draft {
+        return None;
+    }
+    library_url(builtin, entry?)
 }
 
 /// `.skill-lock.json` 的全部条目,按它自己的 `key` 建表,供来源展示
@@ -743,6 +806,17 @@ pub fn build(
         let identity = config.identities.get(registry::BUILTIN_REGISTRY_ID);
         let relation = ownership::relation(identity, author.as_deref(), in_library, true);
 
+        // 「在技能库里查看」:只对确实在公司技能库里的行(`relation != Draft`)
+        // 摆,路径取自公司库索引里这个技能的真实 `path`。查表键与上面查作者/指纹
+        // 同一个姿势——先按发给前端的 `dir_slug`,再退回本体的字面目录名。
+        let library_url = row_library_url(
+            relation,
+            builtin,
+            builtin_library
+                .get(&dir_slug)
+                .or_else(|| builtin_library.get(&body_literal)),
+        );
+
         let in_canonical = body_in_canonical(&home.body, canonical_dir.as_deref());
         let (recorded, _) = remove::state_links_to_recorded(&record.links);
         let (source_removed, library_removed) = reachability_of(builtin, config, record);
@@ -772,6 +846,7 @@ pub fn build(
             local_hash,
             tools: tools_of(&tool_targets, &grouped, &home, &record.links, in_canonical),
             canonical_readers: in_canonical.then(|| canonical_readers.clone()),
+            library_url,
             // 只跟**同一个字面目录名**的那些实体比版本:字面名不同的是另一个技能,
             // 把它摆进"留哪个"的选项里就是在诱导用户销毁另一个技能(R20)。
             versions: versions_for(&home.body, literal_group(&all, &home.dir_name, &body_literal)),
@@ -800,6 +875,7 @@ pub fn build(
                 state,
                 config,
                 &library,
+                &builtin_library,
                 &lock_entries,
                 &tool_targets,
                 &grouped,
@@ -866,6 +942,8 @@ pub fn build(
             share_blocked: None,
             section: ownership::section(relation),
             review: None,
+            // 这一档按定义就在公司技能库里,`entry` 就是它在库里的落点。
+            library_url: row_library_url(relation, builtin, Some(entry)),
             // 本地连本体都没有,谈不上"住在统一技能目录里",更没有谁在读它。
             canonical_readers: None,
         });
@@ -932,6 +1010,10 @@ fn unmanaged_row(
     state: &state::State,
     config: &state::Config,
     library: &ownership::LibraryAttribution,
+    // `builtin_library` = 只含公司库坐标的那一份表(`builtin_library_attribution`)。
+    // **与上面的 `library` 是两件事**:这一份用来拼「在技能库里查看」的地址,
+    // 拿合并表拼会把一条自定义源/广场的同名技能指到公司库的 URL 上去。
+    builtin_library: &ownership::LibraryAttribution,
     lock_entries: &HashMap<String, skill_lock::UpstreamEntry>,
     tool_targets: &[installer::LinkTarget],
     grouped: &BTreeMap<PathBuf, Vec<String>>,
@@ -1020,6 +1102,14 @@ fn unmanaged_row(
         .map(|h| tools_of(tool_targets, grouped, h, &[], in_canonical))
         .unwrap_or_default();
 
+    // 与第 1 源同一条规矩:只对确实在公司技能库里的行摆,路径取自公司库索引。
+    // **在构造 InstalledRow 之前算**——`dir_slug` 会被移进结构体。
+    let library_url = row_library_url(
+        relation,
+        builtin,
+        builtin_library.get(&dir_slug).or_else(|| builtin_library.get(key)),
+    );
+
     InstalledRow {
         dir_slug,
         commit_sha: String::new(),
@@ -1046,6 +1136,7 @@ fn unmanaged_row(
         body: body.to_string_lossy().into_owned(),
         section: ownership::section(relation),
         review: None,
+        library_url,
         canonical_readers: in_canonical.then(|| canonical_readers.to_vec()),
     }
 }
@@ -1173,6 +1264,100 @@ pub fn fill_review_from_records(rows: &mut [InstalledRow], state: &state::State,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 「在技能库里查看」的地址(v7.1 任务 3)────────────────────────────
+    //
+    // 判据是"缺一样就不摆",所以每一条缺失都要有自己的负向用例:全都返回 None
+    // 的坏实现在只有正向用例时照样全绿。
+
+    fn entry(path: &str) -> ownership::LibraryEntry {
+        ownership::LibraryEntry {
+            registry_id: registry::BUILTIN_REGISTRY_ID.to_string(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            path: path.into(),
+            author: None,
+        }
+    }
+
+    fn builtin_at(base: Option<&'static str>) -> registry::BuiltinSource {
+        registry::BuiltinSource {
+            base_url: base,
+            repo: Some(("skills", "skills")),
+            branch: "main",
+        }
+    }
+
+    #[test]
+    fn a_library_url_uses_the_real_indexed_path_not_a_guessed_layout() {
+        // 路径取自索引的 `path`,不是 `skills/<dir_slug>` 拼出来的——布局是技能库
+        // 管理员定的,猜错就是 404。这里刻意用一个**不是** `skills/` 开头的路径,
+        // 猜出来的实现会在这条上失配。
+        let url = library_url(&builtin_at(Some("http://gitea.internal:3000")), &entry("catalog/weekly-report"));
+        assert_eq!(
+            url.as_deref(),
+            Some("http://gitea.internal:3000/skills/skills/src/branch/main/catalog/weekly-report")
+        );
+    }
+
+    #[test]
+    fn a_library_url_tolerates_a_trailing_slash_on_the_base_and_the_path() {
+        let url = library_url(&builtin_at(Some("http://gitea.internal:3000/")), &entry("/skills/x/"));
+        assert_eq!(
+            url.as_deref(),
+            Some("http://gitea.internal:3000/skills/skills/src/branch/main/skills/x")
+        );
+    }
+
+    #[test]
+    fn no_library_url_when_the_build_has_no_intranet_address() {
+        // 未注入内网配置的构建(SKILLSYNC_NO_INTRANET 那一档):拼不出来就不摆,
+        // 绝不用空 base 拼出一个 `/skills/skills/...` 这样的相对串。
+        assert!(library_url(&builtin_at(None), &entry("skills/x")).is_none());
+    }
+
+    #[test]
+    fn no_library_url_for_an_entry_that_belongs_to_another_source() {
+        // 广场/自定义源的同名技能:指到公司库的地址上去就是撒谎(而且 404)。
+        let mut e = entry("skills/x");
+        e.registry_id = "plaza".into();
+        assert!(library_url(&builtin_at(Some("http://gitea.internal:3000")), &e).is_none());
+    }
+
+    #[test]
+    fn no_library_url_when_the_index_has_no_path_for_this_skill() {
+        assert!(library_url(&builtin_at(Some("http://gitea.internal:3000")), &entry("")).is_none());
+        assert!(library_url(&builtin_at(Some("http://gitea.internal:3000")), &entry("/")).is_none());
+    }
+
+    #[test]
+    fn a_shareable_row_never_gets_a_library_url_even_when_the_name_collides() {
+        // 「可分享到」区的行**不在公司库里**——名字撞上库里的同名技能时
+        // `builtin_library` 照样查得到条目,给它地址用户点开就是 404。
+        let b = builtin_at(Some("http://gitea.internal:3000"));
+        assert!(row_library_url(ownership::Relation::Draft, &b, Some(&entry("skills/x"))).is_none());
+        // 对照:同一份 entry,换成在库里的两档就有地址
+        assert!(row_library_url(ownership::Relation::Installed, &b, Some(&entry("skills/x"))).is_some());
+        assert!(row_library_url(ownership::Relation::Shared, &b, Some(&entry("skills/x"))).is_some());
+    }
+
+    #[test]
+    fn no_library_url_when_the_company_index_has_no_entry_for_this_row() {
+        // 索引缓存里没有这个技能(从没取过索引 / 只靠记账判定在库里):
+        // 拼不出来就不摆,不猜一个 `skills/<dir_slug>`。
+        let b = builtin_at(Some("http://gitea.internal:3000"));
+        assert!(row_library_url(ownership::Relation::Installed, &b, None).is_none());
+    }
+
+    #[test]
+    fn no_library_url_without_a_repo_coordinate() {
+        let mut e = entry("skills/x");
+        e.owner = String::new();
+        assert!(library_url(&builtin_at(Some("http://gitea.internal:3000")), &e).is_none());
+        let mut e = entry("skills/x");
+        e.repo = String::new();
+        assert!(library_url(&builtin_at(Some("http://gitea.internal:3000")), &e).is_none());
+    }
 
     #[test]
     fn a_library_missing_from_a_live_source_is_not_the_same_as_a_removed_source() {

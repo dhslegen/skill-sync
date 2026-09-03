@@ -1,9 +1,11 @@
+import { useState } from "react";
+
 import { OutlineButton, PrimaryAction, rowMenuHandler } from "@/components/RowActionControls";
 import { t } from "@/i18n";
-import type { InstalledSkillView } from "@/lib/ipc";
+import { isAppError, openLibraryUrl, skillReveal, type InstalledSkillView } from "@/lib/ipc";
 import { buildRowMenuItems, rowAction } from "@/lib/ownership";
 import { SHARE_BLOCK_LABEL, SHARE_DONE_LABEL, SHARE_FAILED_LABEL } from "@/lib/share-block";
-import { hasUpdate, localDiffersNoBaseline, remoteChangedForShareable, useMySkills } from "@/store/my-skills";
+import { localDiffersNoBaseline, useMySkills } from "@/store/my-skills";
 import { useInstall } from "@/store/install";
 import { useStoreIndex } from "@/store/store-index";
 
@@ -25,11 +27,37 @@ import { useStoreIndex } from "@/store/store-index";
  * 摆一遍」,不是再摆一个「更多」触发器)。分开各写一份判定正是本项目记录的
  * 空转测试模式 #1。
  *
- * 🔴 **`reveal`("打开文件夹")这一项被过滤掉,不铺进这个动作区**:紧挨着它
- * 之上的 `WhereBlocks`「这台电脑上」那一块(`ThisComputerBlock`)已经摆着
- * 同样文案、同样动作的按钮——「全部再摆一遍」摆的是"行上有、详情面板此前没有
- * 的动作",不是把已经在详情面板别处存在的动作再复制一份。两处若都摆,
- * 用户会在同一屏看到两颗一模一样的「打开文件夹」,是噪音不是补齐。
+ * # 🔴 v7.1 任务 3:它变成了详情面板的**固定页脚**,「打开文件夹」只此一处
+ *
+ * 照设计画布 `Detail.dc.html` 最后那个 `border-top` 的 div:
+ * 主按钮 → 打开文件夹 → 在技能库里查看(有链接才摆)→ 其余动作 → 撑开 → 移除。
+ * 它不再夹在「在哪」与页签之间(那个位置把 md 正文挤出首屏,违反 Q1A
+ * 「md 是主角」),而是钉在面板底部,正文区 `flex:1`。
+ *
+ * `reveal` 此前**被过滤掉**,理由是 `WhereBlocks`「这台电脑上」那一块里已经有
+ * 一颗同样的按钮。Q3 拍板反过来:那一块里的按钮删掉、面板底部那颗「在访达中
+ * 打开」也删掉,**动作只留页脚这一处**——此前是同一个动作两个入口两种叫法,
+ * 而「在访达中打开」在 Windows 上还是错的。所以这里的过滤一并撤销。
+ * ⚠️ 撤销过滤之后 `onReveal` 就不能再是空函数了:它要真的调
+ * `skill_reveal`,并且**传 `skill.body`(本体的绝对路径)、绝不传 `dirSlug`**
+ * ——后者会被 core 解析成统一目录下的同名目录,而本体很可能根本不在那里
+ * (v6 二期「本体住在它现在所在的地方」)。失败要有渲染点,见下面的 `revealError`:
+ * 「这台电脑上」那一块被删掉时,它原来的失败渲染点也一起没了。
+ *
+ * # 「在技能库里查看」
+ *
+ * 照画布摆在页脚,数据是 core 新给的 `skill.libraryUrl`(v7.1 复审后用户裁定:
+ * **改数据来源,不是接受现状**)。此前 `InstalledSkillView` 上唯一的库链接是
+ * `review.url`,只有「审核中」那一档有值——那个限制已经由 core 侧的
+ * `my_skills::library_url` 解掉:用内建源的编译期地址 + 索引里这个技能的真实
+ * `path` 拼出网页地址,只对确实在公司技能库里的行(`section` 是
+ * `installedFrom`/`sharedTo`)给值。
+ *
+ * 🔴 **拼接必须在 core**(铁律 5:源码里不得出现真实内网地址),前端只是把串
+ * 交给 `open_library_url`(带同源白名单守卫)。拼不出来 → `null` → **不摆**,
+ * 而不是摆一颗点开是 404 的按钮。
+ * ⚠️ 与 `underReview` 档 `PrimaryAction` 里那颗同名按钮**不会同屏**:那一档按
+ * 定义是「可分享到」区(还没进库),`libraryUrl` 恒 `null`。
  *
  * # 挂载位置与全局对话框的关系
  *
@@ -85,9 +113,18 @@ import { useStoreIndex } from "@/store/store-index";
  *   `removeError`,而且那个弹窗是全局挂在 `App.tsx` 的,不依赖任何一页。
  *   真要摆得换个承载位置(比如提升成 App 级的一次性提示),超出本波边界。
  */
-export function SkillActionsBlock({ skill }: { skill: InstalledSkillView }) {
+export function SkillActionsBlock({
+  skill,
+  remoteChanged,
+}: {
+  skill: InstalledSkillView;
+  /** 「库里那一版变了没有」。**由调用方按 section 分流算好**(`hasUpdate` /
+   *  `remoteChangedForShareable`),与折叠头的结论行、「技能库里」那一块吃的是
+   *  同一个布尔量——三处各算一遍就是本项目记的空转模式 ①,而且「可分享到」区
+   *  外部来源的行会在其中一处静默丢掉"有新版"。 */
+  remoteChanged: boolean;
+}) {
   const index = useStoreIndex((s) => s.index);
-  const shareableIndexes = useMySkills((s) => s.shareableIndexes);
   const pulling = useInstall((s) => s.dirSlug === skill.dirSlug && s.phase === "running");
   const sharing = useMySkills((s) => s.shareBusy === skill.dirSlug);
   const openVersions = useMySkills((s) => s.versionChoice !== null);
@@ -97,19 +134,26 @@ export function SkillActionsBlock({ skill }: { skill: InstalledSkillView }) {
   const shareError = rawShareError?.dirSlug === skill.dirSlug ? rawShareError : null;
   const shareDone = rawShareDone?.dirSlug === skill.dirSlug ? rawShareDone : null;
 
-  const remoteChanged =
-    skill.section === "shareable"
-      ? remoteChangedForShareable(skill, shareableIndexes)
-      : hasUpdate(skill, index);
   const noBaselineDiffers = localDiffersNoBaseline(skill, index);
   const action = rowAction(skill, remoteChanged);
-  // 🔴 `reveal` 过滤掉,理由见组件文档——`WhereBlocks` 的「这台电脑上」那一块
-  // 已经摆着同样的按钮。
-  const items = buildRowMenuItems(skill, action, remoteChanged, noBaselineDiffers).filter(
-    (spec) => spec.kind !== "reveal",
-  );
+  // 🔴 `reveal` **不再过滤**(Q3:打开文件夹只留页脚这一处,见组件文档)。
+  // 「移除」单独摘出来靠右摆,其余按 `buildRowMenuItems` 的自然顺序排在左边
+  // ——那个顺序本来就是「打开文件夹」在前、「移除」在末,与画布一致。
+  const allItems = buildRowMenuItems(skill, action, remoteChanged, noBaselineDiffers);
+  const items = allItems.filter((spec) => spec.kind !== "remove");
+  const removeItem = allItems.find((spec) => spec.kind === "remove") ?? null;
 
+  const [revealError, setRevealError] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
 
+  const onReveal = () => {
+    setRevealError(null);
+    // 🔴 传 body(本体的绝对路径),绝不传 dirSlug——后者会被 skill_reveal
+    // 解析成统一目录下的同名目录,本体很可能根本不在那里。
+    skillReveal({ path: skill.body }).catch((raw: unknown) =>
+      setRevealError(isAppError(raw) ? raw.message : t("error.generic")),
+    );
+  };
   const onPull = () => void useMySkills.getState().pull(skill.dirSlug);
   const onShareChanges = () => void useMySkills.getState().shareChanges(skill.dirSlug);
   const onShare = () => useMySkills.getState().beginShare(skill.dirSlug);
@@ -121,13 +165,17 @@ export function SkillActionsBlock({ skill }: { skill: InstalledSkillView }) {
     });
 
   return (
-    <div className="border-t border-border px-5 py-3">
-      <div className="flex flex-wrap items-center gap-1.5">
+    <div className="flex-none border-t border-border px-5 py-3.5">
+      {/* `flex-wrap`:按钮数量随档位变(`conflict` 档有五颗),480px 宽的面板放不下时
+          换行比压扁好。「移除」用 `ml-auto` 靠右——换行后它会在自己那一行的最右边,
+          与不换行时的效果一致(画布里它就在最右)。 */}
+      <div className="flex flex-wrap items-center gap-2">
         <PrimaryAction
           action={action}
           pulling={pulling}
           sharing={sharing}
           openVersions={openVersions}
+          size="footer"
           onPull={onPull}
           onShareChanges={onShareChanges}
           onShare={onShare}
@@ -136,16 +184,46 @@ export function SkillActionsBlock({ skill }: { skill: InstalledSkillView }) {
         {items.map((spec) => (
           <OutlineButton
             key={spec.kind}
+            size="footer"
             title={spec.titleKey ? t(spec.titleKey) : undefined}
-            // `reveal` 已被过滤,`onReveal` 这里永远不会真的被调用——仍然要传
-            // 一个符合 `RowMenuHandlers` 形状的值,`rowMenuHandler` 不为了这一处
-            // 单开一个"少一个键"的类型。
-            onClick={rowMenuHandler(spec.kind, { onReveal: () => {}, onShareChanges, onPull, onShare, onRemove })}
+            onClick={rowMenuHandler(spec.kind, { onReveal, onShareChanges, onPull, onShare, onRemove })}
           >
             {t(spec.labelKey)}
           </OutlineButton>
         ))}
+        {skill.libraryUrl && (
+          <OutlineButton
+            size="footer"
+            onClick={() => {
+              setLinkError(null);
+              // core 已经保证这个串与内建 Gitea 同源;`open_library_url` 自己
+              // 还有一道同源白名单守卫,这里不重复判,失败如实说出来。
+              openLibraryUrl(skill.libraryUrl ?? "").catch((raw: unknown) =>
+                setLinkError(isAppError(raw) ? raw.message : t("error.generic")),
+              );
+            }}
+          >
+            {t("mine.reviewLink")}
+          </OutlineButton>
+        )}
+        {removeItem && (
+          <div className="ml-auto">
+            <OutlineButton size="footer" onClick={onRemove}>
+              {t(removeItem.labelKey)}
+            </OutlineButton>
+          </div>
+        )}
       </div>
+      {revealError && (
+        <p className="mt-1.5 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+          {t("mine.openFolderFailed")}
+          {t("punct.labelSeparator")}
+          {revealError}
+        </p>
+      )}
+      {linkError && (
+        <p className="mt-1.5 text-[12px] text-[#c0392b] dark:text-[#e0705f]">{linkError}</p>
+      )}
       {/* 🔴 分享的成功与失败:归属过滤后自己摆一份,理由见组件文档。
           文案按 `flow` 分流,**不按渲染那一刻的 `action` 反推**——首次分享成功后
           这一行的 section/rowAction 已经换档了,反推出来的答案恰恰在成功路径上是错的

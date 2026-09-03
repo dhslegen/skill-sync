@@ -414,7 +414,7 @@ describe("装完之后的出口", () => {
 
   it("🔴 design §18:装完那一屏能「在我的技能里查看」,切页并打开这一行的详情", async () => {
     useUi.setState({ page: "store" });
-    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    useLocalDetail.setState({ target: null, detail: null, error: null });
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "agents_detected") return AGENTS;
       if (cmd === "skill_local_detail")

@@ -56,7 +56,7 @@ describe("桌面快捷键", () => {
 
   it("Esc 关本地详情面板(我的技能/分享页打开的那种)", async () => {
     render(<Harness />);
-    useLocalDetail.setState({ target: { dirSlug: "weekly-report" }, detail: null, error: null, revealError: null });
+    useLocalDetail.setState({ target: { dirSlug: "weekly-report" }, detail: null, error: null });
     useStoreIndex.setState({ detailSlug: "weekly-report" });
 
     await userEvent.keyboard("{Escape}");

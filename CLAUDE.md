@@ -45,6 +45,14 @@ cargo test --workspace   # Rust 单测(在 src-tauri/ 下)
 pnpm lint           # eslint
 pnpm build:web      # tsc + vite build —— **提交前必跑**,见下
 cargo clippy --all-targets -- -D warnings   # --all-targets 必带,见下
+./scripts/rust-test.sh fast   # **逐任务用这个**:lib + 全部非 `*_live` 二进制(约 1-2 分钟)
+./scripts/rust-test.sh full   # 全量含 live(20+ 分钟),只在**整分支终审前**与**发版前**跑
+                              # 起因(2026-09-03):`cargo test --workspace` 要 20+ 分钟——57 个
+                              # 测试二进制**彼此串行**(只有二进制内部并行),再叠上十几个真发
+                              # HTTP 的 live 测试。逐任务每次全量 = 五个任务多等一个半小时。
+                              # ⚠️ **fast 档绿了不能写成「Rust 全绿」**——它不覆盖 live,
+                              # 声称的范围必须等于实际跑过的范围。
+                              # full 档开跑前会自己查 docker(见下),不必手动确认。
 pnpm verify:agents     # 与上游 vercel-labs/skills 差分校验 agents.json 并重生成 fixture(需联网)
 pnpm verify:discovery  # 同上,校验技能发现规则
 pnpm verify:lock       # 同上,录制 .skill-lock.json(v3)的真实读写行为
@@ -192,7 +200,8 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
 ## 测试要求
 - core 模块单测覆盖:installer 降级链、SKILL.md 解析边界、state 迁移、同名预检三分支
 - Gitea client 用 wiremock-rs 模拟;e2e 用 docker compose 起 gitea(见 fixtures/)
-- ⚠️ **本机跑 `cargo test --workspace` 前先确认 docker 起着**(`docker ps` 里要有
+- ⚠️ **本机跑全量前先确认 docker 起着**(`./scripts/rust-test.sh full` 会自己查并拒绝空跑;
+  手敲 `cargo test --workspace` 则要自己确认)(`docker ps` 里要有
   `skillsync-fixture-gitea`):`tests/gitea_live.rs` 的跳过判据是
   "`fixtures/.env.local` **文件在不在**",**不是"服务通不通"**——docker 停着时
   那两条测试必红(HTTP 502),**看起来像代码回归**(2026-08-19 真被绊过一次,
@@ -2485,6 +2494,17 @@ universal 双切片、minos、动态库依赖、下载文件 sha256 全验过一
   查一次"的用法之所以没事,是因为它是**一次性检查**、不是等待循环的判据本身。
   **在等待/轮询场景下一律改用 `pgrep -x cargo`**(精确匹配可执行文件名
   `cargo`,不含参数文本,不会自我匹配)。
+- 🔴 **「我看到的是全部吗」——2026-09-03 一天之内在同一件事上错了四次,形态各不相同**:
+  ①`cd src-tauri` 相对路径失败 → 退出码 1,差点当成代码回归(其实是会话工作目录不对);
+  ②日志只有 3 个结果行 → 判"进程被杀"(其实**还在跑**,读到的是正在写入中的日志);
+  ③15 个测试各 20 秒 → 判"在等超时"(其实在真干活);
+  ④`docker ps | head -3` 没看到 fixture 容器 → 判"没起"(其实 8 个容器里它排第六)。
+  ④的代价最大:**基于错误诊断杀掉了一次正常运行的全量测试**。
+  共同点是**用不完整的观测下了完整的结论**。判据:
+  **下结论前问一句"我看到的是全部吗";读日志前先确认产生它的进程已经结束了**
+  (`pgrep -x cargo`);**慢和卡在日志里长得一模一样,区别只在系统状态里**(`ps` / `docker ps`)。
+  与既有的「看测试输出永不截断」是同一条——那条记的是 `head`/`tail` 会把**红的**藏起来,
+  这次它藏起来的是**一个存在的容器**。
 - 🔴 **`cargo test --test a --test b` 是 fail-fast 的**(v7 任务 1 复审实测,
   2026-08-27):前一个测试二进制里有用例失败,**后面列的二进制根本不会跑**——
   "另一个文件全绿"完全可能只是"它没跑到"而不是真的通过。**注入验证时一律加

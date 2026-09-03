@@ -31,12 +31,19 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// 一个 `dir_slug` 在某个已配置库里的落点:它属于哪个库(`registry_id` +
-/// `owner`/`repo`),以及库里记的作者。
+/// `owner`/`repo`)、在库里的相对路径,以及库里记的作者。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibraryEntry {
     pub registry_id: String,
     pub owner: String,
     pub repo: String,
+    /// 相对技能库根的路径,如 `skills/weekly-report`(来自索引的
+    /// `store::IndexedSkill::path`)。
+    ///
+    /// 🔴 **它是「在技能库里查看」那颗按钮唯一的路径来源**(v7.1 任务 3)。
+    /// 拿 `skills/<dir_slug>` 现拼是在**猜**库的目录布局——布局是技能库管理员定的,
+    /// 猜错的表现是用户点开得到一个 404。索引里现成就有真实路径,用它。
+    pub path: String,
     pub author: Option<String>,
 }
 

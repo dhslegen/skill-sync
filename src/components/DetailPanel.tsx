@@ -1,4 +1,4 @@
-import { ExternalLink, FileCode, FileText, Folder, FolderOpen, TriangleAlert, X } from "lucide-react";
+import { ExternalLink, FileCode, FileText, Folder, TriangleAlert, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Icon } from "@/components/Icon";
@@ -10,7 +10,7 @@ import { SkillIcon } from "@/components/SkillIcon";
 import { WhereBlocks } from "@/components/WhereBlocks";
 import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
-import { formatBytes, relativeTimeFromIso, shortSha } from "@/lib/format";
+import { formatBytes, relativeTimeFromIso } from "@/lib/format";
 import {
   BUILTIN_REGISTRY_ID,
   isAppError,
@@ -22,7 +22,7 @@ import {
 } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
-import { useMySkills } from "@/store/my-skills";
+import { cardFor, hasUpdate, remoteChangedForShareable, useMySkills } from "@/store/my-skills";
 import { locatePlazaSkill, usePlaza } from "@/store/plaza";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
@@ -139,13 +139,64 @@ function useWhereSkill(dirSlug: string) {
   const list = useMySkills((s) => s.list);
   const agentNames = useMySkills((s) => s.agentNames);
   const load = useMySkills((s) => s.load);
+  const shareableIndexes = useMySkills((s) => s.shareableIndexes);
+  const index = useStoreIndex((s) => s.index);
 
   useEffect(() => {
     if (list === null) void load();
   }, [list, load]);
 
   const skill = list?.find((s) => s.dirSlug === dirSlug) ?? null;
-  return { skill, agentNames };
+  // 🔴 「库里那一版变了没有」在这一处算**一次**,折叠头的结论行、「技能库里」
+  // 那一块、页脚的主按钮全部吃它。分流按 section:`shareable` 区有外部来源的行
+  // 要按它自己那个源的索引判(`hasUpdate` 对这些行恒 false),其余按当前浏览的
+  // 库判。三处各算一遍就是空转模式 ①,而且其中一处必然把外源那一档判丢。
+  const remoteChanged = skill
+    ? skill.section === "shareable"
+      ? remoteChangedForShareable(skill, shareableIndexes)
+      : hasUpdate(skill, index)
+    : false;
+  // 概览行(作者/标签)的数据源与「我的技能」页的行名字同一份实现,不另抄一遍。
+  const card = skill ? cardFor(skill, index, shareableIndexes) : null;
+  return { skill, agentNames, remoteChanged, card };
+}
+
+/**
+ * 概览行(v7.1 任务 3,照画布 `Detail.dc.html` 标题区下方那条 `border-y`)。
+ *
+ * # 🔴 有什么摆什么,缺的整列不摆;**三列全缺时整行不摆**(Q4A)
+ *
+ * 这是本项目既有原则「没有条目整栏不摆、不编造」的直接应用——占位符
+ * (「作者未知」「—」)是最弱的一种编造。全缺时若只是把列去掉而留着那个
+ * `border-y` 的容器,画面上会出现一道莫名其妙的粗线,所以整行返回 `null`。
+ *
+ * 🔴 **「版本标识」那一列已删除**(Q9A):它显示的是 `commitSha`,而那是
+ * **整库 HEAD**——别人改任何一个技能它都会变,拿它当"这个技能的版本"是撒谎。
+ * 副标题里的 `@ sha` 同理一并删掉。
+ * 「文件 N 个」那一列也删了:页签上的「文件 (N)」已经有这个数,两处重复。
+ */
+function OverviewRow({
+  author,
+  updated,
+  tags,
+  children,
+}: {
+  author?: string | null;
+  updated?: string | null;
+  tags?: string[] | null;
+  /** 作者缺席时的替代内容(商店详情的「这是我分享的」入口)。有它就算这一列有东西。 */
+  children?: React.ReactNode;
+}) {
+  const tagText = tags && tags.length > 0 ? tags.join(t("punct.listSeparator")) : null;
+  if (!author && !children && !updated && !tagText) return null;
+
+  return (
+    <div className="mt-3.5 flex flex-wrap gap-4 border-y border-border py-2.5">
+      {author ? <Meta label={t("detail.metaAuthor")} value={author} /> : children}
+      {updated && <Meta label={t("detail.metaUpdated")} value={updated} />}
+      {tagText && <Meta label={t("detail.metaTags")} value={tagText} />}
+    </div>
+  );
 }
 
 /** 「在访达/资源管理器中打开」的按钮文案按平台挑。webview 里没有可靠的 OS API,
@@ -157,9 +208,9 @@ export function revealLabel(userAgent: string): string {
 }
 
 function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
-  const { close, reveal, revealError } = useLocalDetail();
+  const close = useLocalDetail((s) => s.close);
   const [tab, setTab] = useState<"readme" | "files">("readme");
-  const { skill, agentNames } = useWhereSkill(detail.dirSlug);
+  const { skill, agentNames, remoteChanged, card } = useWhereSkill(detail.dirSlug);
   // 🔴 取回/更新失败的渲染点(终审复审轮 1,C-A)。`SkillActionsBlock` 的
   // 「更新」/「取回」走 `useMySkills.pull` → `useInstall.beginUpdate`,失败只写进
   // `useInstall.error`。商店/广场那条路(`PanelBody`)下方挂着 `InstallPanel`,
@@ -179,8 +230,15 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
           <SkillIcon name={detail.name} className="size-10 rounded-[10px] text-[17px]" />
           <div className="min-w-0">
             <h2 className="truncate text-[16px] font-[650] tracking-[-0.015em]">{detail.name}</h2>
-            <div className="mt-px truncate font-mono text-[11.5px] text-text-3" title={detail.path}>
-              {detail.path}
+            {/* 副标题优先用**技能库里的坐标**(`skills/<目录名>`,照画布)——本体的
+                绝对路径就在下面折叠头上等宽显示着,副标题再抄一遍是同屏两份同样的
+                字符串。库里查不到这个技能(纯本地草稿)时才退回本体路径:那时
+                折叠头是唯一一处,不构成重复。 */}
+            <div
+              className="mt-px truncate font-mono text-[11.5px] text-text-3"
+              title={card?.path ?? detail.path}
+            >
+              {card?.path ?? detail.path}
             </div>
           </div>
           <button
@@ -194,20 +252,17 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
           </button>
         </div>
 
-        <div className="mt-3.5 flex gap-4 border-y border-border py-2.5">
-          <Meta
-            label={t("detail.metaFiles")}
-            value={t("detail.metaFilesValue", { count: detail.files.length })}
-          />
-        </div>
+        <OverviewRow
+          author={card?.author}
+          updated={skill ? relativeTimeFromIso(skill.updatedAt) : null}
+          tags={card?.tags}
+        />
       </div>
 
-      {skill && <WhereBlocks skill={skill} agentNames={agentNames} />}
-      {/* 设计 §12:动作区(行上主按钮 + 「…」各项全部再摆一遍)。挂在「在哪」
-          三块之后,与既有的「在访达中显示」(下方,OS 措辞)是两件事:后者是
-          这一屏本来就有的"打开本体所在文件夹"这一个动作,动作区是"这一行原本
-          该有的其余动作"整套补齐——两者并存,不是互相替代。 */}
-      {skill && <SkillActionsBlock skill={skill} />}
+      {/* 「在哪」压成一行折叠头(Q2),默认收起——正文才是主角。 */}
+      {skill && (
+        <WhereBlocks skill={skill} agentNames={agentNames} remoteChanged={remoteChanged} />
+      )}
       {pullError && (
         <p className="px-5 pt-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
           {t("mine.pullFailed", { name: detail.name })}
@@ -216,7 +271,7 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
         </p>
       )}
 
-      <div className="flex gap-0.5 px-5 pt-2.5" role="tablist">
+      <div className="flex flex-none gap-0.5 border-t border-border px-5 pt-2.5" role="tablist">
         <Tab selected={tab === "readme"} onClick={() => setTab("readme")}>
           {t("detail.tabReadme")}
         </Tab>
@@ -237,21 +292,11 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
         )}
       </div>
 
-      <div className="border-t border-border px-5 py-3">
-        <button
-          type="button"
-          onClick={() => void reveal()}
-          className="inline-flex h-7 items-center gap-1.5 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
-        >
-          <Icon icon={FolderOpen} />
-          {revealLabel(navigator.userAgent)}
-        </button>
-        {revealError && (
-          <p className="mt-1.5 text-[11.5px] text-[#c0392b] dark:text-[#e0705f]">
-            {revealError.message}
-          </p>
-        )}
-      </div>
+      {/* 固定页脚(Q3)。此前这里是一颗孤零零的「在访达中打开」,而同一个动作
+          在「这台电脑上」那一块里还有一颗「打开文件夹」——同一件事两个入口两种
+          叫法,且"访达"在 Windows 上是错的。两颗都删,动作统一收进页脚的
+          `SkillActionsBlock`(它自己会摆「打开文件夹」并接住失败)。 */}
+      {skill && <SkillActionsBlock skill={skill} remoteChanged={remoteChanged} />}
     </>
   );
 }
@@ -406,7 +451,11 @@ function PanelBody({
   const closePlaza = usePlaza((s) => s.closeDetail);
   const closeDetail = plaza ? closePlaza : closeDetailStore;
   const [tab, setTab] = useState<"readme" | "files">("readme");
-  const { skill: whereSkill, agentNames: whereAgentNames } = useWhereSkill(detail.dirSlug);
+  const {
+    skill: whereSkill,
+    agentNames: whereAgentNames,
+    remoteChanged: whereRemoteChanged,
+  } = useWhereSkill(detail.dirSlug);
 
   // 「这是我分享的」(v6 任务 5)的门槛:`useSession` 只反映**内建源**的登录态
   // (`auth_status` 不带 registryId),`claim_attribution` 也只有 Gitea 型的库支持
@@ -423,8 +472,10 @@ function PanelBody({
           <SkillIcon name={detail.name} className="size-10 rounded-[10px] text-[17px]" />
           <div className="min-w-0">
             <h2 className="truncate text-[16px] font-[650] tracking-[-0.015em]">{detail.name}</h2>
+            {/* 🔴 副标题里**不出现** `@ sha`(Q9A):那是整库 HEAD,不是这个
+                技能的版本,摆出来是在撒谎。 */}
             <div className="mt-px truncate font-mono text-[11.5px] text-text-3">
-              {repo}/{detail.dirSlug} @ {shortSha(detail.commitSha)}
+              {repo}/{detail.dirSlug}
             </div>
           </div>
           <button
@@ -439,42 +490,36 @@ function PanelBody({
         </div>
         {plaza && <PlazaBrowserLink slug={plaza.slug} />}
 
-        <div className="mt-3.5 flex flex-wrap gap-4 border-y border-border py-2.5">
-          {/* 作者/贡献者来自技能库的 authors.json(服务端维护);没有就整栏不摆,
-              换成「作者未登记 · 这是我分享的」这个入口(登录了、且是内建源才摆)。
-              作者排第一,对齐 UI-Demo 的 p-meta 顺序 */}
-          {detail.attribution ? (
-            <Meta label={t("detail.metaAuthor")} value={detail.attribution.author} />
-          ) : (
-            canClaimAttribution && (
-              <ClaimAttribution dirSlug={detail.dirSlug} repo={activeRepo ?? undefined} />
-            )
+        {/* 作者/贡献者来自技能库的 authors.json(服务端维护);没有就整栏不摆,
+            换成「作者未登记 · 这是我分享的」这个入口(登录了、且是内建源才摆)。 */}
+        <OverviewRow
+          author={detail.attribution?.author}
+          updated={relativeTimeFromIso(detail.committedAt)}
+          tags={detail.tags}
+        >
+          {!detail.attribution && canClaimAttribution && (
+            <ClaimAttribution dirSlug={detail.dirSlug} repo={activeRepo ?? undefined} />
           )}
-          <Meta label={t("detail.metaUpdated")} value={relativeTimeFromIso(detail.committedAt)} />
-          <Meta label={t("detail.metaVersion")} value={shortSha(detail.commitSha)} mono />
-          <Meta
-            label={t("detail.metaFiles")}
-            value={t("detail.metaFilesValue", { count: detail.files.length })}
-          />
-          {/* 标签来自技能库的 tags.json(服务端管理);没有就整栏不摆 */}
-          {detail.tags.length > 0 && (
-            <Meta label={t("detail.metaTags")} value={detail.tags.join(t("punct.listSeparator"))} />
-          )}
-          {detail.attribution && detail.attribution.contributors.length > 0 && (
+        </OverviewRow>
+        {detail.attribution && detail.attribution.contributors.length > 0 && (
+          <div className="flex flex-wrap gap-4 border-b border-border py-2.5">
             <Meta
               label={t("detail.metaContributors")}
               value={contributorsText(detail.attribution.contributors)}
             />
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
-      {whereSkill && <WhereBlocks skill={whereSkill} agentNames={whereAgentNames} />}
-      {/* 设计 §12:动作区。商店/广场详情此前完全没有对应"打开文件夹"以外的
-          任何动作出口,这台电脑上有这个技能时(`whereSkill` 非空)才有事可做。 */}
-      {whereSkill && <SkillActionsBlock skill={whereSkill} />}
+      {whereSkill && (
+        <WhereBlocks
+          skill={whereSkill}
+          agentNames={whereAgentNames}
+          remoteChanged={whereRemoteChanged}
+        />
+      )}
 
-      <div className="flex gap-0.5 px-5 pt-2.5" role="tablist">
+      <div className="flex flex-none gap-0.5 border-t border-border px-5 pt-2.5" role="tablist">
         <Tab selected={tab === "readme"} onClick={() => setTab("readme")}>
           {t("detail.tabReadme")}
         </Tab>
@@ -495,6 +540,11 @@ function PanelBody({
           <FileTree detail={detail} />
         )}
       </div>
+
+      {/* 设计 §12 的动作区,v7.1 起搬到正文之下(md 是主角)。商店/广场这条路
+          的页脚仍然是 `InstallPanel`——把它并进 `SkillActionsBlock` 超出本任务
+          边界(那是"获取/安装"的整条流程,不只是一排按钮),两者上下并存。 */}
+      {whereSkill && <SkillActionsBlock skill={whereSkill} remoteChanged={whereRemoteChanged} />}
 
       <InstalledScopes dirSlug={detail.dirSlug} />
 
@@ -593,18 +643,13 @@ function ClaimAttribution({ dirSlug, repo }: { dirSlug: string; repo?: string })
   );
 }
 
-function Meta({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+/** 概览行里的一列。**`mono` 那个可选参数已删**(v7.1 任务 3):它唯一的用户是
+ *  Q9A 撤掉的「版本标识」列,留着就是一个没有调用方的分支。 */
+function Meta({ label, value }: { label: string; value: string }) {
   return (
     <div className="text-[11px] leading-[1.4] text-text-3">
       {label}
-      <b
-        className={cn(
-          "block text-[12.5px] font-[550] text-text",
-          mono && "font-mono font-medium",
-        )}
-      >
-        {value || "—"}
-      </b>
+      <b className="block text-[12.5px] font-[550] text-text">{value || "—"}</b>
     </div>
   );
 }

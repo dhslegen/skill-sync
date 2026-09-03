@@ -20,7 +20,7 @@ const detail: LocalSkillDetail = {
 
 function reset() {
   invoke.mockReset();
-  useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+  useLocalDetail.setState({ target: null, detail: null, error: null });
 }
 
 describe("local-detail store", () => {
@@ -65,24 +65,7 @@ describe("local-detail store", () => {
       target: null,
       detail: null,
       error: null,
-      revealError: null,
     });
   });
 
-  it("reveal 用当前 target 调 skill_reveal;失败原样留错", async () => {
-    invoke.mockResolvedValue(detail);
-    await useLocalDetail.getState().open({ path: "/tmp/skill" });
-    invoke.mockRejectedValue({
-      code: "FS_REVEAL_FAILED",
-      message: "没能在文件管理器中显示这个技能",
-    });
-    await useLocalDetail.getState().reveal();
-    expect(invoke).toHaveBeenLastCalledWith("skill_reveal", { args: { path: "/tmp/skill" } });
-    expect(useLocalDetail.getState().revealError?.code).toBe("FS_REVEAL_FAILED");
-  });
-
-  it("面板关着时 reveal 是空操作", async () => {
-    await useLocalDetail.getState().reveal();
-    expect(invoke).not.toHaveBeenCalled();
-  });
 });

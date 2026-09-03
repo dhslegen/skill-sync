@@ -9,6 +9,7 @@ import { useLocalDetail } from "@/store/local-detail";
 import { useMySkills } from "@/store/my-skills";
 import { usePlaza } from "@/store/plaza";
 import { useSession } from "@/store/session";
+import { useDetailCollapse } from "@/store/detail-collapse";
 import { useStoreIndex } from "@/store/store-index";
 
 // agent 探测走 IPC:mock 掉才能让"点安装 → 展开勾选"这条路走通。
@@ -122,12 +123,16 @@ describe("DetailPanel", () => {
     expect(screen.queryByText("周报生成")).not.toBeInTheDocument();
   });
 
-  it("渲染技能名、等宽坐标与短版本标识", () => {
+  // 🔴 Q9A(v7.1):副标题里**不再**跟一个 `@ <短 sha>`。那个 sha 是**整库 HEAD**
+  // ——别人改任何一个技能它都会变,拿它当"这个技能的版本"是撒谎。原用例断言的是
+  // "坐标 + 短版本标识",现在断言"坐标在、版本标识不在":命题被拍板改掉了,
+  // 不是把断言放宽。
+  it("渲染技能名与等宽坐标,且不跟版本标识(Q9A:那是整库 HEAD)", () => {
     open();
     render(<DetailPanel />);
     expect(screen.getByRole("heading", { name: "周报生成" })).toBeInTheDocument();
-    // 版本标识只以 7 位短码露出(terminology.md:不解释)
-    expect(screen.getByText("skills/weekly-report @ a1b2c3d")).toBeInTheDocument();
+    expect(screen.getByText("skills/weekly-report")).toBeInTheDocument();
+    expect(screen.queryByText(/a1b2c3d/)).not.toBeInTheDocument();
   });
 
   it("元数据给相对时间,而不是原始时间戳", () => {
@@ -249,7 +254,7 @@ describe("DetailPanel", () => {
 describe("详情面板底部的获取区", () => {
   beforeEach(() => {
     useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
-    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    useLocalDetail.setState({ target: null, detail: null, error: null });
     useInstall.setState({ phase: "idle", dirSlug: null, installed: new Map() });
   });
 
@@ -308,7 +313,7 @@ const localDetail = (over: Partial<LocalSkillDetail> = {}): LocalSkillDetail => 
 
 function openLocal(over: Partial<LocalSkillDetail> = {}) {
   const d = localDetail(over);
-  useLocalDetail.setState({ target: { dirSlug: d.dirSlug }, detail: d, error: null, revealError: null });
+  useLocalDetail.setState({ target: { dirSlug: d.dirSlug }, detail: d, error: null });
   return d;
 }
 
@@ -353,6 +358,7 @@ const installedView = (over: Partial<InstalledSkillView> = {}): InstalledSkillVi
   shareBlocked: null,
   section: sectionOfRelation(over.relation ?? "installed"),
   review: null,
+  libraryUrl: null,
   canonicalReaders: null,
   ...over,
 });
@@ -363,7 +369,10 @@ describe("DetailPanel(本地详情模式)", () => {
     // ——今天靠归属过滤恰好看不出来,而"绿的那次什么都没证明"正是这么来的。
     useInstall.setState({ phase: "idle", dirSlug: null, error: null });
     useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
-    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    useLocalDetail.setState({ target: null, detail: null, error: null });
+    // 折叠状态是模块级单例,上一条用例展开过就会泄漏进下一条——默认收起是这一版
+    // 的语义,每条用例都从收起开始。
+    useDetailCollapse.setState({ whereExpanded: false });
     // 每条用例都显式给出这一份数据,不依赖上一条用例残留的 useMySkills 全局状态。
     useMySkills.setState({
       list: null,
@@ -385,6 +394,8 @@ describe("DetailPanel(本地详情模式)", () => {
       canonicalDir: "/home/u/.agents/skills",
       toolDirs: new Map([["claude-code", "/home/u/.claude/skills"]]),
     });
+    // 折叠头默认收起(v7.1 Q2),要看三块得先展开——补一步交互,不放宽断言。
+    useDetailCollapse.setState({ whereExpanded: true });
     openLocal();
     render(<DetailPanel />);
     const titles = screen.getAllByTestId("where-title").map((e) => e.textContent);
@@ -392,6 +403,173 @@ describe("DetailPanel(本地详情模式)", () => {
     // 本体在统一目录:界面必须说「统一技能目录」,不点名任何工具
     // ——修的就是"Zed 本体在这里"那个真实缺陷。
     expect(screen.getByText(/统一技能目录/)).toBeInTheDocument();
+  });
+
+  // v7.1 Q2:折叠头默认收起,md 正文才是首屏主角。
+  it("默认收起「在哪」,首屏直接是正文;结论行仍然说清区名与工具数", () => {
+    useMySkills.setState({
+      list: [installedView()],
+      agentNames: new Map([["claude-code", "Claude Code"]]),
+      canonicalDir: "/home/u/.agents/skills",
+      toolDirs: new Map([["claude-code", "/home/u/.claude/skills"]]),
+    });
+    openLocal();
+    render(<DetailPanel />);
+    expect(screen.queryAllByTestId("where-title")).toHaveLength(0);
+    expect(screen.getByTestId("where-toggle").textContent).toMatch(/安装自技能库/);
+    expect(screen.getByText("本地正文内容")).toBeInTheDocument();
+  });
+
+  // 🔴 结论行的「库里有新版」必须真的从索引比对来(不是靠某个常量)。这一条
+  // 走的是真实链路:useStoreIndex 的索引里那一版指纹与安装基线不同 → `hasUpdate`
+  // → 结论行。折叠把细节收起来了,这件"要处理"的事不能跟着被收掉。
+  it("库里有新版时,收起状态下的结论行照样说出来", () => {
+    useStoreIndex.setState({
+      index: {
+        registryId: "company",
+        owner: "skills",
+        repo: "skills",
+        branch: "main",
+        commitSha: "zzz",
+        committedAt: "2026-08-20T00:00:00.000Z",
+        fetchedAt: 1,
+        skills: [{ dirSlug: "weekly-report", contentHash: "sha256:newer" } as never],
+        skipped: [],
+        fromCache: false,
+        offline: false,
+        curated: [],
+      },
+    });
+    useMySkills.setState({
+      list: [installedView()],
+      agentNames: new Map([["claude-code", "Claude Code"]]),
+      canonicalDir: "/home/u/.agents/skills",
+      toolDirs: new Map(),
+    });
+    openLocal();
+    render(<DetailPanel />);
+    expect(screen.getByTestId("where-toggle").textContent).toMatch(/库里有新版/);
+  });
+
+  // 副标题不与折叠头上的等宽路径重复(照画布:副标题是库里的坐标)。
+  it("副标题优先显示技能库坐标;库里查不到时才退回本体路径", () => {
+    useStoreIndex.setState({
+      index: {
+        registryId: "company",
+        owner: "skills",
+        repo: "skills",
+        branch: "main",
+        commitSha: "zzz",
+        committedAt: "2026-08-20T00:00:00.000Z",
+        fetchedAt: 1,
+        skills: [
+          { dirSlug: "weekly-report", contentHash: "sha256:base", path: "skills/weekly-report", tags: [] } as never,
+        ],
+        skipped: [],
+        fromCache: false,
+        offline: false,
+        curated: [],
+      },
+    });
+    useMySkills.setState({ list: [installedView()], agentNames: new Map(), toolDirs: new Map() });
+    openLocal();
+    render(<DetailPanel />);
+    expect(screen.getByText("skills/weekly-report")).toBeInTheDocument();
+    // 本体路径只出现一次(折叠头上那一处)
+    expect(screen.getAllByText("/home/u/.agents/skills/weekly-report")).toHaveLength(1);
+  });
+
+  it("库里查不到这个技能时,副标题退回本体路径(不留空)", () => {
+    useStoreIndex.setState({ index: null });
+    useMySkills.setState({ list: [installedView()], agentNames: new Map(), toolDirs: new Map() });
+    openLocal({ path: "/home/u/.claude/skills/weekly-report" });
+    render(<DetailPanel />);
+    expect(screen.getByText("/home/u/.claude/skills/weekly-report")).toBeInTheDocument();
+  });
+
+  // Q1A:md 是主角——正文区拿 flex-1,页脚固定在它**之后**。
+  it("正文区 flex-1,且固定页脚排在正文之后(不是夹在「在哪」与页签之间)", () => {
+    useMySkills.setState({ list: [installedView()], agentNames: new Map(), toolDirs: new Map() });
+    openLocal();
+    const { container } = render(<DetailPanel />);
+    const body = container.querySelector(".selectable");
+    expect(body?.className).toContain("flex-1");
+
+    // 页脚(含「打开文件夹」)在 DOM 里必须排在正文之后
+    const footer = screen.getByRole("button", { name: "打开文件夹" }).closest("div.border-t");
+    expect(body && footer && body.compareDocumentPosition(footer)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  // 概览行(Q4A):有什么摆什么、缺的整列不摆、三列全缺整行不摆。
+  describe("概览行", () => {
+    const withIndex = (over: { author?: string | null; tags?: string[] }) => {
+      useStoreIndex.setState({
+        index: {
+          registryId: "company",
+          owner: "skills",
+          repo: "skills",
+          branch: "main",
+          commitSha: "zzz",
+          committedAt: "2026-08-20T00:00:00.000Z",
+          fetchedAt: 1,
+          skills: [
+            {
+              dirSlug: "weekly-report",
+              contentHash: "sha256:base",
+              author: over.author ?? null,
+              tags: over.tags ?? [],
+            } as never,
+          ],
+          skipped: [],
+          fromCache: false,
+          offline: false,
+          curated: [],
+        },
+      });
+      useMySkills.setState({ list: [installedView()], agentNames: new Map(), toolDirs: new Map() });
+      openLocal();
+      render(<DetailPanel />);
+    };
+
+    it("作者与标签都有:两列都摆", () => {
+      withIndex({ author: "李雯", tags: ["测试", "文档"] });
+      expect(screen.getByText("作者")).toBeInTheDocument();
+      expect(screen.getByText("李雯")).toBeInTheDocument();
+      expect(screen.getByText("标签")).toBeInTheDocument();
+      expect(screen.getByText("测试、文档")).toBeInTheDocument();
+    });
+
+    it("🔴 库里查不到作者时整列不摆,不写「作者未知」这类占位", () => {
+      withIndex({ author: null, tags: ["测试"] });
+      expect(screen.queryByText("作者")).not.toBeInTheDocument();
+      expect(screen.getByText("标签")).toBeInTheDocument();
+    });
+
+    it("🔴 没有标签时整列不摆", () => {
+      withIndex({ author: "李雯", tags: [] });
+      expect(screen.queryByText("标签")).not.toBeInTheDocument();
+      expect(screen.getByText("作者")).toBeInTheDocument();
+    });
+
+    it("🔴 「版本标识」与「文件 N 个」两列已删除(Q9A + 与页签重复)", () => {
+      withIndex({ author: "李雯", tags: ["测试"] });
+      expect(screen.queryByText("版本标识")).not.toBeInTheDocument();
+      // 「文件」只作为页签出现一次(「文件 (2)」),不再有一列独立的「文件 / 2 个」
+      expect(screen.queryByText("2 个")).not.toBeInTheDocument();
+    });
+
+    it("🔴 三列全缺时整行不摆(留一个空的 border-y 会画出一道莫名其妙的粗线)", () => {
+      // 商店索引里没有这个技能 → 没有作者也没有标签;`list` 也没有这一行 →
+      // 没有「更新」时间。三样都缺。
+      useStoreIndex.setState({ index: null });
+      useMySkills.setState({ list: [], agentNames: new Map(), toolDirs: new Map() });
+      openLocal();
+      const { container } = render(<DetailPanel />);
+      expect(container.querySelector(".border-y")).toBeNull();
+      expect(screen.queryByText("更新")).not.toBeInTheDocument();
+    });
   });
 
   // 终审复审轮 1,C-A:动作区的「更新」/「取回」走 `useMySkills.pull` →
@@ -451,12 +629,21 @@ describe("DetailPanel(本地详情模式)", () => {
     expect(screen.getByText(/含可执行脚本/)).toBeInTheDocument();
   });
 
-  it("「在访达中打开」按当前 target 调 skill_reveal", async () => {
+  // 🔴 v7.1 Q3:底部那颗「在访达中打开」删掉了(它与「这台电脑上」块里的
+  // 「打开文件夹」是同一个动作的两个入口两种叫法,而"访达"在 Windows 上是错的)。
+  // 动作收进页脚,**并且传的是本体绝对路径而不是 dirSlug**——后者会被 core 解析
+  // 成统一目录下的同名目录,而本体不一定在那里。原用例断言的 `{dirSlug}` 正是
+  // 那条旧口径,这里跟着改成 `{path: body}`。
+  it("页脚「打开文件夹」按本体绝对路径调 skill_reveal,且不再有「在访达中打开」", async () => {
+    useMySkills.setState({ list: [installedView()], agentNames: new Map(), toolDirs: new Map() });
     openLocal();
     render(<DetailPanel />);
-    await userEvent.click(screen.getByRole("button", { name: revealLabel(navigator.userAgent) }));
+    expect(
+      screen.queryByRole("button", { name: revealLabel(navigator.userAgent) }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "打开文件夹" }));
     expect(invokeMock).toHaveBeenCalledWith("skill_reveal", {
-      args: { dirSlug: "weekly-report" },
+      args: { path: "/home/u/.agents/skills/weekly-report" },
     });
   });
 
@@ -465,7 +652,6 @@ describe("DetailPanel(本地详情模式)", () => {
       target: { path: "/tmp/nope" },
       detail: null,
       error: { code: "FS_NOT_A_SKILL", message: "这个文件夹不是技能,或技能描述文件缺失" },
-      revealError: null,
     });
     render(<DetailPanel />);
     expect(screen.getByText(/不是技能/)).toBeInTheDocument();
@@ -520,7 +706,7 @@ describe("DetailPanel(本地详情模式)", () => {
 
 describe("商店详情的动作区(设计 §12,`PanelBody` 一侧)", () => {
   beforeEach(() => {
-    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    useLocalDetail.setState({ target: null, detail: null, error: null });
     useMySkills.setState({
       list: null,
       agentNames: new Map(),
@@ -565,7 +751,7 @@ describe("revealLabel", () => {
 describe("标签展示(M5 任务 3)", () => {
   beforeEach(() => {
     // 上一个 describe 留下的本地详情 target 会让面板走本地分支,商店详情渲染不出来
-    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    useLocalDetail.setState({ target: null, detail: null, error: null });
     useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
   });
 
@@ -584,7 +770,7 @@ describe("标签展示(M5 任务 3)", () => {
 
 describe("作者/贡献者展示(M7 任务 2)", () => {
   beforeEach(() => {
-    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    useLocalDetail.setState({ target: null, detail: null, error: null });
     useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
   });
 
@@ -808,7 +994,7 @@ describe("DetailPanel(技能广场详情态)", () => {
 
   function resetAll() {
     useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
-    useLocalDetail.setState({ target: null, detail: null, error: null, revealError: null });
+    useLocalDetail.setState({ target: null, detail: null, error: null });
     usePlaza.setState({
       detailOwnerRepo: null,
       detailWantedName: null,
@@ -872,7 +1058,7 @@ describe("DetailPanel(技能广场详情态)", () => {
     expect(screen.getByRole("heading", { name: "React 最佳实践" })).toBeInTheDocument();
     // owner/repo 是外部真名,例外允许等宽展示;坐标行沿用既有的 repo/dirSlug@sha 格式
     expect(
-      screen.getByText("vercel-labs/skills/react-best-practices @ def4567"),
+      screen.getByText("vercel-labs/skills/react-best-practices"),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "在浏览器中查看" })).toBeInTheDocument();
   });

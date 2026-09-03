@@ -1571,6 +1571,14 @@ pub struct InstalledSkillView {
     /// 按钮,避免重复提交。`None` = 从没分享过,或查询失败又没有本地兜底证据
     /// ——两者在界面上是同一档"可以分享"。
     pub review: Option<my_skills::ReviewView>,
+    /// 「在技能库里查看」那颗按钮要打开的网页地址(v7.1 任务 3)。`null` = 拼不
+    /// 出来,界面**不摆这颗按钮**。只有确实在公司技能库里的行(`section` 是
+    /// `installedFrom`/`sharedTo`)才可能有值,判据与拼法见 [`my_skills::library_url`]。
+    ///
+    /// 🔴 **拼接在 core 侧不在前端**:内网地址是编译期常量,铁律 5 要求源码里
+    /// 不得出现真实地址;而且 Gitea 与 GitHub 的浏览路径形状不同,那是 core 的知识。
+    /// 前端只把这个串原样交给既有的 `open_library_url`(带同源白名单守卫)。
+    pub library_url: Option<String>,
     /// 本体住在**统一技能目录**时,这台电脑上正读着那个目录的工具展示名(v7.1);
     /// 本体不在那里时是 `null`。与 `tools` 互补:那一档的工具恒 `Body`、不可勾也
     /// 不可取消,已从 `tools` 里拿掉,改由界面在「…」里展开这份名单。
@@ -1632,6 +1640,7 @@ impl From<my_skills::InstalledRow> for InstalledSkillView {
             share_blocked: r.share_blocked,
             section: r.section,
             review: r.review,
+            library_url: r.library_url,
             canonical_readers: r.canonical_readers,
         }
     }

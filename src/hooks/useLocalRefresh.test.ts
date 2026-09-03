@@ -80,6 +80,7 @@ describe("按页刷新", () => {
             shareBlocked: null,
             section: "shareable",
             review: null,
+            libraryUrl: null,
             canonicalReaders: null,
           },
         ];

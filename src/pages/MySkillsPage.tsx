@@ -16,11 +16,11 @@ import { useLocalDetail } from "@/store/local-detail";
 import { useMineCollapse } from "@/store/mine-collapse";
 import { matchesMineQuery, useMineSearch } from "@/store/mine-search";
 import {
+  cardFor,
   hasUpdate,
   localDiffersNoBaseline,
   remoteChangedForShareable,
   sections,
-  shareableCardFor,
   updateCount,
   useMySkills,
 } from "@/store/my-skills";
@@ -136,10 +136,9 @@ export function MySkillsPage() {
   // 来源的行走它自己那个来源的索引(shareableIndexes,同一趟请求也用来判定
   // 「外源有没有新版」);纯本地草稿没有数据源,展示名退回 dirSlug、描述不摆
   // ——不编一个不存在的字段。
-  const cardOf = (skill: InstalledSkillView) =>
-    skill.section === "shareable"
-      ? shareableCardFor(skill, shareableIndexes)
-      : (index?.skills.find((s) => s.dirSlug === skill.dirSlug) ?? null);
+  // 判定本身在 `store/my-skills.ts::cardFor`(详情面板的概览行读同一份),
+  // 这里只是把这一页的两个索引喂进去。
+  const cardOf = (skill: InstalledSkillView) => cardFor(skill, index, shareableIndexes);
   const nameOf = (dirSlug: string) => {
     const skill = list?.find((s) => s.dirSlug === dirSlug);
     if (!skill) return index?.skills.find((s) => s.dirSlug === dirSlug)?.name ?? dirSlug;
