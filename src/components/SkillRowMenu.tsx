@@ -87,7 +87,11 @@ export function SkillRowMenu({ items }: { items: SkillRowMenuItem[] }) {
             close();
           }
         }}
-        className="flex h-6 w-6 flex-none items-center justify-center rounded-ctl border border-border text-text-2 hover:border-border-strong hover:text-text"
+        // 🔴 v7.1 任务 5:照画布 `Main.dc.html` —— 「更多」是**无边框 ghost**
+        // (`border:1px solid transparent; background:transparent; color:#9a968e`)。
+        // 描边会让它与旁边那颗主按钮抢分量:一行里只该有一个"看起来最该点"的东西。
+        // 悬浮时才提色,可点性靠 hover 与 24px 命中区表达,不靠常驻边框。
+        className="flex h-6 w-6 flex-none items-center justify-center rounded-ctl border border-transparent text-text-3 hover:bg-surface-2 hover:text-text"
       >
         <Icon icon={MoreHorizontal} size={13} />
       </button>

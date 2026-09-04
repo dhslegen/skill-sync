@@ -387,6 +387,26 @@ describe("WhereBlocks", () => {
     );
   });
 
+  // 🔴 v7.1 任务 5:行上与详情动作区的「在技能库里查看」已按画布撤掉,
+  // `review.url` 在详情面板里的渲染点只剩这一处——**打开失败的渲染点也随之
+  // 只剩这一处**,所以在这里正面钉住它,别让那条不变量随旧测试一起消失。
+  it("🔴 块 3:「查看审核」打开失败要有渲染点,不能静默吞掉", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "open_library_url")
+        throw { code: "NET_BLOCKED", message: "这个地址不允许打开" };
+      return null;
+    });
+    const user = userEvent.setup();
+    render(
+      <WhereBlocks
+        skill={mk("weekly-report", "shareable", { review: { url: "http://gitea.local/pulls/9" } })}
+        agentNames={NAMES} remoteChanged={false}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "查看审核" }));
+    expect(await screen.findByText(/这个地址不允许打开/)).toBeInTheDocument();
+  });
+
   it("块 3:审核中但 url 为 null(直推留下的记录)时,「审核中」照摆,不用空串冒充链接", () => {
     render(
       <WhereBlocks

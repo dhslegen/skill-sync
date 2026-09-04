@@ -1,8 +1,5 @@
-import { useState } from "react";
-
 import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
-import { isAppError, openLibraryUrl } from "@/lib/ipc";
 import type { RowAction, RowMenuItemKind } from "@/lib/ownership";
 
 /**
@@ -77,33 +74,30 @@ export function PrimaryAction({
         </SolidButton>
       );
     case "conflict":
-      // 浅色文字链形态:这一档不是"点了就做完",是"点了会先问你"。
+      // 🔴 v7.1 任务 5:浅橙 chip(`ChipButton`),照画布 `Main.dc.html`
+      // ——**不是**此前的虚线下划线文字链。它是这一行**唯一**的主按钮,
+      // 弱到看不出可点就是缺陷(2026-09-02 真机走查用户点名)。
+      // 🔴 文案末尾的省略号是**有语义的**:这一档不是"点了就做完",是
+      // "点了会先问你留哪一份"。别当成文本被截断顺手"修"掉。
       return (
-        <button
-          type="button"
-          disabled={pulling}
-          onClick={onPull}
-          className={cn(
-            "rounded-ctl font-medium text-text-2 underline decoration-dotted underline-offset-2 hover:text-text disabled:opacity-50",
-            size === "footer"
-              ? "h-[30px] shrink-0 whitespace-nowrap px-2 text-[12.5px]"
-              : "h-6 px-1.5 text-[11.5px]",
-          )}
-        >
+        <ChipButton size={size} disabled={pulling} onClick={onPull}>
           {pulling ? t("mine.updating") : t("mine.conflictPending")}
-        </button>
+        </ChipButton>
       );
     case "contribute":
+      // 画布里「贡献更改」是浅橙 chip(不是灰描边):它是动作,但比「分享改动」
+      // 轻一档——改的是别人库里的东西,要走评审。
       return (
-        <OutlineButton size={size} disabled={sharing} onClick={onShareChanges}>
+        <ChipButton size={size} disabled={sharing} onClick={onShareChanges}>
           {sharing ? t("mine.contributing") : t("mine.contribute")}
-        </OutlineButton>
+        </ChipButton>
       );
     case "shareChanges":
+      // 画布里「分享改动」是实心(自己分享的技能推自己的改动,是本行的主动作)。
       return (
-        <OutlineButton size={size} disabled={sharing} onClick={onShareChanges}>
+        <SolidButton size={size} disabled={sharing} onClick={onShareChanges}>
           {sharing ? t("mine.sharingChanges") : t("mine.shareChanges")}
-        </OutlineButton>
+        </SolidButton>
       );
     case "share":
       return (
@@ -120,7 +114,10 @@ export function PrimaryAction({
           : action.blockedAction === "shareChanges"
             ? t("mine.shareChanges")
             : t("mine.share");
-      const Btn = action.blockedAction === "share" ? SolidButton : OutlineButton;
+      // 🔴 v7.1 任务 5:被拦下的形态必须与它**启用时**的形态一致,只多一层
+      // `disabled:opacity-50`(画布里禁用态就是"同一颗按钮 + opacity .5")。
+      // 用另一种形态画禁用态,等于对用户撒谎——他分不出被禁的到底是哪个动作。
+      const Btn = action.blockedAction === "contribute" ? ChipButton : SolidButton;
       return (
         <Btn size={size} disabled onClick={() => {}}>
           {label}
@@ -128,42 +125,21 @@ export function PrimaryAction({
       );
     }
     case "underReview":
-      return <ReviewPendingText url={action.url} />;
+      // 🔴 v7.1 任务 5:画布(`Main.dc.html`)把「审核中」画成**实心 + opacity .5**
+      // 的禁用按钮,而不是 Q5B 说的"轻量状态标记"——**这不是与 Q5B 冲突**:
+      // 「审核中」占的是这一行主按钮的位置,它是"分享"这个动作**此刻不能再点**
+      // 的形态(与同屏那颗禁用的「分享」逐字同款),不是一枚状态徽标。
+      // 别按 Q5B 把它"修"成浅底无边框的标记。
+      // 行上不再摆「在技能库里查看」(画布里那颗链接不在行上):`review.url`
+      // 在详情面板仍有两处渲染点——`WhereBlocks` 的 `ReviewLink`(「技能库里」
+      // 那一块)与 `SkillActionsBlock` 页脚的「在技能库里查看」,两处各自都有
+      // "打开失败要有渲染点"的测试钉着,所以这不是把 core 备好的事实丢掉。
+      return (
+        <SolidButton size={size} disabled onClick={() => {}}>
+          {t("detail.whereReviewPending")}
+        </SolidButton>
+      );
   }
-}
-
-/**
- * 「审核中」+(有链接时)「在技能库里查看」——`RowAction.underReview.url` 此前
- * 只在算出来就没有任何渲染点用过(I1 修复:v7 任务 7 修复轮 1)。
- *
- * 自己开一份局部错误状态,不复用页面级的 `revealError`——那个字段说的是
- * "打开文件夹"失败,这里是"打开外部链接"失败,是两件不同的事,合并成一个
- * 字段只会在两种失败同时发生时互相覆盖。与 `WhereBlocks.tsx` 的 `ReviewLink`
- * 是同一个模式的两处独立实现(那边服务详情面板「技能库里」那一块,这里服务
- * 主按钮 / 动作区,两处场景不同不共用状态,但都遵守"失败要有渲染点"这条硬规则)。
- */
-export function ReviewPendingText({ url }: { url: string | null }) {
-  const [error, setError] = useState<string | null>(null);
-  return (
-    <span className="flex items-center gap-1.5 px-1.5 text-[11.5px] text-text-3">
-      {t("detail.whereReviewPending")}
-      {url && (
-        <button
-          type="button"
-          onClick={() => {
-            setError(null);
-            openLibraryUrl(url).catch((raw: unknown) =>
-              setError(isAppError(raw) ? raw.message : t("error.generic")),
-            );
-          }}
-          className="text-accent underline decoration-dotted underline-offset-2 hover:opacity-80"
-        >
-          {t("mine.reviewLink")}
-        </button>
-      )}
-      {error && <span className="text-[#c0392b] dark:text-[#e0705f]">{error}</span>}
-    </span>
-  );
 }
 
 export function SolidButton({
@@ -184,6 +160,40 @@ export function SolidButton({
       onClick={onClick}
       className={cn(
         "rounded-ctl bg-accent font-medium text-white hover:opacity-90 disabled:opacity-50",
+        SIZE_CLASS[size],
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * 浅橙 chip 按钮(`bg-accent-soft` = `rgba(194,65,12,.08)`,与画布内联值逐字相同)。
+ *
+ * 画布 `Main.dc.html` 的行按钮只有三种形态,这是中间那一档:实心 = 这一行的主动作
+ * (更新/分享/分享改动),chip = 可点但比主动作轻一档(库里有新版…/贡献更改/
+ * 页头「全部更新」),ghost 图标 = 「更多」。三处 chip **必须共用这一个实现**
+ * ——各写一份就是本项目记录的空转模式 #1(其中一份漂移了没有任何测试发现)。
+ */
+export function ChipButton({
+  disabled,
+  size = "row",
+  onClick,
+  children,
+}: {
+  disabled?: boolean;
+  size?: ButtonSize;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "rounded-ctl border border-transparent bg-accent-soft font-medium text-accent hover:opacity-80 disabled:opacity-50",
         SIZE_CLASS[size],
       )}
     >

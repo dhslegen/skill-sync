@@ -261,6 +261,26 @@ describe("v7 任务 7:DoD 六条", () => {
     expect(lastInvoke("skill_install_batch")?.args.dirSlugs).toEqual(["a"]);
   });
 
+  // 🔴 v7.1 任务 5(用户 2026-09-02 真机走查):总览是**一行轻字 + 内联 chip**,
+  // 不是一张卡片。断言必须落在**形态**这一层——只查文字的话,卡片形态与轻字
+  // 形态都能通过(视觉类断言最典型的空转)。
+  it("🔴 页头总览是一行轻字,不是卡片:容器不带边框/底色/卡片圆角", async () => {
+    seed([mk("a", "installedFrom", { remote: "NEW" })]);
+    render(<MySkillsPage />);
+    const overview = await screen.findByTestId("mine-overview");
+    expect(overview.className).not.toContain("rounded-card");
+    expect(overview.className).not.toContain("border-border");
+    expect(overview.className).not.toContain("bg-surface-1");
+  });
+
+  // 「全部更新」是可点动作,按画布是浅橙 chip(不是实心、也不是裸文字)。
+  it("🔴 页头「全部更新」是浅橙 chip:带 bg-accent-soft,不是实心 bg-accent", async () => {
+    seed([mk("a", "installedFrom", { remote: "NEW" })]);
+    render(<MySkillsPage />);
+    const btn = await screen.findByRole("button", { name: "全部更新" });
+    expect(btn.className).toContain("bg-accent-soft");
+  });
+
   it("每行至多一颗主按钮,其余在「…」里", async () => {
     seed([mk("a", "installedFrom", { remote: "NEW" })]);
     render(<MySkillsPage />);
@@ -373,6 +393,26 @@ describe("三区排列与判定表接线", () => {
     expect(useInstall.getState().dirSlug).toBe("a");
   });
 
+  // 🔴 v7.1 任务 5(用户 2026-09-02 真机走查):conflict 是这一行**唯一**的主
+  // 按钮,此前画成虚线下划线文字链,弱到看不出可点。断言要落在形态上:chip
+  // 类名在场 **且** 旧的 `decoration-dotted` 不在场——只查文字的话两种形态都过。
+  it("🔴 conflict 档是浅橙 chip 按钮,不是虚线下划线文字链", async () => {
+    seed([mk("a", "installedFrom", { remote: "NEW", localModified: true })]);
+    render(<MySkillsPage />);
+    const btn = await screen.findByRole("button", { name: "库里有新版…" });
+    expect(btn.className).toContain("bg-accent-soft");
+    expect(btn.className).toContain("text-accent");
+    expect(btn.className).not.toContain("decoration-dotted");
+    expect(btn.className).not.toContain("underline");
+  });
+
+  // 省略号是语义的一部分(点了会先问你留哪一份),不是文本被截断。
+  it("🔴 conflict 档的文案保留末尾省略号", async () => {
+    seed([mk("a", "installedFrom", { remote: "NEW", localModified: true })]);
+    render(<MySkillsPage />);
+    expect((await screen.findByRole("button", { name: "库里有新版…" })).textContent).toMatch(/…$/);
+  });
+
   it("🔴 修复轮 2(①):conflict 档的「更多」菜单里,贡献更改/分享改动同样要过 shareBlocked 这道闸(正反对照)", async () => {
     // 正例:conflict + 本地改过 + 合格 → 菜单里有「贡献更改」,点击真的调
     // skill_share_changes(与主按钮那条 conflict 链路互不冲突,是"更多"里的
@@ -412,28 +452,26 @@ describe("三区排列与判定表接线", () => {
     expect(screen.queryByRole("menuitem", { name: "分享改动" })).toBeNull();
   });
 
-  it("🔴 修复轮 2(③):ReviewPendingText 的「在技能库里查看」失败要有渲染点", async () => {
-    const list = [mk("a", "shareable", { review: { url: "http://gitea/x/y/pulls/7" } })];
-    seed(list);
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "installed_list") return stripFixtureOnly(list);
-      if (cmd === "agents_detected") return AGENT_LIST;
-      if (cmd === "open_library_url") throw { code: "NET_BLOCKED", message: "这个地址不允许打开" };
-      return null;
-    });
+  // 🔴 v7.1 任务 5:行上的「审核中」改成**禁用的实心按钮**(照画布
+  // `Main.dc.html`,与同屏那颗禁用的「分享」同一形态),行上不再摆
+  // 「在技能库里查看」——那颗链接在详情面板的「技能库里」那一块
+  // (`WhereBlocks` 的 `ReviewLink`,含打开失败的渲染点)。
+  it("审核中是禁用的实心按钮,行上不再摆「在技能库里查看」", async () => {
+    seed([mk("a", "shareable", { review: { url: "http://gitea/x/y/pulls/7" } })]);
     render(<MySkillsPage />);
-    await screen.findByText("审核中");
-
-    await userEvent.click(screen.getByRole("button", { name: "在技能库里查看" }));
-
-    expect(await screen.findByText(/这个地址不允许打开/)).toBeInTheDocument();
+    const row = await screen.findByTestId("row-a");
+    const btn = within(row).getByRole("button", { name: "审核中" });
+    expect(btn).toBeDisabled();
+    expect(btn.className).toContain("bg-accent");
+    expect(within(row).queryByRole("button", { name: "在技能库里查看" })).toBeNull();
   });
 
-  it("🔴 修复轮 2(③):审核中没有链接时,不摆「在技能库里查看」——url 为 null 时如实不摆", async () => {
+  it("审核中没有链接时,行上照样只有那颗禁用按钮(不用空串冒充链接)", async () => {
     seed([mk("a", "shareable", { review: { url: null } })]);
     render(<MySkillsPage />);
-    await screen.findByText("审核中");
-    expect(screen.queryByRole("button", { name: "在技能库里查看" })).toBeNull();
+    const row = await screen.findByTestId("row-a");
+    expect(within(row).getByRole("button", { name: "审核中" })).toBeDisabled();
+    expect(within(row).queryByRole("button", { name: "在技能库里查看" })).toBeNull();
   });
 
   it("🔴 修复轮 2(③):「更多」菜单里「移除」永远排最后,且与前面的动作有一条分隔线", async () => {

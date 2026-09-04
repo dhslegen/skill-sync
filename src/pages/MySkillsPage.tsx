@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { CreateSkillButton, CreateSkillPanel } from "@/components/CreateSkill";
 import { Icon } from "@/components/Icon";
 import { ProjectSections } from "@/components/ProjectSections";
-import { PrimaryAction, rowMenuHandler } from "@/components/RowActionControls";
+import { ChipButton, PrimaryAction, rowMenuHandler } from "@/components/RowActionControls";
 import { SkillIcon } from "@/components/SkillIcon";
 import { SkillRowMenu, type SkillRowMenuItem } from "@/components/SkillRowMenu";
 import { t } from "@/i18n";
@@ -318,23 +318,26 @@ export function MySkillsPage() {
             </div>
           )}
 
-          {/* 页头总览:只在"有事要做"时出现(design 的「一切正常」板完全没有这一块)。 */}
+          {/* 页头总览:只在"有事要做"时出现(design 的「一切正常」板完全没有这一块)。
+              🔴 v7.1 任务 5:**一行轻字 + 内联 chip**,不是卡片。画布 `Main.dc.html`
+              里这块没有边框、没有底色、没有内边距,就是正文流里的一行 12.5px 灰字,
+              后面跟一颗浅橙 chip。此前的 `rounded-card border bg-surface-1` 把
+              "有几件事要做"这句状态说明做成了一张与下面技能卡同等重量的卡片
+              ——状态不该和内容抢分量(Q5B)。别再给它加回边框/底色。 */}
           {(updatesCount > 0 || unsyncedCount > 0) && (
-            <div className="mb-2.5 flex items-center gap-3 rounded-card border border-border bg-surface-1 px-3.5 py-2.5">
-              <p className="flex-1 text-[12.5px] text-text-2">
+            <div
+              data-testid="mine-overview"
+              className="flex items-center gap-2.5 pb-3 text-[12.5px] text-text-2"
+            >
+              <span>
                 {updatesCount > 0 && t("mine.overviewUpdates", { count: updatesCount })}
                 {updatesCount > 0 && unsyncedCount > 0 && <span className="mx-1.5">·</span>}
                 {unsyncedCount > 0 && t("mine.overviewUnsynced", { count: unsyncedCount })}
-              </p>
+              </span>
               {updatesCount > 0 && (
-                <button
-                  type="button"
-                  disabled={updateAllBusy}
-                  onClick={() => void updateAll()}
-                  className="h-7 flex-none rounded-ctl bg-accent px-2.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
-                >
+                <ChipButton disabled={updateAllBusy} onClick={() => void updateAll()}>
                   {updateAllBusy ? t("mine.updating") : t("mine.updateAll")}
-                </button>
+                </ChipButton>
               )}
             </div>
           )}
@@ -715,8 +718,6 @@ function Row({
     onClick: rowMenuHandler(spec.kind, { onReveal: () => onReveal(skill.body), onShareChanges, onPull, onShare, onRemove }),
   }));
 
-  const explainShareBlocked = action.kind === "shareBlocked";
-
   return (
     <div data-testid={`row-${skill.dirSlug}`} className="border-t border-border px-3.5 py-2.5 first:border-t-0">
       <div className="flex items-center gap-3">
@@ -753,6 +754,16 @@ function Row({
               </div>
             )}
             {description && <div className="mt-0.5 truncate text-[11.5px] text-text-3">{description}</div>}
+            {/* 🔴 v7.1 任务 5:校验没过的说明是**文本列里的第三行小字**,不是横跨
+                整行的描边大框。画布 `Main.dc.html` 的 polyglot 行就长这样:
+                `margin-top:2px; font-size:11.5px; color:#9a6c00`,无边框无底色。
+                它是"为什么这颗按钮点不动"的注解,跟着名字与简介走;做成大框会让
+                一行普通技能凭空长到两倍高,把整页的密度带垮。 */}
+            {action.kind === "shareBlocked" && (
+              <div className="mt-0.5 text-[11.5px] leading-[1.5] text-[#9a6c00] dark:text-[#d4a017]">
+                {t(SHARE_BLOCK_LABEL[action.reason])}
+              </div>
+            )}
           </div>
         </button>
 
@@ -775,12 +786,6 @@ function Row({
           <SkillRowMenu items={menuItems} />
         </div>
       </div>
-
-      {explainShareBlocked && action.kind === "shareBlocked" && (
-        <p className="mt-1.5 rounded-card border border-[#b8860b]/40 px-2.5 py-1.5 text-[11.5px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
-          {t(SHARE_BLOCK_LABEL[action.reason])}
-        </p>
-      )}
     </div>
   );
 }
@@ -790,7 +795,7 @@ function Badge({ title, children }: { title?: string; children: React.ReactNode 
   return (
     <span
       title={title}
-      className="flex-none rounded-[4px] border border-[#b8860b]/40 px-1.5 py-px text-[10.5px] font-medium text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]"
+      className="flex-none rounded-[4px] bg-[#b8860b]/10 px-1.5 py-px text-[10.5px] font-medium text-[#9a6c00] dark:bg-[#d4a017]/15 dark:text-[#d4a017]"
     >
       {children}
     </span>

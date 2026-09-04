@@ -60,7 +60,7 @@ export function SkillCard({
               </span>
             )}
             {mine && (
-              <span className="flex-none rounded-[4px] border border-accent/40 bg-accent-soft px-1.5 py-px text-[10.5px] font-medium text-accent">
+              <span className="flex-none rounded-[4px] bg-accent-soft px-1.5 py-px text-[10.5px] font-medium text-accent">
                 {t("store.mineBadge")}
               </span>
             )}

@@ -249,27 +249,31 @@ describe("页脚的「在技能库里查看」:core 拼得出地址才摆", () =
     expect(await screen.findByText(/不属于任何已配置的技能库/)).toBeInTheDocument();
   });
 
-  // 「审核中」那一档是「可分享到」区(还没进库),core 恒给 null —— 两颗同名按钮
-  // 不会同屏。这一条正面钉住那个前提。
-  it("审核中的行只有 PrimaryAction 里那一颗,不会出现两颗同名按钮", () => {
+  // 🔴 v7.1 任务 5:「审核中」改成**禁用的实心按钮**(照画布),动作区不再自己
+  // 摆 `review.url` 的链接——`review.url` 在同一块详情面板里由 `WhereBlocks`
+  // 的「技能库里」那一块渲染(含打开失败的渲染点,见 WhereBlocks.test.tsx),
+  // 所以 core 备好的这条事实仍然有人读。这两条钉住"新形态 + 不再同屏两颗"。
+  it("审核中是禁用的实心按钮,动作区不再自己摆一颗「在技能库里查看」", () => {
     render(
       <SkillActionsBlock
         skill={view({ relation: "draft", localModified: false, review: { url: "http://g.local/pulls/9" } })}
         remoteChanged={false}
       />,
     );
-    expect(screen.getByText("审核中")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "在技能库里查看" })).toHaveLength(1);
+    const btn = screen.getByRole("button", { name: "审核中" });
+    expect(btn).toBeDisabled();
+    expect(btn.className).toContain("bg-accent");
+    expect(screen.queryByRole("button", { name: "在技能库里查看" })).not.toBeInTheDocument();
   });
 
-  it("审核中但 url 为 null 时,「审核中」照摆、链接不摆(不用空串冒充)", () => {
+  it("审核中但 url 为 null 时,「审核中」照摆(它与有没有链接无关)", () => {
     render(
       <SkillActionsBlock
         skill={view({ relation: "draft", localModified: false, review: { url: null } })}
         remoteChanged={false}
       />,
     );
-    expect(screen.getByText("审核中")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "审核中" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "在技能库里查看" })).not.toBeInTheDocument();
   });
 });
