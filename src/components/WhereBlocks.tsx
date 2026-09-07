@@ -209,10 +209,14 @@ function canReveal(readers: string[] | null): readers is string[] {
  * 三支各自对应一种成因,谁也不能兼并谁:
  * 1. **本体不在这台电脑上**(第 4 源:库里记着是我分享的,本机没有文件)
  *    → 旧那句话对这一档仍然是真话,原样保留;
- * 2. **本体在统一技能目录**(`canonicalReaders !== null`)→ 读它的工具不需要
- *    单独勾选,所以清单是空的。⚠️ 这句话**不点名任何工具**,因为
- *    `canonicalReaders` 可能是空数组(那六个一个都没装):说"都在读它"就又是
- *    一句假话。要看名单的从上面那个「…」进;
+ * 2. **本体在统一技能目录**(`canonicalReaders !== null`)→ 清单是空的。
+ *    ⚠️ 这句话**不点名任何工具**,因为 `canonicalReaders` 可能是空数组
+ *    (那六个一个都没装):说"都在读它"就又是一句假话。要看名单的从上面那个「…」进。
+ *    🔴 **终审 M-4**:它原先写的是「没有需要单独勾选的工具」——**多说了一个成因**。
+ *    清单为空在这一档还有第二种走法:`tools` 里确实有一条 `linked` 的关联,只是
+ *    那个工具已经从这台机器上卸载、被 R21 的收窄藏了起来。那时"没有需要"是假话
+ *    (有一条残留关联,只是这里看不到)。现在只陈述事实(「暂时没有可以勾选的
+ *    工具」)+ 本体位置,不解释成因——与支 3 同一种诚实,只是多说一句位置;
  * 3. **本体在某个工具自己的目录里,但收窄后没有可勾的**(那个工具没被
  *    `agents_detected` 探测到时可达)→ 上面两句都不适用,给一句只说事实、
  *    不解释成因的中性话。套第 2 句会凭空说出"统一技能目录"这个与它无关的位置。
@@ -515,7 +519,11 @@ export function WhereBlocks({
   const summary = whereSummary(skill, remoteChanged).join(t("punct.middleDot"));
 
   return (
-    <div className="px-5">
+    // 🔴 终审 M-5:`flex-none`。父容器是 flex column(详情面板),相邻的 tablist
+    // 与固定页脚都显式 `flex-none`、正文是 `flex-1 overflow-y-auto`;这一块少了
+    // 它就是这一列里唯一没有声明收缩行为的节点——展开态内容变高时会被 flex 默认
+    // 的 `shrink:1` 压缩,而它自己没有滚动容器,被压的内容直接看不见。
+    <div className="flex-none px-5">
       <button
         type="button"
         aria-expanded={expanded}

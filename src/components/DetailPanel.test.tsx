@@ -647,6 +647,22 @@ describe("DetailPanel(本地详情模式)", () => {
     });
   });
 
+  // 🔴 终审 M-3:`skill` 为 null 时页脚整个不渲染,连「打开文件夹」都没有
+  //(v7.1 之前那颗是无条件渲染的)。可达路径:`useMySkills.load()` 失败,
+  // 或刚装完跳过来而 list 还没刷新。降级页脚只摆这一颗——其余动作要靠
+  // `InstalledSkillView` 判档,没有那一行就无从判起。
+  it("这个技能不在 list 里时,页脚降级成只有一颗「打开文件夹」,而不是什么都没有", async () => {
+    useMySkills.setState({ list: [], agentNames: new Map(), toolDirs: new Map() });
+    openLocal();
+    render(<DetailPanel />);
+    // 判档才有的动作一个都不摆(没有那一行,摆出来的档位是猜的)
+    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "打开文件夹" }));
+    expect(invokeMock).toHaveBeenCalledWith("skill_reveal", {
+      args: { path: "/home/u/.agents/skills/weekly-report" },
+    });
+  });
+
   it("读取失败时显示可读原因", () => {
     useLocalDetail.setState({
       target: { path: "/tmp/nope" },

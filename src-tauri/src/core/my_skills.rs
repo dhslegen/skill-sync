@@ -454,6 +454,8 @@ fn attribution_from_refs(
                 owner: repo.owner.clone(),
                 repo: repo.repo.clone(),
                 path: skill.path.clone(),
+                // 终审 I-4:搬 `repo.branch`,不是让下游拿编译期常量兜底。
+                branch: repo.branch.clone(),
                 author: skill.attribution.as_ref().map(|a| a.author.clone()),
             });
         }
@@ -575,6 +577,13 @@ fn in_builtin_library(
 /// 路径**取自索引的 `path`**(`ownership::LibraryEntry::path`),不拿
 /// `skills/<dir_slug>` 现拼——布局是技能库管理员定的,猜错就是 404。
 ///
+/// 🔴 **分支同理取自条目自己的 `branch`**(终审 I-4)。这里原先用的是
+/// `builtin.branch`,而那是编译期常量、只代表内建源的**主仓**;
+/// `builtin_repo_refs` 会把 `config.builtin_extra_repos` 也算进公司库,每条追加仓
+/// 都带自己的分支(M4「一源多仓」)。默认分支是 `master` 的追加仓,拼出来的地址
+/// 会带一个不存在的 `main`,用户点开得到 404——与上一段"路径不现拼"是同一条道理,
+/// 而分支恰恰是猜的。空分支与空 owner/repo/path 同档:拼不出来就不摆。
+///
 /// 拼出来的地址天然与内建 Gitea 同源,所以走既有的 `open_library_url`
 /// (它带同源白名单守卫)是安全的,不需要新开一条通往系统浏览器的通道。
 pub fn library_url(
@@ -586,14 +595,17 @@ pub fn library_url(
     }
     let base = builtin.base_url?.trim_end_matches('/');
     let path = entry.path.trim_matches('/');
-    if base.is_empty() || entry.owner.is_empty() || entry.repo.is_empty() || path.is_empty() {
+    let branch = entry.branch.trim_matches('/');
+    if base.is_empty()
+        || entry.owner.is_empty()
+        || entry.repo.is_empty()
+        || path.is_empty()
+        || branch.is_empty()
+    {
         return None;
     }
     // Gitea 的文件浏览路径形状:/{owner}/{repo}/src/branch/{branch}/{path}
-    Some(format!(
-        "{base}/{}/{}/src/branch/{}/{path}",
-        entry.owner, entry.repo, builtin.branch
-    ))
+    Some(format!("{base}/{}/{}/src/branch/{branch}/{path}", entry.owner, entry.repo))
 }
 
 /// [`library_url`] 的行级包装:**只对确实在公司技能库里的行**给地址。
@@ -1271,11 +1283,16 @@ mod tests {
     // 的坏实现在只有正向用例时照样全绿。
 
     fn entry(path: &str) -> ownership::LibraryEntry {
+        entry_on(path, "main")
+    }
+
+    fn entry_on(path: &str, branch: &str) -> ownership::LibraryEntry {
         ownership::LibraryEntry {
             registry_id: registry::BUILTIN_REGISTRY_ID.to_string(),
             owner: "skills".into(),
             repo: "skills".into(),
             path: path.into(),
+            branch: branch.into(),
             author: None,
         }
     }
@@ -1347,6 +1364,29 @@ mod tests {
         // 拼不出来就不摆,不猜一个 `skills/<dir_slug>`。
         let b = builtin_at(Some("http://gitea.internal:3000"));
         assert!(row_library_url(ownership::Relation::Installed, &b, None).is_none());
+    }
+
+    /// 🔴 终审 I-4:分支取**条目自己的**,不是编译期常量。`builtin_at` 的
+    /// `branch` 恒为 `main`(主仓),条目给 `master` 时拼出来的必须是 `master`
+    /// ——把 `entry.branch` 改回 `builtin.branch` 这条就红。
+    #[test]
+    fn a_library_url_uses_the_branch_of_the_repo_the_skill_actually_lives_in() {
+        let url = library_url(
+            &builtin_at(Some("http://gitea.internal:3000")),
+            &entry_on("skills/x", "master"),
+        )
+        .unwrap();
+        assert_eq!(url, "http://gitea.internal:3000/skills/skills/src/branch/master/skills/x");
+    }
+
+    /// 分支为空(索引缓存里没记分支)时不摆——与 owner/repo/path 为空同档:
+    /// 拼不出来就不摆,不用一个猜的分支冒充。
+    #[test]
+    fn no_library_url_without_a_branch() {
+        assert!(
+            library_url(&builtin_at(Some("http://gitea.internal:3000")), &entry_on("skills/x", ""))
+                .is_none()
+        );
     }
 
     #[test]

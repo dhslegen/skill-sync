@@ -131,9 +131,14 @@ export function PrimaryAction({
       // 的形态(与同屏那颗禁用的「分享」逐字同款),不是一枚状态徽标。
       // 别按 Q5B 把它"修"成浅底无边框的标记。
       // 行上不再摆「在技能库里查看」(画布里那颗链接不在行上):`review.url`
-      // 在详情面板仍有两处渲染点——`WhereBlocks` 的 `ReviewLink`(「技能库里」
-      // 那一块)与 `SkillActionsBlock` 页脚的「在技能库里查看」,两处各自都有
-      // "打开失败要有渲染点"的测试钉着,所以这不是把 core 备好的事实丢掉。
+      // 在详情面板有两处渲染点——`WhereBlocks` 的 `ReviewLink`(「技能库里」
+      // 那一块,**默认收起**)与 `SkillActionsBlock` 的固定页脚。
+      // 🔴 **终审 I-1 订正**:这段话原先说页脚那颗是 `review.url` 的第二个渲染点
+      // ——**是错的**。页脚读的是 `skill.libraryUrl`(另一个字段),而
+      // `review` 非空 ⟹ `section == "shareable"` ⟹ `relation == Draft` ⟹
+      // `my_skills::row_library_url` 第一句就返回 `None`,于是审核中的行页脚
+      // **恒无库链接**,唯一入口埋在默认收起的折叠头里。现在 `SkillActionsBlock`
+      // 已改成 `libraryUrl ?? review.url`,这句话才成立(见该文件的组件文档)。
       return (
         <SolidButton size={size} disabled onClick={() => {}}>
           {t("detail.whereReviewPending")}

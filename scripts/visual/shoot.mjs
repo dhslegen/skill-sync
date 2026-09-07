@@ -121,6 +121,44 @@ const SCREENS = [
       await page.getByTestId("where-readers").waitFor({ state: "visible" });
     },
   },
+  // ---------------------------------------------------------------- 终审修复波
+  // 🔴 08/09 是 I-2 要看的两屏:任务 4 把共享常量 `LIST_ROW_EXTRA` 从
+  // `border-t … px-3 py-2 … hover:bg-surface-2` 压成 `py-1.5`,而**只有这两个
+  // 调用方**把 `ToolPicker` 包在带边框的盒子里、横向留白原本全靠那个 `px-3`。
+  // 四个调用方里另外两个(详情面板「各个工具里」、项目行改选)是裸清单,不受影响。
+  {
+    id: "08-install-agent-chooser",
+    title: "商店 · 获取时的工具多选(I-2:带边框盒子里的 ToolPicker)",
+    async run(page, ctx) {
+      await ctx.openStoreDetail(page, "安全评审清单");
+      await page.getByRole("button", { name: "安装", exact: true }).click();
+      await page.getByRole("checkbox").first().waitFor({ state: "visible" });
+      await page.waitForTimeout(300);
+    },
+  },
+  {
+    id: "09-install-project-confirm",
+    title: "商店 · 装到项目的确认条(I-2:第二个带边框盒子)",
+    async run(page, ctx) {
+      await ctx.openStoreDetail(page, "安全评审清单");
+      await page.getByRole("button", { name: "选择安装位置" }).click();
+      await page.getByRole("menuitem", { name: "装到项目…" }).click();
+      await page.getByRole("button", { name: "装到这里" }).waitFor({ state: "visible" });
+      await page.waitForTimeout(300);
+    },
+  },
+  // 🔴 10 是 I-1 要看的那屏:「审核中」那一行的详情面板页脚,此前恒无库链接。
+  {
+    id: "10-detail-under-review-footer",
+    title: "详情面板 ·「审核中」那一档的页脚(I-1:库链接退回 review.url)",
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      await page.getByTestId("row-riso-editorial-deck-body").click();
+      await page.waitForTimeout(500);
+      await ctx.scrollPanelToBottom(page);
+      await page.waitForTimeout(300);
+    },
+  },
 ];
 
 // ---------------------------------------------------------------- 交互小工具
@@ -129,6 +167,13 @@ const ctx = {
     await page.getByRole("button", { name: "我的技能" }).first().click();
     // 等到真的有行渲染出来为止,不靠 sleep 猜
     await page.getByTestId("row-api-test-expert").waitFor({ state: "visible" });
+  },
+  /** 商店页(默认页)里点开一张卡片的详情。卡片的 `aria-label` 就是技能名,
+   *  但卡片内部还有一颗同名相关的按钮,所以取 `.first()`(外层卡片先出现)。 */
+  async openStoreDetail(page, name) {
+    await page.getByRole("button", { name }).first().click();
+    await page.getByRole("heading", { name, level: 2 }).waitFor({ state: "visible" });
+    await page.waitForTimeout(400);
   },
   /** 滚动详情面板自己的滚动容器(不是页面 body——body 是 overflow:hidden)。 */
   async scrollPanelToBottom(page) {

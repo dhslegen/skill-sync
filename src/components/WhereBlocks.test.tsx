@@ -553,11 +553,11 @@ describe("WhereBlocks · 空勾选清单按成因分流(C-1)", () => {
     );
   });
 
-  it("🔴 成因二:本体在统一技能目录 —— 说的是「没有需要单独勾选的工具」,不许说「没有本体」", () => {
+  it("🔴 成因二:本体在统一技能目录 —— 说位置 + 「暂时没有可以勾选的工具」,不许说「没有本体」", () => {
     const skill = mk("x", "installedFrom", { tools: [], canonicalReaders: ["Zed"] });
     const block = () => screen.getByTestId("where-block-tools");
     render(<WhereBlocks skill={skill} agentNames={NAMES} remoteChanged={false} />);
-    expect(block()).toHaveTextContent("本体放在统一技能目录,没有需要单独勾选的工具");
+    expect(block()).toHaveTextContent("本体放在统一技能目录,暂时没有可以勾选的工具");
     expect(block()).not.toHaveTextContent(/没有本体/);
     // 这一句刻意不点名任何工具:readers 可能是空数组,说"都在读它"又是一句假话
     expect(block()).not.toHaveTextContent("Zed");

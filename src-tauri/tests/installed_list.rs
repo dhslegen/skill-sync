@@ -147,6 +147,26 @@ fn write_index_cache(ctx: &Ctx, skills: Vec<IndexedSkill>) {
     store::save_cache(&path, &index).unwrap();
 }
 
+/// [`write_index_cache`] 的泛化版:往**指定的**内建源仓写索引缓存
+/// (终审 I-4 的追加仓用例要它——`write_index_cache` 把坐标写死成 `skills/skills`)。
+fn write_index_cache_for(ctx: &Ctx, repo: &skillsync_lib::core::gitea::RepoRef, skills: Vec<IndexedSkill>) {
+    let path = store::cache_path(ctx.store.dir(), registry::BUILTIN_REGISTRY_ID, repo);
+    let index = StoreIndex {
+        schema_version: store::INDEX_SCHEMA_VERSION,
+        registry_id: registry::BUILTIN_REGISTRY_ID.into(),
+        owner: repo.owner.clone(),
+        repo: repo.repo.clone(),
+        branch: repo.branch.clone(),
+        commit_sha: "abc1111".into(),
+        committed_at: NOW.into(),
+        fetched_at: 0,
+        skills,
+        skipped: Vec::new(),
+        curated: Vec::new(),
+    };
+    store::save_cache(&path, &index).unwrap();
+}
+
 fn lock_entry_gitea(source: &str) -> LockEntry {
     LockEntry {
         source: source.into(),
@@ -1178,4 +1198,108 @@ fn an_accounted_row_does_offer_versions_when_the_same_literal_name_differs() {
     let paths: Vec<&str> = r.versions.iter().map(|v| v.path.as_str()).collect();
     assert!(paths.contains(&body.to_string_lossy().as_ref()), "本体自己必须在选项里");
     assert!(paths.contains(&other.to_string_lossy().as_ref()));
+}
+
+// ============================================================ 终审 I-3 / I-4
+//
+// 🔴 **这一节存在的理由是一条实测的缺口**(整分支终审 R5):把 `my_skills::build`
+// 里三处 `library_url` 填值(第 1 源 / 第 4 源 / `unmanaged_row`)**全部改成
+// `None`**,`./scripts/rust-test.sh fast` 仍然 **EXIT=0、880 passed / 0 failed**
+// ——`library_url`/`row_library_url` 的纯函数单测、`installed_list.rs` 的键集合
+// 断言、前端测试、截图 harness 的 fixture,一个都没有走过这条接线。也就是说
+// core 把地址算出来、上了 IPC、前端也在用,而"它到底有没有被填进这一行"在
+// Rust 侧零覆盖。
+//
+// 所以下面这条测试**逐源正面断言完整 URL**(不是 `is_some()`):三个填值点对应
+// 三个不同的 `dir_slug`,单点注入时红的那条断言自己就报出是哪一个源漏了。
+//
+// 第四行是终审 I-4 的用例:技能住在**追加仓**里(`config.builtin_extra_repos`,
+// M4「一源多仓」),而那个仓的默认分支是 `master`。地址里的分支必须是 `master`
+// ——用编译期常量 `builtin.branch`(主仓的 `main`)拼出来的地址点开是 404。
+
+/// 三个填值点各一行 + 追加仓那一行,全部正面断言完整地址。
+#[test]
+fn every_row_source_fills_in_the_library_url_and_uses_its_own_branch() {
+    let ctx = ctx();
+    let lock_path = skill_lock::lock_path(&ctx.env).unwrap();
+
+    // ---- 第 1 源:state.installed 记账 + canonical 有本体
+    write_skill_md(&ctx.canonical("recorded-skill"));
+    let mut state = State::default();
+    state.installed.push(InstalledSkill {
+        name: "recorded-skill".into(),
+        source: SkillSource {
+            registry_id: registry::BUILTIN_REGISTRY_ID.into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            path: "skills/recorded-skill".into(),
+            git_ref: "abc1111".into(),
+        },
+        commit_sha: "abc1111".into(),
+        content_hash: "deadbeef".into(),
+        origin: Some("acquired".into()),
+        body: None,
+        agents: Vec::new(),
+        links: Vec::new(),
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    });
+    ctx.store.save_state(&state).unwrap();
+
+    // ---- 第 2 源(`unmanaged_row`):canonical 有本体、没有记账,库里作者是我
+    write_skill_md(&ctx.canonical("unmanaged-skill"));
+    skill_lock::upsert(&lock_path, "unmanaged-skill", &lock_entry_gitea("skills/skills"), NOW);
+
+    // ---- 第 4 源:只在库里、本机没有本体,作者是我
+    // ---- 主仓索引(前三行都从这里查坐标与路径)
+    write_index_cache(
+        &ctx,
+        vec![
+            indexed_skill("recorded-skill", None),
+            indexed_skill("unmanaged-skill", Some("赵文浩")),
+            indexed_skill("library-only-skill", Some("赵文浩")),
+        ],
+    );
+
+    // ---- I-4:追加仓,默认分支是 master(不是主仓的 main)
+    let extra = skillsync_lib::core::gitea::RepoRef {
+        owner: "skills".into(),
+        repo: "team-b".into(),
+        branch: "master".into(),
+    };
+    write_index_cache_for(&ctx, &extra, vec![indexed_skill("team-b-skill", Some("赵文浩"))]);
+
+    let mut config = Config::default();
+    config.identities.insert(registry::BUILTIN_REGISTRY_ID.into(), me());
+    config.builtin_extra_repos.push(RepoConfig {
+        owner: "skills".into(),
+        repo: "team-b".into(),
+        branch: "master".into(),
+        name: None,
+    });
+
+    let rows = build(&ctx, &config, &state);
+    let base = "http://gitea.internal:3000/skills";
+
+    assert_eq!(
+        row(&rows, "recorded-skill").library_url.as_deref(),
+        Some(format!("{base}/skills/src/branch/main/skills/recorded-skill").as_str()),
+        "第 1 源(state.installed 记账)没有填上库地址"
+    );
+    assert_eq!(
+        row(&rows, "unmanaged-skill").library_url.as_deref(),
+        Some(format!("{base}/skills/src/branch/main/skills/unmanaged-skill").as_str()),
+        "第 2 源(unmanaged_row)没有填上库地址"
+    );
+    assert_eq!(
+        row(&rows, "library-only-skill").library_url.as_deref(),
+        Some(format!("{base}/skills/src/branch/main/skills/library-only-skill").as_str()),
+        "第 4 源(只在库里)没有填上库地址"
+    );
+    // 🔴 I-4:分支是这个仓自己的 `master`,不是编译期常量里的 `main`。
+    assert_eq!(
+        row(&rows, "team-b-skill").library_url.as_deref(),
+        Some(format!("{base}/team-b/src/branch/master/skills/team-b-skill").as_str()),
+        "追加仓的地址必须用它自己的默认分支,拿主仓分支拼出来的点开是 404"
+    );
 }

@@ -462,7 +462,11 @@ describe("三区排列与判定表接线", () => {
     const row = await screen.findByTestId("row-a");
     const btn = within(row).getByRole("button", { name: "审核中" });
     expect(btn).toBeDisabled();
-    expect(btn.className).toContain("bg-accent");
+    // 🔴 终审 M-1:必须按**空白切分后的类名集合**断言,不能 `className.toContain`
+    // ——`"bg-accent-soft".includes("bg-accent")` 为真,实心↔chip 的漂移不会红,
+    // 而那正是任务 5 的全部命题。`/\bbg-accent\b/` 同样不行:`-` 是非词字符,
+    // `\b` 在 `accent` 与 `-` 之间照样成立。
+    expect(btn.className.split(/\s+/)).toContain("bg-accent");
     expect(within(row).queryByRole("button", { name: "在技能库里查看" })).toBeNull();
   });
 

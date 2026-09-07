@@ -249,11 +249,14 @@ describe("页脚的「在技能库里查看」:core 拼得出地址才摆", () =
     expect(await screen.findByText(/不属于任何已配置的技能库/)).toBeInTheDocument();
   });
 
-  // 🔴 v7.1 任务 5:「审核中」改成**禁用的实心按钮**(照画布),动作区不再自己
-  // 摆 `review.url` 的链接——`review.url` 在同一块详情面板里由 `WhereBlocks`
-  // 的「技能库里」那一块渲染(含打开失败的渲染点,见 WhereBlocks.test.tsx),
-  // 所以 core 备好的这条事实仍然有人读。这两条钉住"新形态 + 不再同屏两颗"。
-  it("审核中是禁用的实心按钮,动作区不再自己摆一颗「在技能库里查看」", () => {
+  // 🔴 v7.1 任务 5:「审核中」是**禁用的实心按钮**(照画布),行上不再摆链接。
+  // 🔴 **终审 I-1**:这一档 `libraryUrl` 恒 null(`review` 非空 ⟹ shareable ⟹
+  // Draft ⟹ `row_library_url` 返回 None),所以页脚那颗按钮必须退回吃
+  // `review.url`——否则审核中的技能唯一的库入口只剩默认收起的折叠头,而
+  // `RowAction.underReview.url` 全仓零消费。上一版这里正面断言了"不摆",
+  // 把那个缺陷钉成了期望行为,现在翻转过来。
+  it("审核中:主按钮是禁用的实心按钮,页脚仍有一颗指向 review.url 的库链接", async () => {
+    const user = userEvent.setup();
     render(
       <SkillActionsBlock
         skill={view({ relation: "draft", localModified: false, review: { url: "http://g.local/pulls/9" } })}
@@ -262,11 +265,19 @@ describe("页脚的「在技能库里查看」:core 拼得出地址才摆", () =
     );
     const btn = screen.getByRole("button", { name: "审核中" });
     expect(btn).toBeDisabled();
-    expect(btn.className).toContain("bg-accent");
-    expect(screen.queryByRole("button", { name: "在技能库里查看" })).not.toBeInTheDocument();
+    expect(btn.className.split(/\s+/)).toContain("bg-accent");
+    // 正面断言点开的是 review.url 那个地址,不只是"有这么一颗按钮"。
+    const link = screen.getByRole("button", { name: "在技能库里查看" });
+    await user.click(link);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "open_library_url",
+        expect.objectContaining({ args: { url: "http://g.local/pulls/9" } }),
+      ),
+    );
   });
 
-  it("审核中但 url 为 null 时,「审核中」照摆(它与有没有链接无关)", () => {
+  it("审核中但 url 为 null 时,「审核中」照摆,而库链接不摆(没有能打开的地址)", () => {
     render(
       <SkillActionsBlock
         skill={view({ relation: "draft", localModified: false, review: { url: null } })}
@@ -275,5 +286,17 @@ describe("页脚的「在技能库里查看」:core 拼得出地址才摆", () =
     );
     expect(screen.getByRole("button", { name: "审核中" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "在技能库里查看" })).not.toBeInTheDocument();
+  });
+
+  // 🔴 两个来源互斥,不会摆出两颗(`libraryUrl` 只给在库里的行,`review.url`
+  // 只给「可分享到」区)——这条钉住"只有一颗",防止将来把 `??` 写成两个并列渲染。
+  it("审核中那一档只摆一颗库链接", () => {
+    render(
+      <SkillActionsBlock
+        skill={view({ relation: "draft", localModified: false, review: { url: "http://g.local/pulls/9" } })}
+        remoteChanged={false}
+      />,
+    );
+    expect(screen.getAllByRole("button", { name: "在技能库里查看" })).toHaveLength(1);
   });
 });

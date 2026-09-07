@@ -56,8 +56,22 @@ import { useStoreIndex } from "@/store/store-index";
  * 🔴 **拼接必须在 core**(铁律 5:源码里不得出现真实内网地址),前端只是把串
  * 交给 `open_library_url`(带同源白名单守卫)。拼不出来 → `null` → **不摆**,
  * 而不是摆一颗点开是 404 的按钮。
- * ⚠️ 与 `underReview` 档 `PrimaryAction` 里那颗同名按钮**不会同屏**:那一档按
- * 定义是「可分享到」区(还没进库),`libraryUrl` 恒 `null`。
+ *
+ * ## 🔴 「审核中」那一档改吃 `review.url`(终审 I-1)
+ *
+ * 上一版这里写着「与 `underReview` 档那颗同名按钮不会同屏」,并据此认为审核中的
+ * 行在页脚不需要库链接——**推理对了一半、结论错了**:`review` 非空 ⟹ `section`
+ * 是 `shareable` ⟹ `relation` 是 `Draft` ⟹ `my_skills::row_library_url` 第一句就
+ * `return None`,所以 `libraryUrl` 对这一档**恒为 null**,页脚那颗按钮**根本渲染
+ * 不出来**。同一期任务 5 把行上的链接删掉时,注释说"页脚还有一颗"——指的却是
+ * 另一个字段,于是 `RowAction.underReview.url` 变成全仓零消费,审核中的技能唯一
+ * 的库入口只剩**默认收起**的「在哪」折叠头里那一条。这正是 v7 任务 7 修复轮 1
+ * 修过的「core 算出来了却没有渲染点」的编号回归。
+ *
+ * 所以这颗按钮的数据来源是 **`libraryUrl` 优先、退回 `review.url`**:两者不会
+ * 同时有值(前者只给在库里的行、后者只给「可分享到」区),所以不存在"摆两颗"的
+ * 问题;`review.url` 本身可以是 `null`(降级路 / 直推留下的记录没有链接),
+ * 那一档仍然不摆——判据始终是"有没有一个能打开的地址",不是"是不是审核中"。
  *
  * # 挂载位置与全局对话框的关系
  *
@@ -143,6 +157,11 @@ export function SkillActionsBlock({
   const items = allItems.filter((spec) => spec.kind !== "remove");
   const removeItem = allItems.find((spec) => spec.kind === "remove") ?? null;
 
+  // 🔴 终审 I-1:审核中那一档 `libraryUrl` 恒 null(见组件文档),库入口退回
+  // `review.url`。两者互斥,所以这不是"两个来源抢同一颗按钮",是同一颗按钮的
+  // 两种数据来源;都没有就不摆。
+  const libraryLink = skill.libraryUrl ?? (action.kind === "underReview" ? action.url : null);
+
   const [revealError, setRevealError] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
 
@@ -191,14 +210,14 @@ export function SkillActionsBlock({
             {t(spec.labelKey)}
           </OutlineButton>
         ))}
-        {skill.libraryUrl && (
+        {libraryLink && (
           <OutlineButton
             size="footer"
             onClick={() => {
               setLinkError(null);
               // core 已经保证这个串与内建 Gitea 同源;`open_library_url` 自己
               // 还有一道同源白名单守卫,这里不重复判,失败如实说出来。
-              openLibraryUrl(skill.libraryUrl ?? "").catch((raw: unknown) =>
+              openLibraryUrl(libraryLink).catch((raw: unknown) =>
                 setLinkError(isAppError(raw) ? raw.message : t("error.generic")),
               );
             }}

@@ -44,6 +44,12 @@ export async function installTauriMock(page, fixtures) {
         // 未知的库:与 core 一样报错,而不是回一份空索引冒充"这个库是空的"
         throw { code: "REPO_UNKNOWN_REPO", message: "harness 没有为这个技能库准备索引" };
       }
+      if (cmd === "store_skill_detail") {
+        const a = (args && args.args) || {};
+        const hit = data.storeDetails[a.dirSlug];
+        if (hit) return hit;
+        throw { code: "REPO_NOT_FOUND", message: "harness 没有为这个技能准备商店详情" };
+      }
       if (cmd === "skill_local_detail") {
         const a = (args && args.args) || {};
         const hit =

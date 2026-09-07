@@ -302,8 +302,18 @@ function ConfirmBar() {
                   })
                 : t("install.confirmNoAgents")}
           </div>
+          {/* 🔴 终审 I-2:`px-3` 是这个盒子自己的内边距。任务 4 把共享常量
+                `LIST_ROW_EXTRA` 从 `border-t … px-3 py-2 … hover:bg-surface-2`
+                压成 `py-1.5`(照画布的紧凑清单),而这个调用方把 picker 包在一个
+                **带边框的滚动盒**里、横向留白原本全靠那个 `px-3` 提供——常量一改,
+                checkbox 就贴上了左边框、mono 路径贴上了右边框。补在盒子上而不是
+                改回常量:画布(`ToolPicker.dc.html`)四处都是无分隔线、无 hover 底、
+                `padding:6px 0` 的裸清单,横向留白由**容器**给(画布里那四张演示卡片
+                自己的 `padding:14px 16px` 就是这个角色)。
+                ⚠️ 代价:这 12px 的留白不属于 `<label>`,点不动。与画布同款取舍
+                ——盒子的 padding 本来就不是那一行的一部分。 */}
           {items.length > 0 && (
-            <div className="mt-1.5 max-h-[140px] overflow-y-auto rounded-ctl border border-border">
+            <div className="mt-1.5 max-h-[140px] overflow-y-auto rounded-ctl border border-border px-3">
               {/* 🔴 key={confirm.projectPath}:`ToolPicker` 的"已勾排前面"只在
                   拿到第一份非空 items 时排一次(见该组件文档),往后不重排。
                   用户点「换个文件夹」时 `ConfirmBar` 实例不会卸载(只有换技能
@@ -395,7 +405,8 @@ function AgentChooser({ onCancel }: { onCancel: () => void }) {
   return (
     <div className="border-t border-border px-5 py-3.5">
       <div className="mb-2 text-[12px] font-[550]">{t("install.choose")}</div>
-      <div className="max-h-[168px] overflow-y-auto rounded-card border border-border">
+      {/* `px-3` 的理由与 `ConfirmBar` 那个盒子逐字相同(终审 I-2,见那里的注释)。 */}
+      <div className="max-h-[168px] overflow-y-auto rounded-card border border-border px-3">
         <ToolPicker items={items} onToggle={(agent) => toggleAgent(agent)} layout="list" />
       </div>
       <p className="mt-2 text-[11.5px] leading-[1.5] text-text-3">{t("install.chooseHint")}</p>

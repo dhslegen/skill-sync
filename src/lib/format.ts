@@ -31,11 +31,6 @@ export function relativeTimeFromIso(iso: string, now?: number): string {
   return Number.isNaN(ms) ? "" : relativeTime(ms, now);
 }
 
-/** 版本标识只以短码露出(terminology.md:不解释,仅等宽展示)。 */
-export function shortSha(sha: string): string {
-  return sha.slice(0, 7);
-}
-
 /** 文件大小。拿不到大小(二进制文件不进内存树)时给一个占位符而不是 "0 B"。 */
 export function formatBytes(size?: number): string {
   if (size === undefined) return t("detail.fileSizeUnknown");

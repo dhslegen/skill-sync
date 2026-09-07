@@ -5,7 +5,6 @@ import {
   formatInstalls,
   relativeTime,
   relativeTimeFromIso,
-  shortSha,
   skillSlug,
 } from "./format";
 
@@ -46,12 +45,6 @@ describe("relativeTime", () => {
 });
 
 describe("展示格式", () => {
-  it("版本标识只露 7 位短码", () => {
-    expect(shortSha("a1b2c3d4e5f6a7b8c9d0")).toBe("a1b2c3d");
-    // 已经很短就原样返回,不补位
-    expect(shortSha("abc")).toBe("abc");
-  });
-
   it("拿不到文件大小时给占位符而不是 0 B", () => {
     // 二进制文件不进内存树(core 侧的既定行为),size 缺失是正常情况
     expect(formatBytes(undefined)).toBe("—");

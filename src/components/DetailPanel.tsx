@@ -16,6 +16,7 @@ import {
   isAppError,
   openLibraryUrl,
   skillClaimAttribution,
+  skillReveal,
   type AppError,
   type LocalSkillDetail,
   type SkillDetail,
@@ -296,8 +297,55 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
           在「这台电脑上」那一块里还有一颗「打开文件夹」——同一件事两个入口两种
           叫法,且"访达"在 Windows 上是错的。两颗都删,动作统一收进页脚的
           `SkillActionsBlock`(它自己会摆「打开文件夹」并接住失败)。 */}
-      {skill && <SkillActionsBlock skill={skill} remoteChanged={remoteChanged} />}
+      {skill ? (
+        <SkillActionsBlock skill={skill} remoteChanged={remoteChanged} />
+      ) : (
+        <RevealOnlyFooter path={detail.path} />
+      )}
     </>
+  );
+}
+
+/**
+ * 「我的技能」列表里找不到这一行时的**降级页脚**(终审 M-3)。
+ *
+ * v7.1 任务 3 之前,详情面板底部那颗「在访达中打开」是**无条件**渲染的;搬进
+ * `SkillActionsBlock` 之后整个页脚挂在 `{skill && …}` 之下,而 `skill` 来自
+ * `useWhereSkill`(在 `useMySkills.list` 里按 `dirSlug` 查)——`load()` 失败、
+ * 或者刚装完就跳「到我的技能里看看」而列表还没刷新时,`skill` 就是 `null`,
+ * 于是**面板底部一个动作都没有**。那不是"少一颗按钮",是本地详情这条路唯一的
+ * 出口整个消失。
+ *
+ * 只摆「打开文件夹」这一颗:其余动作(更新/分享/移除)都要靠 `InstalledSkillView`
+ * 上的字段判档,没有那一行就无从判起,摆出来的会是**猜**的档位。打开文件夹不需要
+ * 任何判定——`detail.path` 就是本体所在目录(`core::local_detail` 直接给的绝对
+ * 路径),这一条永远成立。文案与失败提示复用页脚那一份,不新增文案键:同一个动作
+ * 在两条路上必须是同一个叫法。
+ */
+function RevealOnlyFooter({ path }: { path: string }) {
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="flex-none border-t border-border px-5 py-3.5">
+      <button
+        type="button"
+        onClick={() => {
+          setError(null);
+          skillReveal({ path }).catch((raw: unknown) =>
+            setError(isAppError(raw) ? raw.message : t("error.generic")),
+          );
+        }}
+        className="h-[30px] shrink-0 whitespace-nowrap rounded-ctl border border-border px-3 text-[12.5px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+      >
+        {t("mine.openFolder")}
+      </button>
+      {error && (
+        <p className="mt-1.5 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+          {t("mine.openFolderFailed")}
+          {t("punct.labelSeparator")}
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

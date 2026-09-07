@@ -245,6 +245,7 @@ fn candidate_relation_reflects_library_attribution() {
             registry_id: "company".into(),
             owner: "skills".into(),
             repo: "skills".into(),
+            branch: "main".into(),
             author: Some("赵文浩".into()),
         },
     );
@@ -255,6 +256,7 @@ fn candidate_relation_reflects_library_attribution() {
             registry_id: "company".into(),
             owner: "skills".into(),
             repo: "skills".into(),
+            branch: "main".into(),
             author: Some("李四".into()),
         },
     );

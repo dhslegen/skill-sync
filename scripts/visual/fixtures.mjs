@@ -206,6 +206,26 @@ const SKILLS = [
     tools: [{ agent: "claude-code", state: "linked" }],
     canonicalReaders: CANONICAL_READERS,
   },
+  // ------------------------------------------------ 库里有、这台电脑还没装(终审 I-2)
+  // 🔴 `notInstalled` 让它**不进** `installed_list`,只进公司库索引——商店卡片
+  // 因此是「获取」而不是「已启用」,才走得到 `AgentChooser`(选工具)与
+  // `ConfirmBar`(装到项目确认条)这两屏。这两屏正是终审 I-2 要看的东西:
+  // 共享常量 `LIST_ROW_EXTRA` 改动后,只有这两个调用方把 picker 包在带边框的
+  // 盒子里,截图之外没有任何环节看得见它们。
+  {
+    slug: "security-review",
+    name: "安全评审清单",
+    description: "按威胁建模逐项过一遍改动,输出可执行的复查清单。",
+    tags: ["安全", "评审"],
+    notInstalled: true,
+    section: "installedFrom",
+    body: `${CANONICAL}/security-review`,
+    contentHash: "h-sec-1",
+    remote: "h-sec-1",
+    localModified: false,
+    tools: [{ agent: "claude-code", state: "linked" }],
+    canonicalReaders: CANONICAL_READERS,
+  },
 ];
 
 const RELATION_OF = {
@@ -335,6 +355,28 @@ export function buildFixtures() {
     "plaza::vercel-labs/agent-skills": indexView(PLAZA, plazaCards),
   };
 
+  // 商店详情(`store_skill_detail`)。与本地详情同一份数据派生,别手写第二份
+  // ——两份分叉时截图会安静地显示一个与索引对不上的技能。
+  const storeDetails = {};
+  for (const s of SKILLS) {
+    storeDetails[s.slug] = {
+      name: s.name,
+      dirSlug: s.slug,
+      description: s.description,
+      path: `skills/${s.slug}`,
+      skillMd: skillMd(s.name, s.description),
+      files: [
+        { path: "SKILL.md", size: 4210 },
+        { path: "reference/template.md", size: 1180 },
+      ],
+      hasScripts: false,
+      commitSha: "9a8b7c6d5e4f30291827364554637281900abcde",
+      committedAt: "2026-09-01T02:11:00Z",
+      tags: s.tags ?? [],
+      attribution: null,
+    };
+  }
+
   const localDetails = {};
   for (const s of SKILLS) {
     localDetails[s.body] = {
@@ -356,6 +398,7 @@ export function buildFixtures() {
     // 截图脚本要按名字点行,所以把这张表也带过去(只读,页面不用)
     roster: SKILLS.map((s) => ({ slug: s.slug, name: s.name, section: s.section })),
     indexes,
+    storeDetails,
     localDetails,
     defaultIndexKey: "company::skills/skills",
     responses: {
@@ -366,7 +409,7 @@ export function buildFixtures() {
         loggedIn: true,
         user: { login: "zhaowenhao", displayName: "赵文浩", avatarUrl: "" },
       },
-      installed_list: SKILLS.map(installedSkill),
+      installed_list: SKILLS.filter((s) => !s.notInstalled).map(installedSkill),
       agents_detected: {
         canonicalDir: CANONICAL,
         agents: AGENTS.map((a) => ({
@@ -405,6 +448,9 @@ export function buildFixtures() {
       release_notes_state: { current: "0.6.0", pending: [], all: [] },
       release_notes_ack: null,
       project_list: [],
+      // 「装到项目…」→ 系统选择框。harness 里直接给一个路径,
+      // `useProjects.requestInstall` 据此摆出确认条(终审 I-2 的第二屏)。
+      project_pick: "/Users/demo/Developer/company/erp-backend",
       auto_update_get: { skills: { enabled: true, intervalMinutes: 240 }, app: true },
       update_check_now: null,
       app_update_check: { status: "upToDate" },
