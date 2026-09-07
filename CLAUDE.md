@@ -2484,6 +2484,13 @@ universal 双切片、minos、动态库依赖、下载文件 sha256 全验过一
   Node 26 在 globalThis 上自带 localStorage accessor(getter 返回 undefined),曾让 45 个
   前端测试假红而 CI 全绿——`src/test/setup.ts` 已补内存级 shim 兜底,任何 Node 版本都能跑,
   但日常仍建议 `export PATH="$HOME/.nvm/versions/node/v22.21.1/bin:$PATH"` 与 CI 对齐。
+- 🔴 **跑 Rust 前先确认没有 `pnpm dev` 在跑**(2026-09-07 实测):tauri dev 会**持有
+  `src-tauri/target` 的构建锁**,`cargo test` 会无限 `Blocking waiting for file lock`。
+  那次跑到 22 分钟的全量根因就是它——当时怀疑过 docker、怀疑过进程被杀,
+  **没想到是在排队等锁**。判据 `pgrep -f "tauri dev"`;非要并行就给 cargo 单独的
+  `CARGO_TARGET_DIR`(多花一次编译,但不打扰开发实例)。
+- ⚠️ **截图 harness(`scripts/visual/`)必须关沙箱**:沙箱内 Chrome 访问本机 vite 一律
+  `net::ERR_ABORTED`(外网 https 与 curl 都正常),而 README 里没写这条。
 - 🔴 **任何两个测试进程都别并发跑**——不只是 vitest 与 cargo test,**两个 `cargo test --workspace`
   之间同样不行**(2026-08-27 洁癖收尾实测踩到):它们共用同一个 docker fixture Gitea、
   同一个 `target/` 目录与若干进程全局状态,并发时 `gitea_live`/`share_live`/`e2e_author_loop`
