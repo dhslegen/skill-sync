@@ -41,17 +41,32 @@ const ONLY = arg("only", "")
 const SCREENS = [
   {
     id: "01-my-skills",
-    title: "「我的技能」· 通用页签(三区 + conflict 行 + 审核中行)",
-    // 🔴 比画板高:同样的十二行,画布用 1000px 装得下,当前实现装不下
-    //(这本身就是一条待校准的密度差)。这一屏要求「三区都有内容 + conflict 行 +
-    // 审核中行」同时可见,所以放宽高度;与画布并排比**密度**时记得这个差别。
-    viewport: { width: 1200, height: 1760 },
+    title: "「我的技能」·「安装自技能库」页签(v7.2 需求 1:三区改页签)",
+    viewport: { width: 1200, height: 1000 },
     async run(page, ctx) {
       await ctx.gotoMine(page);
-      // 「可分享到」区里有外部来源的那一行,名字与「有没有新版」都来自它自己的
-      // 来源索引,而那一趟请求**只有点开这一行才会发**(store/my-skills.ts 的
-      // ensureShareableIndexes:翻页本身不发请求)。所以先点一下再关掉,
-      // 截出来的才是用户真正会看到的那一行。
+    },
+  },
+  {
+    id: "01b-my-skills-shared-to",
+    title: "「我的技能」·「已分享到技能库」页签",
+    viewport: { width: 1200, height: 1000 },
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      await page.getByRole("tab", { name: /已分享到技能库/ }).click();
+      await page.waitForTimeout(200);
+    },
+  },
+  {
+    id: "01c-my-skills-shareable",
+    title: "「我的技能」·「可分享到技能库」页签(v7.2 需求 4:按来源分组)",
+    viewport: { width: 1200, height: 1000 },
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      await page.getByRole("tab", { name: /可分享到技能库/ }).click();
+      // 外部来源那两行的名字与「有没有新版」来自它们自己的来源索引,而那一趟
+      // 请求**只有点开这一行才会发**(store/my-skills.ts 的 ensureShareableIndexes)。
+      // 先点一下再关掉,截出来的才是用户真正会看到的那一行。
       await page.getByTestId("row-react-best-practices-body").click();
       await page.keyboard.press("Escape");
       await page.waitForTimeout(300);
@@ -153,10 +168,28 @@ const SCREENS = [
     title: "详情面板 ·「审核中」那一档的页脚(I-1:库链接退回 review.url)",
     async run(page, ctx) {
       await ctx.gotoMine(page);
+      await page.getByRole("tab", { name: /可分享到技能库/ }).click();
       await page.getByTestId("row-riso-editorial-deck-body").click();
       await page.waitForTimeout(500);
       await ctx.scrollPanelToBottom(page);
       await page.waitForTimeout(300);
+    },
+  },
+  // 🔴 11 是 v7.2 需求 2 唯一能证明问题的那一屏:**必须用矮视口**。
+  // 1000px 高的默认视口里正文区还有余量,页脚本来就不会动,截出来什么都证明不了;
+  // 640px 高时 v7.1 的实现会把页脚顶出视口(实测「移除」按钮 y 从 596 跳到 626)。
+  {
+    id: "11-detail-readers-short-viewport",
+    title: "详情面板 ·「…」展开 · 矮窗口(需求 2:页脚必须原地不动)",
+    viewport: { width: 1000, height: 640 },
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      await page.getByTestId("row-api-test-expert-body").click();
+      await page.waitForTimeout(500);
+      await page.getByTestId("where-toggle").click();
+      await page.waitForTimeout(200);
+      await page.getByRole("button", { name: "哪些工具" }).click();
+      await page.getByTestId("where-readers").waitFor({ state: "visible" });
     },
   },
 ];

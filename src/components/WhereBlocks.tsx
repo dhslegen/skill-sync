@@ -14,7 +14,6 @@ import { Icon } from "@/components/Icon";
 import { ToolChecks } from "@/components/ToolChecks";
 import { t } from "@/i18n";
 import { isAppError, openLibraryUrl, skillReveal, type InstalledSkillView, type Section } from "@/lib/ipc";
-import { useDetailCollapse } from "@/store/detail-collapse";
 import { useMySkills, visibleTools } from "@/store/my-skills";
 
 /**
@@ -513,17 +512,26 @@ export function WhereBlocks({
   /** 「库里那一版变了没有」——调用方按 section 分流算好,见 {@link LibraryBlock}。 */
   remoteChanged: boolean;
 }) {
-  const expanded = useDetailCollapse((s) => s.whereExpanded);
-  const toggle = useDetailCollapse((s) => s.toggleWhere);
+  // 🔴 v7.2 需求 3(用户拍板,推翻 v7.1 任务 3 的落 localStorage):折叠是
+  // **打开详情期间的临时操作**,关掉面板再打开应当回到默认收起——所以是组件
+  // 本地 state,不是 store、更不持久化。与同文件里 `ThisComputerBlock` 的
+  // 「…」同一个理由,那一处从一开始就是这么写的。
+  // 能这么写的前提已实测:关闭面板时 `DetailPanel` 会把 `LocalPanelBody` /
+  // `PanelBody` 整个卸载(条件渲染,不是隐藏),换技能同理——这份 useState
+  // 因此天然跟着重置。
+  const [expanded, setExpanded] = useState(false);
+  const toggle = () => setExpanded((v) => !v);
   const bodyId = "detail-where-blocks";
   const summary = whereSummary(skill, remoteChanged).join(t("punct.middleDot"));
 
   return (
-    // 🔴 终审 M-5:`flex-none`。父容器是 flex column(详情面板),相邻的 tablist
-    // 与固定页脚都显式 `flex-none`、正文是 `flex-1 overflow-y-auto`;这一块少了
-    // 它就是这一列里唯一没有声明收缩行为的节点——展开态内容变高时会被 flex 默认
-    // 的 `shrink:1` 压缩,而它自己没有滚动容器,被压的内容直接看不见。
-    <div className="flex-none px-5">
+    // ⚠️ v7.2 需求 2 起这一块**不再是** flex column 的直接子节点,`flex-none`
+    // 随之删掉(那句 v7.1 终审 M-5 的理由已经不成立了,别照旧文照抄):它现在
+    // 和 tablist、正文一起住在详情面板那个 `flex-1 min-h-0 overflow-y-auto`
+    // 滚动区里。原因是展开这一块(尤其再展开里面的「…」)会长高,而
+    // `flex-1 basis-0` 的正文区被压到 0 之后再长就把**固定页脚顶出列外**
+    // ——用户点一下「…」页脚就跑了(真机反馈,矮窗口下实测 y 596 → 626)。
+    <div className="px-5">
       <button
         type="button"
         aria-expanded={expanded}

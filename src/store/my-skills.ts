@@ -1135,3 +1135,51 @@ export function sections(
   });
   return all.filter((sec) => sec.items.length > 0);
 }
+
+/** 「可分享到技能库」页签里按来源分出来的一组(v7.2 需求 4)。 */
+export interface SourceGroup {
+  /** React key。有来源就是 `sourceLabel` 本身;无来源那一组固定是空串。 */
+  key: string;
+  /** 来源展示文案(`ownership::source_label` 归一化后的 `owner/repo` 或域名);
+   *  `null` = 这一组的技能没有任何来源记录。 */
+  label: string | null;
+  items: InstalledSkillView[];
+}
+
+/**
+ * 把「可分享到技能库」那一区按**来源**分组(v7.2 需求 4:那一区混着本地自建的
+ * 草稿、从技能广场/GitHub 装来的、从别的技能库装来的,一列平铺读不出所以然)。
+ *
+ * # 分组键 = `sourceLabel`
+ *
+ * 它是 core 侧 `ownership::source_label` 归一化之后的那一句(`owner/repo` 或
+ * 域名),已经是"这东西从哪来的"这件事在界面上的唯一说法——再造第二把尺子
+ * (比如自己去解析 `sourceUrl`)就是本项目记的"同一条规则查两遍"。
+ *
+ * # 顺序:无来源在前,其余按 label 排
+ *
+ * 无来源那一组放最前面,因为它是**用户自己的东西**(本地新建的草稿,以及
+ * `converge::set_agents` 建的空来源记账那类存量行)——这一区的主语是"我可以
+ * 分享点什么给团队",自己写的排在最前最合理。其余按 `localeCompare` 排,给一个
+ * 稳定、可预期的顺序;**组内不重排**,原样保留调用方(`sections()`)已经排好的
+ * "有动作的在前、其余按名字"。
+ *
+ * ⚠️ 无来源那一组**不等于** `relation === "draft"`:空来源的记账(v0.5.0 存量、
+ * 或勾工具时 `set_agents` 自建的那种)同样落进来。所以组名按事实起(「没有来源」),
+ * 不按归属起。
+ */
+export function groupBySource(items: InstalledSkillView[]): SourceGroup[] {
+  const groups = new Map<string, SourceGroup>();
+  for (const skill of items) {
+    const label = skill.sourceLabel ?? null;
+    const key = label ?? "";
+    const found = groups.get(key);
+    if (found) found.items.push(skill);
+    else groups.set(key, { key, label, items: [skill] });
+  }
+  return [...groups.values()].sort((a, b) => {
+    if (a.label === null) return b.label === null ? 0 : -1;
+    if (b.label === null) return 1;
+    return a.label.localeCompare(b.label);
+  });
+}

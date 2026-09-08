@@ -6,7 +6,6 @@ import { MySkillsPage } from "./MySkillsPage";
 import type { InstalledSkillView, Section, StoreIndexView } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
-import { useMineCollapse } from "@/store/mine-collapse";
 import { useMineSearch } from "@/store/mine-search";
 import { useCreate } from "@/store/create";
 import { useMySkills } from "@/store/my-skills";
@@ -151,6 +150,19 @@ function seedSignedOut(list: Fixture[]) {
 }
 
 /**
+ * 渲染并切到某个库页签。
+ *
+ * v7.2 起「我的技能」是四个并列页签,**一次只渲染一个区**——默认落在
+ * 「安装自技能库」,所以断言其余两区的行必须先真点一下那个页签(不是放宽断言,
+ * 是补上用户真实要做的那一步)。
+ */
+async function renderAtTab(name: RegExp) {
+  const r = render(<MySkillsPage />);
+  await userEvent.click(await screen.findByRole("tab", { name }));
+  return r;
+}
+
+/**
  * 最近一次调用某个 command 的参数——`skill_install_batch` 那条断言专用。
  *
  * 🔴 不用 `.at(-1)`——项目 tsconfig 锁在 ES2020 lib,`.at()` 是 ES2022 才有的
@@ -212,7 +224,6 @@ function resetStores() {
     updateAllFailures: null,
   });
   useCreate.setState({ phase: "closed" });
-  useMineCollapse.setState({ collapsed: [] });
   try {
     localStorage.clear();
   } catch {
@@ -231,9 +242,11 @@ describe("v7 任务 7:DoD 六条", () => {
     seed([mk("a", "installedFrom"), mk("b", "sharedTo")]);
     render(<MySkillsPage />);
     const row = await screen.findByTestId("row-a");
-    // 🔴 范围收在**行内**:区标题("已分享到技能库"/"可分享到技能库")本身就带
-    // 「分享」二字,而它是折叠头不是动作按钮——不收窄的话这条断言会被区名误伤,
+    // 🔴 范围收在**行内**:页签("已分享到技能库"/"可分享到技能库")本身就带
+    // 「分享」二字,而它们是页签不是动作按钮——不收窄的话这条断言会被页签名误伤,
     // 测的就不再是"行上没有动作按钮"这件事了。
+    // (v7.2 之前这个误伤源是区标题/折叠头,区标题已删,但页签接管了同一批文字,
+    //  所以收窄这件事本身照旧需要,只是理由的指向变了。)
     expect(within(row).queryByRole("button", { name: /更新|分享|贡献/ })).toBeNull();
     expect(screen.queryByText(/已同步/)).toBeNull();
   });
@@ -349,12 +362,12 @@ describe("v7 任务 7:DoD 六条", () => {
 
   it("🔴 终审 M-8:只有草稿(没有「安装自」的行)时,未登录提示不该贴在「可分享到」标题下", async () => {
     // 提示说的是"登录后能区分哪些是你分享的"——那对的是"安装自 vs 已分享到"
-    // 这一对区分,与草稿(还没进公司库的技能)毫无关系。此前的判据只看
-    // secIndex===0,而没有「安装自」行时「可分享到」会顶到第一位,提示就会
-    // 贴错地方。
+    // 这一对区分,与草稿(还没进公司库的技能)毫无关系。v7.2 页签化之后判据
+    // 变成了"用户正在看哪个页签",这条命题原样成立:切到「可分享到」不摆它。
     seedSignedOut([mk("draft-a", "shareable")]);
     render(<MySkillsPage />);
-    await screen.findByText("可分享到技能库");
+    await userEvent.click(await screen.findByRole("tab", { name: /可分享到技能库/ }));
+    expect(screen.getByTestId("row-draft-a")).toBeInTheDocument();
     expect(screen.queryByText(/登录后能区分哪些是你分享的/)).toBeNull();
   });
 });
@@ -364,16 +377,15 @@ describe("v7 任务 7:DoD 六条", () => {
 // ---------------------------------------------------------------------------
 
 describe("三区排列与判定表接线", () => {
-  it("三区按 installedFrom → sharedTo → shareable 固定顺序,空区不出现", async () => {
+  // v7.2:三区变成页签之后,"固定顺序"这条命题的落点从区标题挪到了页签行,
+  // 而"空区不出现"**不再成立也不该成立**——页签是常驻的,空的那个页签要留着
+  // 让用户点进去看到它自己的空态文案(否则用户找不到那一类在哪)。
+  it("页签按 installedFrom → sharedTo → shareable → 项目里 固定顺序,空区的页签也常驻", async () => {
     seed([mk("a", "shareable"), mk("b", "installedFrom")]);
     render(<MySkillsPage />);
-    await screen.findByText("a");
-    // 区标题现在是折叠头(区名 + 计数),所以比"以区名开头",不比全等
-    const titles = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent ?? "");
-    expect(titles.map((x) => x.replace(/\s+/g, ""))).toEqual([
-      "安装自技能库·1",
-      "可分享到技能库·1",
-    ]);
+    await screen.findByText("b");
+    const titles = screen.getAllByRole("tab").map((h) => (h.textContent ?? "").replace(/\s+/g, ""));
+    expect(titles).toEqual(["安装自技能库·1", "已分享到技能库·0", "可分享到技能库·1", "项目里"]);
   });
 
   it("installedFrom:本地改过但库没变 → 「贡献更改」", async () => {
@@ -458,7 +470,7 @@ describe("三区排列与判定表接线", () => {
   // (`WhereBlocks` 的 `ReviewLink`,含打开失败的渲染点)。
   it("审核中是禁用的实心按钮,行上不再摆「在技能库里查看」", async () => {
     seed([mk("a", "shareable", { review: { url: "http://gitea/x/y/pulls/7" } })]);
-    render(<MySkillsPage />);
+    await renderAtTab(/可分享到技能库/);
     const row = await screen.findByTestId("row-a");
     const btn = within(row).getByRole("button", { name: "审核中" });
     expect(btn).toBeDisabled();
@@ -472,7 +484,7 @@ describe("三区排列与判定表接线", () => {
 
   it("审核中没有链接时,行上照样只有那颗禁用按钮(不用空串冒充链接)", async () => {
     seed([mk("a", "shareable", { review: { url: null } })]);
-    render(<MySkillsPage />);
+    await renderAtTab(/可分享到技能库/);
     const row = await screen.findByTestId("row-a");
     expect(within(row).getByRole("button", { name: "审核中" })).toBeDisabled();
     expect(within(row).queryByRole("button", { name: "在技能库里查看" })).toBeNull();
@@ -492,13 +504,13 @@ describe("三区排列与判定表接线", () => {
 
   it("sharedTo:本地改过、库没变 → 「分享改动」", async () => {
     seed([mk("a", "sharedTo", { localModified: true })]);
-    render(<MySkillsPage />);
+    await renderAtTab(/已分享到技能库/);
     expect(await screen.findByRole("button", { name: "分享改动" })).toBeInTheDocument();
   });
 
   it("shareable:标准校验没过 → 禁用的「分享」+ 一句人话说清哪不合格", async () => {
     seed([mk("a", "shareable", { shareBlocked: "nameMismatch" })]);
-    render(<MySkillsPage />);
+    await renderAtTab(/可分享到技能库/);
     const btn = await screen.findByRole("button", { name: "分享" });
     expect(btn).toBeDisabled();
     expect(screen.getByText(/团队标准要求两者相同/)).toBeInTheDocument();
@@ -514,7 +526,7 @@ describe("三区排列与判定表接线", () => {
 
   it("🔴 C1:已分享到区本地改了但标准校验不过 → 禁用的「分享改动」+ 说明", async () => {
     seed([mk("a", "sharedTo", { localModified: true, shareBlocked: "descriptionMissing" })]);
-    render(<MySkillsPage />);
+    await renderAtTab(/已分享到技能库/);
     const btn = await screen.findByRole("button", { name: "分享改动" });
     expect(btn).toBeDisabled();
     expect(screen.getByText(/分享前请在 SKILL\.md 里补上 description/)).toBeInTheDocument();
@@ -522,7 +534,7 @@ describe("三区排列与判定表接线", () => {
 
   it("shareable:审核中 → 没有按钮,只有「审核中」文字", async () => {
     seed([mk("a", "shareable", { review: { url: null } })]);
-    render(<MySkillsPage />);
+    await renderAtTab(/可分享到技能库/);
     await screen.findByText("审核中");
     expect(screen.queryByRole("button", { name: "分享" })).toBeNull();
   });
@@ -531,7 +543,7 @@ describe("三区排列与判定表接线", () => {
     seed([
       mk("a", "shareable", { sourceLabel: "vercel-labs/agent-skills" }),
     ]);
-    render(<MySkillsPage />);
+    await renderAtTab(/可分享到技能库/);
     const label = await screen.findByText("来源 vercel-labs/agent-skills");
     expect(label.className).toContain("font-mono");
   });
@@ -578,7 +590,7 @@ describe("三区排列与判定表接线", () => {
       }
       return null;
     });
-    render(<MySkillsPage />);
+    await renderAtTab(/可分享到技能库/);
 
     // 🔴 I3(用户拍板):翻开页面本身不发请求——这一行的外源指纹还没探过,
     // 主按钮此刻只能是「分享」,展示名也只能退回 dirSlug。
@@ -691,7 +703,7 @@ describe("移除只在本体在这台电脑上时才摆", () => {
     // 本体不在(取回之前)+ 没有可打开的文件夹路径 = 「更多」菜单空空如也,
     // 按「不摆比摆一个没有意义的东西好」这条既定取舍,SkillRowMenu 索性不渲染。
     seed([mk("a", "sharedTo", { localPresent: false, body: "" })]);
-    render(<MySkillsPage />);
+    await renderAtTab(/已分享到技能库/);
     const row = await screen.findByTestId("row-a");
     expect(within(row).getByRole("button", { name: "取回" })).toBeInTheDocument();
     expect(within(row).queryByRole("button", { name: "更多" })).toBeNull();
@@ -700,7 +712,7 @@ describe("移除只在本体在这台电脑上时才摆", () => {
 
   it("localPresent 为 true:「移除」在「更多」里,`localPresent` 为 false 时消失(正反对照)", async () => {
     seed([mk("a", "sharedTo")]);
-    render(<MySkillsPage />);
+    await renderAtTab(/已分享到技能库/);
     const row = await screen.findByTestId("row-a");
     await userEvent.click(within(row).getByRole("button", { name: "更多" }));
     expect(screen.getByRole("menuitem", { name: "移除" })).toBeInTheDocument();
@@ -910,7 +922,7 @@ describe("「取回」与「以本地为准分享」失败必须在这一页看�
         throw { code: "NET_TIMEOUT", message: "连不上公司技能库,请确认已接入内网" };
       return null;
     });
-    render(<MySkillsPage />);
+    await renderAtTab(/已分享到技能库/);
 
     await userEvent.click(await screen.findByRole("button", { name: "取回" }));
 
@@ -1063,7 +1075,7 @@ describe("C3(v7 任务 7 修复轮 1):「改用库里的版本」——没有安
         return { outcome: "installed", report: { dirName: "weekly-report", canonicalDir: "/c", links: [] }, localKept: false, lock: "written" };
       return null;
     });
-    render(<MySkillsPage />);
+    await renderAtTab(/已分享到技能库/);
     const row = await screen.findByTestId("row-weekly-report");
 
     await userEvent.click(within(row).getByRole("button", { name: "更多" }));
@@ -1113,7 +1125,7 @@ describe("C3(v7 任务 7 修复轮 1):「改用库里的版本」——没有安
       if (cmd === "agents_detected") return AGENT_LIST;
       return null;
     });
-    render(<MySkillsPage />);
+    await renderAtTab(/已分享到技能库/);
     const row = await screen.findByTestId("row-weekly-report");
     await userEvent.click(within(row).getByRole("button", { name: "更多" }));
     expect(screen.queryByRole("menuitem", { name: "改用库里的版本" })).toBeNull();
@@ -1244,7 +1256,7 @@ describe("新建技能(补充覆盖:CreateSkill 的 UI 通道,不是只断言渲
 // ---------------------------------------------------------------------------
 
 describe("v7 任务 8:项目里页签", () => {
-  it("两个页签:通用 / 项目里,默认通用;切到项目里能看到项目", async () => {
+  it("默认落在「安装自技能库」页签;切到「项目里」能看到项目", async () => {
     seed([mk("a", "installedFrom")]);
     // 🔴 `ProjectSections` 挂载即 `useProjects().load()`,那会整体覆盖 groups
     // ——数据必须从 mock 的 IPC 里来,不能事后 `setState` 手喂(本项目记着的
@@ -1262,97 +1274,62 @@ describe("v7 任务 8:项目里页签", () => {
     });
 
     render(<MySkillsPage />);
-    expect(await screen.findByRole("tab", { name: "通用" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("tab", { name: /安装自技能库/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     expect(screen.getByRole("tab", { name: "项目里" })).toHaveAttribute("aria-selected", "false");
 
     await userEvent.click(screen.getByRole("tab", { name: "项目里" }));
     expect(await screen.findByText("erp-backend")).toBeInTheDocument();
-    // 切到项目里之后,「通用」区的行不该还摆在页面上
+    // 切到项目里之后,库页签的行不该还摆在页面上
     expect(screen.queryByText("a")).toBeNull();
   });
 });
 
 // ---------------------------------------------------------------------------
-// 分区折叠 + 区标题吸顶(用户真机反馈:条目一多就得一路滚)
+// 四个并列页签(v7.2 需求 1:三区改页签,分区折叠整套删除)
 // ---------------------------------------------------------------------------
 
-describe("分区折叠", () => {
-  /** 折叠头是 `<button>`,可访问名 = 它的可见文字(区名 + 计数),所以按区名
-   *  的子串去找。 */
-  const header = (name: RegExp) => screen.getByRole("button", { name });
+describe("页签", () => {
+  /** 页签是 `<button role="tab">`,可访问名 = 可见文字(区名 + 总数 + 要处理数),
+   *  所以按区名的子串去找。 */
+  const tab = (name: RegExp) => screen.getByRole("tab", { name });
 
-  it("默认全部展开,头上写着这个区一共几条", async () => {
-    seed([mk("a", "installedFrom"), mk("b", "installedFrom"), mk("c", "sharedTo")]);
+  it("四个页签并列;默认落在「安装自技能库」,只渲染这一区的行", async () => {
+    seed([mk("a", "installedFrom"), mk("c", "sharedTo"), mk("d", "shareable")]);
     render(<MySkillsPage />);
     expect(await screen.findByTestId("row-a")).toBeInTheDocument();
-    const h = header(/安装自技能库/);
-    expect(h).toHaveAttribute("aria-expanded", "true");
-    expect(h).toHaveTextContent("2");
+    expect(screen.getAllByRole("tab").map((e) => e.textContent?.replace(/\s+/g, ""))).toEqual([
+      "安装自技能库·1",
+      "已分享到技能库·1",
+      "可分享到技能库·1",
+      "项目里",
+    ]);
+    expect(tab(/安装自技能库/)).toHaveAttribute("aria-selected", "true");
+    // 🔴 一次只看一个区:另外两个区的行**不在 DOM 里**(不是 hidden)
+    expect(screen.queryByTestId("row-c")).toBeNull();
+    expect(screen.queryByTestId("row-d")).toBeNull();
   });
 
-  it("点区标题折起来,行不再显示;再点一次回来", async () => {
+  it("点另一个页签就切过去", async () => {
     seed([mk("a", "installedFrom"), mk("c", "sharedTo")]);
     render(<MySkillsPage />);
     expect(await screen.findByTestId("row-a")).toBeInTheDocument();
-
-    await userEvent.click(header(/安装自技能库/));
-    expect(header(/安装自技能库/)).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByTestId("row-a")).not.toBeVisible();
-    // 只折这一个区,别的区不受影响
-    expect(screen.getByTestId("row-c")).toBeVisible();
-
-    await userEvent.click(header(/安装自技能库/));
-    expect(screen.getByTestId("row-a")).toBeVisible();
+    await userEvent.click(tab(/已分享到技能库/));
+    expect(screen.getByTestId("row-c")).toBeInTheDocument();
+    expect(screen.queryByTestId("row-a")).toBeNull();
+    expect(tab(/已分享到技能库/)).toHaveAttribute("aria-selected", "true");
   });
 
-  it("折叠状态跨重新挂载还在(落 localStorage,不落 config.ui)", async () => {
-    seed([mk("a", "installedFrom")]);
-    const first = render(<MySkillsPage />);
-    expect(await screen.findByTestId("row-a")).toBeInTheDocument();
-    await userEvent.click(header(/安装自技能库/));
-    expect(screen.getByTestId("row-a")).not.toBeVisible();
-    // 🔴 落点必须是 localStorage:config.ui 的 None 有独立语义,往里写第一个值
-    // 会把用户存在 localStorage 里的主题物化掉(CLAUDE.md 记的 M11 教训)。
-    expect(JSON.parse(localStorage.getItem("skillsync.mineCollapsed") ?? "null")).toEqual([
-      "installedFrom",
-    ]);
-    expect(lastInvoke("ui_prefs_set")).toBeUndefined();
-
-    first.unmount();
-    render(<MySkillsPage />);
-    expect(await screen.findByRole("button", { name: /安装自技能库/ })).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    );
-    expect(screen.getByTestId("row-a")).not.toBeVisible();
-  });
-
-  it("🔴 搜索穿透折叠:区折着时搜到的行照样显示出来", async () => {
-    seed([mk("alpha", "installedFrom"), mk("beta", "installedFrom")]);
-    render(<MySkillsPage />);
-    expect(await screen.findByTestId("row-alpha")).toBeInTheDocument();
-    await userEvent.click(header(/安装自技能库/));
-    expect(screen.getByTestId("row-alpha")).not.toBeVisible();
-
-    act(() => useMineSearch.getState().setQuery("alpha"));
-    // 折着也要显示——否则"搜到了但那个区折着"在用户看来就是搜索坏了
-    expect(screen.getByTestId("row-alpha")).toBeVisible();
-    expect(screen.queryByTestId("row-beta")).toBeNull();
-    // 展示态恒为展开,aria-expanded 跟展示态走
-    expect(header(/安装自技能库/)).toHaveAttribute("aria-expanded", "true");
-
-    // 清空搜索后,原来折着的状态回来(存储态没被搜索改掉)
-    act(() => useMineSearch.getState().setQuery(""));
-    expect(screen.getByTestId("row-alpha")).not.toBeVisible();
-    expect(header(/安装自技能库/)).toHaveAttribute("aria-expanded", "false");
-  });
-
-  it("🔴 折叠头数出「几个要处理」,含页头总览数不到的档(冲突 / 留哪一份)", async () => {
+  // 🔴 这条是从 v7.1 分区折叠继承下来的那条原则的落点:一次只看一个区,
+  // 另外两个区里等着你的事必须在页签上写出来,否则它们整个看不见。
+  it("🔴 **未选中**的页签也写「N 个要处理」,含页头总览数不到的档(冲突 / 留哪一份)", async () => {
     seed([
-      mk("a", "installedFrom"), // none
-      mk("b", "installedFrom", { remote: "NEW" }), // update
-      mk("c", "installedFrom", { remote: "NEW", localModified: true }), // conflict
-      mk("d", "installedFrom", {
+      mk("y", "installedFrom", { remote: "NEW" }), // update(页头总览数得到的唯一一档)
+      mk("b", "sharedTo", { remote: "NEW" }), // conflict
+      mk("c", "sharedTo", { remote: "NEW", localModified: true }), // conflict
+      mk("d", "sharedTo", {
         versions: [
           { path: "/h/.claude/skills/d", modifiedAt: "2026-08-01T00:00:00Z", files: 1, contentHash: "sha256:x" },
           { path: "/h/.agents/skills/d", modifiedAt: "2026-08-01T00:00:00Z", files: 1, contentHash: "sha256:y" },
@@ -1360,44 +1337,117 @@ describe("分区折叠", () => {
       }), // chooseVersion
     ]);
     render(<MySkillsPage />);
-    expect(await screen.findByTestId("row-a")).toBeInTheDocument();
-    // 页头总览只认得出 1 个「有更新」,而这个区实际有 3 行需要用户动手
+    expect(await screen.findByTestId("row-y")).toBeInTheDocument();
+    // 当前页签是「安装自」,「已分享到」一行都没渲染出来——但它的计数照样在
+    const shared = tab(/已分享到技能库/);
+    expect(shared).toHaveAttribute("aria-selected", "false");
+    expect(shared).toHaveTextContent("3 个要处理");
+    // 页头总览只认得出 1 个「有更新」(那一档在当前页签里),而「已分享到」区
+    // 另有 3 行需要用户动手、一行都没渲染出来——页签上的数是它们唯一的出口
     expect(screen.getByText(/1 个有更新/)).toBeInTheDocument();
-    expect(header(/安装自技能库/)).toHaveTextContent("3 个要处理");
+    expect(tab(/安装自技能库/)).toHaveTextContent("1 个要处理");
   });
 
-  it("「可分享到」区的草稿不算「要处理」(那是该区的常态,不是折叠会藏掉的例外)", async () => {
+  it("「可分享到」区的草稿不算「要处理」(那是该区的常态)", async () => {
     seed([mk("draft", "shareable"), mk("other", "shareable")]);
     render(<MySkillsPage />);
-    expect(await screen.findByTestId("row-draft")).toBeInTheDocument();
-    const h = header(/可分享到技能库/);
+    await screen.findByRole("tab", { name: /可分享到技能库/ });
+    const h = tab(/可分享到技能库/);
     expect(h).toHaveTextContent("2");
     expect(h).not.toHaveTextContent(/个要处理/);
   });
 
-  it("计数走全量 list,不受搜索影响(搜索时头上的数不能说谎)", async () => {
+  it("计数走全量 list,不受搜索影响(搜索时页签上的数不能说谎)", async () => {
     seed([mk("alpha", "installedFrom"), mk("beta", "installedFrom", { remote: "NEW" })]);
     render(<MySkillsPage />);
     expect(await screen.findByTestId("row-alpha")).toBeInTheDocument();
     act(() => useMineSearch.getState().setQuery("alpha"));
     expect(screen.queryByTestId("row-beta")).toBeNull();
-    const h = header(/安装自技能库/);
+    const h = tab(/安装自技能库/);
     expect(h).toHaveTextContent("2");
     expect(h).toHaveTextContent("1 个要处理");
   });
 
-  it("区标题吸顶(sticky),且不带 aria-label(可访问名就是可见文字)", async () => {
+  it("空页签有自己的空态文案,不是一句笼统的「没有技能」", async () => {
     seed([mk("a", "installedFrom")]);
     render(<MySkillsPage />);
-    const h = await screen.findByRole("button", { name: /安装自技能库/ });
-    // 吸顶挂在外层 `<h3>` 上(区标题的语义保留),按钮是它里面的整条可点区
-    const heading = h.closest("h3");
-    expect(heading?.className).toContain("sticky");
-    expect(heading?.className).toContain("top-0");
-    expect(h).not.toHaveAttribute("aria-label");
-    // aria-controls 指向下面那个行容器
-    const bodyId = h.getAttribute("aria-controls");
-    expect(bodyId).toBeTruthy();
-    expect(document.getElementById(bodyId!)).toContainElement(screen.getByTestId("row-a"));
+    expect(await screen.findByTestId("row-a")).toBeInTheDocument();
+    await userEvent.click(tab(/已分享到技能库/));
+    expect(screen.getByText("你还没有分享过技能到公司技能库。")).toBeInTheDocument();
+  });
+
+  // 🔴 页签把列表切成三份之后新冒出来的诚实问题:在 A 页签搜 B 页签里的技能,
+  // 光说"没有匹配的技能"与事实相反。
+  it("搜索在别的页签里有匹配时,要说清楚匹配在别处", async () => {
+    seed([mk("alpha", "installedFrom"), mk("beta", "sharedTo")]);
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-alpha")).toBeInTheDocument();
+    act(() => useMineSearch.getState().setQuery("beta"));
+    expect(screen.getByText(/没有匹配「beta」的技能/)).toBeInTheDocument();
+    expect(screen.getByText(/其他分类里有 1 个匹配/)).toBeInTheDocument();
+  });
+
+  // 🔴 分区折叠(mine-collapse)整套删除:留着就是与页签并行的第二套"一次只看
+  // 一个区"机制。这条按**痕迹**钉:不再有可展开/折叠的区标题,也不再写那个键。
+  it("分区折叠已删除:没有 aria-expanded 的区标题,也不写 localStorage", async () => {
+    seed([mk("a", "installedFrom"), mk("b", "installedFrom")]);
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-a")).toBeInTheDocument();
+    // 区标题不再是可折叠的按钮,行容器也不再有 `mine-section-*` 这个 id
+    // (⚠️ 别写成"页面上没有任何 aria-expanded"——行尾的「更多」菜单也带它,
+    // 那样断言红了也不是因为折叠还在)
+    expect(screen.queryByRole("button", { name: /安装自技能库/ })).toBeNull();
+    expect(document.querySelector('[id^="mine-section-"]')).toBeNull();
+    expect(localStorage.getItem("skillsync.mineCollapsed")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 「可分享到技能库」页签按来源分组(v7.2 需求 4)
+// ---------------------------------------------------------------------------
+
+describe("可分享到 · 按来源分组", () => {
+  const openShareable = async () => {
+    render(<MySkillsPage />);
+    await userEvent.click(await screen.findByRole("tab", { name: /可分享到技能库/ }));
+  };
+
+  it("按来源分组:无来源那一组在最前,其余按来源名排;组头写来源", async () => {
+    seed([
+      mk("z-draft", "shareable", { sourceLabel: null }),
+      mk("b-skill", "shareable", { sourceLabel: "vercel-labs/agent-skills" }),
+      mk("a-skill", "shareable", { sourceLabel: "acme/tools" }),
+    ]);
+    await openShareable();
+    expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual([
+      "没有来源",
+      "来源 acme/tools",
+      "来源 vercel-labs/agent-skills",
+    ]);
+  });
+
+  it("同一个来源的多行归进同一组(组数 = 不同来源数,不是行数)", async () => {
+    seed([
+      mk("p", "shareable", { sourceLabel: "acme/tools" }),
+      mk("q", "shareable", { sourceLabel: "acme/tools" }),
+    ]);
+    await openShareable();
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(1);
+    expect(screen.getByTestId("row-p")).toBeInTheDocument();
+    expect(screen.getByTestId("row-q")).toBeInTheDocument();
+  });
+
+  it("🔴 来源只写在组头上,行内不再重复(同屏两遍同样的字符串)", async () => {
+    seed([mk("p", "shareable", { sourceLabel: "acme/tools" })]);
+    await openShareable();
+    expect(screen.getAllByText("来源 acme/tools")).toHaveLength(1);
+    expect(within(screen.getByTestId("row-p")).queryByText(/来源/)).toBeNull();
+  });
+
+  it("其余两个页签不分组(它们本来就都来自公司技能库)", async () => {
+    seed([mk("a", "installedFrom"), mk("b", "installedFrom")]);
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-a")).toBeInTheDocument();
+    expect(screen.queryAllByRole("heading", { level: 3 })).toHaveLength(0);
   });
 });

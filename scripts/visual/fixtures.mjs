@@ -206,6 +206,22 @@ const SKILLS = [
     tools: [{ agent: "claude-code", state: "linked" }],
     canonicalReaders: CANONICAL_READERS,
   },
+  {
+    // v7.2 需求 4:第三个来源组——按来源分组要看得出"不止一个外部来源"
+    slug: "md-translator",
+    name: "Markdown 汉化",
+    description: "语义感知地把英文 Markdown 译成中文,保留代码块与链接。",
+    section: "shareable",
+    source: PLAZA,
+    sourceLabel: "acme/skills-lab",
+    body: `${CANONICAL}/md-translator`,
+    contentHash: "h-md-1",
+    remote: null,
+    externalRemote: "h-md-1", // 与本地一致 → 没有更新,主按钮是「分享」
+    localModified: false,
+    tools: [{ agent: "claude-code", state: "linked" }],
+    canonicalReaders: CANONICAL_READERS,
+  },
   // ------------------------------------------------ 库里有、这台电脑还没装(终审 I-2)
   // 🔴 `notInstalled` 让它**不进** `installed_list`,只进公司库索引——商店卡片
   // 因此是「获取」而不是「已启用」,才走得到 `AgentChooser`(选工具)与

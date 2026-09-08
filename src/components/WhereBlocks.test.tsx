@@ -1,11 +1,12 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { ReactElement } from "react";
 
 import { bodyLocationText, WhereBlocks, whereSummary } from "./WhereBlocks";
 import type { InstalledSkillView, Section } from "@/lib/ipc";
 import { useMySkills } from "@/store/my-skills";
-import { useDetailCollapse } from "@/store/detail-collapse";
 import { useStoreIndex } from "@/store/store-index";
 
 async function defaultInvoke(cmd: string, args?: unknown): Promise<unknown> {
@@ -139,21 +140,28 @@ beforeEach(() => {
     toolFailuresFor: null,
   });
   useStoreIndex.setState({ index: null });
-  // 折叠头默认收起(v7.1 任务 3)。下面这一大批用例断言的是**展开之后**的三块,
-  // 所以统一先展开——这是给测试补一步交互,不是把断言放宽:"默认收起"这条
-  // 命题由 describe("折叠头") 里自己的用例正面钉住。
-  useDetailCollapse.setState({ whereExpanded: true });
+  // 折叠头默认收起(v7.1 任务 3;v7.2 需求 3 起它是组件本地 state,不再有
+  // 可以 setState 的 store)。下面这一大批用例断言的是**展开之后**的三块,
+  // 所以统一走 {@link renderExpanded} 真点一下折叠头——这是给测试补一步交互,
+  // 不是把断言放宽:"默认收起"这条命题由 describe("折叠头") 里自己的用例正面钉住。
 });
+
+/** 渲染并展开「在哪」折叠头。v7.2 起展开是组件本地 state,只能靠真点一下。 */
+function renderExpanded(ui: ReactElement) {
+  const r = render(ui);
+  fireEvent.click(screen.getByTestId("where-toggle"));
+  return r;
+}
 
 describe("WhereBlocks", () => {
   it("三块都在,顺序是 这台电脑上 → 各个工具里 → 技能库里", () => {
-    render(<WhereBlocks skill={mk("x", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
+    renderExpanded(<WhereBlocks skill={mk("x", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
     const titles = screen.getAllByTestId("where-title").map((e) => e.textContent);
     expect(titles).toEqual(["这台电脑上", "各个工具里", "技能库里"]);
   });
 
   it("块 1:本体住统一目录时,「这台电脑上」不点名任何工具,且路径原样展示", () => {
-    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
+    renderExpanded(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
     // 路径在折叠头上也有一份,所以断言范围收进展开出来的那三块
     const blocks = within(screen.getByTestId("where-blocks"));
     expect(blocks.getByText(/统一技能目录/)).toBeInTheDocument();
@@ -167,12 +175,12 @@ describe("WhereBlocks", () => {
   // describe「打开文件夹(Q3:详情面板里只此一处)」),不是被删掉了。
   // 这里留一条负向断言,钉住"这一块里不再有第二个入口"。
   it("块 1:不再摆「打开文件夹」——那个动作只在页脚出现一次(Q3)", () => {
-    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
+    renderExpanded(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
     expect(screen.queryByRole("button", { name: "打开文件夹" })).not.toBeInTheDocument();
   });
 
   it("块 1:本体不在这台电脑上时,给出对应文案,不显示路径与打开按钮", () => {
-    render(
+    renderExpanded(
       <WhereBlocks
         skill={mk("gone", "sharedTo", { localPresent: false, body: "", tools: [] })}
         agentNames={NAMES} remoteChanged={false}
@@ -184,7 +192,7 @@ describe("WhereBlocks", () => {
   });
 
   it("块 2:内容委托给 ToolChecks,不是裸拼一份新的 checkbox 列表", () => {
-    render(
+    renderExpanded(
       <WhereBlocks
         skill={mk("weekly-report", "installedFrom", {
           tools: [
@@ -200,7 +208,7 @@ describe("WhereBlocks", () => {
   });
 
   it("块 2:没有本体、没有工具可显示时给中性提示,不是空白", () => {
-    render(
+    renderExpanded(
       <WhereBlocks
         skill={mk("gone", "sharedTo", { localPresent: false, body: "", tools: [] })}
         agentNames={NAMES} remoteChanged={false}
@@ -236,7 +244,7 @@ describe("WhereBlocks", () => {
         return null;
       });
       const user = userEvent.setup();
-      render(
+      renderExpanded(
         <WhereBlocks
           skill={mk("weekly-report", "installedFrom", {
             tools: [
@@ -261,7 +269,7 @@ describe("WhereBlocks", () => {
 
     it("勾选中的动作正在处理时,ToolChecks 的 checkbox 整体禁用(不传 disabled 会连点打架)", () => {
       useMySkills.setState({ setAgentsBusy: "weekly-report" });
-      render(
+      renderExpanded(
         <WhereBlocks
           skill={mk("weekly-report", "installedFrom", {
             tools: [{ agent: "claude-code", state: "linked" }],
@@ -277,7 +285,7 @@ describe("WhereBlocks", () => {
         setAgentsError: { code: "FS_LINK_FAILED", message: "统一目录那一处没配上" },
         toolFailuresFor: "weekly-report",
       });
-      render(
+      renderExpanded(
         <WhereBlocks
           skill={mk("weekly-report", "installedFrom", {
             tools: [{ agent: "claude-code", state: "linked" }],
@@ -301,7 +309,7 @@ describe("WhereBlocks", () => {
         toolFailuresFor: "skill-a",
       });
 
-      render(
+      renderExpanded(
         <WhereBlocks
           skill={mk("skill-b", "installedFrom", {
             tools: [{ agent: "claude-code", state: "linked" }],
@@ -320,7 +328,7 @@ describe("WhereBlocks", () => {
         toolFailuresFor: "skill-a",
       });
 
-      render(
+      renderExpanded(
         <WhereBlocks
           skill={mk("skill-a", "installedFrom", {
             tools: [{ agent: "claude-code", state: "linked" }],
@@ -334,7 +342,7 @@ describe("WhereBlocks", () => {
   });
 
   it("块 3:显示这个技能在公司技能库里的分区与来源", () => {
-    render(<WhereBlocks skill={mk("weekly-report", "sharedTo")} agentNames={NAMES} remoteChanged={false} />);
+    renderExpanded(<WhereBlocks skill={mk("weekly-report", "sharedTo")} agentNames={NAMES} remoteChanged={false} />);
     // 区名在折叠头的结论行上也有一份,断言范围收进展开出来的三块
     const blocks = within(screen.getByTestId("where-blocks"));
     expect(blocks.getByText("已分享到技能库")).toBeInTheDocument();
@@ -342,7 +350,7 @@ describe("WhereBlocks", () => {
   });
 
   it("块 3:草稿(还没分享过)不编造来源,说清还没分享到任何技能库", () => {
-    render(
+    renderExpanded(
       <WhereBlocks
         skill={mk("draft-x", "shareable", { sourceLabel: null })}
         agentNames={NAMES} remoteChanged={false}
@@ -358,18 +366,18 @@ describe("WhereBlocks", () => {
   // 的护栏在 `store/my-skills.ts` 的单测与 `DetailPanel.test.tsx`(那边从真实的
   // `useStoreIndex` 索引出发,断言结论行真的说出了「库里有新版」)。
   it("块 3:确定库里有新版本时才说「有新版本」", () => {
-    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={true} />);
+    renderExpanded(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={true} />);
     expect(screen.getByText("技能库里有新版本")).toBeInTheDocument();
   });
 
   it("块 3:内容指纹一致时不显示「有新版本」,不猜", () => {
-    render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
+    renderExpanded(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
     expect(screen.queryByText("技能库里有新版本")).not.toBeInTheDocument();
   });
 
   it("块 3:审核中且有链接时可点开查看,调用 open_library_url", async () => {
     const user = userEvent.setup();
-    render(
+    renderExpanded(
       <WhereBlocks
         skill={mk("weekly-report", "shareable", {
           review: { url: "http://gitea.local/skills/skills/pulls/9" },
@@ -397,7 +405,7 @@ describe("WhereBlocks", () => {
       return null;
     });
     const user = userEvent.setup();
-    render(
+    renderExpanded(
       <WhereBlocks
         skill={mk("weekly-report", "shareable", { review: { url: "http://gitea.local/pulls/9" } })}
         agentNames={NAMES} remoteChanged={false}
@@ -408,7 +416,7 @@ describe("WhereBlocks", () => {
   });
 
   it("块 3:审核中但 url 为 null(直推留下的记录)时,「审核中」照摆,不用空串冒充链接", () => {
-    render(
+    renderExpanded(
       <WhereBlocks
         skill={mk("weekly-report", "shareable", { review: { url: null } })}
         agentNames={NAMES} remoteChanged={false}
@@ -419,7 +427,7 @@ describe("WhereBlocks", () => {
   });
 
   it("三块外层左右留白与元信息行一致(px-5)", () => {
-    const { container } = render(
+    const { container } = renderExpanded(
       <WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />,
     );
     expect(container.firstElementChild?.className).toContain("px-5");
@@ -487,7 +495,7 @@ describe("WhereBlocks · 本体在统一技能目录(canonicalReaders)", () => {
 
   it("🔴 勾选清单里不出现 Zed,而「…」展开后的名单里有它(双向)", async () => {
     useMySkills.setState({ installedAgents: new Set(["claude-code", "zed", "cline"]) });
-    render(<WhereBlocks skill={canonical()} agentNames={NAMES} remoteChanged={false} />);
+    renderExpanded(<WhereBlocks skill={canonical()} agentNames={NAMES} remoteChanged={false} />);
 
     const toolsBlock = screen.getByTestId("where-block-tools");
     expect(within(toolsBlock).getByRole("checkbox", { name: /Claude Code/ })).toBeInTheDocument();
@@ -501,7 +509,7 @@ describe("WhereBlocks · 本体在统一技能目录(canonicalReaders)", () => {
   });
 
   it("「…」默认收起,再点一次收回去", async () => {
-    render(<WhereBlocks skill={canonical()} agentNames={NAMES} remoteChanged={false} />);
+    renderExpanded(<WhereBlocks skill={canonical()} agentNames={NAMES} remoteChanged={false} />);
     expect(screen.queryByTestId("where-readers")).not.toBeInTheDocument();
     const toggle = screen.getByRole("button", { name: "哪些工具" });
     await userEvent.click(toggle);
@@ -511,12 +519,12 @@ describe("WhereBlocks · 本体在统一技能目录(canonicalReaders)", () => {
   });
 
   it("🔴 名单是空数组(那几个工具一个都没装)时连按钮都不摆 —— 不展开一个空标题", () => {
-    render(<WhereBlocks skill={canonical({ canonicalReaders: [] })} agentNames={NAMES} remoteChanged={false} />);
+    renderExpanded(<WhereBlocks skill={canonical({ canonicalReaders: [] })} agentNames={NAMES} remoteChanged={false} />);
     expect(screen.queryByRole("button", { name: "哪些工具" })).not.toBeInTheDocument();
   });
 
   it("本体不在统一目录(null)时也不摆按钮", () => {
-    render(
+    renderExpanded(
       <WhereBlocks
         skill={canonical({ canonicalReaders: null, body: "/h/.claude/skills/api-test-expert" })}
         agentNames={NAMES}
@@ -528,7 +536,7 @@ describe("WhereBlocks · 本体在统一技能目录(canonicalReaders)", () => {
 
   it("工具清单每行右侧显示那个工具的技能目录(store 里的 toolDirs,零新 IPC)", () => {
     useMySkills.setState({ installedAgents: new Set(["claude-code"]) });
-    render(<WhereBlocks skill={canonical()} agentNames={NAMES} remoteChanged={false} />);
+    renderExpanded(<WhereBlocks skill={canonical()} agentNames={NAMES} remoteChanged={false} />);
     expect(screen.getByText("/h/.claude/skills")).toBeInTheDocument();
   });
 });
@@ -547,7 +555,7 @@ describe("WhereBlocks · 空勾选清单按成因分流(C-1)", () => {
 
   it("成因一:本体不在这台电脑上 —— 仍然说「没有本体」", () => {
     const skill = mk("gone", "sharedTo", { localPresent: false, body: "", tools: [], canonicalReaders: null });
-    render(<WhereBlocks skill={skill} agentNames={NAMES} remoteChanged={false} />);
+    renderExpanded(<WhereBlocks skill={skill} agentNames={NAMES} remoteChanged={false} />);
     expect(screen.getByTestId("where-block-tools")).toHaveTextContent(
       "这台电脑上没有本体,暂时没有工具在用它",
     );
@@ -556,7 +564,7 @@ describe("WhereBlocks · 空勾选清单按成因分流(C-1)", () => {
   it("🔴 成因二:本体在统一技能目录 —— 说位置 + 「暂时没有可以勾选的工具」,不许说「没有本体」", () => {
     const skill = mk("x", "installedFrom", { tools: [], canonicalReaders: ["Zed"] });
     const block = () => screen.getByTestId("where-block-tools");
-    render(<WhereBlocks skill={skill} agentNames={NAMES} remoteChanged={false} />);
+    renderExpanded(<WhereBlocks skill={skill} agentNames={NAMES} remoteChanged={false} />);
     expect(block()).toHaveTextContent("本体放在统一技能目录,暂时没有可以勾选的工具");
     expect(block()).not.toHaveTextContent(/没有本体/);
     // 这一句刻意不点名任何工具:readers 可能是空数组,说"都在读它"又是一句假话
@@ -569,7 +577,7 @@ describe("WhereBlocks · 空勾选清单按成因分流(C-1)", () => {
       canonicalReaders: null,
       body: "/h/.claude/skills/x",
     });
-    render(<WhereBlocks skill={skill} agentNames={NAMES} remoteChanged={false} />);
+    renderExpanded(<WhereBlocks skill={skill} agentNames={NAMES} remoteChanged={false} />);
     const el = screen.getByTestId("where-block-tools");
     expect(el).toHaveTextContent("这台电脑上暂时没有可以勾选的工具");
     expect(el).not.toHaveTextContent(/没有本体|统一技能目录/);
@@ -578,7 +586,6 @@ describe("WhereBlocks · 空勾选清单按成因分流(C-1)", () => {
 
 describe("WhereBlocks 折叠头", () => {
   it("收起时三块都不渲染,只剩路径与结论那一行", () => {
-    useDetailCollapse.setState({ whereExpanded: false });
     render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
     expect(screen.queryAllByTestId("where-title")).toHaveLength(0);
     expect(screen.getByTestId("where-toggle")).toHaveAttribute("aria-expanded", "false");
@@ -586,7 +593,6 @@ describe("WhereBlocks 折叠头", () => {
   });
 
   it("🔴 收起状态下,「库里有新版」照样看得见——折叠不得把例外藏掉", () => {
-    useDetailCollapse.setState({ whereExpanded: false });
     render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={true} />);
     expect(screen.getByTestId("where-toggle").textContent).toMatch(/库里有新版/);
   });
@@ -595,7 +601,6 @@ describe("WhereBlocks 折叠头", () => {
   // 而 `whereSummary` 对同一类行返回的**就是**那句话——收起态同一句话上下叠两遍,
   // 展开后加上块 1 是三遍。可达路径是第 4 源(库里记着是我分享的、本地没有本体)。
   it("本体不在这台电脑上时,那句话在收起态恰好出现一次(不叠两遍)", () => {
-    useDetailCollapse.setState({ whereExpanded: false });
     render(
       <WhereBlocks
         skill={mk("gone", "sharedTo", { localPresent: false, body: "", tools: [] })}
@@ -607,7 +612,6 @@ describe("WhereBlocks 折叠头", () => {
   });
 
   it("点一下折叠头就展开,三块出现", async () => {
-    useDetailCollapse.setState({ whereExpanded: false });
     const user = userEvent.setup();
     render(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
     await user.click(screen.getByTestId("where-toggle"));

@@ -260,38 +260,43 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
         />
       </div>
 
-      {/* 「在哪」压成一行折叠头(Q2),默认收起——正文才是主角。 */}
-      {skill && (
-        <WhereBlocks skill={skill} agentNames={agentNames} remoteChanged={remoteChanged} />
-      )}
-      {pullError && (
-        <p className="px-5 pt-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
-          {t("mine.pullFailed", { name: detail.name })}
-          {t("punct.labelSeparator")}
-          {pullError.message}
-        </p>
-      )}
-
-      <div className="flex flex-none gap-0.5 border-t border-border px-5 pt-2.5" role="tablist">
-        <Tab selected={tab === "readme"} onClick={() => setTab("readme")}>
-          {t("detail.tabReadme")}
-        </Tab>
-        <Tab selected={tab === "files"} onClick={() => setTab("files")}>
-          {t("detail.tabFiles", { count: detail.files.length })}
-        </Tab>
-      </div>
-
-      <div className="selectable flex-1 overflow-y-auto px-5 pb-5 pt-3.5">
-        {tab === "readme" ? (
-          stripFrontmatter(detail.skillMd).trim() ? (
-            <Markdown source={stripFrontmatter(detail.skillMd)} />
-          ) : (
-            <p className="text-[12.5px] text-text-3">{t("detail.noBody")}</p>
-          )
-        ) : (
-          <FileTree detail={detail} />
+      {/* 🔴 v7.2 需求 2:「在哪」+ 页签 + 正文合用**同一个**滚动区,页脚才是
+          真的固定的。见 {@link ScrollArea} 的文档(两个 PanelBody 同构,改一处
+          就要改另一处)。 */}
+      <ScrollArea>
+        {/* 「在哪」压成一行折叠头(Q2),默认收起——正文才是主角。 */}
+        {skill && (
+          <WhereBlocks skill={skill} agentNames={agentNames} remoteChanged={remoteChanged} />
         )}
-      </div>
+        {pullError && (
+          <p className="px-5 pt-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+            {t("mine.pullFailed", { name: detail.name })}
+            {t("punct.labelSeparator")}
+            {pullError.message}
+          </p>
+        )}
+
+        <TabsBar>
+          <Tab selected={tab === "readme"} onClick={() => setTab("readme")}>
+            {t("detail.tabReadme")}
+          </Tab>
+          <Tab selected={tab === "files"} onClick={() => setTab("files")}>
+            {t("detail.tabFiles", { count: detail.files.length })}
+          </Tab>
+        </TabsBar>
+
+        <div className="selectable px-5 pb-5 pt-3.5">
+          {tab === "readme" ? (
+            stripFrontmatter(detail.skillMd).trim() ? (
+              <Markdown source={stripFrontmatter(detail.skillMd)} />
+            ) : (
+              <p className="text-[12.5px] text-text-3">{t("detail.noBody")}</p>
+            )
+          ) : (
+            <FileTree detail={detail} />
+          )}
+        </div>
+      </ScrollArea>
 
       {/* 固定页脚(Q3)。此前这里是一颗孤零零的「在访达中打开」,而同一个动作
           在「这台电脑上」那一块里还有一颗「打开文件夹」——同一件事两个入口两种
@@ -559,35 +564,39 @@ function PanelBody({
         )}
       </div>
 
-      {whereSkill && (
-        <WhereBlocks
-          skill={whereSkill}
-          agentNames={whereAgentNames}
-          remoteChanged={whereRemoteChanged}
-        />
-      )}
-
-      <div className="flex flex-none gap-0.5 border-t border-border px-5 pt-2.5" role="tablist">
-        <Tab selected={tab === "readme"} onClick={() => setTab("readme")}>
-          {t("detail.tabReadme")}
-        </Tab>
-        <Tab selected={tab === "files"} onClick={() => setTab("files")}>
-          {t("detail.tabFiles", { count: detail.files.length })}
-        </Tab>
-      </div>
-
-      {/* 正文区是全站唯一放开选中与文本光标的地方 */}
-      <div className="selectable flex-1 overflow-y-auto px-5 pb-5 pt-3.5">
-        {tab === "readme" ? (
-          detail.skillMd.trim() ? (
-            <Markdown source={stripFrontmatter(detail.skillMd)} />
-          ) : (
-            <p className="text-[12.5px] text-text-3">{t("detail.noBody")}</p>
-          )
-        ) : (
-          <FileTree detail={detail} />
+      {/* 🔴 v7.2 需求 2:与 `LocalPanelBody` 同构的滚动区,见 {@link ScrollArea}。 */}
+      <ScrollArea>
+        {whereSkill && (
+          <WhereBlocks
+            skill={whereSkill}
+            agentNames={whereAgentNames}
+            remoteChanged={whereRemoteChanged}
+          />
         )}
-      </div>
+
+        <TabsBar>
+          <Tab selected={tab === "readme"} onClick={() => setTab("readme")}>
+            {t("detail.tabReadme")}
+          </Tab>
+          <Tab selected={tab === "files"} onClick={() => setTab("files")}>
+            {t("detail.tabFiles", { count: detail.files.length })}
+          </Tab>
+        </TabsBar>
+
+        {/* 正文区是全站唯一放开选中与文本光标的地方(`selectable` 只挂在这一层,
+            不上提到 ScrollArea——上提就把「在哪」与页签也一起放开了)。 */}
+        <div className="selectable px-5 pb-5 pt-3.5">
+          {tab === "readme" ? (
+            detail.skillMd.trim() ? (
+              <Markdown source={stripFrontmatter(detail.skillMd)} />
+            ) : (
+              <p className="text-[12.5px] text-text-3">{t("detail.noBody")}</p>
+            )
+          ) : (
+            <FileTree detail={detail} />
+          )}
+        </div>
+      </ScrollArea>
 
       {/* 设计 §12 的动作区,v7.1 起搬到正文之下(md 是主角)。商店/广场这条路
           的页脚仍然是 `InstallPanel`——把它并进 `SkillActionsBlock` 超出本任务
@@ -698,6 +707,48 @@ function Meta({ label, value }: { label: string; value: string }) {
     <div className="text-[11px] leading-[1.4] text-text-3">
       {label}
       <b className="block text-[12.5px] font-[550] text-text">{value || "—"}</b>
+    </div>
+  );
+}
+
+/**
+ * 详情面板的滚动区(v7.2 需求 2)。
+ *
+ * # 为什么「在哪」也得住进来
+ *
+ * 面板是一列 flex:头部 / 「在哪」/ 页签 / 正文 / 固定页脚。v7.1 里正文是唯一的
+ * 滚动区(`flex-1 overflow-y-auto`),而 `flex-1` = `flex: 1 1 0%`——**基准是 0**,
+ * 于是正文被压到 0 之后整列就再也没有可压缩的余量了,「在哪」或它里面的「…」
+ * 再展开一点,溢出的部分直接把页脚顶出列外。用户的原话是"「…」展开会把底部
+ * 操作按钮顶下去";矮窗口下实测页脚 y 从 596 跳到 626(视口高 640)。
+ *
+ * 只给「在哪」封一个 `max-h` 治不了本:vh 值是拍脑袋的,窗口再矮一点照样溢出,
+ * 还多一层嵌套滚动条。正解是**把会长高的东西全部放进同一个滚动区**,页脚保持
+ * `flex-none`,于是"页脚固定"是结构保证的,不是靠内容恰好不够高。
+ *
+ * `min-h-0` 不能省:flex 子项的 `min-height:auto` 会按内容撑开,加了
+ * `overflow-y-auto` 才解析成 0——两者要一起写才真的可收缩。
+ *
+ * ⚠️ 两个 PanelBody(本地详情 / 商店·广场详情)结构同构,**改一处必须改另一处**
+ * ——v7.1 那次就是只看了其中一个三明治。
+ */
+function ScrollArea({ children }: { children: React.ReactNode }) {
+  return <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>;
+}
+
+/**
+ * 说明/文件两个页签那一条。搬进滚动区之后要 `sticky top-0` 才不会被「在哪」
+ * 顶走,而吸顶**必须给不透明底色**(`bg-surface-1` = 面板底色),否则正文会从
+ * 它字底下透出来。UI 规范禁毛玻璃,这里就是纯不透明底色。
+ * `z-10` 压在正文之上,又在「更多」下拉与遮罩之下。
+ */
+function TabsBar({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      className="sticky top-0 z-10 flex gap-0.5 border-t border-border bg-surface-1 px-5 pt-2.5"
+      role="tablist"
+    >
+      {children}
     </div>
   );
 }

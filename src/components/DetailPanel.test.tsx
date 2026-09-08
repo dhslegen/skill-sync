@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -9,7 +9,6 @@ import { useLocalDetail } from "@/store/local-detail";
 import { useMySkills } from "@/store/my-skills";
 import { usePlaza } from "@/store/plaza";
 import { useSession } from "@/store/session";
-import { useDetailCollapse } from "@/store/detail-collapse";
 import { useStoreIndex } from "@/store/store-index";
 
 // agent 探测走 IPC:mock 掉才能让"点安装 → 展开勾选"这条路走通。
@@ -370,9 +369,6 @@ describe("DetailPanel(本地详情模式)", () => {
     useInstall.setState({ phase: "idle", dirSlug: null, error: null });
     useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
     useLocalDetail.setState({ target: null, detail: null, error: null });
-    // 折叠状态是模块级单例,上一条用例展开过就会泄漏进下一条——默认收起是这一版
-    // 的语义,每条用例都从收起开始。
-    useDetailCollapse.setState({ whereExpanded: false });
     // 每条用例都显式给出这一份数据,不依赖上一条用例残留的 useMySkills 全局状态。
     useMySkills.setState({
       list: null,
@@ -394,10 +390,10 @@ describe("DetailPanel(本地详情模式)", () => {
       canonicalDir: "/home/u/.agents/skills",
       toolDirs: new Map([["claude-code", "/home/u/.claude/skills"]]),
     });
-    // 折叠头默认收起(v7.1 Q2),要看三块得先展开——补一步交互,不放宽断言。
-    useDetailCollapse.setState({ whereExpanded: true });
     openLocal();
     render(<DetailPanel />);
+    // 折叠头默认收起(v7.1 Q2),要看三块得先展开——补一步交互,不放宽断言。
+    fireEvent.click(screen.getByTestId("where-toggle"));
     const titles = screen.getAllByTestId("where-title").map((e) => e.textContent);
     expect(titles).toEqual(["这台电脑上", "各个工具里", "技能库里"]);
     // 本体在统一目录:界面必须说「统一技能目录」,不点名任何工具
@@ -418,6 +414,33 @@ describe("DetailPanel(本地详情模式)", () => {
     expect(screen.queryAllByTestId("where-title")).toHaveLength(0);
     expect(screen.getByTestId("where-toggle").textContent).toMatch(/安装自技能库/);
     expect(screen.getByText("本地正文内容")).toBeInTheDocument();
+  });
+
+  // 🔴 v7.2 需求 3(用户拍板,推翻 v7.1 任务 3 的落 localStorage):折叠是打开
+  // 详情**期间**的临时操作,关掉面板再打开必须回到默认收起。按**行为**写
+  // (展开 → 关 → 重开 → 断言收起),不按"有没有那个 store"写——store 删没删
+  // 只是实现细节,用户看得见的是这一串动作的结果。
+  it("🔴「在哪」的展开不跨面板保留:关掉再打开回到默认收起,也不落 localStorage", () => {
+    useMySkills.setState({
+      list: [installedView()],
+      agentNames: new Map([["claude-code", "Claude Code"]]),
+      canonicalDir: "/home/u/.agents/skills",
+      toolDirs: new Map([["claude-code", "/home/u/.claude/skills"]]),
+    });
+    openLocal();
+    const view = render(<DetailPanel />);
+    fireEvent.click(screen.getByTestId("where-toggle"));
+    expect(screen.getByTestId("where-toggle")).toHaveAttribute("aria-expanded", "true");
+    // 展开这件事一个字节都不该落盘——落了就会跨面板、跨会话保留下来
+    expect(localStorage.getItem("skillsync.detailWhereExpanded")).toBeNull();
+
+    // 关掉面板(`local.detail` 置空,PanelBody 整个卸载),再打开同一个技能
+    act(() => useLocalDetail.setState({ target: null, detail: null, error: null }));
+    view.rerender(<DetailPanel />);
+    openLocal();
+    view.rerender(<DetailPanel />);
+    expect(screen.getByTestId("where-toggle")).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryAllByTestId("where-title")).toHaveLength(0);
   });
 
   // 🔴 结论行的「库里有新版」必须真的从索引比对来(不是靠某个常量)。这一条
@@ -488,16 +511,33 @@ describe("DetailPanel(本地详情模式)", () => {
   });
 
   // Q1A:md 是主角——正文区拿 flex-1,页脚固定在它**之后**。
-  it("正文区 flex-1,且固定页脚排在正文之后(不是夹在「在哪」与页签之间)", () => {
+  // 🔴 v7.2 需求 2:页脚固定这件事必须由**结构**保证,不能靠内容恰好不够高。
+  // 用户真机反馈:点一下「这台电脑上」那句话后面的「…」,页脚就被顶下去了。
+  // 根因是 v7.1 里正文是唯一的滚动区(`flex-1` = basis 0),被压到 0 之后整列
+  // 再没有可压缩的余量,「在哪」一长高就把 `flex-none` 的页脚挤出列外。
+  // jsdom 量不了布局,所以按不变量钉:**会长高的东西(在哪 / 页签 / 正文)
+  // 全部住在同一个可收缩滚动区里,页脚是它之后的兄弟**。
+  it("🔴「在哪」与正文同住一个可收缩滚动区,页脚是它之后的兄弟(展开不会顶走页脚)", () => {
     useMySkills.setState({ list: [installedView()], agentNames: new Map(), toolDirs: new Map() });
     openLocal();
     const { container } = render(<DetailPanel />);
     const body = container.querySelector(".selectable");
-    expect(body?.className).toContain("flex-1");
+    const scroller = container.querySelector(".overflow-y-auto");
+    expect(scroller).not.toBeNull();
+    // 可收缩:flex-1 + min-h-0(少了 min-h-0,`min-height:auto` 会按内容撑开)
+    expect(scroller?.className).toContain("flex-1");
+    expect(scroller?.className).toContain("min-h-0");
+    // 「在哪」折叠头与正文都在它里面——不在的话,展开就还是在挤别人
+    expect(scroller).toContainElement(screen.getByTestId("where-toggle"));
+    expect(scroller).toContainElement(body as HTMLElement);
+    // 「…」展开出来的那张小卡同样落在滚动区里(它是用户点的那一下)
+    fireEvent.click(screen.getByTestId("where-toggle"));
 
-    // 页脚(含「打开文件夹」)在 DOM 里必须排在正文之后
+    // 页脚(含「打开文件夹」)是滚动区**之后**的兄弟,且不参与收缩
     const footer = screen.getByRole("button", { name: "打开文件夹" }).closest("div.border-t");
-    expect(body && footer && body.compareDocumentPosition(footer)).toBe(
+    expect(footer?.parentElement).toBe(scroller?.parentElement);
+    expect(footer?.className).toContain("flex-none");
+    expect(scroller && footer && scroller.compareDocumentPosition(footer)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
   });

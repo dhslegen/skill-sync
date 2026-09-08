@@ -1,22 +1,20 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { CreateSkillButton, CreateSkillPanel } from "@/components/CreateSkill";
-import { Icon } from "@/components/Icon";
 import { ProjectSections } from "@/components/ProjectSections";
 import { ChipButton, PrimaryAction, rowMenuHandler } from "@/components/RowActionControls";
 import { SkillIcon } from "@/components/SkillIcon";
 import { SkillRowMenu, type SkillRowMenuItem } from "@/components/SkillRowMenu";
-import { t } from "@/i18n";
+import { t, type MessageKey } from "@/i18n";
 import { skillReveal, type InstalledSkillView, type Section } from "@/lib/ipc";
 import { buildRowMenuItems, needsAttention, rowAction, type RowAction } from "@/lib/ownership";
 import { SHARE_BLOCK_LABEL, SHARE_DONE_LABEL, SHARE_FAILED_LABEL } from "@/lib/share-block";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
-import { useMineCollapse } from "@/store/mine-collapse";
 import { matchesMineQuery, useMineSearch } from "@/store/mine-search";
 import {
   cardFor,
+  groupBySource,
   hasUpdate,
   localDiffersNoBaseline,
   remoteChangedForShareable,
@@ -31,7 +29,22 @@ import { useUi } from "@/store/ui";
 /**
  * 「我的技能」页(v7 任务 7 整页重画)。
  *
- * # 三区 + 每行至多一颗主按钮
+ * # 🔴 三区 = 三个**页签**(v7.2 需求 1,推翻了 v7 的"一页三区")
+ *
+ * v7 把三个区竖着排在同一页里,v7.1 又给每个区加了折叠头。用户真机反馈是
+ * 「目前不直观,滚动效率很低」——两个机制都在解同一个问题(一次只想看一个区),
+ * 而竖排那条路无论怎么折叠都要先滚到那个区。所以这一版把三个区**并列成页签**,
+ * 与原有的「项目里」一起是**四个**:安装自 / 已分享到 / 可分享到 / 项目里。
+ * 分区折叠(`store/mine-collapse.ts` + `SectionHeader` + 吸顶那一套)**整套删除**
+ * ——页签已经解决了"一次只看一区",留着就是两套并行机制。
+ *
+ * 🔴 **折叠时定下的那条原则原样转移到页签上**:未选中的页签必须写出里面有几个
+ * "要处理",否则切到一个页签,另外两个里等着你的事就整个看不见了。判据仍是
+ * `lib/ownership.ts::needsAttention`(**不是**页头总览那两个数——它们漏掉
+ * conflict/chooseVersion/shareBlocked/underReview 四档)。计数与总数都走**全量**
+ * `list`、不走 `filteredList`:搜索只影响展示,页签上写的是这个区的事实。
+ *
+ * # 每行至多一颗主按钮
  *
  * 按公司技能库分:安装自 / 已分享到 / 可分享到(`core::ownership::Section`,
  * v7 任务 1-4 已埋好)。每一行**只讲一句"该做什么"**——判定表在
@@ -104,9 +117,7 @@ export function MySkillsPage() {
   const setPage = useUi((s) => s.setPage);
   const sessionStatus = useSession((s) => s.status);
   const query = useMineSearch((s) => s.query);
-  const [tab, setTab] = useState<"general" | "projects">("general");
-  const collapsed = useMineCollapse((s) => s.collapsed);
-  const toggleCollapsed = useMineCollapse((s) => s.toggle);
+  const [tab, setTab] = useState<MineTab>("installedFrom");
 
   // 三级刷新的级别 2(切页):页面组件挂载时 load 一次。级别 1(窗口重获焦点)
   // 与级别 3(文件监听)是 `useLocalRefresh()` 的活,全局挂在 App.tsx,这里不重复。
@@ -191,8 +202,8 @@ export function MySkillsPage() {
   const filteredList = list.filter((s) => matchesMineQuery(s, nameOf(s.dirSlug), query));
   const secs = sections(filteredList, actionFor);
 
-  // 🔴 折叠头的两个数走**全量** list,不走 filteredList:搜索只影响展示,
-  // 头上写的"这个区一共有多少 / 其中几个要处理"是这个区的事实,搜索时按筛选后
+  // 🔴 页签上那两个数走**全量** list,不走 filteredList:搜索只影响展示,
+  // 页签上写的"这个区一共有多少 / 其中几个要处理"是这个区的事实,搜索时按筛选后
   // 的条数报数就成了假话(与页头总览 band 同一个口径,见上面那两个计数)。
   const statsOf = (key: Section) => {
     const rows = list.filter((s) => s.section === key);
@@ -202,10 +213,50 @@ export function MySkillsPage() {
     };
   };
 
-  // 🔴 搜索必须穿透折叠:`query` 非空时折叠整体失效(展示态恒为展开),否则
-  // "搜到了但那个区折着"在用户看来就是**搜索坏了**。存储态不受影响——搜索期间
-  // 点折叠头照常写进 localStorage,清空搜索后生效。
-  const searching = query.trim() !== "";
+  // 当前页签要渲染的那一区(`sections()` 会把空区整个滤掉,所以这里可能是
+  // undefined——页签是常驻的,那一档要有自己的空态文案,见 TAB_EMPTY)。
+  const activeSec = tab === "projects" ? undefined : secs.find((s) => s.key === tab);
+
+  // 一行的渲染(平铺与「按来源分组」两条路共用同一份——分开各写一遍就是
+  // 本项目记录的空转模式 #1 的变体:两处会各自漂)。
+  const renderRow = (skill: InstalledSkillView) => {
+    const remoteChanged =
+      skill.section === "shareable"
+        ? remoteChangedForShareable(skill, shareableIndexes)
+        : hasUpdate(skill, index);
+    // 🔴 C3 修复(v7 任务 7 修复轮 1):没有安装基线的行,`rowAction` 从不读
+    // `localHash`——两方指纹直接比,只影响「更多」菜单要不要多一条
+    // 「改用库里的版本」,不进判定表。
+    const noBaselineDiffers = localDiffersNoBaseline(skill, index);
+    return (
+      <Row
+        key={skill.dirSlug}
+        skill={skill}
+        name={nameOf(skill.dirSlug)}
+        description={cardOf(skill)?.description ?? null}
+        action={rowAction(skill, remoteChanged)}
+        remoteChanged={remoteChanged}
+        noBaselineDiffers={noBaselineDiffers}
+        pulling={activeSlug === skill.dirSlug && installPhase === "running"}
+        sharing={shareBusy === skill.dirSlug}
+        onPull={() => void pull(skill.dirSlug)}
+        onShareChanges={() => void shareChanges(skill.dirSlug)}
+        onShare={() => beginShare(skill.dirSlug)}
+        onRemove={() => askRemove(skill.dirSlug)}
+        onReveal={revealOrExplain}
+        onOpenDetail={() => {
+          void useLocalDetail
+            .getState()
+            .open(skill.body ? { path: skill.body } : { dirSlug: skill.dirSlug });
+          // 🔴 I3(用户拍板)+ 修复轮 2 订正:点击是"立即查"这一半的触发点
+          // ——只对这一行自己的外部来源发请求,不碰其余行。
+          // shareableSourceKey 为 null(非 shareable 区/纯本地草稿)时
+          // ensureShareableIndexes 自己会跳过,这里不必先判一遍。
+          void ensureShareableIndexes([skill.dirSlug]);
+        }}
+      />
+    );
+  };
 
   return (
     <div>
@@ -213,8 +264,13 @@ export function MySkillsPage() {
           「新建技能」搬进 TabsRow 自己那一条(design #16 那句"新建技能"紧跟在
           "项目里"之后的顺序)。空态那一档不同:它自己的 CTA 行已经有「新建技能」,
           TabsRow 不重复摆一份。 */}
-      <TabsRow tab={tab} onChange={setTab} showCreate={tab === "general" && list.length > 0} />
-      {tab === "general" && <CreateSkillPanel />}
+      <TabsRow
+        tab={tab}
+        onChange={setTab}
+        statsOf={statsOf}
+        showCreate={tab !== "projects" && list.length > 0}
+      />
+      {tab !== "projects" && <CreateSkillPanel />}
 
       {tab === "projects" ? (
         <ProjectSections />
@@ -342,97 +398,44 @@ export function MySkillsPage() {
             </div>
           )}
 
-          {filteredList.length === 0 ? (
-            <p className="py-6 text-[12.5px] text-text-3">{t("mine.searchEmpty", { query })}</p>
-          ) : (
-            secs.map((sec, secIndex) => {
-              const stats = statsOf(sec.key);
-              const expanded = searching || !collapsed.includes(sec.key);
-              const bodyId = `mine-section-${sec.key}`;
-              return (
-              <section key={sec.key} className="mt-3 first-of-type:mt-0">
-                <SectionHeader
-                  title={sec.title}
-                  total={stats.total}
-                  attention={stats.attention}
-                  expanded={expanded}
-                  bodyId={bodyId}
-                  onToggle={() => toggleCollapsed(sec.key)}
-                />
-                {/* 🔴 M5(复审):未登录提示紧跟在**第一个**区标题旁边,不是摆在
-                    整个区列表的最上面——画布里它就贴在「安装自技能库」标题下方。
-                    「已分享到」区未登录时天然不会出现(core 的 relation 决定,
-                    这里不需要按登录态过滤 sec)。
-                    🔴 终审 M-8:光判 `secIndex === 0` 不够——用户**只有草稿**
-                    (没有任何"安装自"的行)时,「可分享到」会顶到第一位,这句
-                    "登录后能区分哪些是你分享的"贴在草稿标题下毫无意义(草稿本来
-                    就与登录态无关,是"安装自 vs 已分享到"这对区分才需要登录)。
-                    改判 `secs[0]?.key === "installedFrom"`:未登录时 `sharedTo`
-                    结构性必空(design 决策 #4),所以第一区要么是
-                    `installedFrom`(该摆)要么是 `shareable`(不该摆),这一条
-                    判据就够穷尽两种情形。 */}
-                {/* 🔴 **刻意不跟随折叠**(下一个人多半会有"折起来就该一起收"的
-                    直觉,所以把理由写在这里):这句话解释的是**三个区标题为什么
-                    长这样**(登录后才区分得出哪些是你分享的),它是**标题的**注解,
-                    不是行的注解。而区标题恰恰是折叠之后唯一还看得见的东西——
-                    折起来时用户只剩三个标题,正是最可能纳闷"这几个区按什么分的"
-                    的时刻,这句话那时反而更需要在场。 */}
-                {secIndex === 0 && secs[0]?.key === "installedFrom" && sessionStatus !== "signedIn" && (
-                  <p className="pb-1.5 text-[11.5px] text-text-3">{t("mine.signedOutHint")}</p>
-                )}
-                <div
-                  id={bodyId}
-                  hidden={!expanded}
-                  className="overflow-hidden rounded-card border border-border bg-surface-1"
-                >
-                  {sec.items.map((skill) => {
-                    const remoteChanged =
-                      skill.section === "shareable"
-                        ? remoteChangedForShareable(skill, shareableIndexes)
-                        : hasUpdate(skill, index);
-                    // 🔴 C3 修复(v7 任务 7 修复轮 1):没有安装基线的行,
-                    // `rowAction` 从不读 `localHash`——两方指纹直接比,只影响
-                    // 「更多」菜单要不要多一条「改用库里的版本」,不进判定表。
-                    const noBaselineDiffers = localDiffersNoBaseline(skill, index);
-                    return (
-                      <Row
-                        key={skill.dirSlug}
-                        skill={skill}
-                        name={nameOf(skill.dirSlug)}
-                        description={cardOf(skill)?.description ?? null}
-                        action={rowAction(skill, remoteChanged)}
-                        remoteChanged={remoteChanged}
-                        noBaselineDiffers={noBaselineDiffers}
-                        pulling={activeSlug === skill.dirSlug && installPhase === "running"}
-                        sharing={shareBusy === skill.dirSlug}
-                        onPull={() => void pull(skill.dirSlug)}
-                        onShareChanges={() => void shareChanges(skill.dirSlug)}
-                        onShare={() => beginShare(skill.dirSlug)}
-                        onRemove={() => askRemove(skill.dirSlug)}
-                        onReveal={revealOrExplain}
-                        onOpenDetail={() => {
-                          void useLocalDetail
-                            .getState()
-                            .open(skill.body ? { path: skill.body } : { dirSlug: skill.dirSlug });
-                          // 🔴 I3(用户拍板)+ 修复轮 2 订正:点击是"立即查"
-                          // 这一半的触发点——只对这一行自己的外部来源发请求,
-                          // 不碰其余行(修复轮 2 之前这句话是假话:`forceDirSlugs`
-                          // 与被动兜底共用一次"或"判据,首次点击时全部来源都还
-                          // 没有时间戳、恒 stale,实际会把当时**全部**外部来源
-                          // 探一遍——行为仍在预算内但与这句注释不符,现在两条
-                          // 路径已经拆开,这里传参就是精确只查这一个)。
-                          // shareableSourceKey 为 null(非 shareable 区/纯本地
-                          // 草稿)时 ensureShareableIndexes 自己会跳过,这里不必
-                          // 先判一遍。
-                          void ensureShareableIndexes([skill.dirSlug]);
-                        }}
-                      />
-                    );
-                  })}
-                </div>
+          {/* 🔴 未登录提示只在「安装自技能库」页签下摆:这句话解释的是
+              **安装自 vs 已分享到这对区分**为什么需要登录(v7 终审 M-8 已经
+              查明它贴在草稿那一区标题下毫无意义)。页签化之后判据变简单了
+              ——就是"用户正在看那一个页签"。 */}
+          {tab === "installedFrom" && sessionStatus !== "signedIn" && (
+            <p className="pb-1.5 text-[11.5px] text-text-3">{t("mine.signedOutHint")}</p>
+          )}
+
+          {!activeSec ? (
+            <TabEmpty
+              tab={tab}
+              /* 这个页签在**全量** list 里就是空的 → 摆它自己的空态文案;
+                 全量里有、筛完没了 → 那是搜索的结果,而且要说清"匹配在别的
+                 页签里"——否则用户在 A 页签搜 B 页签里的技能,看到的是一句
+                 "没有匹配的技能",与事实相反。 */
+              sectionEmpty={statsOf(tab).total === 0}
+              query={query}
+              otherTabMatches={filteredList.length}
+            />
+          ) : tab === "shareable" ? (
+            /* 🔴 需求 4:「可分享到」按**来源**分组。分组与排序在
+               `store/my-skills.ts::groupBySource`(纯函数,有单测),这里只负责
+               把每组画成"一个组头 + 一张卡"。组头承载来源(等宽),所以行内
+               那一行 `mine.sourceLabel` 已经从 `Row` 里删掉——同屏两遍是啰嗦。 */
+            groupBySource(activeSec.items).map((group) => (
+              <section key={group.key} className="mt-3 first-of-type:mt-0">
+                <h3 className="pb-1.5 text-[11.5px] font-medium text-text-3">
+                  {group.label === null ? (
+                    t("mine.sourceGroupNone")
+                  ) : (
+                    <span className="font-mono">{t("mine.sourceLabel", { label: group.label })}</span>
+                  )}
+                </h3>
+                <RowCard>{group.items.map(renderRow)}</RowCard>
               </section>
-              );
-            })
+            ))
+          ) : (
+            <RowCard>{activeSec.items.map(renderRow)}</RowCard>
           )}
         </div>
       )}
@@ -440,96 +443,132 @@ export function MySkillsPage() {
   );
 }
 
-/**
- * 分区的折叠头(用户真机反馈:条目一多就得一路滚)。
- *
- * # 吸顶
- *
- * `sticky top-0`——参照系是 `App.tsx` 那个 `overflow-y-auto` 容器,而 `Toolbar`
- * (`h-11 flex-none`)在它**外面**是 flex 兄弟,所以不需要任何偏移。`z-10` 压在
- * 行卡片之上、又在「更多」下拉(`SkillRowMenu` 的 `z-20`)与详情面板
- * (`z-50`)之下,三者都实测读过类名。**必须给一个不透明的页面地色**
- * (`bg-bg` = `--bg`,`body` 用的同一个 token;不是 `bg-surface-1`——那是行卡片
- * 的色,用它吸顶条会像一根悬空的卡片),否则滚动时行会从字底下透出来。
- * UI 规范禁毛玻璃,这里就是纯不透明底色。
- *
- * # 计数
- *
- * 「安装自技能库 · 12 · 2 个要处理」,后半段只在 > 0 时出现。判据是
- * `lib/ownership.ts` 的 {@link needsAttention}——**不是**页头总览那两个数
- * (它们漏掉 conflict/chooseVersion/shareBlocked/underReview 四档,拿它们做
- * 折叠头会让折叠打穿 v7「只写例外」的承诺)。
- *
- * # 可访问性
- *
- * 折叠头是 `<button>`,可访问名就是它的可见文字(区名 + 计数),**刻意不加
- * `aria-label`**;`aria-expanded` 跟**实际展示态**走(搜索期间恒 true),
- * `aria-controls` 指向下面那个行容器的 `id`。
- * ⚠️ 它在 `row-*` 之外,不进「每行至多一颗不带 aria-label 的按钮」那条既有
- * 测试契约的统计范围(那条只在 `within(row)` 里数)。
- */
-function SectionHeader({
-  title,
-  total,
-  attention,
-  expanded,
-  bodyId,
-  onToggle,
-}: {
-  title: string;
-  total: number;
-  attention: number;
-  expanded: boolean;
-  bodyId: string;
-  onToggle: () => void;
-}) {
+/** 行卡片容器(一张卡里若干行)。 */
+function RowCard({ children }: { children: React.ReactNode }) {
   return (
-    // 仍然是 `<h3>`(区标题的语义没变,屏幕阅读器的标题导航照旧),里面套一颗
-    // 全宽按钮——吸顶与地色挂在 h3 上,可点区域是整条。
-    <h3 className="sticky top-0 z-10 -mx-1 bg-bg px-1 pb-1.5 pt-1 text-[11.5px] font-medium">
-      <button
-        type="button"
-        aria-expanded={expanded}
-        aria-controls={bodyId}
-        onClick={onToggle}
-        className="flex w-full items-center gap-1.5 text-left text-text-3 hover:text-text-2"
-      >
-        <Icon icon={expanded ? ChevronDown : ChevronRight} size={13} />
-        <span>{title}</span>
-        <span aria-hidden className="text-text-3">·</span>
-        <span>{total}</span>
-        {attention > 0 && (
-          <>
-            <span aria-hidden className="text-text-3">·</span>
-            <span className="text-accent">{t("mine.sectionAttention", { count: attention })}</span>
-          </>
-        )}
-      </button>
-    </h3>
+    <div className="overflow-hidden rounded-card border border-border bg-surface-1">{children}</div>
   );
 }
 
+/** 每个页签自己的空态文案。三区各说各的事实,不用一句笼统的"这里没有技能"。 */
+const TAB_EMPTY: Record<Section, MessageKey> = {
+  installedFrom: "mine.tabEmptyInstalledFrom",
+  sharedTo: "mine.tabEmptySharedTo",
+  shareable: "mine.tabEmptyShareable",
+};
+
+/**
+ * 当前页签一行都渲染不出来时的两档说明。
+ *
+ * 🔴 **两档必须分开**:这个区本来就是空的(说它自己的事实),与"搜了但这个
+ * 页签里没匹配上"(那是搜索的结果)完全是两句话。后一档还要把
+ * 「其他分类里有 N 个匹配」说出来——页签把列表切成了三份,不说这一句,用户
+ * 在 A 页签搜 B 页签里的技能会得到一句与事实相反的"没有匹配的技能"。
+ */
+function TabEmpty({
+  tab,
+  sectionEmpty,
+  query,
+  otherTabMatches,
+}: {
+  tab: MineTab;
+  sectionEmpty: boolean;
+  query: string;
+  /** 筛选后**全部**页签加起来的匹配数。这个页签自己是 0,所以它就是"别处"的数。 */
+  otherTabMatches: number;
+}) {
+  if (tab === "projects") return null;
+  if (sectionEmpty) {
+    return <p className="py-6 text-[12.5px] text-text-3">{t(TAB_EMPTY[tab])}</p>;
+  }
+  return (
+    <div className="py-6">
+      <p className="text-[12.5px] text-text-3">{t("mine.searchEmpty", { query })}</p>
+      {otherTabMatches > 0 && (
+        <p className="mt-1 text-[12.5px] text-text-3">
+          {t("mine.searchOtherTabs", { count: otherTabMatches })}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** 四个并列页签:三个库分区 + 项目里(v7.2 需求 1)。 */
+export type MineTab = Section | "projects";
+
+const TAB_ORDER: { key: MineTab; title: MessageKey }[] = [
+  // 三区顺序与 `my-skills.ts::SECTION_TITLES` 一致(design 根决策 #2),
+  // 标题也复用同一批键——两份标题各写一份必然漂。
+  { key: "installedFrom", title: "mine.sectionInstalledFrom" },
+  { key: "sharedTo", title: "mine.sectionSharedTo" },
+  { key: "shareable", title: "mine.sectionShareable" },
+  { key: "projects", title: "mine.tabProjects" },
+];
+
+/**
+ * 页签行。
+ *
+ * 🔴 **未选中的页签也写「N 个要处理」**——这是从 v7.1 分区折叠继承下来的原则
+ * (载体从折叠头换成了页签,原则不变):一次只看一个区的代价是另外两个区里
+ * 等着你的事看不见,所以那个数必须写在页签上。判据是
+ * `lib/ownership.ts::needsAttention`,与页头总览那两个数**不是**同一个集合
+ * (总览漏掉 conflict/chooseVersion/shareBlocked/underReview 四档)。
+ *
+ * 「项目里」历来没有计数(要数得接项目 store,是另一条链路),这里不发明一个。
+ */
 function TabsRow({
   tab,
   onChange,
+  statsOf,
   showCreate,
 }: {
-  tab: "general" | "projects";
-  onChange: (tab: "general" | "projects") => void;
-  /** 只在「通用」且列表非空时给 true——空态自己的 CTA 行已经有「新建技能」,
+  tab: MineTab;
+  onChange: (tab: MineTab) => void;
+  statsOf: (key: Section) => { total: number; attention: number };
+  /** 只在库页签且列表非空时给 true——空态自己的 CTA 行已经有「新建技能」,
    *  这里不重复摆一份(design #16:「新建技能」紧跟在「项目里」之后)。 */
   showCreate: boolean;
 }) {
   return (
-    <div className="mb-2.5 flex items-center justify-between border-b border-border pb-2.5">
-      <div role="tablist" className="flex items-center gap-1">
-        <TabButton active={tab === "general"} onClick={() => onChange("general")}>
-          {t("mine.tabGeneral")}
-        </TabButton>
-        <TabButton active={tab === "projects"} onClick={() => onChange("projects")}>
-          {t("mine.tabProjects")}
-        </TabButton>
+    <div className="mb-2.5 flex items-center justify-between gap-2 border-b border-border pb-2.5">
+      {/* 🔴 窄窗口下页签行要**横向滚动**,不能挤:四个页签带上两个计数之后,窗口
+          宽 ≤1000px 时(实测:内容区 752px)总宽就超了。`h-7` 是写死的,文字一挤
+          就在 28px 高的 chip 里换行、上下都被切掉。UI 规范对宽内容的规定就是
+          "在自己的 overflow-x 容器里滚",这里照办:`min-w-0` 让它真的能收缩,
+          页签自己 `shrink-0 whitespace-nowrap` 保持完整。 */}
+      <div role="tablist" className="flex min-w-0 items-center gap-1 overflow-x-auto">
+        {TAB_ORDER.map(({ key, title }) => {
+          const stats = key === "projects" ? null : statsOf(key);
+          return (
+            <TabButton key={key} active={tab === key} onClick={() => onChange(key)}>
+              <span>{t(title)}</span>
+              {stats && (
+                <>
+                  <span aria-hidden className="text-text-3">
+                    ·
+                  </span>
+                  <span className="text-text-3">{stats.total}</span>
+                  {stats.attention > 0 && (
+                    <>
+                      {/* 两个数之间要有分隔点,否则「6 3 个要处理」读起来像一个数 */}
+                      <span aria-hidden className="text-text-3">
+                        ·
+                      </span>
+                      <span className="text-accent">
+                        {t("mine.sectionAttention", { count: stats.attention })}
+                      </span>
+                    </>
+                  )}
+                </>
+              )}
+            </TabButton>
+          );
+        })}
       </div>
+      {/* ⚠️ 不给它包一层容器:有一条测试正面钉住「新建技能」与 tablist 是**同一个
+          父容器下的兄弟节点**(design #16)。它也不需要——按钮里是文字、
+          `overflow` 是 visible,flex 子项的 `min-width:auto` 本来就不让它被压到
+          内容以下,会收缩的只有显式写了 `min-w-0` 的 tablist。 */}
       {showCreate && <CreateSkillButton />}
     </div>
   );
@@ -552,8 +591,8 @@ function TabButton({
       onClick={onClick}
       className={
         active
-          ? "h-7 rounded-ctl bg-[rgba(194,65,12,.08)] px-2.5 text-[12.5px] font-[550] text-accent"
-          : "h-7 rounded-ctl px-2.5 text-[12.5px] font-[450] text-text-2 hover:text-text"
+          ? "flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-ctl bg-[rgba(194,65,12,.08)] px-2.5 text-[12.5px] font-[550] text-accent"
+          : "flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-ctl px-2.5 text-[12.5px] font-[450] text-text-2 hover:text-text"
       }
     >
       {children}
@@ -744,15 +783,10 @@ function Row({
                 <Badge title={t("mine.badgeLibraryRemovedHint")}>{t("mine.badgeLibraryRemoved")}</Badge>
               )}
             </div>
-            {/* 🔴 M3/④(复审):design §6 点名这一行是"等宽来源标签"——UI 硬规则
-                "等宽字体展示 slug/路径/sha"在这里的落点。这处与 WhereBlocks.tsx
-                (设计 §11「技能库里」那一块)不是同一个元素,那边没有被点名要求
-                等宽,不与本处捆绑修改。 */}
-            {skill.section === "shareable" && skill.sourceLabel && (
-              <div className="mt-0.5 truncate font-mono text-[11px] text-text-3">
-                {t("mine.sourceLabel", { label: skill.sourceLabel })}
-              </div>
-            )}
+            {/* ⚠️ v7.2 需求 4:行内那一行等宽来源标签**已经删掉**——「可分享到」
+                页签现在按来源分组,来源写在组头上(同样是等宽,UI 硬规则
+                "等宽字体展示 slug/路径/sha"的落点从行搬到了组头)。两处都写就是
+                同屏两遍同样的字符串。其余两个页签本来就不摆来源。 */}
             {description && <div className="mt-0.5 truncate text-[11.5px] text-text-3">{description}</div>}
             {/* 🔴 v7.1 任务 5:校验没过的说明是**文本列里的第三行小字**,不是横跨
                 整行的描边大框。画布 `Main.dc.html` 的 polyglot 行就长这样:

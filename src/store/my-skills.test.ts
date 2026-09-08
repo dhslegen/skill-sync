@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  groupBySource,
   hasUpdate,
   localDiffersNoBaseline,
   remoteChangedForShareable,
@@ -1811,5 +1812,40 @@ describe("hasUpdate 对草稿(relation === draft)", () => {
     ).toBe(false);
     // 就算某天空字段被填上,也不该亮更新
     expect(hasUpdate(view({ relation: "draft" }), index)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// groupBySource(v7.2 需求 4:「可分享到技能库」页签按来源分组)
+// ---------------------------------------------------------------------------
+
+describe("groupBySource", () => {
+  const s = (dirSlug: string, sourceLabel: string | null) =>
+    view({ dirSlug, section: "shareable", relation: "draft", sourceLabel });
+
+  it("无来源那一组排在最前,其余按来源名 localeCompare", () => {
+    const got = groupBySource([
+      s("b", "vercel-labs/agent-skills"),
+      s("a", "acme/tools"),
+      s("d", null),
+    ]);
+    expect(got.map((g) => g.label)).toEqual([null, "acme/tools", "vercel-labs/agent-skills"]);
+  });
+
+  it("同一个来源归进同一组(组数 = 不同来源数)", () => {
+    const got = groupBySource([s("p", "acme/tools"), s("q", "acme/tools"), s("r", null)]);
+    expect(got).toHaveLength(2);
+    expect(got[1]?.items.map((x) => x.dirSlug)).toEqual(["p", "q"]);
+  });
+
+  // 🔴 组内顺序是调用方(`sections()`)排好的"有动作在前、其余按名字",
+  // 这个函数**不许重排**——重排等于在分组这一步把那条排序规则悄悄推翻。
+  it("组内保持传入顺序,不重排", () => {
+    const got = groupBySource([s("z", "acme/tools"), s("a", "acme/tools")]);
+    expect(got[0]?.items.map((x) => x.dirSlug)).toEqual(["z", "a"]);
+  });
+
+  it("空输入给空数组(不是一个空组)", () => {
+    expect(groupBySource([])).toEqual([]);
   });
 });
