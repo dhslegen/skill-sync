@@ -6,24 +6,16 @@ import { cn } from "@/lib/cn";
 
 /** 安装状态机。判定唯一实现在 `lib/update.ts` 的 `cardState`,这里只负责画。
  *  `otherLibrary` = 同名技能已装自另一个技能库(M4 一源多仓):那不是更新,
- *  是替换,按钮文案与去向都不同。`mine*` 四档(v6)= 技能库里记的分享者是我。
- *  ⚠️ **终审 M-6 订正**:这里原写着"文案借用「我的技能」页已有的
- *  「取回/分享更新/已同步」,不再另造一套词"——v7 重画「我的技能」整页后
- *  只有一半还成立:`mine.pull`(取回)仍是共用词(v7 的 `pull` 档、
- *  `store/my-skills.ts::pull` 走的就是它);`mine.stateSynced`(已同步)与
- *  `mine.shareUpdate`(分享更新)那两个键**已随 v7 从「我的技能」页的行上
- *  删除**(整页不再摆状态字,见 `pages/MySkillsPage.tsx` 模块头「不再有状态字」
- *  一节)——两个键的**唯一消费者现在就是这个文件**,不再是"借用",翻译文件里
- *  留着它们只是因为这里还在用,不代表「我的技能」页也在用。 */
-export type InstallState =
-  | "install"
-  | "installed"
-  | "update"
-  | "otherLibrary"
-  | "mineSynced"
-  | "minePull"
-  | "mineShareUpdate"
-  | "mineBoth";
+ *  是替换,按钮文案与去向都不同。
+ *
+ *  ⚠️ **v7.4 起 `mine*` 四档已删除**(用户第 9 轮拷问拍板撤掉商店卡片的
+ *  作者四档:「取回」一词背三种意思、「已同步」回答的是没人问的问题,商店
+ *  只该回答"我有没有 / 我要不要"这一件事)。库里有新版时(不论是不是自己
+ *  分享的、不论本地改没改)一律落进 `update`,点下去交给 core 的
+ *  `acquire::precheck` 去判"这是不是我分享的"、要不要弹 `Mine` 变体的冲突框
+ *  ——那份折叠机制原样留在 `core/acquire.rs`,这里删掉的只是曾经借按钮文案
+ *  抢答的四个展示分支,不是背后的安全判定。 */
+export type InstallState = "install" | "installed" | "update" | "otherLibrary";
 
 /**
  * 安装按钮。
@@ -54,23 +46,9 @@ export function InstallButton({
         ? t("skill.actionUpdate")
         : state === "otherLibrary"
           ? t("skill.actionReplace")
-          : state === "mineSynced"
-            ? t("mine.stateSynced")
-            : // `mineBoth` 用「取回」而不是「分享更新」:与「我的技能」页
-              // `both`/`remoteAhead`/`notHere` 三档共用一颗按钮同一个理由
-              // (`store/my-skills.ts` 的 `pull` doc)——点下去交给调用方的
-              // `onClick`(这颗按钮在 `InstallPanel` 里走的是 `begin`/
-              // `beginFromPlaza`,不是 `beginUpdate`;`beginUpdate` 是「我的
-              // 技能」页那颗按钮走的路,这里只是借它的理由,不是同一个函数),
-              // core 的 precheck 自然会把"本地也改过"折进 `ConflictDialog`,
-              // 不需要按钮文案越俎代庖先说一遍。
-              state === "minePull" || state === "mineBoth"
-              ? t("mine.pull")
-              : state === "mineShareUpdate"
-                ? t("mine.shareUpdate")
-                : t("skill.actionInstall");
+          : t("skill.actionInstall");
 
-  const terminal = state === "installed" || state === "mineSynced";
+  const terminal = state === "installed";
 
   // 置灰的主按钮不能只是"半透明的实心强调色":深色主题下它看着还是个能点的主按钮,
   // 用户会反复去点。降级成 ghost 灰,一眼就知道现在不可用。
@@ -81,7 +59,7 @@ export function InstallButton({
       type="button"
       title={hint}
       aria-label={hint ? `${label} — ${hint}` : label}
-      // 已启用/已同步是终态,不接受点击;其余状态由调用方决定
+      // 已启用是终态,不接受点击;其余状态由调用方决定
       disabled={disabled || terminal}
       onClick={onClick}
       className={cn(
@@ -100,12 +78,7 @@ export function InstallButton({
         // ✅ 这个"倒置"已由 Q22-A 拍板接受(共识第 6 轮),不再是存疑点;
         //   主 CTA 降级的风险已如实告知,待真机扫一眼确认。
         !inert && state === "install" && "bg-accent-soft text-accent hover:opacity-80",
-        !inert &&
-          (state === "minePull" ||
-            state === "update" ||
-            state === "mineShareUpdate" ||
-            state === "mineBoth") &&
-          "bg-accent text-white hover:bg-accent-hover",
+        !inert && state === "update" && "bg-accent text-white hover:bg-accent-hover",
         // 替换不是常规动作:给中性描边,不用强调色去引诱点击
         !inert && state === "otherLibrary" && "border-border bg-transparent text-text-2 hover:border-border-strong hover:text-text",
         terminal && "bg-transparent font-medium text-ok",

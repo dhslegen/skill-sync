@@ -20,7 +20,12 @@ export interface LibraryRef {
 /** 已装记账里与判定有关的部分。来源坐标缺失(旧状态)时按"同库"处理,行为退回 M3。 */
 export interface InstalledRecord {
   contentHash: string;
-  /** 本地是否改过安装那一刻的内容(v6:「我分享的」四档要用它分流)。 */
+  /**
+   * 本地是否改过安装那一刻的内容。**`cardState` 自身自 v7.4 起不读这个字段**
+   * ——v6 加的「我分享的」四档已撤销,商店的按钮状态不再区分"本地改没改"。
+   * 字段留在这里是给调用方(如 `InstallPanel` 的本地改动徽标)传值用的,
+   * 与 `cardState` 的判定逻辑无关。
+   */
   localModified?: boolean;
   registryId?: string;
   sourceOwner?: string;
@@ -38,23 +43,15 @@ export interface MeRef {
  *
  * 与 core `ownership::is_same_person` 同一个比对口径(`authors.json` 写入时就是
  * 按这两种写法二选一存的,见 `core/share.rs::claim_attribution`),前端这里不重新
- * 发明一套。**唯一一处实现**——商店卡片的「我分享的」徽标与 `cardState` 都调它,
- * 不各自比一遍(CLAUDE.md 记的教训:同一条规则查两遍,其中一遍迟早会漂)。
+ * 发明一套。**唯一一处实现**——商店卡片的「我分享的」徽标(`store.mineBadge`)调它。
+ * `cardState` 自 v7.4 起不再调用它(用户第 9 轮拷问拍板撤掉商店卡片的作者四档,
+ * 见 `cardState` 文档注释):商店只回答"我有没有 / 我要不要",不再回答"这是不是我的"。
  */
 export function isMine(author: string | null | undefined, me: MeRef | null | undefined): boolean {
   return !!author && !!me && (author === me.displayName || author === me.login);
 }
 
-export type CardState =
-  | "install"
-  | "installed"
-  | "update"
-  | "otherLibrary"
-  /** 技能库里记的分享者是我(v6),四档按「本地/远端各自有没有变」折出来。 */
-  | "mineSynced"
-  | "minePull"
-  | "mineShareUpdate"
-  | "mineBoth";
+export type CardState = "install" | "installed" | "update" | "otherLibrary";
 
 /**
  * 卡片/详情按钮的状态机。
@@ -68,29 +65,27 @@ export type CardState =
  * 毫无关系。标成"更新"既是假话,也会把用户引向一次没预期的替换(core 的 precheck
  * 会拦下来要求拍板,但界面不能先撒谎再让 core 兜底)。
  *
- * **`author === me` 时永不返回 `install`/`installed`/`update`**(v6):库里记的
- * 分享者就是当前登录的这个人,"获取/更新"这两个词对自己的技能不成立——按
- * `localModified`/远端指纹折成 `mineSynced`(都没变)/`minePull`(只有远端变,
- * 典型场景:同事经审核改过)/`mineShareUpdate`(只有本地变,还没分享上去)/
- * `mineBoth`(两边都变,需要拍板)。
+ * **v7.4 起不再判"这是不是我分享的"**(撤掉了 v6 加的 `mineSynced`/`minePull`/
+ * `mineShareUpdate`/`mineBoth` 四档,用户第 9 轮拷问拍板:「取回」一词背三种意思、
+ * 「已同步」回答的是没人问的问题,商店只该回答"我有没有 / 我要不要"这一件事)。
+ * `record.localModified` 因此**从不参与这里的判定**——本地改没改是"我的技能"页
+ * 该回答的问题,不是商店。这不代表作者的安全机制消失了:库里有新版时(不论本地改
+ * 没改)`otherLibrary`/内容指纹比对仍会照常判成 `update`,点下去 core 的
+ * `acquire::precheck` 依然会返回 `Precheck::Mine` 触发冲突框——那条折叠机制原样
+ * 保留在 `core/acquire.rs`,这里删掉的只是展示层的四个分支,不是背后的判定。
  *
- * **`otherLibrary` 判定要排在 mine 折叠之前**,与 core `acquire::precheck`
- * 的判定顺序一致(`ownership` 一节记的裁定):两个库的同名技能是两个东西,
- * 哪怕两边的作者都是我,"用另一个库的版本替换掉现有的"仍然必须由用户拍板——
- * 这一档不受 mine 影响。
+ * **`otherLibrary` 判定必须排在「按内容指纹比对」之前**,与 core
+ * `acquire::precheck` 的判定顺序一致(`ownership` 一节记的裁定):两个库的同名
+ * 技能是两个东西,即便内容恰好相同,"用另一个库的版本替换掉现有的"仍然必须由
+ * 用户拍板,不能被内容指纹比对当成"已是最新"悄悄放过。
  */
 export function cardState(
   record: InstalledRecord | undefined,
   remoteHash: string,
   /** 当前浏览的库;省略 = 调用方不区分库(判定退回 M3 口径)。 */
   library?: LibraryRef,
-  /** 这个技能库里记的分享者(authors.json,`null` = 库里没写)。 */
-  author?: string | null,
-  /** 当前登录身份;省略/`null` = 不判定"是不是我"(行为退回 mine 加入前的口径)。 */
-  me?: MeRef | null,
 ): CardState {
-  const mine = isMine(author, me);
-  if (!record) return mine ? "minePull" : "install";
+  if (!record) return "install";
   if (library && record.registryId && record.sourceOwner && record.sourceRepo) {
     const sameLibrary =
       record.registryId === library.registryId &&
@@ -98,14 +93,6 @@ export function cardState(
       record.sourceRepo === library.repo;
     if (!sameLibrary) return "otherLibrary";
   }
-  if (!mine) {
-    if (!remoteHash || !record.contentHash) return "installed";
-    return record.contentHash === remoteHash ? "installed" : "update";
-  }
-  const remoteChanged = !!remoteHash && !!record.contentHash && record.contentHash !== remoteHash;
-  const localChanged = !!record.localModified;
-  if (localChanged && remoteChanged) return "mineBoth";
-  if (localChanged) return "mineShareUpdate";
-  if (remoteChanged) return "minePull";
-  return "mineSynced";
+  if (!remoteHash || !record.contentHash) return "installed";
+  return record.contentHash === remoteHash ? "installed" : "update";
 }

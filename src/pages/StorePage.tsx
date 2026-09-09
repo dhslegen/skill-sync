@@ -216,17 +216,11 @@ function StoreBody() {
               repo={index.repo}
               updatedAt={updatedAt}
               mine={isMine(skill.author, me)}
-              state={cardState(
-                records.get(skill.dirSlug),
-                skill.contentHash,
-                {
-                  registryId: index.registryId,
-                  owner: index.owner,
-                  repo: index.repo,
-                },
-                skill.author,
-                me,
-              )}
+              state={cardState(records.get(skill.dirSlug), skill.contentHash, {
+                registryId: index.registryId,
+                owner: index.owner,
+                repo: index.repo,
+              })}
               onOpen={() => void openDetail(skill.dirSlug)}
             />
           ))}

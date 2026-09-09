@@ -67,22 +67,50 @@ describe("cardState", () => {
     expect(cardState(record, "sha:whatever", library)).toBe("otherLibrary");
   });
 
-  // ---- 「我分享的」四档(v6 任务 5):author === me 时永不返回
-  //      install/installed/update,改按 localModified/远端指纹折出 mine* 四档。
+  // ---- v7.4:撤掉商店卡片的作者四档(用户第 9 轮拷问拍板,推翻 v6 任务 5 加的
+  //      mineSynced/minePull/mineShareUpdate/mineBoth)。`cardState` 不再收
+  //      author/me 两个形参,也不再判"这是不是我分享的"——`localModified` 因此
+  //      从不参与这里的判定。下面三条正面钉住这条拍板唯一可验证的落点:
+  //      即便是自己分享的技能、即便本地也改过,商店卡片仍然只按"库里有没有
+  //      新版"这一件事出结果,不再对"是不是我的"另开分支。
 
-  const me: MeRef = { login: "zhaowenhao", displayName: "赵文昊" };
-
-  it("me 为 null/未传时,行为与 mine 加入前逐字相同(对照组)", () => {
-    // 不传 author/me:与本文件顶部一路测试完全同款调用,证明新增的两个参数
-    // 是纯粹的可选加法,没有悄悄改变旧行为。
-    expect(cardState(undefined, "sha:remote")).toBe("install");
-    expect(cardState({ contentHash: "sha:same" }, "sha:same")).toBe("installed");
-    expect(cardState({ contentHash: "sha:old" }, "sha:new")).toBe("update");
-    // author 有值但没传 me:isMine 因 `!me` 短路为假,同样退回旧口径
-    expect(cardState({ contentHash: "sha:old" }, "sha:new", undefined, "赵文昊")).toBe("update");
-    // me 有值但 author 是别人:同样不落进 mine 分支
-    expect(cardState({ contentHash: "sha:old" }, "sha:new", undefined, "张三", me)).toBe("update");
+  it("本地改过、远端没变 → installed(哪怕这是我分享的技能,商店也保持沉默)", () => {
+    const record = { contentHash: "sha:same", localModified: true };
+    expect(cardState(record, "sha:same")).toBe("installed");
   });
+
+  it("远端有新版、本地没改 → update", () => {
+    const record = { contentHash: "sha:old", localModified: false };
+    expect(cardState(record, "sha:new")).toBe("update");
+  });
+
+  it("远端有新版、本地也改了 → 仍是 update,不因为本地也改过而分流出别的档", () => {
+    // 这正是撤掉之前 mine* 四档要单独区分的场景(会折成 mineBoth);现在
+    // localModified 完全不参与判定,"库里有新版"单独就决定了返回值——
+    // "本地改没改"这件事交给「我的技能」页,以及点下去之后 core 的
+    // acquire::precheck 触发的冲突框去回答,不再由商店卡片抢答。
+    const record = { contentHash: "sha:old", localModified: true };
+    expect(cardState(record, "sha:new")).toBe("update");
+  });
+
+  it("otherLibrary 判定排在按内容指纹比对之前(与 core acquire::precheck 判定顺序一致)", () => {
+    // 两个库的同名技能是两个东西,即便内容恰好相同,"用另一个库的版本替换掉
+    // 现有的"仍然必须由用户拍板——不能被"指纹相等"当成"已是最新"悄悄放过。
+    const record = {
+      contentHash: "sha:design",
+      registryId: "company",
+      sourceOwner: "design",
+      sourceRepo: "design-skills",
+    };
+    const library: LibraryRef = { registryId: "company", owner: "skills", repo: "skills" };
+    expect(cardState(record, "sha:design", library)).toBe("otherLibrary");
+  });
+});
+
+describe("isMine", () => {
+  // isMine 本身未被撤销(store.mineBadge「我分享的」徽标唯一消费者,见 update.ts
+  // 文档注释),`cardState` 自 v7.4 起不再调用它——这里独立于 cardState 测试。
+  const me: MeRef = { login: "zhaowenhao", displayName: "赵文昊" };
 
   it("author === me.displayName 或 me.login 都算是我", () => {
     expect(isMine("赵文昊", me)).toBe(true);
@@ -90,51 +118,6 @@ describe("cardState", () => {
     expect(isMine("张三", me)).toBe(false);
     expect(isMine(null, me)).toBe(false);
     expect(isMine("赵文昊", null)).toBe(false);
-  });
-
-  it("author === me 且从没获取过 → minePull,不是 install", () => {
-    expect(cardState(undefined, "sha:remote", undefined, "赵文昊", me)).toBe("minePull");
-  });
-
-  it("author === me:本地/远端都没变 → mineSynced", () => {
-    const record = { contentHash: "sha:same", localModified: false };
-    expect(cardState(record, "sha:same", undefined, "赵文昊", me)).toBe("mineSynced");
-  });
-
-  it("author === me:只有本地改过 → mineShareUpdate", () => {
-    const record = { contentHash: "sha:same", localModified: true };
-    expect(cardState(record, "sha:same", undefined, "赵文昊", me)).toBe("mineShareUpdate");
-  });
-
-  it("author === me:只有远端变过 → minePull", () => {
-    const record = { contentHash: "sha:old", localModified: false };
-    expect(cardState(record, "sha:new", undefined, "赵文昊", me)).toBe("minePull");
-  });
-
-  it("author === me:两边都变了 → mineBoth", () => {
-    const record = { contentHash: "sha:old", localModified: true };
-    expect(cardState(record, "sha:new", undefined, "赵文昊", me)).toBe("mineBoth");
-  });
-
-  it("author === me 但任一侧指纹缺失时按未变处理(宁可漏报)", () => {
-    const record1 = { contentHash: "sha:old", localModified: false };
-    expect(cardState(record1, "", undefined, "赵文昊", me)).toBe("mineSynced");
-    const record2 = { contentHash: "", localModified: false };
-    expect(cardState(record2, "sha:new", undefined, "赵文昊", me)).toBe("mineSynced");
-  });
-
-  it("otherLibrary 判定排在 mine 折叠之前(与 core acquire::precheck 判定顺序一致)", () => {
-    // 两个库的同名技能是两个东西,哪怕两边的作者都是我,"用另一个库的版本替换掉
-    // 现有的"仍然必须由用户拍板——这一档不受 mine 影响。
-    const record = {
-      contentHash: "sha:design",
-      localModified: true,
-      registryId: "company",
-      sourceOwner: "design",
-      sourceRepo: "design-skills",
-    };
-    const library: LibraryRef = { registryId: "company", owner: "skills", repo: "skills" };
-    expect(cardState(record, "sha:whatever", library, "赵文昊", me)).toBe("otherLibrary");
   });
 });
 

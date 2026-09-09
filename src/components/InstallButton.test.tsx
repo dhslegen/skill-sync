@@ -50,54 +50,12 @@ describe("InstallButton 状态机", () => {
   });
 });
 
-describe("mine* 四档(v6 任务 5:技能库里记的分享者是我)", () => {
-  // 四档各一条:文案对、可点性(disabled/terminal)对。`mineSynced` 是这四档里
-  // 唯一的终态(与 `installed` 同款,不接受点击);其余三档都要能点。
+// v6 任务 5 加过的 mine* 四档(mineSynced/minePull/mineShareUpdate/mineBoth)
+// 已随 v7.4 撤销(用户第 9 轮拷问拍板:商店只回答"我有没有 / 我要不要",不再
+// 回答"这是不是我的")。四档专属的文案/可点性用例随之整段删除——`InstallState`
+// 类型已经不含这四个成员,继续断言它们连编译都过不去,不是"删测试图省事"。
 
-  it("mineSynced:文案「已同步」,终态不接受点击", async () => {
-    const onClick = vi.fn();
-    render(<InstallButton state="mineSynced" onClick={onClick} />);
-    const button = screen.getByRole("button");
-    expect(button).toHaveTextContent("已同步");
-    expect(button).toBeDisabled();
-    await userEvent.click(button);
-    expect(onClick).not.toHaveBeenCalled();
-  });
-
-  it("minePull:文案「取回」,可点", async () => {
-    const onClick = vi.fn();
-    render(<InstallButton state="minePull" onClick={onClick} />);
-    const button = screen.getByRole("button");
-    expect(button).toHaveTextContent("取回");
-    expect(button).not.toBeDisabled();
-    await userEvent.click(button);
-    expect(onClick).toHaveBeenCalledTimes(1);
-  });
-
-  it("mineShareUpdate:文案「分享更新」,可点", async () => {
-    const onClick = vi.fn();
-    render(<InstallButton state="mineShareUpdate" onClick={onClick} />);
-    const button = screen.getByRole("button");
-    expect(button).toHaveTextContent("分享更新");
-    expect(button).not.toBeDisabled();
-    await userEvent.click(button);
-    expect(onClick).toHaveBeenCalledTimes(1);
-  });
-
-  it("mineBoth:与 minePull 共用「取回」文案(两边都变了,同样先走「以本地为准」的冲突弹窗),可点", async () => {
-    const onClick = vi.fn();
-    render(<InstallButton state="mineBoth" onClick={onClick} />);
-    const button = screen.getByRole("button");
-    expect(button).toHaveTextContent("取回");
-    expect(button).not.toBeDisabled();
-    await userEvent.click(button);
-    expect(onClick).toHaveBeenCalledTimes(1);
-  });
-
-  // -------------------------------------------------------------------------
-  // v7.3 需求 5:常态动作降级(全站规则),商店卡片是被点名复查的第一处。
-  // -------------------------------------------------------------------------
-
+describe("v7.3 需求 5:常态动作降级(全站规则),商店卡片是被点名复查的第一处", () => {
   /** 🔴 形态断言必须**按空白切分类名逐个比**:`toContain("bg-accent")` 分不出
    *  实心与 chip(字符串 `"bg-accent-soft"` 含有 `"bg-accent"`),
    *  `/\bbg-accent\b/` 同样不行(`-` 是非词字符)。 */
@@ -113,13 +71,5 @@ describe("mine* 四档(v6 任务 5:技能库里记的分享者是我)", () => {
     render(<InstallButton state="update" onClick={() => {}} />);
     expect(classes()).toContain("bg-accent");
     expect(classes()).not.toContain("bg-accent-soft");
-  });
-
-  it("「取回」「分享更新」同属例外,同样实心", () => {
-    const { unmount } = render(<InstallButton state="minePull" onClick={() => {}} />);
-    expect(classes()).toContain("bg-accent");
-    unmount();
-    render(<InstallButton state="mineShareUpdate" onClick={() => {}} />);
-    expect(classes()).toContain("bg-accent");
   });
 });

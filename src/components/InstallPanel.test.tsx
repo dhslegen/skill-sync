@@ -688,10 +688,14 @@ describe("本次安装结果是临时态", () => {
   });
 });
 
-describe("mine* 徽标抑制(v6 任务 5)", () => {
-  // mine* 四档已经用按钮文案把"哪边有改动"说清楚了(取回/分享更新),
-  // 不需要再叠一个「你修改过这个技能」徽标说同一件事——`IdleFooter` 的判据是
-  // `record?.localModified && !state.startsWith("mine")`。
+describe("v7.4:商店不再按「是不是我的」分流", () => {
+  // v6 任务 5 加的 mine* 四档已随 v7.4 撤销(用户第 9 轮拷问拍板:「取回」一词
+  // 背三种意思、「已同步」回答的是没人问的问题,商店只该回答"我有没有 / 我要不要")。
+  // 这一对用例是这条拍板在组件层面的钉子:同样的本地改动 + 相同的内容指纹,
+  // 唯一变量是"作者是不是我",结果必须一致——本地改没改不再改变按钮状态,
+  // 也不再改变徽标的显隐(徽标本身与"是不是我的"无关,任何已装技能只要本体
+  // 内容变了就提示,`IdleFooter` 已删掉 `!state.startsWith("mine")` 那道
+  // 现在恒真的死判据)。
 
   const baseIndex = {
     registryId: "company",
@@ -707,7 +711,7 @@ describe("mine* 徽标抑制(v6 任务 5)", () => {
     curated: [],
   };
 
-  it("mine* 档(本地改过)不显示「你修改过这个技能」徽标 —— 按钮文案已经说清楚了", () => {
+  it("是我分享的技能、本地也改过 → 按钮仍是「已启用」(终态),徽标照常出现", () => {
     useSession.setState({
       status: "signedIn",
       user: { login: "wenhao", displayName: "赵文昊", avatarUrl: "" },
@@ -740,12 +744,15 @@ describe("mine* 徽标抑制(v6 任务 5)", () => {
 
     render(<InstallPanel dirSlug="weekly-report" />);
 
-    // 先确认状态真的落进了 mine* 档(分享更新),不是巧合般"没显示出来"
-    expect(screen.getByRole("button", { name: /分享更新/ })).toBeTruthy();
-    expect(screen.queryByText("你修改过这个技能")).toBeNull();
+    // 按钮不再借"是不是我的"另开分支:内容指纹相等就是「已启用」终态,
+    // 曾经的「分享更新」「取回」「已同步」三个词都不该再出现。
+    expect(screen.getByRole("button", { name: /已启用/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /分享更新|取回|已同步/ })).toBeNull();
+    // 徽标不再按"是不是我的"过滤——本地改没改是与作者身份无关的信息。
+    expect(screen.getByText("你修改过这个技能")).toBeTruthy();
   });
 
-  it("对照组:非 mine 档(作者不是我)本地改过时,徽标照常出现", () => {
+  it("对照组:作者不是我、本地也改过时,按钮与徽标的表现与上一条逐字相同", () => {
     useSession.setState({ status: "signedOut", user: null });
     useStoreIndex.setState({
       index: {
