@@ -20,6 +20,7 @@ import { useUi, type PageId } from "@/store/ui";
 const TITLES: Record<PageId, MessageKey> = {
   store: "nav.store",
   mine: "nav.mine",
+  projects: "nav.projects",
   settings: "nav.settings",
 };
 
@@ -62,7 +63,12 @@ export function Toolbar() {
       data-tauri-drag-region
       className="flex h-11 flex-none items-center gap-2.5 pl-5 pr-4"
     >
-      <h1 className="mr-1 text-[13.5px] font-semibold tracking-[-0.01em]">{t(TITLES[page])}</h1>
+      {/* `shrink-0 whitespace-nowrap`:800px 窗口下这行标题会被搜索框挤到折行
+          (v7.3 窄窗口走查实测,「我的技能」断成两行、把顶栏撑破)。它是页名,
+          从来不该换行——要收缩的是搜索框那一侧。 */}
+      <h1 className="mr-1 shrink-0 whitespace-nowrap text-[13.5px] font-semibold tracking-[-0.01em]">
+        {t(TITLES[page])}
+      </h1>
 
       {page === "store" && (
         <SearchBox
@@ -72,7 +78,15 @@ export function Toolbar() {
           kbdHint="⌘K"
         />
       )}
-      {page === "mine" && <SearchBox value={mineQuery} onChange={setMineQuery} kbdHint="⌘K" />}
+      {/* 🔴 v7.3:「项目里的技能」独立成页之后**必须一起接这个搜索框**。
+          `ProjectSections` 读的就是 `useMineSearch`(终审 M-3 才刚接上),
+          只按 `page === "mine"` 渲染搜索框的话,那条匹配(`matchesProjectQuery`)
+          当场变成死代码、用户在那一页敲字界面一个字都不会变——正是 M-3 修过的
+          那颗死控件换个地方复活。两页共用同一份 query 是刻意的:它们是同一个
+          「我的技能」心智的两半,搜索词跟着走比清空更符合预期。 */}
+      {(page === "mine" || page === "projects") && (
+        <SearchBox value={mineQuery} onChange={setMineQuery} kbdHint="⌘K" />
+      )}
 
       <div className="flex-1" />
 

@@ -192,6 +192,60 @@ const SCREENS = [
       await page.getByTestId("where-readers").waitFor({ state: "visible" });
     },
   },
+  // ---------------------------------------------------------------- v7.3
+  // 12/13 是 v7.3 需求 6 与需求 3 唯一能证明问题的两屏(筛选态、搜索穿透);
+  // 14–17 是四档窄视口——页签少了一个但多了角标,页签行会不会被挤/被切
+  // 只有真的量一遍才知道(v7.2 就在 1000px 上把文字挤到换行、上下切掉)。
+  {
+    id: "12-tab-badge-filter",
+    title: "「我的技能」· 点角标筛选(需求 6:切到该页签 + 只看要处理的)",
+    viewport: { width: 1200, height: 1000 },
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      // 「已分享到」区共 2 行,其中 1 行要处理——点它的角标应当切过去并只剩那 1 行
+      await page.getByTestId("tab-badge-sharedTo").click();
+      await page.waitForTimeout(300);
+    },
+  },
+  {
+    id: "13-search-across-tabs",
+    title: "「我的技能」· 搜索穿透页签(需求 3:页签整行让位 + 按栏分组)",
+    viewport: { width: 1200, height: 1000 },
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      // 「生成」同时命中「安装自」(周报生成)与「已分享到」(接口脚本生成、
+      // 数据库逆向生成)——当前页签是「安装自」,另外那一栏的命中照样要出来。
+      await page.getByTestId("store-search").fill("生成");
+      await page.waitForTimeout(300);
+    },
+  },
+  ...[1200, 1000, 900, 800].map((width, i) => ({
+    id: `1${4 + i}-tabs-width-${width}`,
+    title: `「我的技能」· 页签行在 ${width}px 窗口下(名字 + 角标 +「全部更新 · N」+「新建技能」不许被切)`,
+    viewport: { width, height: 700 },
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      await page.waitForTimeout(200);
+    },
+  })),
+  {
+    id: "19-store-cards",
+    title: "技能商店 · 卡片(需求 5 复查:满屏「获取」降成 chip,「有更新」才实心)",
+    viewport: { width: 1200, height: 1000 },
+    async run(page) {
+      await page.getByRole("button", { name: "技能商店" }).first().click();
+      await page.waitForTimeout(500);
+    },
+  },
+  {
+    id: "18-projects-page",
+    title: "侧边栏新的一页「项目里的技能」(需求 1:从页签挪出来)",
+    viewport: { width: 1200, height: 1000 },
+    async run(page) {
+      await page.getByRole("button", { name: "项目里的技能" }).click();
+      await page.waitForTimeout(400);
+    },
+  },
 ];
 
 // ---------------------------------------------------------------- 交互小工具

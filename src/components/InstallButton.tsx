@@ -89,10 +89,23 @@ export function InstallButton({
         "inline-flex min-w-[52px] items-center justify-center gap-[5px] rounded-ctl",
         "border border-transparent text-[12px] font-[550] transition-colors duration-150",
         size === "lg" ? "h-[30px] px-[14px] text-[12.5px]" : "h-6 px-[10px]",
-        !inert && (state === "install" || state === "minePull") && "bg-accent text-white hover:bg-accent-hover",
+        // 🔴 v7.3 需求 5 的全站规则(Q21-A 定稿的措辞):
+        //   **实心 = 这一栏里的例外;chip = 这一栏里人人都有的那个动作。**
+        //   (不枚举具体档位——枚举一加档就对不上,这正是 Q21-A 要消灭的形态。)
+        // 商店卡片是这条规则点名要复查的
+        // 第一处:满屏卡片人人都有「获取」,此前它是实心橙,于是整页实心橙,
+        // 真正的例外(「有更新」「取回」「分享更新」)反而比常态还弱一档
+        // ——形态与"哪件事更要紧"恰好是反的。现在**倒过来**:
+        // 「获取」= 常态 → 浅橙 chip;其余几档都是例外 → 实心。
+        // ✅ 这个"倒置"已由 Q22-A 拍板接受(共识第 6 轮),不再是存疑点;
+        //   主 CTA 降级的风险已如实告知,待真机扫一眼确认。
+        !inert && state === "install" && "bg-accent-soft text-accent hover:opacity-80",
         !inert &&
-          (state === "update" || state === "mineShareUpdate" || state === "mineBoth") &&
-          "bg-accent-soft text-accent",
+          (state === "minePull" ||
+            state === "update" ||
+            state === "mineShareUpdate" ||
+            state === "mineBoth") &&
+          "bg-accent text-white hover:bg-accent-hover",
         // 替换不是常规动作:给中性描边,不用强调色去引诱点击
         !inert && state === "otherLibrary" && "border-border bg-transparent text-text-2 hover:border-border-strong hover:text-text",
         terminal && "bg-transparent font-medium text-ok",

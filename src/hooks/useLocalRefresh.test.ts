@@ -53,6 +53,16 @@ describe("按页刷新", () => {
     await vi.waitFor(() => expect(sent()).toContain("installed_list"));
   });
 
+  // 🔴 v7.3:「项目里的技能」升成独立一页之后必须一起接进这条刷新链路
+  // ——它展示的同样是磁盘上的真实内容(项目根的 skills-lock.json),切到编辑器
+  // 里删掉一个技能再切回来,不刷新就会一直显示一条已经不存在的行。
+  it("项目页刷项目清单(v7.3:它已经是独立一页了)", async () => {
+    refreshLocalFor("projects");
+    await vi.waitFor(() => expect(sent()).toContain("project_list"));
+    // 它与「我的技能」是两条链路,别顺手把另一条也发了
+    expect(sent()).not.toContain("installed_list");
+  });
+
   it("🔴 我的技能页顺带触发「可分享到」外源索引的被动兜底(v7 任务 7 修复轮 1,I3)", async () => {
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "installed_list") {

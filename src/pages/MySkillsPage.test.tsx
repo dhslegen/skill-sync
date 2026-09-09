@@ -251,47 +251,76 @@ describe("v7 任务 7:DoD 六条", () => {
     expect(screen.queryByText(/已同步/)).toBeNull();
   });
 
-  it("🔴 M2:页头不摆「N 个技能」计数,「新建技能」在 tabs 那一行,不是单独一行", async () => {
+  /** ⚠️ 这一条被改判过两次,每次都是前提被推翻、不是断言被放宽:
+   *  Q19-C 推翻了"总数挂在页签上所以页头别摆第二份"这个前提;Q24-B 把落点定在
+   *  页签行右侧;**Q27-A 又把它挪回列表上方**——总数是**本栏**口径,而页签行是
+   *  跨栏区域。三次改判之后仍然成立、也仍然值得钉的是"**不另起一行**":它并进
+   *  了列表上方那一行(与筛选态同行),没有为它单开一行。 */
+  it("🔴 M2:总数在列表上方那一行里、不另起一行,「新建技能」在页签行", async () => {
     seed([mk("a", "installedFrom")]);
     render(<MySkillsPage />);
     await screen.findByText("a");
-    expect(screen.queryByText(/个技能$/)).toBeNull();
     const tabs = screen.getByRole("tablist");
+    // Q27-A:总数在列表上方那一行(`mine-section-bar`),不在页签行
+    expect(screen.getByTestId("mine-total")).toHaveTextContent("共 1 个技能");
+    expect(screen.getByTestId("mine-section-bar")).toContainElement(
+      screen.getByTestId("mine-total"),
+    );
+    expect(screen.getByTestId("mine-tabs-row")).not.toContainElement(
+      screen.getByTestId("mine-total"),
+    );
     const createButton = screen.getByRole("button", { name: "新建技能" });
     // 「新建技能」与 tablist 是同一个父容器下的兄弟节点(design #16:紧跟在
     // 「项目里」之后),不是散落在页面别处。
     expect(tabs.parentElement).toBe(createButton.parentElement);
   });
 
-  it("有事要做时:页头给总览与「全部更新」,只覆盖库有新版且本地没改的", async () => {
+  /** ⚠️ v7.3 Q28-C 撤掉了「N 个有更新」那段文字,数字改挂在按钮上(「全部更新 · 1」)
+   *  ——所以这一条改成按按钮名断言。**行为一个字没动**:仍只覆盖"库有新版且本地
+   *  没改"的行,由 `skill_install_batch` 收到的 dirSlugs 正面钉住。 */
+  it("有事要做时:页签行给「全部更新 · N」,只覆盖库有新版且本地没改的", async () => {
     seed([
       mk("a", "installedFrom", { remote: "NEW" }),
       mk("b", "installedFrom", { remote: "NEW", localModified: true }),
     ]);
     render(<MySkillsPage />);
-    expect(await screen.findByText(/1 个有更新/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "全部更新" }));
+    // 数字在按钮上:b 本地改过,不算——所以是 1 不是 2
+    await userEvent.click(await screen.findByRole("button", { name: "全部更新 · 1" }));
     expect(lastInvoke("skill_install_batch")?.args.dirSlugs).toEqual(["a"]);
   });
 
-  // 🔴 v7.1 任务 5(用户 2026-09-02 真机走查):总览是**一行轻字 + 内联 chip**,
+  /** 🔴 Q28-C:整页汇总那两段文字**撤掉了**。它们是页签角标(逐栏、更精确)的
+   *  冗余表达。负向断言按语义写、不抄某一个字面量。 */
+  it("🔴 整页汇总文字已撤掉:全屏没有「N 个有更新 / N 个有改动未分享」", async () => {
+    seed([
+      mk("a", "installedFrom", { remote: "NEW" }),
+      mk("b", "installedFrom", { localModified: true }),
+    ]);
+    render(<MySkillsPage />);
+    await screen.findByTestId("row-a");
+    expect(document.body.textContent ?? "").not.toMatch(/个有更新|有改动未分享/);
+  });
+
+  // 🔴 v7.1 任务 5(用户 2026-09-02 真机走查):列表上方那一行是**一行轻字**,
   // 不是一张卡片。断言必须落在**形态**这一层——只查文字的话,卡片形态与轻字
   // 形态都能通过(视觉类断言最典型的空转)。
-  it("🔴 页头总览是一行轻字,不是卡片:容器不带边框/底色/卡片圆角", async () => {
+  // (v7.3 Q29-B:这一行的内容换成了「共 N 个技能」+ 筛选态,形态约束不变。)
+  it("🔴 列表上方那一行是一行轻字,不是卡片:容器不带边框/底色/卡片圆角", async () => {
     seed([mk("a", "installedFrom", { remote: "NEW" })]);
     render(<MySkillsPage />);
-    const overview = await screen.findByTestId("mine-overview");
-    expect(overview.className).not.toContain("rounded-card");
-    expect(overview.className).not.toContain("border-border");
-    expect(overview.className).not.toContain("bg-surface-1");
+    const bar = await screen.findByTestId("mine-section-bar");
+    expect(bar.className).not.toContain("rounded-card");
+    expect(bar.className).not.toContain("border-border");
+    expect(bar.className).not.toContain("bg-surface-1");
   });
 
   // 「全部更新」是可点动作,按画布是浅橙 chip(不是实心、也不是裸文字)。
-  it("🔴 页头「全部更新」是浅橙 chip:带 bg-accent-soft,不是实心 bg-accent", async () => {
+  it("🔴 「全部更新 · N」是浅橙 chip:带 bg-accent-soft,不是实心 bg-accent", async () => {
     seed([mk("a", "installedFrom", { remote: "NEW" })]);
     render(<MySkillsPage />);
-    const btn = await screen.findByRole("button", { name: "全部更新" });
-    expect(btn.className).toContain("bg-accent-soft");
+    const btn = await screen.findByRole("button", { name: "全部更新 · 1" });
+    expect(btn.className.split(/\s+/)).toContain("bg-accent-soft");
+    expect(btn.className.split(/\s+/)).not.toContain("bg-accent");
   });
 
   it("每行至多一颗主按钮,其余在「…」里", async () => {
@@ -380,12 +409,16 @@ describe("三区排列与判定表接线", () => {
   // v7.2:三区变成页签之后,"固定顺序"这条命题的落点从区标题挪到了页签行,
   // 而"空区不出现"**不再成立也不该成立**——页签是常驻的,空的那个页签要留着
   // 让用户点进去看到它自己的空态文案(否则用户找不到那一类在哪)。
-  it("页签按 installedFrom → sharedTo → shareable → 项目里 固定顺序,空区的页签也常驻", async () => {
+  it("页签按 installedFrom → sharedTo → shareable 固定顺序,空区的页签也常驻", async () => {
     seed([mk("a", "shareable"), mk("b", "installedFrom")]);
     render(<MySkillsPage />);
     await screen.findByText("b");
     const titles = screen.getAllByRole("tab").map((h) => (h.textContent ?? "").replace(/\s+/g, ""));
-    expect(titles).toEqual(["安装自技能库·1", "已分享到技能库·0", "可分享到技能库·1", "项目里"]);
+    // 🔴 v7.3 需求 1+2 + Q19-C:「项目里」已挪进侧边栏(只剩三个页签);`·` 分隔符、
+    // 「个要处理」四个字**以及总数**全部撤掉——页签上只剩名字。要处理的那个数在
+    // **另一颗按钮**(角标)上,所以不出现在 `role="tab"` 的 textContent 里;
+    // 总数搬去了列表上方的总览行(见「Q19-C」那一组用例)。
+    expect(titles).toEqual(["安装自技能库", "已分享到技能库", "可分享到技能库"]);
   });
 
   it("installedFrom:本地改过但库没变 → 「贡献更改」", async () => {
@@ -662,7 +695,7 @@ describe("页头「全部更新」的失败要有渲染点", () => {
     });
     render(<MySkillsPage />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "全部更新" }));
+    await userEvent.click(await screen.findByRole("button", { name: "全部更新 · 2" }));
 
     expect(await screen.findByText(/有 1 个技能没能更新/)).toBeInTheDocument();
     expect(screen.getByText(/网络超时/)).toBeInTheDocument();
@@ -689,10 +722,14 @@ describe("搜索(v7 任务 7:搜展示名/dirSlug/来源都要搜得到)", () =>
     render(<MySkillsPage />);
     await screen.findByText("周报生成");
 
-    useMineSearch.getState().setQuery("周报");
+    // 🔴 `act` 是必须的:v7.3 起进入搜索态会把整棵列表子树换成"按栏分组"的
+    // 另一种结构,React 会**重建**那些 DOM 节点。不裹 act 的话 `findByText`
+    // 可能在旧树被替换掉之前就匹配上,拿回一个随即脱离文档的节点
+    // ——断言失败的原因与被测命题无关,是测试自己的时序问题。
+    act(() => useMineSearch.getState().setQuery("周报"));
     expect(await screen.findByText("周报生成")).toBeInTheDocument();
 
-    useMineSearch.getState().setQuery("不存在的技能");
+    act(() => useMineSearch.getState().setQuery("不存在的技能"));
     expect(await screen.findByText(/没有匹配/)).toBeInTheDocument();
     expect(screen.queryByText("周报生成")).toBeNull();
   });
@@ -1255,56 +1292,174 @@ describe("新建技能(补充覆盖:CreateSkill 的 UI 通道,不是只断言渲
 // 之前没有测试覆盖过的集成用例)。
 // ---------------------------------------------------------------------------
 
-describe("v7 任务 8:项目里页签", () => {
-  it("默认落在「安装自技能库」页签;切到「项目里」能看到项目", async () => {
-    seed([mk("a", "installedFrom")]);
-    // 🔴 `ProjectSections` 挂载即 `useProjects().load()`,那会整体覆盖 groups
-    // ——数据必须从 mock 的 IPC 里来,不能事后 `setState` 手喂(本项目记着的
-    // 既有教训:挂载的 load() 会把手喂的数据冲掉,绿的那次什么都没证明)。
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "installed_list") return stripFixtureOnly([mk("a", "installedFrom")]);
-      if (cmd === "agents_detected") return AGENT_LIST;
-      if (cmd === "store_index") return companyIndex([mk("a", "installedFrom")]);
-      if (cmd === "project_list") {
-        return [
-          { path: "/w/erp-backend", folderName: "erp-backend", missing: false, readOnly: false, skills: [] },
-        ];
-      }
-      return null;
-    });
+// ---------------------------------------------------------------------------
+// v7.3 Q19-C(总数挪出页签)+ Q20-A(纯间距分块)
+// ---------------------------------------------------------------------------
 
+describe("v7.3 Q19-C + Q27-A:两块区域两种口径(页签行=跨栏,列表上方=本栏)", () => {
+  /** 类名断言一律**按空白切成 token 逐个比**,不用 `toContain` 子串——
+   *  `gap-1` 是 `gap-1.5` 的子串,`bg-accent` 是 `bg-accent-soft` 的子串,
+   *  子串匹配在这两处都会给出恒真的假绿(本项目记的形态断言空转)。 */
+  const tokens = (el: Element) => (el.className ?? "").split(/\s+/).filter(Boolean);
+
+  it("🔴 页签的可见文字里一个数字都没有(总数已挪走,要处理数在角标那颗按钮上)", async () => {
+    seed([
+      mk("a", "installedFrom"),
+      mk("b", "installedFrom"),
+      mk("c", "installedFrom", { remote: "NEW" }),
+    ]);
     render(<MySkillsPage />);
-    expect(await screen.findByRole("tab", { name: /安装自技能库/ })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-    expect(screen.getByRole("tab", { name: "项目里" })).toHaveAttribute("aria-selected", "false");
+    await screen.findByTestId("row-a");
+    for (const el of screen.getAllByRole("tab")) {
+      expect(el.textContent ?? "").not.toMatch(/\d/);
+    }
+    // 而那个"要处理"的数仍然在角标上(它没被一起删掉)
+    expect(screen.getByTestId("tab-badge-installedFrom")).toHaveTextContent("1");
+  });
 
-    await userEvent.click(screen.getByRole("tab", { name: "项目里" }));
-    expect(await screen.findByText("erp-backend")).toBeInTheDocument();
-    // 切到项目里之后,库页签的行不该还摆在页面上
-    expect(screen.queryByText("a")).toBeNull();
+  it("🔴 总数落在列表上方那一行,不在页签行", async () => {
+    seed([mk("a", "installedFrom"), mk("b", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByTestId("row-a");
+    const total = await screen.findByTestId("mine-total");
+    expect(total).toHaveTextContent("共 2 个技能");
+    // 结构断言:它在本栏那一行里,而**不在**页签行里
+    expect(screen.getByTestId("mine-section-bar")).toContainElement(total);
+    expect(screen.getByTestId("mine-tabs-row")).not.toContainElement(total);
+  });
+
+  /** 🔴 Q27-A 的核心约束,**结构**断言不是文字断言。判据一句话:页签行是跨栏
+   *  区域、列表上方是本栏区域。所以:
+   *  - 整页口径的「全部更新 · N」必须在页签行里、**不在**本栏那一行里
+   *    (在后者就等于在「可分享到」栏下说一句关于另外两栏的话——这正是第 6/7 轮
+   *    留下的那个缺陷);
+   *  - 本栏口径的总数反过来。
+   *  两个方向都钉住,任一侧被挪回去都必红。 */
+  it("🔴 整页口径的「全部更新」在页签行里,不在本栏那一行里", async () => {
+    seed([mk("a", "installedFrom", { remote: "NEW" }), mk("b", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByTestId("row-a");
+    const updateAll = screen.getByRole("button", { name: "全部更新 · 1" });
+    expect(screen.getByTestId("mine-tabs-row")).toContainElement(updateAll);
+    expect(screen.getByTestId("mine-section-bar")).not.toContainElement(updateAll);
+    // 反向:本栏口径的总数在本栏那一行里、不在页签行里
+    const total = screen.getByTestId("mine-total");
+    expect(screen.getByTestId("mine-section-bar")).toContainElement(total);
+    expect(screen.getByTestId("mine-tabs-row")).not.toContainElement(total);
+  });
+
+  /** 🔴 总数是**恒有**的信息,不能依赖"有没有事要做"。fixture 刻意零更新
+   *  ——「全部更新」那颗按钮整个不渲染,而总数照样得在。 */
+  it("🔴 没有任何可一键更新的行时(按钮不渲染),总数照样在", async () => {
+    seed([mk("a", "installedFrom"), mk("b", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByTestId("row-a");
+    expect(screen.queryByRole("button", { name: /全部更新/ })).toBeNull();
+    expect(screen.getByTestId("mine-total")).toHaveTextContent("共 2 个技能");
+  });
+
+  it("总数跟着页签走:切到另一个页签,报的是那一栏的条数", async () => {
+    seed([mk("a", "installedFrom"), mk("b", "installedFrom"), mk("c", "sharedTo")]);
+    render(<MySkillsPage />);
+    await screen.findByTestId("row-a");
+    expect(screen.getByTestId("mine-total")).toHaveTextContent("共 2 个技能");
+    await userEvent.click(screen.getByRole("tab", { name: /已分享到技能库/ }));
+    expect(screen.getByTestId("mine-total")).toHaveTextContent("共 1 个技能");
+  });
+
+  /** 空页签那一档不摆总数:下面已经是空态文案,「共 0 个技能」纯属噪音。 */
+  it("空页签不摆总数", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByTestId("row-a");
+    await userEvent.click(screen.getByRole("tab", { name: /已分享到技能库/ }));
+    expect(screen.queryByTestId("mine-total")).toBeNull();
+  });
+
+  /** 搜索态列表是**跨栏**命中、页签行也整行让位了,"共 N 个技能"指谁都不对,
+   *  所以整行不摆(「全部更新」也随页签行一并让位,与「新建技能」同款)。 */
+  it("搜索态不摆总数,「全部更新」也随页签行一并让位", async () => {
+    seed([mk("alpha", "installedFrom"), mk("beta", "installedFrom", { remote: "NEW" })]);
+    render(<MySkillsPage />);
+    await screen.findByTestId("row-alpha");
+    act(() => useMineSearch.getState().setQuery("alpha"));
+    expect(screen.queryByTestId("mine-total")).toBeNull();
+    expect(screen.queryByTestId("mine-section-bar")).toBeNull();
+    expect(screen.queryByRole("button", { name: /全部更新/ })).toBeNull();
+  });
+
+  /** 🔴 Q29-B:筛选态提示与总数**同一行**——那一行的语义是"关于当前这一栏的话",
+   *  筛选态正是其中一句。此前它悬在列表上方、没有归属。 */
+  it("🔴 筛选态提示与总数并在同一行(都是本栏口径)", async () => {
+    seed([mk("quiet", "installedFrom"), mk("hot", "installedFrom", { remote: "NEW" })]);
+    render(<MySkillsPage />);
+    await screen.findByTestId("row-quiet");
+    await userEvent.click(screen.getByTestId("tab-badge-installedFrom"));
+    const bar = screen.getByTestId("mine-section-bar");
+    expect(bar).toContainElement(screen.getByTestId("mine-total"));
+    expect(bar).toHaveTextContent("只看要处理的");
+    expect(bar).toContainElement(screen.getByRole("button", { name: "显示全部" }));
+    // 筛选态开着,总数照样报全量(它写的是事实,不是展示条数)
+    expect(screen.getByTestId("mine-total")).toHaveTextContent("共 2 个技能");
+  });
+
+  it("🔴 Q20-A:页签内部(名字↔角标)的间距必须明显紧于页签之间", async () => {
+    seed([mk("a", "installedFrom", { remote: "NEW" }), mk("c", "sharedTo")]);
+    render(<MySkillsPage />);
+    await screen.findByTestId("row-a");
+    const list = screen.getByRole("tablist");
+    // 页签**之间** = 20px
+    expect(tokens(list)).toContain("gap-5");
+    // 页签**内部** = 4px。容器是那颗 role="tab" 的父节点(role="presentation")。
+    const inner = screen.getByRole("tab", { name: /安装自技能库/ }).parentElement;
+    expect(inner).not.toBeNull();
+    expect(tokens(inner!)).toContain("gap-1");
+    // 🔴 判据是"内外不同",不是"各自等于某个值":两边一样大时眼睛就把六个元素
+    // 等距切成六块,这正是用户报的现象。所以正面断言它们不相等。
+    expect(tokens(inner!)).not.toContain("gap-5");
+    expect(tokens(list)).not.toContain("gap-1");
+  });
+
+  it("🔴 Q20-A 不引入新视觉元素:页签之间没有分隔线,未激活页签没有底色", async () => {
+    seed([mk("a", "installedFrom"), mk("c", "sharedTo")]);
+    render(<MySkillsPage />);
+    await screen.findByTestId("row-a");
+    const inactive = screen.getByRole("tab", { name: /已分享到技能库/ }).parentElement!;
+    const cls = tokens(inactive);
+    expect(cls).not.toContain("bg-accent-soft");
+    expect(cls.filter((c) => c.startsWith("border-l") || c.startsWith("divide-"))).toEqual([]);
+  });
+});
+
+describe("v7.3 需求 1:「项目里」已经不在这一行", () => {
+  // 它挪进了左侧边栏(「项目里的技能」,入口与切页由 `Sidebar.test.tsx` 钉住)。
+  // 这里只钉**这一页不再有那个页签**——留着就是同一个东西两个入口。
+  it("页签里没有「项目里」,只剩三个与公司技能库有关的页签", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-a")).toBeInTheDocument();
+    expect(screen.getAllByRole("tab")).toHaveLength(3);
+    expect(screen.queryByRole("tab", { name: /项目里/ })).toBeNull();
   });
 });
 
 // ---------------------------------------------------------------------------
-// 四个并列页签(v7.2 需求 1:三区改页签,分区折叠整套删除)
+// 三个并列页签(v7.2 需求 1:三区改页签;v7.3 需求 1:「项目里」挪进侧边栏)
 // ---------------------------------------------------------------------------
 
 describe("页签", () => {
-  /** 页签是 `<button role="tab">`,可访问名 = 可见文字(区名 + 总数 + 要处理数),
+  /** 页签是 `<button role="tab">`,可访问名 = 可见文字(v7.3 Q19-C 起**只有区名**),
    *  所以按区名的子串去找。 */
   const tab = (name: RegExp) => screen.getByRole("tab", { name });
 
-  it("四个页签并列;默认落在「安装自技能库」,只渲染这一区的行", async () => {
+  it("三个页签并列;默认落在「安装自技能库」,只渲染这一区的行", async () => {
     seed([mk("a", "installedFrom"), mk("c", "sharedTo"), mk("d", "shareable")]);
     render(<MySkillsPage />);
     expect(await screen.findByTestId("row-a")).toBeInTheDocument();
     expect(screen.getAllByRole("tab").map((e) => e.textContent?.replace(/\s+/g, ""))).toEqual([
-      "安装自技能库·1",
-      "已分享到技能库·1",
-      "可分享到技能库·1",
-      "项目里",
+      "安装自技能库",
+      "已分享到技能库",
+      "可分享到技能库",
     ]);
     expect(tab(/安装自技能库/)).toHaveAttribute("aria-selected", "true");
     // 🔴 一次只看一个区:另外两个区的行**不在 DOM 里**(不是 hidden)
@@ -1341,31 +1496,43 @@ describe("页签", () => {
     // 当前页签是「安装自」,「已分享到」一行都没渲染出来——但它的计数照样在
     const shared = tab(/已分享到技能库/);
     expect(shared).toHaveAttribute("aria-selected", "false");
-    expect(shared).toHaveTextContent("3 个要处理");
-    // 页头总览只认得出 1 个「有更新」(那一档在当前页签里),而「已分享到」区
-    // 另有 3 行需要用户动手、一行都没渲染出来——页签上的数是它们唯一的出口
-    expect(screen.getByText(/1 个有更新/)).toBeInTheDocument();
-    expect(tab(/安装自技能库/)).toHaveTextContent("1 个要处理");
+    // 🔴 v7.3 需求 2:要处理的数字搬到**角标**那颗独立按钮上(页签自己只写
+    // 名字 + 弱色总数),角标靠 `aria-label` 说清它是什么、点了会怎样。
+    expect(screen.getByTestId("tab-badge-sharedTo")).toHaveTextContent("3");
+    expect(screen.getByTestId("tab-badge-sharedTo")).toHaveAccessibleName(
+      "只看「已分享到技能库」里要处理的 3 个",
+    );
+    // 「全部更新 · 1」只认得出 1 个能一键更新的行(那一档在当前页签里),而
+    // 「已分享到」区另有 3 行需要用户动手、一行都没渲染出来——页签角标是它们
+    // 唯一的出口(这正是 Q28-C 撤掉整页汇总文字、保留逐栏角标的理由)
+    expect(screen.getByRole("button", { name: "全部更新 · 1" })).toBeInTheDocument();
+    expect(screen.getByTestId("tab-badge-installedFrom")).toHaveTextContent("1");
   });
 
   it("「可分享到」区的草稿不算「要处理」(那是该区的常态)", async () => {
     seed([mk("draft", "shareable"), mk("other", "shareable")]);
     render(<MySkillsPage />);
     await screen.findByRole("tab", { name: /可分享到技能库/ });
-    const h = tab(/可分享到技能库/);
-    expect(h).toHaveTextContent("2");
-    expect(h).not.toHaveTextContent(/个要处理/);
+    // 总数在列表上方那一行(v7.3 Q27-A),看那一栏的数要先切过去
+    await userEvent.click(tab(/可分享到技能库/));
+    expect(screen.getByTestId("mine-total")).toHaveTextContent("共 2 个技能");
+    // 常态不是"要处理",所以这一档根本没有角标那颗按钮
+    expect(screen.queryByTestId("tab-badge-shareable")).toBeNull();
   });
 
-  it("计数走全量 list,不受搜索影响(搜索时页签上的数不能说谎)", async () => {
+  // 🔴 这两个数走**全量** list,不走展示层筛过的那一份:它们写的是
+  // "这个区一共有多少 / 其中几个要处理"这件**事实**。筛选态开着时列表只剩
+  // 1 行,总数照样得是 2——按展示条数报数就成了假话。
+  // (v7.3 Q27-A 起总数的渲染点是列表上方那一行,角标仍在页签上;口径没变,
+  //  只是位置变了。)
+  it("计数走全量 list,筛选态开着时也不缩水", async () => {
     seed([mk("alpha", "installedFrom"), mk("beta", "installedFrom", { remote: "NEW" })]);
     render(<MySkillsPage />);
     expect(await screen.findByTestId("row-alpha")).toBeInTheDocument();
-    act(() => useMineSearch.getState().setQuery("alpha"));
-    expect(screen.queryByTestId("row-beta")).toBeNull();
-    const h = tab(/安装自技能库/);
-    expect(h).toHaveTextContent("2");
-    expect(h).toHaveTextContent("1 个要处理");
+    await userEvent.click(screen.getByTestId("tab-badge-installedFrom"));
+    expect(screen.queryByTestId("row-alpha")).toBeNull();
+    expect(screen.getByTestId("mine-total")).toHaveTextContent("共 2 个技能");
+    expect(screen.getByTestId("tab-badge-installedFrom")).toHaveTextContent("1");
   });
 
   it("空页签有自己的空态文案,不是一句笼统的「没有技能」", async () => {
@@ -1373,18 +1540,77 @@ describe("页签", () => {
     render(<MySkillsPage />);
     expect(await screen.findByTestId("row-a")).toBeInTheDocument();
     await userEvent.click(tab(/已分享到技能库/));
-    expect(screen.getByText("你还没有分享过技能到公司技能库。")).toBeInTheDocument();
+    expect(
+      screen.getByText("你还没有分享过技能。写好一个技能后,在「可分享到技能库」里分享它。"),
+    ).toBeInTheDocument();
   });
 
-  // 🔴 页签把列表切成三份之后新冒出来的诚实问题:在 A 页签搜 B 页签里的技能,
-  // 光说"没有匹配的技能"与事实相反。
-  it("搜索在别的页签里有匹配时,要说清楚匹配在别处", async () => {
+  // 🔴 共识 §7 的两条既有原则:**每条空态都给一个出路**(不是只说"空的");
+  // **不解释状态、只说下一步**。
+  it("空态给出路:「安装自」有「去技能商店看看」,「可分享到」有「新建技能」", async () => {
+    seed([mk("a", "sharedTo")]);
+    render(<MySkillsPage />);
+    await screen.findByRole("tab", { name: /安装自技能库/ });
+    expect(screen.getByText("还没有从公司技能库获取过技能。")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "去技能商店看看" }));
+    expect(useUi.getState().page).toBe("store");
+
+    useUi.setState({ page: "mine" });
+    await userEvent.click(tab(/可分享到技能库/));
+    expect(
+      screen.getByText("这里会列出还没进公司技能库的技能——你自己写的,或从别处获取的。"),
+    ).toBeInTheDocument();
+    // 🔴 「新建技能」全屏只有一颗:页签行那一份在列表非空时就已经摆着了,
+    // 空态不再重复摆第二颗(同屏两颗一模一样的按钮是噪音)。
+    expect(screen.getAllByRole("button", { name: /新建技能/ })).toHaveLength(1);
+  });
+
+  // 🔴 v7.3 需求 3:搜索**穿透页签**。v7.2 是"在 A 页签搜 B 页签里的技能会得到
+  // 一句『没有匹配』,只好再补一句『其他分类里有 N 个』"——那句补丁本身就是
+  // 症状。同一条原则在 v7.1 分区折叠时就定过:搜索必须穿透折叠,否则"搜到了
+  // 但那区折着",用户看到的就是搜索坏了。
+  it("搜索穿透页签:当前在 A 页签,搜 B 页签里的技能照样搜得到", async () => {
     seed([mk("alpha", "installedFrom"), mk("beta", "sharedTo")]);
     render(<MySkillsPage />);
     expect(await screen.findByTestId("row-alpha")).toBeInTheDocument();
     act(() => useMineSearch.getState().setQuery("beta"));
-    expect(screen.getByText(/没有匹配「beta」的技能/)).toBeInTheDocument();
-    expect(screen.getByText(/其他分类里有 1 个匹配/)).toBeInTheDocument();
+    expect(screen.getByTestId("row-beta")).toBeInTheDocument();
+    expect(screen.queryByTestId("row-alpha")).toBeNull();
+  });
+
+  it("搜索期间页签整行让位,换成「「xxx」的搜索结果」,命中按栏分组", async () => {
+    seed([mk("alpha", "installedFrom"), mk("alphabet", "sharedTo")]);
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-alpha")).toBeInTheDocument();
+    act(() => useMineSearch.getState().setQuery("alpha"));
+    // 页签整行不在了(不是"还在但没高亮")
+    expect(screen.queryAllByRole("tab")).toHaveLength(0);
+    expect(screen.getByText("「alpha」的搜索结果")).toBeInTheDocument();
+    // 两条命中分别落在自己那一栏的组头下面
+    expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual([
+      "安装自技能库",
+      "已分享到技能库",
+    ]);
+    expect(screen.getByTestId("row-alpha")).toBeInTheDocument();
+    expect(screen.getByTestId("row-alphabet")).toBeInTheDocument();
+  });
+
+  it("清空搜索词就恢复页签", async () => {
+    seed([mk("alpha", "installedFrom")]);
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-alpha")).toBeInTheDocument();
+    act(() => useMineSearch.getState().setQuery("alpha"));
+    expect(screen.queryAllByRole("tab")).toHaveLength(0);
+    act(() => useMineSearch.getState().setQuery(""));
+    expect(screen.getAllByRole("tab")).toHaveLength(3);
+  });
+
+  it("三栏都没命中才说「没有匹配」", async () => {
+    seed([mk("alpha", "installedFrom"), mk("beta", "sharedTo")]);
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-alpha")).toBeInTheDocument();
+    act(() => useMineSearch.getState().setQuery("zzz"));
+    expect(screen.getByText(/没有匹配「zzz」的技能/)).toBeInTheDocument();
   });
 
   // 🔴 分区折叠(mine-collapse)整套删除:留着就是与页签并行的第二套"一次只看
@@ -1412,7 +1638,10 @@ describe("可分享到 · 按来源分组", () => {
     await userEvent.click(await screen.findByRole("tab", { name: /可分享到技能库/ }));
   };
 
-  it("按来源分组:无来源那一组在最前,其余按来源名排;组头写来源", async () => {
+  // 🔴 v7.3 需求 4:无来源那一组**不摆标题**,顶格排最前。它是**默认档**
+  // ——给"正常情况"起名字反而暗示它异常(与「只写例外」同一条原则)。
+  // 所以组头只剩两个,而那一组的行仍然排在最前面。
+  it("按来源分组:无来源那一组不摆标题、顶格排最前;其余组头按来源名排", async () => {
     seed([
       mk("z-draft", "shareable", { sourceLabel: null }),
       mk("b-skill", "shareable", { sourceLabel: "vercel-labs/agent-skills" }),
@@ -1420,10 +1649,19 @@ describe("可分享到 · 按来源分组", () => {
     ]);
     await openShareable();
     expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual([
-      "没有来源",
       "来源 acme/tools",
       "来源 vercel-labs/agent-skills",
     ]);
+    // 「没有来源」这句话整个不该再出现
+    expect(screen.queryByText("没有来源")).toBeNull();
+    // 顶格排最前:无来源那一行在 DOM 顺序上排在两个组头之前
+    const rows = screen.getAllByTestId(/^row-/);
+    expect(rows[0]).toHaveAttribute("data-testid", "row-z-draft");
+    expect(
+      screen.getByTestId("row-z-draft").compareDocumentPosition(
+        screen.getAllByRole("heading", { level: 3 })[0],
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("同一个来源的多行归进同一组(组数 = 不同来源数,不是行数)", async () => {
@@ -1449,5 +1687,170 @@ describe("可分享到 · 按来源分组", () => {
     render(<MySkillsPage />);
     expect(await screen.findByTestId("row-a")).toBeInTheDocument();
     expect(screen.queryAllByRole("heading", { level: 3 })).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v7.3 需求 6:角标可点筛选
+// ---------------------------------------------------------------------------
+
+describe("v7.3 需求 6:点角标 = 切到该页签 + 只看要处理的", () => {
+  /** 「已分享到」区:2 行要处理(update 走不到这个区,用 conflict/chooseVersion)
+   *  + 1 行什么都不用做。 */
+  const seedSharedTo = () =>
+    seed([
+      mk("keep-a", "sharedTo", { remote: "NEW" }), // conflict → 要处理
+      mk("keep-b", "sharedTo", { localModified: true }), // shareChanges → 要处理
+      mk("quiet", "sharedTo"), // none → 常态
+      mk("home", "installedFrom"),
+    ]);
+
+  it("在别的页签上点角标:切过去 + 列表只剩要处理的那几行", async () => {
+    seedSharedTo();
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-home")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("tab-badge-sharedTo"));
+
+    expect(screen.getByRole("tab", { name: /已分享到技能库/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByTestId("row-keep-a")).toBeInTheDocument();
+    expect(screen.getByTestId("row-keep-b")).toBeInTheDocument();
+    // 🔴 这一条才是"真的筛了"的判据:常态那一行必须消失
+    expect(screen.queryByTestId("row-quiet")).toBeNull();
+  });
+
+  // 只靠角标太隐蔽:列表突然只剩两行,用户未必知道自己在筛选态、更未必知道怎么退。
+  // 两处互为印证——角标进入按下态说明"是谁在起作用",列表上方那行字给出口。
+  it("筛选态:角标是按下态,列表上方有「只看要处理的 · 显示全部」", async () => {
+    seedSharedTo();
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-home")).toBeInTheDocument();
+
+    expect(screen.getByTestId("tab-badge-sharedTo")).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(screen.getByTestId("tab-badge-sharedTo"));
+    expect(screen.getByTestId("tab-badge-sharedTo")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("只看要处理的")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "显示全部" }));
+    expect(screen.getByTestId("row-quiet")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-badge-sharedTo")).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("已经在这个页签上时,再点角标就地开关(不是恒开)", async () => {
+    seedSharedTo();
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-home")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("tab-badge-sharedTo"));
+    expect(screen.queryByTestId("row-quiet")).toBeNull();
+    await userEvent.click(screen.getByTestId("tab-badge-sharedTo"));
+    expect(screen.getByTestId("row-quiet")).toBeInTheDocument();
+  });
+
+  // 🔴 切页签即清筛选:否则切到一个没有待办的页签会看到空列表,而它明明有
+  // 好几个技能,用户第一反应是"东西呢"。
+  it("切页签即清筛选(切回来也是全量)", async () => {
+    seedSharedTo();
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-home")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("tab-badge-sharedTo"));
+    expect(screen.queryByTestId("row-quiet")).toBeNull();
+
+    await userEvent.click(screen.getByRole("tab", { name: /安装自技能库/ }));
+    expect(screen.getByTestId("row-home")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("tab", { name: /已分享到技能库/ }));
+    expect(screen.getByTestId("row-quiet")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-badge-sharedTo")).toHaveAttribute("aria-pressed", "false");
+  });
+
+  // 筛选与搜索互斥:两个都开着的话,用户看到的是"搜索结果里还少了一半",
+  // 而少的那一半没有任何提示。
+  it("进搜索即清筛选(退出搜索也不恢复)", async () => {
+    seedSharedTo();
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-home")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("tab-badge-sharedTo"));
+    expect(screen.queryByTestId("row-quiet")).toBeNull();
+
+    act(() => useMineSearch.getState().setQuery("keep"));
+    expect(screen.queryByText("只看要处理的")).toBeNull();
+
+    act(() => useMineSearch.getState().setQuery(""));
+    expect(screen.getByTestId("row-quiet")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-badge-sharedTo")).toHaveAttribute("aria-pressed", "false");
+  });
+
+  // 🔴 这一档是**可达死角的唯一出口**,不是防御性分支:筛选开着 → 用户把最后
+  // 一条待办处理掉 → 列表重载后这一栏的 attention 归 0 → **角标本身消失**
+  // (`stats.attention > 0` 才渲染它)。此时「显示全部」是退出筛选态的仅存入口,
+  // 它要是没渲染,用户就被困在一个空列表里,连进来的那颗角标都找不到了。
+  it("筛选态下待办被处理光:不说「这个分类是空的」(那是假话),给出口", async () => {
+    seedSharedTo();
+    render(<MySkillsPage />);
+    expect(await screen.findByTestId("row-home")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("tab-badge-sharedTo"));
+    expect(screen.queryByTestId("row-quiet")).toBeNull();
+
+    // 那两条待办被处理掉了(core 重新给了一份没有待办的列表)
+    act(() =>
+      useMySkills.setState({
+        list: stripFixtureOnly([mk("quiet", "sharedTo"), mk("home", "installedFrom")]),
+      }),
+    );
+
+    expect(screen.getByText("这个分类里已经没有要处理的了。")).toBeInTheDocument();
+    // 角标已经消失,上面那行「只看要处理的 · 显示全部」是仅存的出口
+    expect(screen.queryByTestId("tab-badge-sharedTo")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "显示全部" })).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: "显示全部" }));
+    expect(screen.getByTestId("row-quiet")).toBeInTheDocument();
+  });
+
+  // 🔴 不做 `button` 套 `button`(HTML 不允许),两颗都要能用键盘分别到达。
+  it("页签与角标是两颗兄弟按钮,不是嵌套", async () => {
+    seedSharedTo();
+    render(<MySkillsPage />);
+    await screen.findByTestId("row-home");
+    const badge = screen.getByTestId("tab-badge-sharedTo");
+    const tabBtn = screen.getByRole("tab", { name: /已分享到技能库/ });
+    expect(tabBtn.contains(badge)).toBe(false);
+    expect(badge.contains(tabBtn)).toBe(false);
+    expect(badge.closest("button")).toBe(badge);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v7.3 需求 5:常态动作降级(全站规则)
+// ---------------------------------------------------------------------------
+
+describe("v7.3 需求 5:常态动作用轻形态,例外才用实心", () => {
+  /** 🔴 形态断言必须**按空白切分类名逐个比**:`toContain("bg-accent")` 分不出
+   *  实心与 chip(`"bg-accent-soft"` 这个**字符串**含有 `"bg-accent"`),
+   *  `/\bbg-accent\b/` 同样不行(`-` 是非词字符)。 */
+  const classes = (el: HTMLElement) => el.className.split(/\s+/);
+
+  it("「分享」是浅橙 chip,不是实心(那一栏 41 行 41 个都有它)", async () => {
+    seed([mk("d", "shareable")]);
+    render(<MySkillsPage />);
+    await userEvent.click(await screen.findByRole("tab", { name: /可分享到技能库/ }));
+    const btn = screen.getByRole("button", { name: "分享" });
+    expect(classes(btn)).toContain("bg-accent-soft");
+    expect(classes(btn)).not.toContain("bg-accent");
+  });
+
+  it("例外动作仍是实心:「更新」", async () => {
+    seed([mk("u", "installedFrom", { remote: "NEW" })]);
+    render(<MySkillsPage />);
+    expect(classes(await screen.findByRole("button", { name: "更新" }))).toContain("bg-accent");
+  });
+
+  it("例外动作仍是实心:「分享改动」", async () => {
+    seed([mk("s", "sharedTo", { localModified: true })]);
+    render(<MySkillsPage />);
+    await userEvent.click(await screen.findByRole("tab", { name: /已分享到技能库/ }));
+    expect(classes(screen.getByRole("button", { name: "分享改动" }))).toContain("bg-accent");
   });
 });

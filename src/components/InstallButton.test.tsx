@@ -93,4 +93,33 @@ describe("mine* 四档(v6 任务 5:技能库里记的分享者是我)", () => {
     await userEvent.click(button);
     expect(onClick).toHaveBeenCalledTimes(1);
   });
+
+  // -------------------------------------------------------------------------
+  // v7.3 需求 5:常态动作降级(全站规则),商店卡片是被点名复查的第一处。
+  // -------------------------------------------------------------------------
+
+  /** 🔴 形态断言必须**按空白切分类名逐个比**:`toContain("bg-accent")` 分不出
+   *  实心与 chip(字符串 `"bg-accent-soft"` 含有 `"bg-accent"`),
+   *  `/\bbg-accent\b/` 同样不行(`-` 是非词字符)。 */
+  const classes = () => screen.getByRole("button").className.split(/\s+/);
+
+  it("🔴 「获取」是常态动作(满屏卡片人人都有)→ 浅橙 chip,不是实心", () => {
+    render(<InstallButton state="install" onClick={() => {}} />);
+    expect(classes()).toContain("bg-accent-soft");
+    expect(classes()).not.toContain("bg-accent");
+  });
+
+  it("🔴 「有更新」是例外(少数几张卡片才有)→ 实心,比常态重一档", () => {
+    render(<InstallButton state="update" onClick={() => {}} />);
+    expect(classes()).toContain("bg-accent");
+    expect(classes()).not.toContain("bg-accent-soft");
+  });
+
+  it("「取回」「分享更新」同属例外,同样实心", () => {
+    const { unmount } = render(<InstallButton state="minePull" onClick={() => {}} />);
+    expect(classes()).toContain("bg-accent");
+    unmount();
+    render(<InstallButton state="mineShareUpdate" onClick={() => {}} />);
+    expect(classes()).toContain("bg-accent");
+  });
 });

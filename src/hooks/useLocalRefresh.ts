@@ -21,6 +21,7 @@ import { useEffect, useRef } from "react";
 import { listenLocalSkillsChanged } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useMySkills } from "@/store/my-skills";
+import { useProjects } from "@/store/project";
 import { useUi, type PageId } from "@/store/ui";
 
 /** 按页刷新本地技能相关的状态。导出供 level 3 的文件监听复用。 */
@@ -46,6 +47,12 @@ export function refreshLocalFor(page: PageId): void {
     case "store":
       // 已装技能可能在外部被删掉了,回来该显示「获取」而不是「已启用」
       void useInstall.getState().refreshInstalled();
+      break;
+    case "projects":
+      // v7.3:项目页独立成页之后也要接进级别 1/3——它展示的同样是磁盘上的
+      // 真实内容(项目根的 `skills-lock.json` 与各工具目录),切到编辑器里
+      // 删掉一个技能再切回来,不刷新就会一直显示一条已经不存在的行。
+      void useProjects.getState().load();
       break;
     case "settings":
       // 设置页不展示技能,无需刷新

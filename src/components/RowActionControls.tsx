@@ -100,10 +100,18 @@ export function PrimaryAction({
         </SolidButton>
       );
     case "share":
+      // 🔴 v7.3 需求 5 的全站规则(Q21-A 定稿的措辞):
+      //   **实心 = 这一栏里的例外;chip = 这一栏里人人都有的那个动作。**
+      // 「分享」是「可分享到技能库」
+      // 那一整栏的**常态**——41 行里 41 行都有它。此前它是实心橙,于是满屏
+      // 实心橙,那 1 个真正要处理的行(冲突/选版本/审核中)完全淹掉。
+      // 对照「已分享到」栏没有这个问题,正因为那一栏的常态是"没有按钮"。
+      // `needsAttention` 早就把 `share` 排除在"要处理"之外了(那个判定是对的),
+      // 错的是**视觉没有跟着这个判定走**——这里把它补上。
       return (
-        <SolidButton size={size} disabled={sharing} onClick={onShare}>
+        <ChipButton size={size} disabled={sharing} onClick={onShare}>
           {t("mine.share")}
-        </SolidButton>
+        </ChipButton>
       );
     case "shareBlocked": {
       // 🔴 C1:三个区都可能落进这一档,按钮文案要说对被拦下的是哪个动作
@@ -117,7 +125,10 @@ export function PrimaryAction({
       // 🔴 v7.1 任务 5:被拦下的形态必须与它**启用时**的形态一致,只多一层
       // `disabled:opacity-50`(画布里禁用态就是"同一颗按钮 + opacity .5")。
       // 用另一种形态画禁用态,等于对用户撒谎——他分不出被禁的到底是哪个动作。
-      const Btn = action.blockedAction === "contribute" ? ChipButton : SolidButton;
+      // 🔴 v7.3:「分享」降级成 chip 之后,它被拦下的形态也要跟着降
+      // ——"被禁用的形态必须与它启用时的形态一致,只多一层 opacity"这条规矩没变,
+      // 变的是「分享」启用时长什么样。三档里只剩「分享改动」还是实心。
+      const Btn = action.blockedAction === "shareChanges" ? SolidButton : ChipButton;
       return (
         <Btn size={size} disabled onClick={() => {}}>
           {label}
@@ -176,9 +187,14 @@ export function SolidButton({
 /**
  * 浅橙 chip 按钮(`bg-accent-soft` = `rgba(194,65,12,.08)`,与画布内联值逐字相同)。
  *
- * 画布 `Main.dc.html` 的行按钮只有三种形态,这是中间那一档:实心 = 这一行的主动作
- * (更新/分享/分享改动),chip = 可点但比主动作轻一档(库里有新版…/贡献更改/
- * 页头「全部更新」),ghost 图标 = 「更多」。三处 chip **必须共用这一个实现**
+ * 画布 `Main.dc.html` 的行按钮只有三种形态,这是中间那一档。判据(v7.3 Q21-A 定稿):
+ *
+ *   **实心 = 这一栏里的例外;chip = 这一栏里人人都有的那个动作。**
+ *
+ * ghost 图标 = 「更多」。⚠️ **刻意不枚举具体档位**:此前这里列的是
+ * "实心 = 更新/分享改动/取回,chip = 分享/库里有新版…/贡献更改",一加新档就对不上,
+ * 而且会诱导人按名单对号入座、不看它在自己那一栏里是不是常态。v7.3 把「分享」
+ * 从实心挪到这一档,正是按上面那句原则办的(见 `PrimaryAction` 的 `share` 分支)。所有 chip **必须共用这一个实现**
  * ——各写一份就是本项目记录的空转模式 #1(其中一份漂移了没有任何测试发现)。
  */
 export function ChipButton({

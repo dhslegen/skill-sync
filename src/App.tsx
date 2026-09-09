@@ -4,6 +4,7 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { ConflictDialog } from "@/components/ConflictDialog";
 import { DetailPanel } from "@/components/DetailPanel";
 import { ProjectDecisionDialog } from "@/components/ProjectDecisionDialog";
+import { ProjectSections } from "@/components/ProjectSections";
 import { RemoveDialog } from "@/components/RemoveDialog";
 import { ShareConfirm } from "@/components/ShareConfirm";
 import { VersionChooser } from "@/components/VersionChooser";
@@ -87,6 +88,10 @@ export default function App() {
                 `page === "store"` 一种情况。 */}
             {page === "mine" ? (
               <MySkillsPage />
+            ) : page === "projects" ? (
+              /* v7.3:「项目里的技能」升成独立一页。`ProjectSections` 自己
+                 挂载即 load,不需要额外的页面外壳。 */
+              <ProjectSections />
             ) : page === "settings" ? (
               <SettingsPage />
             ) : (

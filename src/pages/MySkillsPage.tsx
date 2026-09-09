@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 
 import { CreateSkillButton, CreateSkillPanel } from "@/components/CreateSkill";
-import { ProjectSections } from "@/components/ProjectSections";
 import { ChipButton, PrimaryAction, rowMenuHandler } from "@/components/RowActionControls";
 import { SkillIcon } from "@/components/SkillIcon";
 import { SkillRowMenu, type SkillRowMenuItem } from "@/components/SkillRowMenu";
 import { t, type MessageKey } from "@/i18n";
+import { cn } from "@/lib/cn";
 import { skillReveal, type InstalledSkillView, type Section } from "@/lib/ipc";
 import { buildRowMenuItems, needsAttention, rowAction, type RowAction } from "@/lib/ownership";
 import { SHARE_BLOCK_LABEL, SHARE_DONE_LABEL, SHARE_FAILED_LABEL } from "@/lib/share-block";
@@ -30,6 +30,11 @@ import { useUi } from "@/store/ui";
  * 「我的技能」页(v7 任务 7 整页重画)。
  *
  * # 🔴 三区 = 三个**页签**(v7.2 需求 1,推翻了 v7 的"一页三区")
+ *
+ * 🔴 **v7.3 起页签只剩三个**:「项目里」已经挪进左侧边栏成为独立一页
+ * (「项目里的技能」,见 `store/ui.ts::PageId`)。理由是那一行**混了两个轴**
+ * ——前三个回答"与公司技能库的关系",「项目里」回答"装在哪",正交的两个问题
+ * 排成一行,扫过去没有能串起来的逻辑,这才是用户说的"凌乱"的根。
  *
  * v7 把三个区竖着排在同一页里,v7.1 又给每个区加了折叠头。用户真机反馈是
  * 「目前不直观,滚动效率很低」——两个机制都在解同一个问题(一次只想看一个区),
@@ -61,15 +66,25 @@ import { useUi } from "@/store/ui";
  * 重复的第二遍。这一版整页删掉了它,连同支撑它的 `sharedState`/`SharedState`
  * 判定(v6 二期两分区页专用,唯一消费者就是这个旧页面)。
  *
- * # 两个页头信号
+ * # 🔴 两块区域,两种口径(v7.3 Q27-A / Q28-C / Q29-B)
  *
- * 「N 个有更新」只数**能被「全部更新」一键处理的行**(`rowAction.kind ===
- * "update"`,与侧栏角标 `updateCount` 同一个集合)——不含需要拍板的冲突行,
- * 也不含「可分享到」区"外源有新版"那颗自己的更新按钮(那颗按钮走
- * per-row `pull`,`skill_install_batch` 一次只吃一对 `registryId`/`repo`,
- * 协议上表达不出跨源批量,见 `my-skills.ts::updateAll` 的文档)。
- * 「M 个有改动未分享」数 `localModified === true` 且不在「可分享到」区的行
- * ——那个区的技能本来就没有"分享给库"这件事的进度可言。
+ * 判据一句话:**页签行是跨栏区域,放整页级的东西;列表上方是本栏区域,
+ * 放本栏级的东西**。
+ *
+ * - **页签行**(`TabsRow`):三个页签 + 「全部更新 · N」+「新建技能」。
+ *   后两颗都是**页面级动作**——「全部更新」跨三栏一起更新,数字写在按钮
+ *   自己身上(点之前要知道会动几个)。N 只数**能被它一键处理的行**
+ *   (`rowAction.kind === "update"`,与侧栏角标 `updateCount` 同一个集合)
+ *   ——不含需要拍板的冲突行,也不含「可分享到」区"外源有新版"那颗自己的
+ *   更新按钮(那颗走 per-row `pull`,`skill_install_batch` 一次只吃一对
+ *   `registryId`/`repo`,协议上表达不出跨源批量,见 `my-skills.ts::updateAll`)。
+ * - **列表上方**(`mine-section-bar`):「共 N 个技能」+ 这一栏的筛选态。
+ *
+ * 第 6/7 轮把这两者搞反过一次:整页汇总文字留在列表上方(于是在「可分享到」
+ * 栏下说出"3 个有改动未分享"而那 3 个一个都不在这一栏),无辜的总数反被挪去
+ * 页签行。本轮对调回来,并把那两段整页汇总文字**整个撤掉**——页签角标已经
+ * **逐栏**报了"有几件事等你"且更精确(`needsAttention` 覆盖六档),那两段是
+ * 同一批事实的冗余表达。
  *
  * # 🔴 行内不再摆工具勾组(与视觉基准对齐,不是遗漏)
  *
@@ -117,7 +132,11 @@ export function MySkillsPage() {
   const setPage = useUi((s) => s.setPage);
   const sessionStatus = useSession((s) => s.status);
   const query = useMineSearch((s) => s.query);
-  const [tab, setTab] = useState<MineTab>("installedFrom");
+  const [tab, setTab] = useState<Section>("installedFrom");
+  // 🔴 v7.3 需求 6:点页签上的角标 = 切到那个页签 + **只看要处理的**。
+  // 局部 state 而不是 store:它是"这一眼我想怎么看"的瞬时视角,不该跨页面/
+  // 跨会话留存(留存的话用户下次打开会看到一个只剩三行的列表,而它明明有 8 个)。
+  const [attentionOnly, setAttentionOnly] = useState(false);
 
   // 三级刷新的级别 2(切页):页面组件挂载时 load 一次。级别 1(窗口重获焦点)
   // 与级别 3(文件监听)是 `useLocalRefresh()` 的活,全局挂在 App.tsx,这里不重复。
@@ -129,6 +148,18 @@ export function MySkillsPage() {
   useEffect(() => {
     if (installPhase === "done") void load();
   }, [installPhase, load]);
+
+  // 🔴 需求 3:搜索**穿透页签**(三栏一起搜)。同一条原则在 v7.1 分区折叠时就
+  // 定过——"搜索必须穿透折叠,否则'搜到了但那区折着',用户看到的就是搜索坏了";
+  // 页签是同一个形状。搜索期间页签整行让位,换成「「xxx」的搜索结果」+ 按栏分组。
+  const searching = query.trim() !== "";
+
+  // 🔴 筛选与搜索互斥(需求 6 的技术约束):进搜索即清筛选。两个都开着的话,
+  // 用户看到的是"搜索结果里还少了一半",而少的那一半没有任何提示。
+  // **退出搜索不恢复**——所以这个 effect 只在 `searching` 为真时清,不做还原。
+  useEffect(() => {
+    if (searching) setAttentionOnly(false);
+  }, [searching]);
 
   const [revealError, setRevealError] = useState<string | null>(null);
   const revealOrExplain = (path: string) => {
@@ -188,10 +219,12 @@ export function MySkillsPage() {
         : hasUpdate(skill, index);
     return rowAction(skill, remoteChanged);
   };
+  // 🔴 v7.3 Q28-C:整页口径的那两段文字(「N 个有更新 · N 个有改动未分享」)已撤掉
+  // ——页签角标**逐栏**报了"有几件事等你"且更精确(`needsAttention` 覆盖六档),
+  // 整页汇总是同一批事实的冗余表达。`unsyncedCount` 随之没有消费者,一并删除。
+  // `updatesCount` 留着,因为「全部更新 · N」那颗按钮要把数字写在自己身上
+  // ——点之前应当知道会动几个。
   const updatesCount = updateCount(list, index);
-  const unsyncedCount = list.filter(
-    (s) => s.section !== "shareable" && s.localModified,
-  ).length;
 
   // 每行的 `rowAction` 对**全量** list 只算一轮,渲染、分区排序与折叠头的计数
   // 共用这一份——分开各算一遍就是本项目记录的空转模式 #1(同一条规则查两遍)。
@@ -202,9 +235,11 @@ export function MySkillsPage() {
   const filteredList = list.filter((s) => matchesMineQuery(s, nameOf(s.dirSlug), query));
   const secs = sections(filteredList, actionFor);
 
-  // 🔴 页签上那两个数走**全量** list,不走 filteredList:搜索只影响展示,
-  // 页签上写的"这个区一共有多少 / 其中几个要处理"是这个区的事实,搜索时按筛选后
-  // 的条数报数就成了假话(与页头总览 band 同一个口径,见上面那两个计数)。
+  // 🔴 这两个数走**全量** list,不走 filteredList:搜索只影响展示,
+  // "这个区一共有多少 / 其中几个要处理"是这个区的事实,搜索时按筛选后的条数
+  // 报数就成了假话(与页头总览 band 同一个口径,见上面那两个计数)。
+  // ⚠️ v7.3 Q19-C 起 `total` 的渲染点不在页签上了,而在总览行行首;`attention`
+  // 仍是页签角标。两个数由**同一个** statsOf 出,别再各算一遍(空转模式 #1)。
   const statsOf = (key: Section) => {
     const rows = list.filter((s) => s.section === key);
     return {
@@ -215,7 +250,47 @@ export function MySkillsPage() {
 
   // 当前页签要渲染的那一区(`sections()` 会把空区整个滤掉,所以这里可能是
   // undefined——页签是常驻的,那一档要有自己的空态文案,见 TAB_EMPTY)。
-  const activeSec = tab === "projects" ? undefined : secs.find((s) => s.key === tab);
+  const activeSec = secs.find((s) => s.key === tab);
+  // 筛选态只**在展示层**收窄这一页签的行,不影响页签上写的两个数(那是事实)。
+  const activeItems = activeSec
+    ? attentionOnly
+      ? activeSec.items.filter((s) => needsAttention(actionFor(s)))
+      : activeSec.items
+    : [];
+
+  const changeTab = (next: Section) => {
+    setTab(next);
+    // 🔴 切页签即清筛选(需求 6):否则切到一个没有待办的页签会看到空列表,
+    // 而它明明有 8 个技能,用户第一反应是"东西呢"。
+    setAttentionOnly(false);
+  };
+  const toggleAttention = (key: Section) => {
+    if (tab === key) setAttentionOnly((v) => !v);
+    else {
+      setTab(key);
+      setAttentionOnly(true);
+    }
+  };
+
+  /** 一个区的行:「可分享到」按来源分组,其余平铺。两条路共用 `renderRow`。 */
+  const renderItems = (key: Section, items: InstalledSkillView[]) =>
+    key === "shareable" ? (
+      /* 🔴 需求 4:无来源那一组**不摆标题**,顶格排最前(`groupBySource` 已经
+         把 `label === null` 排在最前面)。它是**默认档**——给"正常情况"起名字
+         反而暗示它异常,与 v7「只写例外」是同一条原则。 */
+      groupBySource(items).map((group) => (
+        <section key={group.key} className="mt-3 first-of-type:mt-0">
+          {group.label !== null && (
+            <h3 className="pb-1.5 text-[11.5px] font-medium text-text-3">
+              <span className="font-mono">{t("mine.sourceLabel", { label: group.label })}</span>
+            </h3>
+          )}
+          <RowCard>{group.items.map(renderRow)}</RowCard>
+        </section>
+      ))
+    ) : (
+      <RowCard>{items.map(renderRow)}</RowCard>
+    );
 
   // 一行的渲染(平铺与「按来源分组」两条路共用同一份——分开各写一遍就是
   // 本项目记录的空转模式 #1 的变体:两处会各自漂)。
@@ -260,21 +335,28 @@ export function MySkillsPage() {
 
   return (
     <div>
-      {/* 🔴 M2(复审):页头不再多摆一行「N 个技能」计数——四块画板都没有这一行,
-          「新建技能」搬进 TabsRow 自己那一条(design #16 那句"新建技能"紧跟在
-          "项目里"之后的顺序)。空态那一档不同:它自己的 CTA 行已经有「新建技能」,
-          TabsRow 不重复摆一份。 */}
-      <TabsRow
-        tab={tab}
-        onChange={setTab}
-        statsOf={statsOf}
-        showCreate={tab !== "projects" && list.length > 0}
-      />
-      {tab !== "projects" && <CreateSkillPanel />}
+      {/* 🔴 M2(复审)+ v7.3 Q27-A:页头不另起一行摆计数——「共 N 个技能」是本栏
+          口径,归**列表上方**那一行(`mine-section-bar`);页签行上放的是页面级
+          动作(「全部更新 · N」「新建技能」)。空态那一档不同:它自己的 CTA 行
+          已经有「新建技能」,TabsRow 不重复摆一份。 */}
+      {searching ? (
+        <SearchHeader query={query} />
+      ) : (
+        <TabsRow
+          tab={tab}
+          attentionOnly={attentionOnly}
+          onChange={changeTab}
+          onToggleAttention={toggleAttention}
+          statsOf={statsOf}
+          updatesCount={updatesCount}
+          updateAllBusy={updateAllBusy}
+          onUpdateAll={() => void updateAll()}
+          showCreate={list.length > 0}
+        />
+      )}
+      <CreateSkillPanel />
 
-      {tab === "projects" ? (
-        <ProjectSections />
-      ) : list.length === 0 ? (
+      {list.length === 0 ? (
         <div className="py-6">
           <p className="text-[12.5px] text-text-2">{t("mine.empty")}</p>
           <p className="mt-1 text-[12.5px] text-text-3">{t("mine.emptyHint")}</p>
@@ -374,30 +456,6 @@ export function MySkillsPage() {
             </div>
           )}
 
-          {/* 页头总览:只在"有事要做"时出现(design 的「一切正常」板完全没有这一块)。
-              🔴 v7.1 任务 5:**一行轻字 + 内联 chip**,不是卡片。画布 `Main.dc.html`
-              里这块没有边框、没有底色、没有内边距,就是正文流里的一行 12.5px 灰字,
-              后面跟一颗浅橙 chip。此前的 `rounded-card border bg-surface-1` 把
-              "有几件事要做"这句状态说明做成了一张与下面技能卡同等重量的卡片
-              ——状态不该和内容抢分量(Q5B)。别再给它加回边框/底色。 */}
-          {(updatesCount > 0 || unsyncedCount > 0) && (
-            <div
-              data-testid="mine-overview"
-              className="flex items-center gap-2.5 pb-3 text-[12.5px] text-text-2"
-            >
-              <span>
-                {updatesCount > 0 && t("mine.overviewUpdates", { count: updatesCount })}
-                {updatesCount > 0 && unsyncedCount > 0 && <span className="mx-1.5">·</span>}
-                {unsyncedCount > 0 && t("mine.overviewUnsynced", { count: unsyncedCount })}
-              </span>
-              {updatesCount > 0 && (
-                <ChipButton disabled={updateAllBusy} onClick={() => void updateAll()}>
-                  {updateAllBusy ? t("mine.updating") : t("mine.updateAll")}
-                </ChipButton>
-              )}
-            </div>
-          )}
-
           {/* 🔴 未登录提示只在「安装自技能库」页签下摆:这句话解释的是
               **安装自 vs 已分享到这对区分**为什么需要登录(v7 终审 M-8 已经
               查明它贴在草稿那一区标题下毫无意义)。页签化之后判据变简单了
@@ -406,36 +464,82 @@ export function MySkillsPage() {
             <p className="pb-1.5 text-[11.5px] text-text-3">{t("mine.signedOutHint")}</p>
           )}
 
-          {!activeSec ? (
-            <TabEmpty
-              tab={tab}
-              /* 这个页签在**全量** list 里就是空的 → 摆它自己的空态文案;
-                 全量里有、筛完没了 → 那是搜索的结果,而且要说清"匹配在别的
-                 页签里"——否则用户在 A 页签搜 B 页签里的技能,看到的是一句
-                 "没有匹配的技能",与事实相反。 */
-              sectionEmpty={statsOf(tab).total === 0}
-              query={query}
-              otherTabMatches={filteredList.length}
-            />
-          ) : tab === "shareable" ? (
-            /* 🔴 需求 4:「可分享到」按**来源**分组。分组与排序在
-               `store/my-skills.ts::groupBySource`(纯函数,有单测),这里只负责
-               把每组画成"一个组头 + 一张卡"。组头承载来源(等宽),所以行内
-               那一行 `mine.sourceLabel` 已经从 `Row` 里删掉——同屏两遍是啰嗦。 */
-            groupBySource(activeSec.items).map((group) => (
-              <section key={group.key} className="mt-3 first-of-type:mt-0">
-                <h3 className="pb-1.5 text-[11.5px] font-medium text-text-3">
-                  {group.label === null ? (
-                    t("mine.sourceGroupNone")
-                  ) : (
-                    <span className="font-mono">{t("mine.sourceLabel", { label: group.label })}</span>
-                  )}
-                </h3>
-                <RowCard>{group.items.map(renderRow)}</RowCard>
-              </section>
-            ))
+          {/* 🔴 需求 3:搜索态整页按栏分组渲染**全部**命中,与当前页签无关。
+              `sections()` 吃的已经是筛过的 `filteredList`,空区它自己会滤掉,
+              所以这里拿到的三组就是"哪些栏里有命中"。零命中才说那句
+              「没有匹配的技能」——而不是像页签态那样只报当前这一栏。 */}
+          {searching ? (
+            secs.length === 0 ? (
+              <p className="py-6 text-[12.5px] text-text-3">{t("mine.searchEmpty", { query })}</p>
+            ) : (
+              secs.map((sec) => (
+                <section key={sec.key} className="mt-4 first-of-type:mt-0">
+                  <h3 className="pb-1.5 text-[12px] font-[550] text-text-2">{sec.title}</h3>
+                  {renderItems(sec.key, sec.items)}
+                </section>
+              ))
+            )
           ) : (
-            <RowCard>{activeSec.items.map(renderRow)}</RowCard>
+            <>
+              {/* 🔴 v7.3 Q27-A / Q29-B:列表上方这一行是**本栏区域**,只放"关于当前
+                  这一栏的话"——总数,以及这一栏的筛选态。判据一句话:**页签行是跨栏
+                  区域,放整页级的东西;列表上方是本栏区域,放本栏级的东西**。
+                  第 6/7 轮把这两者搞反了(整页口径的「N 个有更新 · N 个有改动未分享」
+                  留在这里,于是在「可分享到」栏下说出"3 个有改动未分享"而那 3 个一个
+                  都不在这一栏;无辜的「共 N 个」反倒被挪去了页签行),本轮对调回来。
+
+                  两处刻意的例外:①**搜索态整行不摆**——列表是跨栏命中,"共 N 个"
+                  指谁都不对(这一整段就在 `!searching` 分支里);②**空页签不摆总数**
+                  ——下面已经是空态文案,「共 0 个技能」纯属噪音。
+
+                  筛选态是第二处印证(需求 6):角标的按下态说明"是谁在起作用",
+                  这一行给出口。只靠角标太隐蔽——列表突然只剩 3 行,用户未必知道
+                  自己在筛选态、更未必知道怎么退。 */}
+              {(activeSec !== undefined || attentionOnly) && (
+                <div
+                  data-testid="mine-section-bar"
+                  className="flex items-center gap-1.5 pb-2 text-[12px] text-text-3"
+                >
+                  {activeSec && (
+                    <span data-testid="mine-total">
+                      {t("mine.overviewTotal", { count: statsOf(tab).total })}
+                    </span>
+                  )}
+                  {attentionOnly && (
+                    <>
+                      {activeSec && <span aria-hidden>·</span>}
+                      <span>{t("mine.filterAttention")}</span>
+                      <span aria-hidden>·</span>
+                      <button
+                        type="button"
+                        onClick={() => setAttentionOnly(false)}
+                        className="font-medium text-accent underline decoration-dotted underline-offset-2 hover:opacity-80"
+                      >
+                        {t("mine.filterShowAll")}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+              {!activeSec ? (
+                <TabEmpty
+                  tab={tab}
+                  onGoStore={() => setPage("store")}
+                  showCreate={list.length > 0}
+                />
+              ) : activeItems.length === 0 ? (
+                /* 筛选开着、但这一栏的待办已经被处理光了。这一档不能画成
+                   "这个分类是空的"——它明明有行,只是被筛掉了(那才是撒谎)。
+                   🔴 **出路不在这里,在上面那行**:`attentionOnly` 为真时
+                   「只看要处理的 · 显示全部」恒在,再摆第二颗一模一样的按钮是重复。
+                   而这一档恰恰是**角标已经消失**的时刻(`attention` 归 0 就不渲染
+                   角标了),上面那颗「显示全部」是退出筛选态的仅存入口——它与这句
+                   说明必须同屏,有测试正面钉住这一点。 */
+                <p className="py-6 text-[12.5px] text-text-3">{t("mine.filterEmpty")}</p>
+              ) : (
+                renderItems(tab, activeItems)
+              )}
+            </>
           )}
         </div>
       )}
@@ -458,145 +562,213 @@ const TAB_EMPTY: Record<Section, MessageKey> = {
 };
 
 /**
- * 当前页签一行都渲染不出来时的两档说明。
+ * 这个页签在**全量** list 里就是空的时候说的话(共识 §7)。
  *
- * 🔴 **两档必须分开**:这个区本来就是空的(说它自己的事实),与"搜了但这个
- * 页签里没匹配上"(那是搜索的结果)完全是两句话。后一档还要把
- * 「其他分类里有 N 个匹配」说出来——页签把列表切成了三份,不说这一句,用户
- * 在 A 页签搜 B 页签里的技能会得到一句与事实相反的"没有匹配的技能"。
+ * 两条既有原则:**每条都给一个出路**(不是只说"空的");**不解释状态、只说下一步**。
+ * 「安装自」给「去技能商店看看」,「可分享到」给「新建技能」(复用既有的
+ * `CreateSkillButton`,不另造一颗);「已分享到」的出路是一句指路
+ * ——它没有对应的一键动作,分享要先有技能,所以文案直接告诉用户去哪儿分享。
+ *
+ * 🔴 **"搜了但这个页签里没匹配上"那一档已经删掉**:v7.3 起搜索**穿透页签**
+ * (整行让位、按栏分组),不存在"在 A 页签搜 B 页签里的技能"这种场景了,
+ * 连带 `mine.searchOtherTabs`(「其他分类里有 N 个匹配」)这个键也一并撤销。
  */
 function TabEmpty({
   tab,
-  sectionEmpty,
-  query,
-  otherTabMatches,
+  onGoStore,
+  showCreate,
 }: {
-  tab: MineTab;
-  sectionEmpty: boolean;
-  query: string;
-  /** 筛选后**全部**页签加起来的匹配数。这个页签自己是 0,所以它就是"别处"的数。 */
-  otherTabMatches: number;
+  tab: Section;
+  onGoStore: () => void;
+  /** 页签行是不是已经摆着一颗「新建技能」了(列表非空时它就在)。摆着就别再摆
+   *  第二颗——同屏两颗一模一样的按钮是噪音,而"给一个出路"这条已经满足了。 */
+  showCreate: boolean;
 }) {
-  if (tab === "projects") return null;
-  if (sectionEmpty) {
-    return <p className="py-6 text-[12.5px] text-text-3">{t(TAB_EMPTY[tab])}</p>;
-  }
   return (
     <div className="py-6">
-      <p className="text-[12.5px] text-text-3">{t("mine.searchEmpty", { query })}</p>
-      {otherTabMatches > 0 && (
-        <p className="mt-1 text-[12.5px] text-text-3">
-          {t("mine.searchOtherTabs", { count: otherTabMatches })}
-        </p>
+      <p className="text-[12.5px] text-text-3">{t(TAB_EMPTY[tab])}</p>
+      {tab === "installedFrom" && (
+        <button
+          type="button"
+          onClick={onGoStore}
+          className="mt-2.5 h-7 rounded-ctl border border-border px-2.5 text-[12px] font-medium text-text-2 hover:border-border-strong hover:text-text"
+        >
+          {t("mine.tabEmptyInstalledFromCta")}
+        </button>
+      )}
+      {tab === "shareable" && !showCreate && (
+        <div className="mt-2.5">
+          <CreateSkillButton />
+        </div>
       )}
     </div>
   );
 }
 
-/** 四个并列页签:三个库分区 + 项目里(v7.2 需求 1)。 */
-export type MineTab = Section | "projects";
+/** 搜索态的页签行替身(需求 3):页签整行让位,只说"这是谁的搜索结果"。 */
+function SearchHeader({ query }: { query: string }) {
+  return (
+    <div className="mb-2.5 flex h-7 items-center border-b border-border pb-2.5">
+      <p className="min-w-0 truncate text-[12.5px] font-[550]">
+        {t("mine.searchResults", { query })}
+      </p>
+    </div>
+  );
+}
 
-const TAB_ORDER: { key: MineTab; title: MessageKey }[] = [
+const TAB_ORDER: { key: Section; title: MessageKey }[] = [
   // 三区顺序与 `my-skills.ts::SECTION_TITLES` 一致(design 根决策 #2),
   // 标题也复用同一批键——两份标题各写一份必然漂。
   { key: "installedFrom", title: "mine.sectionInstalledFrom" },
   { key: "sharedTo", title: "mine.sectionSharedTo" },
   { key: "shareable", title: "mine.sectionShareable" },
-  { key: "projects", title: "mine.tabProjects" },
 ];
 
 /**
- * 页签行。
+ * 页签行(v7.3 需求 2 + 6 重画,Q19-C / Q20-A 再收,Q27-A/Q28-C 定下这一行的职责)。
  *
- * 🔴 **未选中的页签也写「N 个要处理」**——这是从 v7.1 分区折叠继承下来的原则
- * (载体从折叠头换成了页签,原则不变):一次只看一个区的代价是另外两个区里
- * 等着你的事看不见,所以那个数必须写在页签上。判据是
- * `lib/ownership.ts::needsAttention`,与页头总览那两个数**不是**同一个集合
- * (总览漏掉 conflict/chooseVersion/shareBlocked/underReview 四档)。
+ * # 这一行是**跨栏区域**:三个页签 + 页面级动作
  *
- * 「项目里」历来没有计数(要数得接项目 store,是另一条链路),这里不发明一个。
+ * 右侧只摆**整页口径**的东西——「全部更新 · N」与「新建技能」。本栏口径的
+ * 「共 N 个技能」不在这里,它归列表上方那一行(`mine-section-bar`)。
+ * 第 7 轮曾把总数摆在这里,Q27-A 已纠正;**别再往这一行加回本栏级的数**。
+ *
+ * # 形态 = 名字 + 橙色实心角标(仅 >0)
+ *
+ * 🔴 **撤掉了所有 `·` 分隔符与「个要处理」四个字**:凌乱的直接来源就是它们
+ * ——每个页签因此变成一句话(「可分享到技能库 · 41 · 1 个要处理」),三句话
+ * 并排,扫过去只能逐字读。
+ *
+ * 🔴 **Q19-C 又把总数也拿走了**(推翻第 3 轮"总数留在页签上"):`名字 6 3` 这种
+ * 两个裸数字并排,没有任何标签说明谁是谁,而且 `3 < 6` 会被读成"第 6 项 / 第 3 项"。
+ * 总数搬去**列表上方**那一行(`mine-section-bar`),那里有文字作语境、语义也对
+ * ——它是关于当前这一栏的话。页签上只剩**一个**数字,它的含义由形态本身说明:
+ * 实心橙小块 = 这一栏里要你动手的条数。
+ * 角标在激活页签(浅橙底)里仍然是**实心强调色 + 白字**——同色相的弱底上放弱色
+ * 数字会糊成一团。
+ *
+ * # 🔴 Q20-A:接近性靠**纯间距**,不靠分隔线也不靠底色
+ *
+ * "看起来像 6 块而不是 3 块"的根因是页签**内部**(名字↔角标)与页签**之间**的
+ * 间距差不多,眼睛就按等距切成六份。所以内部 `gap-1`(4px)、之间 `gap-5`(20px),
+ * 五倍差。⚠️ **别拿分隔线/底色去补**:那是用装饰还间距的账,而且会让这一行更密
+ * ——"密"正是用户最初的抱怨。
+ *
+ * # 🔴 角标本身可点(需求 6):点它 = 切到这个页签 + 只看要处理的
+ *
+ * 技术约束:**不做 `button` 套 `button`**(HTML 不允许)。所以每个页签是一个
+ * `div`(`role="presentation"`),名字那颗挂 `role="tab"`,角标那颗是独立按钮、
+ * 有自己的 `aria-label`(「只看「安装自技能库」里要处理的 3 个」)——两颗都能
+ * 用键盘分别到达。按下态用与 Toolbar 强调色圆点同款的 ring(`aria-pressed`
+ * + 双层 shadow 描边),不是新造一套样式,也不是 glow。
+ *
+ * 「项目里」已经不在这一行(v7.3 挪进侧边栏),所以这里不再有"没有计数的第四档"。
  */
 function TabsRow({
   tab,
+  attentionOnly,
   onChange,
+  onToggleAttention,
   statsOf,
+  updatesCount,
+  updateAllBusy,
+  onUpdateAll,
   showCreate,
 }: {
-  tab: MineTab;
-  onChange: (tab: MineTab) => void;
-  statsOf: (key: Section) => { total: number; attention: number };
-  /** 只在库页签且列表非空时给 true——空态自己的 CTA 行已经有「新建技能」,
-   *  这里不重复摆一份(design #16:「新建技能」紧跟在「项目里」之后)。 */
+  tab: Section;
+  attentionOnly: boolean;
+  onChange: (tab: Section) => void;
+  onToggleAttention: (tab: Section) => void;
+  /** 只读 `attention`(角标)——总数是**本栏**口径,归列表上方那一行,
+   *  别再往这里加回一个 `total`(Q27-A 就是在纠正那一步)。 */
+  statsOf: (key: Section) => { attention: number };
+  /** 整页有几个技能能被「全部更新」一键处理。0 时那颗按钮整个不摆。 */
+  updatesCount: number;
+  updateAllBusy: boolean;
+  onUpdateAll: () => void;
+  /** 只在列表非空时给 true——空态自己的 CTA 行已经有「新建技能」,
+   *  这里不重复摆一份(design #16:「新建技能」紧跟在页签之后)。 */
   showCreate: boolean;
 }) {
   return (
-    <div className="mb-2.5 flex items-center justify-between gap-2 border-b border-border pb-2.5">
-      {/* 🔴 窄窗口下页签行要**横向滚动**,不能挤:四个页签带上两个计数之后,窗口
-          宽 ≤1000px 时(实测:内容区 752px)总宽就超了。`h-7` 是写死的,文字一挤
-          就在 28px 高的 chip 里换行、上下都被切掉。UI 规范对宽内容的规定就是
-          "在自己的 overflow-x 容器里滚",这里照办:`min-w-0` 让它真的能收缩,
-          页签自己 `shrink-0 whitespace-nowrap` 保持完整。 */}
-      <div role="tablist" className="flex min-w-0 items-center gap-1 overflow-x-auto">
+    <div
+      data-testid="mine-tabs-row"
+      className="mb-2.5 flex items-center justify-between gap-2 border-b border-border pb-2.5"
+    >
+      {/* 🔴 窄窗口下页签行要**横向滚动**,不能挤:`min-w-0` 让它真的能收缩,
+          页签自己 `shrink-0 whitespace-nowrap` 保持完整。高度写在**外层 div**
+          上(不是那颗 `role="tab"` 的按钮上),里面的文字与角标都靠
+          `items-center` 居中——v7.2 把 `h-7` 写死在按钮上,文字一挤就在 28px
+          里换行、上下被切掉。 */}
+      <div role="tablist" className="flex min-w-0 flex-1 items-center gap-5 overflow-x-auto">
         {TAB_ORDER.map(({ key, title }) => {
-          const stats = key === "projects" ? null : statsOf(key);
+          const stats = statsOf(key);
+          const active = tab === key;
+          const filtering = active && attentionOnly;
           return (
-            <TabButton key={key} active={tab === key} onClick={() => onChange(key)}>
-              <span>{t(title)}</span>
-              {stats && (
-                <>
-                  <span aria-hidden className="text-text-3">
-                    ·
-                  </span>
-                  <span className="text-text-3">{stats.total}</span>
-                  {stats.attention > 0 && (
-                    <>
-                      {/* 两个数之间要有分隔点,否则「6 3 个要处理」读起来像一个数 */}
-                      <span aria-hidden className="text-text-3">
-                        ·
-                      </span>
-                      <span className="text-accent">
-                        {t("mine.sectionAttention", { count: stats.attention })}
-                      </span>
-                    </>
-                  )}
-                </>
+            <div
+              key={key}
+              role="presentation"
+              className={cn(
+                // gap-1 = 4px:页签内部(名字↔角标)必须明显紧于页签之间的
+                // gap-5 = 20px,否则六个元素等距排开,读成六块(Q20-A)。
+                "flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-ctl",
+                stats.attention > 0 ? "pl-2.5 pr-1.5" : "px-2.5",
+                active && "bg-accent-soft",
               )}
-            </TabButton>
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => onChange(key)}
+                className={cn(
+                  "whitespace-nowrap text-[12.5px]",
+                  active ? "font-[550] text-accent" : "font-[450] text-text-2 hover:text-text",
+                )}
+              >
+                {t(title)}
+              </button>
+              {stats.attention > 0 && (
+                <button
+                  type="button"
+                  data-testid={`tab-badge-${key}`}
+                  aria-pressed={filtering}
+                  aria-label={t(
+                    filtering ? "mine.tabAttentionFilterOff" : "mine.tabAttentionFilter",
+                    { section: t(title), count: stats.attention },
+                  )}
+                  onClick={() => onToggleAttention(key)}
+                  className={cn(
+                    "min-w-[16px] rounded-[4px] bg-accent px-1 text-center font-mono text-[10.5px] leading-4 text-white hover:opacity-90",
+                    filtering && "shadow-[0_0_0_1.5px_var(--bg),0_0_0_3px_var(--text-3)]",
+                  )}
+                >
+                  {stats.attention}
+                </button>
+              )}
+            </div>
           );
         })}
       </div>
+      {/* 🔴 Q27-A / Q28-C:「全部更新」是**整页**口径的动作(它跨三栏一起更新),
+          所以它属于**页签行这个跨栏区域**,而不是某一栏的列表上方——摆在后者就等于
+          在「可分享到」栏下说一句关于另外两栏的话。数字挂在按钮自己身上
+          (「全部更新 · 1」):点之前应当知道会动几个,而这是最省地方的说法。
+          原先那两段整页汇总文字(「N 个有更新 · N 个有改动未分享」)已撤掉
+          ——页签角标逐栏报得更精确,那两段是同一批事实的冗余表达。
+          🔴 **行为一个字没动**:仍是整页口径、仍走 `updateAll()`。
+          摆在「新建技能」**左侧**:后者常驻,让它保持最右锚点,免得这颗按钮
+          出现/消失时把用户的点击目标挪来挪去。 */}
+      {updatesCount > 0 && (
+        <ChipButton disabled={updateAllBusy} onClick={onUpdateAll}>
+          {updateAllBusy ? t("mine.updating") : t("mine.updateAll", { count: updatesCount })}
+        </ChipButton>
+      )}
       {/* ⚠️ 不给它包一层容器:有一条测试正面钉住「新建技能」与 tablist 是**同一个
-          父容器下的兄弟节点**(design #16)。它也不需要——按钮里是文字、
-          `overflow` 是 visible,flex 子项的 `min-width:auto` 本来就不让它被压到
-          内容以下,会收缩的只有显式写了 `min-w-0` 的 tablist。 */}
+          父容器下的兄弟节点**(design #16)。 */}
       {showCreate && <CreateSkillButton />}
     </div>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      className={
-        active
-          ? "flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-ctl bg-[rgba(194,65,12,.08)] px-2.5 text-[12.5px] font-[550] text-accent"
-          : "flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-ctl px-2.5 text-[12.5px] font-[450] text-text-2 hover:text-text"
-      }
-    >
-      {children}
-    </button>
   );
 }
 

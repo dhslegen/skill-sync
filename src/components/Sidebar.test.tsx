@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Sidebar } from "./Sidebar";
@@ -6,6 +7,7 @@ import type { InstalledSkillView, Section } from "@/lib/ipc";
 import { useMySkills } from "@/store/my-skills";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
+import { useUi } from "@/store/ui";
 import { useUpdatePrompt } from "@/store/update-prompt";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
@@ -68,6 +70,7 @@ function reset() {
   useUpdatePrompt.setState({ readyVersion: null, dismissed: false });
   useMySkills.setState({ list: null });
   useStoreIndex.setState({ index: null });
+  useUi.setState({ page: "store" });
 }
 
 /** 导航项上的角标:取「我的技能」那颗按钮里的数字。 */
@@ -102,6 +105,24 @@ describe("侧边栏 · 技能更新角标", () => {
     render(<Sidebar version="0.3.0" />);
 
     expect(mineBadge()).toBeNull();
+  });
+
+  // 🔴 v7.3:「项目里的技能」从「我的技能」的第四个页签升成侧边栏一条独立的页。
+  // 两条命题都要钉:①它在侧边栏上、点了会切页(否则整页无入口,ProjectSections
+  // 变成挂在 App 里谁也到不了的死组件);②**它没有角标**(项目级链路算不出
+  // "有几个要处理"这个数,摆一个没有含义的点比不摆更糟)。
+  it("侧边栏有「项目里的技能」,点它切到 projects 页,且不摆角标", async () => {
+    useMySkills.setState({ list: [view(), view({ dirSlug: "code-review" })] });
+    useStoreIndex.setState({ index: index("weekly-report", "code-review") as never });
+    render(<Sidebar version="0.3.0" />);
+
+    const btn = screen.getByRole("button", { name: /项目里的技能/ });
+    // 「我的技能」此刻角标是 2,而它旁边这一条一个数都不该有
+    expect(mineBadge()).toBe("2");
+    expect(btn.querySelector("[data-testid='nav-badge']")).toBeNull();
+
+    await userEvent.click(btn);
+    expect(useUi.getState().page).toBe("projects");
   });
 
   // 2026-08-07 用户报"窗口拖不动":顶部这条 52px 空白(给 macOS 红绿灯让位的地方)
