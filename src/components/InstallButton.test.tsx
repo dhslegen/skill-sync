@@ -101,10 +101,28 @@ describe("v7.5:商店认得出'这台电脑上已经有了'", () => {
     expect(classesOf(installedButton)).toEqual(classesOf(onDiskButton));
   });
 
-  it("label 覆盖:传了就用它,不用状态机算出的默认文案", () => {
-    render(<InstallButton state="onDiskDiffers" label="换成库里的版本" onClick={() => {}} />);
+  it("🔴 onDiskDiffers 两处不同词:卡片是陈述,详情面板是动作", () => {
+    const { unmount } = render(<InstallButton state="onDiskDiffers" onClick={() => {}} />);
+    expect(screen.getByRole("button")).toHaveTextContent("与库里不同");
+    expect(screen.queryByText("换成库里的版本")).toBeNull();
+    unmount();
+
+    render(<InstallButton state="onDiskDiffers" variant="panel" onClick={() => {}} />);
     expect(screen.getByRole("button")).toHaveTextContent("换成库里的版本");
     expect(screen.queryByText("与库里不同")).toBeNull();
+  });
+
+  it("其余各档两处同词——variant 只在 onDiskDiffers 上有分歧", () => {
+    const states = ["install", "installed", "update", "otherLibrary", "onDisk"] as const;
+    for (const state of states) {
+      const card = render(<InstallButton state={state} />);
+      const cardText = screen.getByRole("button").textContent;
+      card.unmount();
+
+      const panel = render(<InstallButton state={state} variant="panel" />);
+      expect(screen.getByRole("button").textContent).toBe(cardText);
+      panel.unmount();
+    }
   });
 });
 

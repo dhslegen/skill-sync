@@ -176,9 +176,9 @@ function IdleFooter({
           size="lg"
           onClick={onBegin}
           // 详情面板底部的 onDiskDiffers 说的是**动作**「换成库里的版本」,不是
-          // 卡片上那句状态陈述「与库里不同」——两处不同词是有意的(v7.5 共识,
-          // 见 `lib/update.ts` 与 `InstallButton.tsx` 的文档注释)。
-          label={state === "onDiskDiffers" ? t("install.replaceWithLibrary") : undefined}
+          // 卡片上那句状态陈述「与库里不同」——两处不同词是有意的(v7.5 共识)。
+          // 文案表在 `InstallButton.tsx::labelOf`,这里只说"我是哪一处"。
+          variant="panel"
           hint={
             state === "otherLibrary" && record
               ? t("skill.otherLibraryHint", {

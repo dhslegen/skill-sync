@@ -30,6 +30,42 @@ export type InstallState =
   | "onDiskDiffers";
 
 /**
+ * 这颗按钮长在哪儿。**只影响文案,不影响任何行为侧判定**
+ * (`terminal` / `inert` / 配色一律只读 `state`)。
+ *
+ * 🔴 **刻意是闭合联合,不是开放的 `label?: string`**(v7.5 复审改的):后者让
+ * 任何调用方都能让这颗按钮说任何话,于是「判定唯一实现在 `cardState`,这里
+ * 只负责画」就退化成一句注释里的约定——CLAUDE.md 记着「约定会被下一个人
+ * 无声打破,类型不会」。闭合联合的好处是加新档时 `labelOf` 的穷尽 switch
+ * 会当场编译失败,逼着人把两个位置都填了。
+ */
+export type InstallButtonVariant = "card" | "panel";
+
+/**
+ * 文案表。`onDiskDiffers` 是**目前唯一两处不同词的档**:卡片上是状态陈述
+ * (「与库里不同」),详情面板底部是动作(「换成库里的版本」)——两处不同词
+ * 是有意的,见 `docs/v7.5-共识.md`。其余各档两处同词。
+ *
+ * 没有 `default` 分支:加档时这里必须编译失败。
+ */
+function labelOf(state: InstallState, variant: InstallButtonVariant): string {
+  switch (state) {
+    case "installed":
+      return t("skill.actionInstalled");
+    case "onDisk":
+      return t("store.onDisk");
+    case "update":
+      return t("skill.actionUpdate");
+    case "otherLibrary":
+      return t("skill.actionReplace");
+    case "onDiskDiffers":
+      return variant === "panel" ? t("install.replaceWithLibrary") : t("store.onDiskDiffers");
+    case "install":
+      return t("skill.actionInstall");
+  }
+}
+
+/**
  * 安装按钮。
  *
  * **本任务里它不执行安装**:获取流程是下一个任务,而 `Installer::install` 目前仍会
@@ -43,12 +79,7 @@ export function InstallButton({
   disabled = false,
   hint,
   size = "sm",
-  /**
-   * 覆盖状态机算出的默认文案。目前唯一的用途:详情面板底部的
-   * `onDiskDiffers` 按钮要说「换成库里的版本」(动作),而同一状态在卡片上
-   * 说「与库里不同」(陈述)——两处不同词是有意的,见 `docs/v7.5-共识.md`。
-   */
-  label: labelOverride,
+  variant = "card",
 }: {
   state: InstallState;
   onClick?: () => void;
@@ -56,21 +87,10 @@ export function InstallButton({
   /** 置灰时的说明,同时作为可访问名的补充。 */
   hint?: string;
   size?: "sm" | "lg";
-  label?: string;
+  /** 这颗按钮长在哪儿。**只影响文案**,不影响任何行为侧判定。 */
+  variant?: InstallButtonVariant;
 }) {
-  const label =
-    labelOverride ??
-    (state === "installed"
-      ? t("skill.actionInstalled")
-      : state === "onDisk"
-        ? t("store.onDisk")
-        : state === "update"
-          ? t("skill.actionUpdate")
-          : state === "otherLibrary"
-            ? t("skill.actionReplace")
-            : state === "onDiskDiffers"
-              ? t("store.onDiskDiffers")
-              : t("skill.actionInstall"));
+  const label = labelOf(state, variant);
 
   // onDisk 与 installed 是同一档"终态"(v7.5):本机这份内容与库里逐字节相同
   // (或无从比较),没有下一步动作可点。
