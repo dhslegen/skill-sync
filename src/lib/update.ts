@@ -10,6 +10,22 @@ export function remoteHashOf(
   return index?.skills.find((s) => s.dirSlug === dirSlug)?.contentHash ?? "";
 }
 
+/**
+ * 这台电脑上某个 dirSlug 本体此刻的实时指纹(v7.5,`cardState` 新形参
+ * `localHash` 的数据来源)。数据来自 `useMySkills` 的 `list`,只取
+ * `localPresent === true` 的行——`list` 为 `null`(还没加载过)或找不到这一行
+ * 都返回 `undefined`,与 `cardState` 里"本机没有本体"是同一个信号。
+ *
+ * 与 `remoteHashOf` 同一种"单一实现供多处复用"的姿势,但语义相反:那个答的是
+ * "库里这一版长什么样",这个答的是"这台电脑上现在长什么样"。
+ */
+export function localHashOf(
+  list: { dirSlug: string; localPresent: boolean; localHash: string }[] | null | undefined,
+  dirSlug: string,
+): string | undefined {
+  return list?.find((s) => s.dirSlug === dirSlug && s.localPresent)?.localHash;
+}
+
 /** 当前浏览的技能库坐标。判定要比到库,不只是源(M4 一源多仓)。 */
 export interface LibraryRef {
   registryId: string;
@@ -51,7 +67,15 @@ export function isMine(author: string | null | undefined, me: MeRef | null | und
   return !!author && !!me && (author === me.displayName || author === me.login);
 }
 
-export type CardState = "install" | "installed" | "update" | "otherLibrary";
+export type CardState =
+  | "install"
+  | "installed"
+  | "update"
+  | "otherLibrary"
+  // v7.5 新增,见下面文档注释「本机本体」一节。**只在 `!record` 时可达**——
+  // 有记账时走既有四档,一个字没变。
+  | "onDisk"
+  | "onDiskDiffers";
 
 /**
  * 卡片/详情按钮的状态机。
@@ -78,14 +102,59 @@ export type CardState = "install" | "installed" | "update" | "otherLibrary";
  * `acquire::precheck` 的判定顺序一致(`ownership` 一节记的裁定):两个库的同名
  * 技能是两个东西,即便内容恰好相同,"用另一个库的版本替换掉现有的"仍然必须由
  * 用户拍板,不能被内容指纹比对当成"已是最新"悄悄放过。
+ *
+ * ## 本机本体(v7.5,`docs/v7.5-共识.md` Q33–Q43)
+ *
+ * 起因:商店卡片此前只问「我**装**过吗」(读 `record`,即 `state.installed` 记账),
+ * 而在 Claude Code 里原创、走「开分支+提交审核」分享的技能——本体明明在磁盘上,
+ * 只是没有记账(`adopt_into_management` 只认直推)——卡片对着用户自己的原稿写
+ * 「获取」。同样的假话适用于任何本机有本体但无记账的技能:npx 装的、自己写的
+ * 草稿、换电脑后 git 拉的。
+ *
+ * `!record` 分支因此改成会先看 `localHash`(这台电脑上这个 `dirSlug` 的本体
+ * 指纹,来自 `useMySkills` 的 `list`,`localPresent === true` 的行才有值):
+ * `localHash === undefined` = 本机确实没有本体,才是真的 `install`;
+ * 否则按内容分两档 —— 与库里逐字节相同(或任一侧指纹读不到,**宁可漏报**,
+ * 与既有"任一侧指纹为空按没有更新处理"同源)算 `onDisk`,不同算 `onDiskDiffers`。
+ *
+ * 🔴 **判据只认 `dirSlug`,不判"是不是同一个技能"**(用户 Q37-B 明确拍板,
+ * 是**接受代价的显式选择**,不是遗漏)。本机 `weekly-report` 草稿撞上库里一个
+ * 完全无关的 `weekly-report` 时,会显示「与库里不同」——"与"字暗示是同一个技能
+ * 的两份,而其实两者可能毫无关系。**别顺手加 description/authors 这类"是不是
+ * 同一个技能"的判据去"修"这条**:那是拿更多的猜去补一个猜,而且 authors 只对
+ * 公司库有,广场技能永远补不上。出路是详情底部的「换成库里的版本」——点下去走
+ * 既有的 `acquire`,`precheck` 会用真实内容比对把误判拦成 `LocalDiffers`/`Mine`
+ * 拍板框,磁盘在用户拍板前一个字节都不会动。
+ *
+ * 这一档也**永远不会说「有更新」**:没有安装基线,方向判不出来(同
+ * `my-skills.ts` 的 `localDiffersNoBaseline`)。出路同样是「换成库里的版本」
+ * ——点一次走完 acquire,记账就建起来了,之后才回到 `update`/`installed` 那两档。
+ *
+ * 广场卡片(`PlazaSkillCard`)没有内容指纹,`remoteHash` 恒传空串,因此永远落进
+ * "指纹缺失按相同处理"那一支,只会显示 `onDisk`——**这是刻意的漏报**(Q43-A):
+ * 内容其实不同也说"已在电脑上",与既有"任一侧指纹为空按没有更新处理"同源。
  */
 export function cardState(
   record: InstalledRecord | undefined,
   remoteHash: string,
   /** 当前浏览的库;省略 = 调用方不区分库(判定退回 M3 口径)。 */
   library?: LibraryRef,
+  /**
+   * 这台电脑上这个 dirSlug 的本体指纹(来自 `useMySkills` 的 `list`,
+   * `localPresent === true` 的行);`undefined` = 本机没有本体。
+   * 空串 = 有本体但指纹读不到,按"无从比较"处理。**只在 `!record` 时读取**。
+   */
+  localHash?: string,
 ): CardState {
-  if (!record) return "install";
+  if (!record) {
+    if (localHash === undefined) return "install";
+    // 任一侧指纹缺失 → 按"相同"处理。这是**刻意的漏报**:说「已在电脑上」在
+    // "本机确实有个同名技能"时是真的、只是没说全;说「获取」在东西已经躺在
+    // 磁盘上时是纯粹的假。与既有"任一侧指纹为空按没有更新处理"同源。
+    // 广场那一侧永远走这一支(PlazaSkillCard 没有内容指纹)。
+    if (!localHash || !remoteHash) return "onDisk";
+    return localHash === remoteHash ? "onDisk" : "onDiskDiffers";
+  }
   if (library && record.registryId && record.sourceOwner && record.sourceRepo) {
     const sameLibrary =
       record.registryId === library.registryId &&

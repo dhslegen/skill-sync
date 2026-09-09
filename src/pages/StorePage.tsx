@@ -12,6 +12,7 @@ import { PLAZA_REGISTRY_ID, type PlazaSkillCard } from "@/lib/ipc";
 import { filterSkills, type StoreFilter } from "@/lib/search";
 import { cardState, isMine } from "@/lib/update";
 import { useInstall } from "@/store/install";
+import { useMySkills } from "@/store/my-skills";
 import { usePlaza } from "@/store/plaza";
 import { useRegistries } from "@/store/registries";
 import { useSession } from "@/store/session";
@@ -53,8 +54,34 @@ function StoreBody() {
     activeRepo,
   } = useStoreIndex();
   const records = useInstall((s) => s.installed);
-  // 已安装集合来自 installed_list(core 的 state.json),不再是恒空的占位
-  const installed = useMemo(() => new Set(records.keys()), [records]);
+  // v7.5:商店卡片要认得出"这台电脑上已经有了"(`docs/v7.5-共识.md`),数据来自
+  // 「我的技能」的 `list`——**不新增 IPC**,只是复用既有的四源合一表。挂载时若
+  // 还没加载过就触发一次;`load()` 本身不发任何网络请求(审核态查询挂在
+  // `useLocalRefresh` 的窗口重获焦点那一级,不在 `load()` 里),不违反"翻页不
+  // 发请求"。
+  const myList = useMySkills((s) => s.list);
+  const loadMySkills = useMySkills((s) => s.load);
+  useEffect(() => {
+    if (myList === null) void loadMySkills();
+  }, [myList, loadMySkills]);
+  // dirSlug → 本机本体此刻的实时指纹,只取 `localPresent === true` 的行
+  // ——Zustand selector 里绝不能造新对象(`store/project.ts` 的既有教训),
+  // 派生放在组件里 `useMemo`。
+  const localHashes = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const skill of myList ?? []) {
+      if (skill.localPresent) map.set(skill.dirSlug, skill.localHash);
+    }
+    return map;
+  }, [myList]);
+  // 已安装集合来自 installed_list(core 的 state.json)**并上**本机有本体的
+  // dirSlug(v7.5 Q42-A):筛选器要与卡片按钮用同一把尺子,否则点「未安装」会
+  // 看到一批写着「已在电脑上」的卡片——筛选器和按钮当场打架。
+  const installed = useMemo(() => {
+    const set = new Set(records.keys());
+    for (const dirSlug of localHashes.keys()) set.add(dirSlug);
+    return set;
+  }, [records, localHashes]);
   // 「我分享的」四档(v6)要知道"这是不是我"——未登录时 `me` 是 null,
   // `cardState` 对此按既有口径处理(行为与 mine 加入前逐字相同)。
   const me = useSession((s) => s.user);
@@ -216,11 +243,12 @@ function StoreBody() {
               repo={index.repo}
               updatedAt={updatedAt}
               mine={isMine(skill.author, me)}
-              state={cardState(records.get(skill.dirSlug), skill.contentHash, {
-                registryId: index.registryId,
-                owner: index.owner,
-                repo: index.repo,
-              })}
+              state={cardState(
+                records.get(skill.dirSlug),
+                skill.contentHash,
+                { registryId: index.registryId, owner: index.owner, repo: index.repo },
+                localHashes.get(skill.dirSlug),
+              )}
               onOpen={() => void openDetail(skill.dirSlug)}
             />
           ))}

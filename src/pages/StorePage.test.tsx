@@ -1,10 +1,11 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { StorePage } from "./StorePage";
-import type { PlazaSkillCard, StoreIndexView, StoreSkillCard } from "@/lib/ipc";
+import type { InstalledSkillView, PlazaSkillCard, StoreIndexView, StoreSkillCard } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
+import { useMySkills } from "@/store/my-skills";
 import { usePlaza } from "@/store/plaza";
 import { useRegistries } from "@/store/registries";
 import { useChangelog } from "@/store/changelog";
@@ -21,7 +22,45 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args: unknown) =>
 
 beforeEach(() => {
   invoke.mockReset();
+  // v7.5:商店卡片"这台电脑上已经有了"的判定来自「我的技能」的 `list`(全局
+  // Zustand 单例,测试之间不会自动重置)。默认收回"还没加载过",避免上一条用例
+  // 塞进去的本机本体数据残留到下一条——绝大多数既有用例根本不关心它,只有
+  // 「本机本体」那个 describe 会显式 setState。
+  useMySkills.setState({ list: null });
 });
+
+/** 最小可用的 `InstalledSkillView`,只有 v7.5 关心的三个字段(dirSlug/localPresent/
+ *  localHash)是变量,其余填不影响判定的占位值——与 `InstallPanel.test.tsx` 的
+ *  `localSkill` 同一姿势,这里不共用是因为两个文件各自独立、字段清单本身来自
+ *  v7 任务 7,拆公共 fixture 超出本任务范围。 */
+function localSkill(over: Partial<InstalledSkillView> & { dirSlug: string }): InstalledSkillView {
+  return {
+    commitSha: "",
+    contentHash: "",
+    agents: [],
+    installedAt: "",
+    updatedAt: "",
+    localModified: false,
+    sourceOwner: "",
+    sourceRepo: "",
+    registryId: "",
+    sourceRemoved: false,
+    libraryRemoved: false,
+    relation: "draft",
+    localPresent: true,
+    sourceLabel: null,
+    body: `/h/.claude/skills/${over.dirSlug}`,
+    localHash: "",
+    tools: [],
+    versions: [],
+    shareBlocked: null,
+    section: "shareable",
+    review: null,
+    libraryUrl: null,
+    canonicalReaders: null,
+    ...over,
+  };
+}
 
 const card = (over: Partial<StoreSkillCard>): StoreSkillCard => ({
   name: "周报生成",
@@ -261,6 +300,115 @@ describe("卡片安装状态", () => {
     render(<StorePage />);
     expect(screen.getByRole("button", { name: /^替换/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^更新 —/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("v7.5:商店认得出'这台电脑上已经有了'(docs/v7.5-共识.md)", () => {
+  beforeEach(() => {
+    seed();
+    useInstall.setState({ installed: new Map() });
+  });
+
+  it("商店页挂载时,list 还没加载过就触发一次 load()", async () => {
+    render(<StorePage />);
+    await waitFor(() => {
+      expect(invoke.mock.calls.some(([c]) => c === "installed_list")).toBe(true);
+    });
+  });
+
+  it("list 已经加载过(非 null)时不重复触发", () => {
+    useMySkills.setState({ list: [] });
+    render(<StorePage />);
+    expect(invoke.mock.calls.some(([c]) => c === "installed_list")).toBe(false);
+  });
+
+  it("🔴 无记账 + 本机有本体 + 指纹相同 → 「已在电脑上」,不再是「获取」", () => {
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha256:weekly" })],
+    });
+    render(<StorePage />);
+
+    // 卡片上按钮的可访问名带着固定的 hint(「— 打开详情,选择要启用的 AI 工具」,
+    // 见 SkillCard.tsx),与其余用例(`/^安装 —/`、`/已启用/`)同款只锚定文案前缀。
+    const button = screen.getByRole("button", { name: /^已在电脑上/ });
+    expect(button).toBeDisabled();
+    // 这一档不该还显示「安装」——它是那三张卡片里唯一有本体的一张
+    expect(screen.getAllByRole("button", { name: /^安装 —/ })).toHaveLength(2);
+  });
+
+  it("🔴 无记账 + 本机有本体 + 指纹不同 → 「与库里不同」,可点", async () => {
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha256:本地那份" })],
+    });
+    render(<StorePage />);
+
+    const button = screen.getByRole("button", { name: /^与库里不同/ });
+    expect(button).not.toBeDisabled();
+  });
+
+  it("🔴 本机没有本体(localPresent: false)→ 仍是「获取」", () => {
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: false, localHash: "" })],
+    });
+    render(<StorePage />);
+
+    expect(screen.getAllByRole("button", { name: /^安装 —/ })).toHaveLength(3);
+    expect(screen.queryByText("已在电脑上")).not.toBeInTheDocument();
+  });
+
+  it("🔴 Q37-B:同名不同物也会显示「与库里不同」——判据只认 dirSlug,这是接受的代价,不是缺陷", () => {
+    // 本机 weekly-report 草稿与库里那个 weekly-report 可能毫无关系,但共识文档
+    // 明确拍板:不补 description/authors 这类"是不是同一个技能"的判据。
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha256:跟库里完全无关的草稿" })],
+    });
+    render(<StorePage />);
+
+    expect(screen.getByRole("button", { name: /^与库里不同/ })).toBeInTheDocument();
+  });
+
+  it("🔴 有记账时新逻辑不介入——既有的「已启用」判定不受本机本体数据影响", () => {
+    useInstall.setState({
+      installed: new Map([
+        [
+          "weekly-report",
+          { commitSha: "a1b2c3d4e5", contentHash: "sha256:weekly", localModified: false, registryId: "company", sourceOwner: "skills", sourceRepo: "skills" },
+        ],
+      ]),
+    });
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "随便什么值" })],
+    });
+    render(<StorePage />);
+
+    expect(screen.getByRole("button", { name: /已启用/ })).toBeInTheDocument();
+    expect(screen.queryByText("已在电脑上")).not.toBeInTheDocument();
+    expect(screen.queryByText("与库里不同")).not.toBeInTheDocument();
+  });
+
+  describe("筛选器换同一把尺子(Q42-A)", () => {
+    it("本机有本体、无记账的技能落进「已安装」,不落进「未安装」", async () => {
+      useMySkills.setState({
+        list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha256:weekly" })],
+      });
+      render(<StorePage />);
+
+      await userEvent.click(screen.getByRole("button", { name: "已安装" }));
+      expect(screen.getByText("skills/weekly-report")).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: "未安装" }));
+      expect(screen.queryByText("skills/weekly-report")).not.toBeInTheDocument();
+    });
+
+    it("不改筛选器的话,「未安装」会与按钮打架(对照组:localPresent 为假时正常落进未安装)", async () => {
+      useMySkills.setState({
+        list: [localSkill({ dirSlug: "weekly-report", localPresent: false, localHash: "" })],
+      });
+      render(<StorePage />);
+
+      await userEvent.click(screen.getByRole("button", { name: "未安装" }));
+      expect(screen.getByText("skills/weekly-report")).toBeInTheDocument();
+    });
   });
 });
 

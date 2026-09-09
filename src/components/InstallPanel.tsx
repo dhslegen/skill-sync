@@ -9,8 +9,9 @@ import { t, type MessageKey } from "@/i18n";
 import { failedLinks, linkedAgents, useInstall } from "@/store/install";
 import { cn } from "@/lib/cn";
 import { PLAZA_REGISTRY_ID, type InstallStage, type ToolState } from "@/lib/ipc";
-import { cardState, remoteHashOf, type LibraryRef } from "@/lib/update";
+import { cardState, localHashOf, remoteHashOf, type LibraryRef } from "@/lib/update";
 import { useLocalDetail } from "@/store/local-detail";
+import { useMySkills } from "@/store/my-skills";
 import { useProjects } from "@/store/project";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
@@ -133,23 +134,32 @@ function IdleFooter({
   const installed = useInstall((s) => s.installed);
   const index = useStoreIndex((s) => s.index);
   const record = installed.get(dirSlug);
+  // v7.5:这台电脑上这个 dirSlug 的本体指纹,供 `cardState` 判"无记账但本机有
+  // 本体"那两档(`onDisk`/`onDiskDiffers`)。数据来自 `useMySkills` 的 `list`
+  // ——**这里不主动 load()**,商店页挂载时已经 load 过一次(见 `StorePage.tsx`),
+  // 而 `InstallPanel` 只会从商店(含广场搜索结果)打开,那时 `list` 要么已经在
+  // 加载、要么已经加载完。
+  const myList = useMySkills((s) => s.list);
+  const localHash = localHashOf(myList, dirSlug);
   // 与商店卡片同一条判定。曾经这里只算 install/installed 两档,于是卡片显示
   // "更新"、点进来按钮却是禁用的「已启用」——用户点了毫无反应(2026-08-03 实测缺陷)。
   //
   // 广场详情态没有索引可比(广场是搜索态,不建索引——设计文档 §2.4):remoteHash
-  // 传空串,`cardState` 对指纹缺失按"已启用"处理,宁可漏报"有更新"也不能编造一个。
-  // 真正精确的"有更新"判定,要等这个仓被挂上、用户切到它按普通库浏览时才出现
-  // (那条路走的是 store_index,自然有指纹可比,§2.4 说的正是这件事)。
+  // 传空串,`cardState` 对指纹缺失按"已启用"(或 v7.5 新增的 `onDisk`)处理,
+  // 宁可漏报"有更新"也不能编造一个。真正精确的"有更新"判定,要等这个仓被挂上、
+  // 用户切到它按普通库浏览时才出现(那条路走的是 store_index,自然有指纹可比,
+  // §2.4 说的正是这件事)。
   //
   // v7.4 起 `cardState` 不再收作者/登录身份两个形参(用户第 9 轮拷问拍板撤掉商店
   // 卡片的作者四档,见 `lib/update.ts` 文档注释):商店只回答"我有没有 / 我要不要",
   // "这是不是我分享的"这件事交给 core 的 `acquire::precheck` 在点下去之后判定。
   const state = plaza
-    ? cardState(record, "", ownerRepoToLibrary(plaza.ownerRepo))
+    ? cardState(record, "", ownerRepoToLibrary(plaza.ownerRepo), localHash)
     : cardState(
         record,
         remoteHashOf(index, dirSlug),
         index ? { registryId: index.registryId, owner: index.owner, repo: index.repo } : undefined,
+        localHash,
       );
   const requestInstall = useProjects((s) => s.requestInstall);
   const installing = useProjects((s) => s.installing);
@@ -165,6 +175,10 @@ function IdleFooter({
           state={state}
           size="lg"
           onClick={onBegin}
+          // 详情面板底部的 onDiskDiffers 说的是**动作**「换成库里的版本」,不是
+          // 卡片上那句状态陈述「与库里不同」——两处不同词是有意的(v7.5 共识,
+          // 见 `lib/update.ts` 与 `InstallButton.tsx` 的文档注释)。
+          label={state === "onDiskDiffers" ? t("install.replaceWithLibrary") : undefined}
           hint={
             state === "otherLibrary" && record
               ? t("skill.otherLibraryHint", {
@@ -175,10 +189,11 @@ function IdleFooter({
         />
         <InstallScopeMenu
           dirSlug={dirSlug}
-          // 主按钮是终态(「已启用」不可点)时,把作用域入口显性化成
-          // 文字按钮——那一档整块看起来就是"做完了",小三角不足以让人想到还能
-          // 装到项目(2026-08-22 用户反馈)。可点动作那几档保持图标,免得抢注意力。
-          label={state === "installed" ? t("install.scopeProject") : undefined}
+          // 主按钮是终态(「已启用」/v7.5 新增的「已在电脑上」不可点)时,把作用域
+          // 入口显性化成文字按钮——那一档整块看起来就是"做完了",小三角不足以
+          // 让人想到还能装到项目(2026-08-22 用户反馈,v7.5 Q39-A 沿用同一条判据)。
+          // 可点动作那几档保持图标,免得抢注意力。
+          label={state === "installed" || state === "onDisk" ? t("install.scopeProject") : undefined}
           disabled={!!installing}
           onGlobal={onBegin}
           onPickProject={() => {

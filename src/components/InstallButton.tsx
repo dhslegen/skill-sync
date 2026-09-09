@@ -14,8 +14,20 @@ import { cn } from "@/lib/cn";
  *  分享的、不论本地改没改)一律落进 `update`,点下去交给 core 的
  *  `acquire::precheck` 去判"这是不是我分享的"、要不要弹 `Mine` 变体的冲突框
  *  ——那份折叠机制原样留在 `core/acquire.rs`,这里删掉的只是曾经借按钮文案
- *  抢答的四个展示分支,不是背后的安全判定。 */
-export type InstallState = "install" | "installed" | "update" | "otherLibrary";
+ *  抢答的四个展示分支,不是背后的安全判定。
+ *
+ *  🔴 **v7.5 起新增 `onDisk`/`onDiskDiffers`**(`docs/v7.5-共识.md`):无记账但
+ *  本机有本体的技能。`onDisk`(与库里逐字节相同或无从比较)是**终态**,与
+ *  `installed` 同形;`onDiskDiffers`(与库里不同)可点、走既有的
+ *  `acquire`——与 `otherLibrary` 同形(中性描边,不用强调色去引诱点击),
+ *  理由相同:这一档点下去是**替换**,不是常规动作。 */
+export type InstallState =
+  | "install"
+  | "installed"
+  | "update"
+  | "otherLibrary"
+  | "onDisk"
+  | "onDiskDiffers";
 
 /**
  * 安装按钮。
@@ -31,6 +43,12 @@ export function InstallButton({
   disabled = false,
   hint,
   size = "sm",
+  /**
+   * 覆盖状态机算出的默认文案。目前唯一的用途:详情面板底部的
+   * `onDiskDiffers` 按钮要说「换成库里的版本」(动作),而同一状态在卡片上
+   * 说「与库里不同」(陈述)——两处不同词是有意的,见 `docs/v7.5-共识.md`。
+   */
+  label: labelOverride,
 }: {
   state: InstallState;
   onClick?: () => void;
@@ -38,17 +56,25 @@ export function InstallButton({
   /** 置灰时的说明,同时作为可访问名的补充。 */
   hint?: string;
   size?: "sm" | "lg";
+  label?: string;
 }) {
   const label =
-    state === "installed"
+    labelOverride ??
+    (state === "installed"
       ? t("skill.actionInstalled")
-      : state === "update"
-        ? t("skill.actionUpdate")
-        : state === "otherLibrary"
-          ? t("skill.actionReplace")
-          : t("skill.actionInstall");
+      : state === "onDisk"
+        ? t("store.onDisk")
+        : state === "update"
+          ? t("skill.actionUpdate")
+          : state === "otherLibrary"
+            ? t("skill.actionReplace")
+            : state === "onDiskDiffers"
+              ? t("store.onDiskDiffers")
+              : t("skill.actionInstall"));
 
-  const terminal = state === "installed";
+  // onDisk 与 installed 是同一档"终态"(v7.5):本机这份内容与库里逐字节相同
+  // (或无从比较),没有下一步动作可点。
+  const terminal = state === "installed" || state === "onDisk";
 
   // 置灰的主按钮不能只是"半透明的实心强调色":深色主题下它看着还是个能点的主按钮,
   // 用户会反复去点。降级成 ghost 灰,一眼就知道现在不可用。
@@ -79,8 +105,14 @@ export function InstallButton({
         //   主 CTA 降级的风险已如实告知,待真机扫一眼确认。
         !inert && state === "install" && "bg-accent-soft text-accent hover:opacity-80",
         !inert && state === "update" && "bg-accent text-white hover:bg-accent-hover",
-        // 替换不是常规动作:给中性描边,不用强调色去引诱点击
-        !inert && state === "otherLibrary" && "border-border bg-transparent text-text-2 hover:border-border-strong hover:text-text",
+        // 替换不是常规动作:给中性描边,不用强调色去引诱点击。
+        // onDiskDiffers 同一条理由(用户 Q40-B 拍板):点下去也是替换,不该用
+        // 实心去引诱——这一档的问题在别处("与库里不同"是不是同一个技能都
+        // 未必确定,见 lib/update.ts 的 Q37-B 注释),不该借形态显得比"有更新"
+        // 更紧急。
+        !inert &&
+          (state === "otherLibrary" || state === "onDiskDiffers") &&
+          "border-border bg-transparent text-text-2 hover:border-border-strong hover:text-text",
         terminal && "bg-transparent font-medium text-ok",
         inert && "cursor-default border-border bg-transparent font-medium text-text-3",
       )}

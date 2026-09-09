@@ -3,8 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { InstallPanel } from "@/components/InstallPanel";
+import type { InstalledSkillView } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
+import { useMySkills } from "@/store/my-skills";
 import { useProjects } from "@/store/project";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
@@ -40,7 +42,43 @@ beforeEach(() => {
   });
   useInstall.setState({ phase: "idle", dirSlug: null, mineKept: null });
   useStoreIndex.setState({ activeRegistry: "company", activeRepo: "skills/skills" });
+  // v7.5:「我的技能」的 list 是新形参 localHash 的数据来源,默认重置成"还没
+  // 加载过",避免上一条用例 setState 的本机本体数据残留到下一条。
+  useMySkills.setState({ list: null });
 });
+
+/** 最小可用的 `InstalledSkillView`,只有 v7.5 关心的 dirSlug/localPresent/localHash
+ *  是变量,其余字段填不影响判定的占位值(与 `MySkillsPage.test.tsx` 的 `mk` 同一姿势,
+ *  这里不复用它是因为这个字段清单是当时 v7 任务 7 的产物,拆分成公共 fixture
+ *  超出本任务范围)。 */
+function localSkill(over: Partial<InstalledSkillView> & { dirSlug: string }): InstalledSkillView {
+  return {
+    commitSha: "",
+    contentHash: "",
+    agents: [],
+    installedAt: "",
+    updatedAt: "",
+    localModified: false,
+    sourceOwner: "",
+    sourceRepo: "",
+    registryId: "",
+    sourceRemoved: false,
+    libraryRemoved: false,
+    relation: "draft",
+    localPresent: true,
+    sourceLabel: null,
+    body: `/h/.claude/skills/${over.dirSlug}`,
+    localHash: "",
+    tools: [],
+    versions: [],
+    shareBlocked: null,
+    section: "shareable",
+    review: null,
+    libraryUrl: null,
+    canonicalReaders: null,
+    ...over,
+  };
+}
 
 async function openScopeMenu() {
   await userEvent.click(screen.getByRole("button", { name: "选择安装位置" }));
@@ -784,5 +822,128 @@ describe("v7.4:商店不再按「是不是我的」分流", () => {
 
     expect(screen.getByRole("button", { name: /已启用/ })).toBeTruthy();
     expect(screen.getByText("你修改过这个技能")).toBeTruthy();
+  });
+});
+
+describe("v7.5:详情面板认得出'这台电脑上已经有了'(docs/v7.5-共识.md)", () => {
+  const baseIndex = {
+    registryId: "company",
+    owner: "skills",
+    repo: "skills",
+    branch: "main",
+    commitSha: "x",
+    committedAt: "2026-01-01T00:00:00Z",
+    fetchedAt: 0,
+    skipped: [],
+    fromCache: false,
+    offline: false,
+    curated: [],
+  };
+
+  function seedIndex(contentHash: string) {
+    useStoreIndex.setState({
+      index: {
+        ...baseIndex,
+        skills: [
+          {
+            name: "周报生成",
+            dirSlug: "weekly-report",
+            description: "",
+            path: "weekly-report",
+            hasScripts: false,
+            fileCount: 1,
+            contentHash,
+            tags: [],
+            author: null,
+          },
+        ],
+      } as never,
+      activeRegistry: "company",
+      activeRepo: "skills/skills",
+    });
+  }
+
+  it("无记账 + 本机有本体 + 与库里指纹相同 → 「已在电脑上」,终态不可点", async () => {
+    seedIndex("sha:same");
+    useInstall.setState({ installed: new Map() });
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha:same" })],
+    });
+
+    render(<InstallPanel dirSlug="weekly-report" />);
+
+    const button = screen.getByRole("button", { name: "已在电脑上" });
+    expect(button).toBeDisabled();
+  });
+
+  it("无记账 + 本机有本体 + 与库里指纹不同 → 「换成库里的版本」(详情底部用动作词,不是卡片的陈述词)", async () => {
+    seedIndex("sha:library");
+    useInstall.setState({ installed: new Map() });
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha:local" })],
+    });
+
+    render(<InstallPanel dirSlug="weekly-report" />);
+
+    // 卡片上的陈述词「与库里不同」不该出现在这里
+    expect(screen.queryByText("与库里不同")).toBeNull();
+    const button = screen.getByRole("button", { name: "换成库里的版本" });
+    expect(button).not.toBeDisabled();
+  });
+
+  it("🔴 「换成库里的版本」可点,走既有的 onBegin(acquire),不新写确认逻辑", async () => {
+    seedIndex("sha:library");
+    useInstall.setState({ installed: new Map(), phase: "idle", dirSlug: null });
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha:local" })],
+    });
+
+    render(<InstallPanel dirSlug="weekly-report" />);
+    await userEvent.click(screen.getByRole("button", { name: "换成库里的版本" }));
+
+    // `begin()` 把 phase 推进到 choosing(渲染 AgentChooser)——precheck 真正的
+    // 拍板发生在 core 那一侧,这里只验证点击确实触达了既有的获取入口。
+    await waitFor(() => expect(useInstall.getState().phase).toBe("choosing"));
+    expect(useInstall.getState().dirSlug).toBe("weekly-report");
+  });
+
+  it("本机没有本体(localPresent: false)→ 仍是「获取」,不会被新逻辑吃掉", () => {
+    useStoreIndex.setState({ index: null, activeRegistry: "company", activeRepo: "skills/skills" });
+    useInstall.setState({ installed: new Map() });
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: false, localHash: "" })],
+    });
+
+    render(<InstallPanel dirSlug="weekly-report" />);
+
+    expect(screen.getByRole("button", { name: "安装" })).toBeTruthy();
+    expect(screen.queryByText("已在电脑上")).toBeNull();
+  });
+
+  it("已在电脑上(onDisk)是终态时,「装到项目…」文字按钮同样显性化(Q39-A 沿用 installed 的既有判据)", () => {
+    seedIndex("sha:same");
+    useInstall.setState({ installed: new Map() });
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha:same" })],
+    });
+
+    render(<InstallPanel dirSlug="weekly-report" />);
+
+    const entry = screen.getByRole("button", { name: "装到项目…" });
+    expect(entry.getAttribute("aria-haspopup")).toBe("menu");
+  });
+
+  it("技能广场详情态:remoteHash 恒为空串,localHash 存在时永远落 onDisk,不比内容(Q43-A)", () => {
+    // 广场卡片没有内容指纹——即便本机内容其实与库里不同,也只能说「已在电脑上」,
+    // 不能说「与库里不同」,那需要一个不存在的比对基准。
+    useInstall.setState({ installed: new Map() });
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "react-best-practices", localPresent: true, localHash: "sha:whatever" })],
+    });
+
+    render(<InstallPanel dirSlug="react-best-practices" plaza={{ ownerRepo: "vercel-labs/skills" }} />);
+
+    expect(screen.getByRole("button", { name: "已在电脑上" })).toBeTruthy();
+    expect(screen.queryByText("与库里不同")).toBeNull();
   });
 });

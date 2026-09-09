@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { cardState, isMine, remoteHashOf, type LibraryRef, type MeRef } from "./update";
+import { cardState, isMine, localHashOf, remoteHashOf, type LibraryRef, type MeRef } from "./update";
 
 describe("cardState", () => {
   it("没装过 → install", () => {
@@ -104,6 +104,77 @@ describe("cardState", () => {
     };
     const library: LibraryRef = { registryId: "company", owner: "skills", repo: "skills" };
     expect(cardState(record, "sha:design", library)).toBe("otherLibrary");
+  });
+
+  // ---- v7.5(`docs/v7.5-共识.md` Q33–Q43):商店认得出"这台电脑上已经有了"。
+  //      无记账但本机有本体的技能(在 Claude Code 里原创、走评审分享的技能;
+  //      npx 装的;换电脑后 git 拉的)不该再被商店卡片写成「获取」。
+  //      六条正面钉住的判据里,这里覆盖 1、2、3、4、5;第 6 条(筛选器)在
+  //      StorePage.test.tsx。
+
+  it("🔴 v7.5:无记账 + 本机有本体 + 指纹相同 → onDisk", () => {
+    expect(cardState(undefined, "sha:same", undefined, "sha:same")).toBe("onDisk");
+  });
+
+  it("🔴 v7.5:无记账 + 本机有本体 + 指纹不同 → onDiskDiffers", () => {
+    expect(cardState(undefined, "sha:remote", undefined, "sha:local")).toBe("onDiskDiffers");
+  });
+
+  it("🔴 v7.5:无记账 + 本机有本体 + remoteHash 为空(广场)→ onDisk(漏报是刻意的,Q43-A)", () => {
+    // 广场卡片没有内容指纹,`remoteHash` 恒传空串——哪怕本地内容其实不同,
+    // 也不该说「与库里不同」(那需要一个不存在的比对基准)。
+    expect(cardState(undefined, "", undefined, "sha:local")).toBe("onDisk");
+  });
+
+  it("🔴 v7.5:localHash 本身是空串(有本体但指纹读不到)时同样按'相同'处理", () => {
+    expect(cardState(undefined, "sha:remote", undefined, "")).toBe("onDisk");
+  });
+
+  it("🔴 v7.5:无记账 + 本机没有本体(localHash undefined)→ 仍是 install,不能被新逻辑吃掉", () => {
+    expect(cardState(undefined, "sha:remote", undefined, undefined)).toBe("install");
+    // 不传第四个实参(调用方没喂 localHash)必须与显式传 undefined 完全等价
+    // ——这是这次改动对"没打算处理 localHash 的调用方"唯一的兼容承诺。
+    expect(cardState(undefined, "sha:remote")).toBe("install");
+  });
+
+  it("🔴 v7.5:有记账时,新形参 localHash 不改变任何既有结论(逐条对照)", () => {
+    // 装了且指纹一致 → installed
+    expect(cardState({ contentHash: "sha:same" }, "sha:same", undefined, "随便什么值")).toBe(
+      "installed",
+    );
+    // 装了但远端指纹不同 → update
+    expect(cardState({ contentHash: "sha:old" }, "sha:new", undefined, "随便什么值")).toBe("update");
+    // 任一侧指纹缺失时按 installed 处理
+    expect(cardState({ contentHash: "sha:old" }, "", undefined, "随便什么值")).toBe("installed");
+    // otherLibrary:同名技能来自另一个库,localHash 同样不参与
+    const record = {
+      contentHash: "sha:design",
+      registryId: "company",
+      sourceOwner: "design",
+      sourceRepo: "design-skills",
+    };
+    const library: LibraryRef = { registryId: "company", owner: "skills", repo: "skills" };
+    expect(cardState(record, "sha:whatever", library, "随便什么值")).toBe("otherLibrary");
+  });
+});
+
+describe("localHashOf", () => {
+  it("list 为 null/undefined,或找不到这一行 → undefined", () => {
+    expect(localHashOf(null, "weekly-report")).toBeUndefined();
+    expect(localHashOf(undefined, "weekly-report")).toBeUndefined();
+    expect(localHashOf([], "weekly-report")).toBeUndefined();
+  });
+
+  it("只取 localPresent 的行,不是随便一条匹配 dirSlug 的记录", () => {
+    const list = [{ dirSlug: "weekly-report", localPresent: false, localHash: "sha:x" }];
+    expect(localHashOf(list, "weekly-report")).toBeUndefined();
+  });
+
+  it("localPresent 为真时给出它的 localHash(哪怕是空串)", () => {
+    const list = [{ dirSlug: "weekly-report", localPresent: true, localHash: "" }];
+    expect(localHashOf(list, "weekly-report")).toBe("");
+    const list2 = [{ dirSlug: "weekly-report", localPresent: true, localHash: "sha:x" }];
+    expect(localHashOf(list2, "weekly-report")).toBe("sha:x");
   });
 });
 
