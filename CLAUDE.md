@@ -1429,8 +1429,11 @@ v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
     `acquire::is_mine`(precheck 用)、`my_skills::build` 内的两处(`state.installed`
     记账那一档 + "只在库里、本地没本体"那一档)、`share::candidate`
     (`scan_candidates` 用)。前端**没有**跨语言复用同一份代码,但有一份口径对齐的
-    独立镜像:`lib/update.ts::isMine`(展示名/登录名任一相同即算)驱动
-    `cardState`(商店卡片)。改判定表**必须四处 Rust 调用 + 这一处前端镜像一起改**,
+    独立镜像:`lib/update.ts::isMine`(展示名/登录名任一相同即算)。
+    ⚠️ **v7.4 起它只驱动商店卡片的「我分享的」徽标,不再驱动 `cardState`**
+    ——商店的按钮状态自 v7.4 起不区分"是不是我分享的"(用户第 9 轮拷问拍板,
+    见下面 v7.4 那条),`cardState` 连 `author`/`me` 两个形参都已删除。
+    改判定表**必须四处 Rust 调用 + 这一处前端镜像一起改**,
     漏一处就是新一轮"卡片说有更新、按钮却是禁用的"那种缺陷(`CLAUDE.md` 记的
     既有教训)。
     ⚠️ **这句话原先还提到 `lib/ownership.ts::sharedState` 是第二处前端镜像
@@ -1438,7 +1441,32 @@ v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
     (`installedFrom`/`sharedTo`/`shareable`)现在由 `InstalledSkillView.section`
     直接给出(core 侧 `ownership::section(relation)` 算好),`src/lib/ownership.ts`
     的 `rowAction` 只消费这个字段,不在前端重新判一遍"这是不是我的技能"
-    ——所以**镜像只剩一处**(`isMine`/`cardState`),不再是两处。
+    ——所以**镜像只剩一处**(`isMine`,v7.4 起只用于那个徽标),不再是两处。
+
+  - 🔴 **商店卡片不区分"这是不是我分享的"(v7.4,2026-09-09 用户第 9 轮拷问拍板,
+    推翻 v6 任务 5)**:`cardState` 曾为作者单开四档(`mineSynced`/`minePull`/
+    `mineShareUpdate`/`mineBoth`),结果是「取回」一个词背三种意思(没装过 /
+    库里有新版 / 两边都变了)、「已同步」在回答一个没人问的问题(别人的技能写
+    「已启用」,只有自己的写「已同步」,同一状态两个词、差别仅在作者身份)。
+    更根本的是**「分享更新」是个"推"的动作,摆在了"拉"的界面里**——v6 二期已经
+    把分享整页删掉、"推"的动作全部收进「我的技能」,那是收拢时漏掉的最后一个入口。
+    现在 `CardState` 只剩 `install`/`installed`/`update`/`otherLibrary`。
+    **删档不删机制**:作者的安全保护全部在 core、由 `acquire::precheck` 的结果
+    驱动,与 `cardState` 无关——`Precheck::Mine` 折叠、`acquire_batch` 对 `Mine`
+    一律跳过、`keepLocalAndShareMine` 的 `forceReview` 恒真、`ConflictDialog` 的
+    mine 变体,四件一件没动。所以"你分享的技能、库里有新版"点下去仍是 mine 变体
+    冲突框,不会静默覆盖。
+    ⚠️ **一处自动发生的行为变化**:`InstallPanel` 底部「你修改过这个技能」的条件
+    原本是 `localModified && !state.startsWith("mine")`,删档后 `startsWith("mine")`
+    恒假,条件自然退化成只看 `localModified`——作者本地改过自己的技能时,商店详情
+    面板现在也会显示这句话(与别人的技能口径一致)。**这是刻意接受的**:它是信息
+    不是动作(按钮仍沉默地写「已启用」);保住旧行为要么把 `isMine` 重新引进
+    `InstallPanel`(正是这次要拆的耦合)、要么另写一个与状态机无关的新判据,
+    两者都是在给已被推翻的设计续命。
+    ⚠️ **"本地改了"在商店是沉默的,而且不需要写代码去实现**:非-mine 分支只比
+    `record.contentHash`(安装基线)与 `remoteHash`(库里指纹),两者都不受本地
+    改动影响。有测试正面钉住这一行——它是"推的动作不摆在拉的界面里"这条拍板
+    唯一可验证的落点,别让人"补全"判定时把 `localModified` 加回商店。
   - 🔴 **`acquire::precheck` 里 `Mine` 判在 `Foreign` 之前、在 `Managed` 之后**:
     没有 `state.installed` 记账时(第一次遇到这个目录),先判 `is_mine`——是我
     就直接给 `Mine{local_changed:true, remote_changed:true}`,不是我才落进
