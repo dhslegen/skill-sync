@@ -1059,7 +1059,17 @@ v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
     商店获取面板(`InstallPanel` 的 `AgentChooser`,`list` 布局)、详情面板
     「各个工具里」(`ToolChecks`→`WhereBlocks`,`inline` 布局)、项目行事后改选
     (`ProjectSections`,`list` 布局)、项目确认条上可选工具
-    (`InstallPanel` 的 `ConfirmBar`,`list` 布局,终审 §15)。两种 `layout`
+    (`InstallPanel` 的 `ConfirmBar`,**`inline` 布局**——v7.6 任务 3 起,
+    **这是一处经用户看截图批准的画布偏离**:画布 §15 给确认条画的是 `list`,
+    而 `list` 相对 `inline` 的**唯一**优势是"每行带路径",项目语境下那个路径
+    按已登记欠账③**刻意留空**(`DetectedAgent` 只有全局 `globalSkillsDir`,
+    穿到项目行会撒谎)。没有路径的 `list` 只是更高的 checkbox 竖排,正是它逼出了
+    `max-h-[140px]` 滚动盒与"第一项被切一半",也就是用户 2026-09-10 真机投诉的
+    那张图。🔴 **别照画布把它改回 `list`**——画布本体尚未更新,而"画布背离实现"
+    与本项目复盘过的"实现背离画布"是同一个病的两面。原委见
+    `docs/v7.6-共识.md`。⚠️ **同一条逻辑也适用于 `ProjectSections`**
+    (项目行事后改选,同样受欠账③、同样 `list`),但那是用户**没批过**的第五处,
+    只登记不动,见「待处理」)。两种 `layout`
     共用同一副 checkbox/label 骨架与类名,
     只是容器排布不同(`inline` 是 chip 流、`list` 是带路径的竖排清单)——
     "统一"指的是骨架,不是排布方向。排序"已勾在前、其余按注册表原相对顺序"
