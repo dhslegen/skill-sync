@@ -340,6 +340,7 @@
   "install.confirmTitle": "将装到",
   "install.confirmAgents": "会启用到 {agents}",
   "install.confirmNoAgents": "不必单独启用(这些工具直接读技能文件夹)",
+  "install.confirmToolsUnknown": "暂时读不到这台机器上的工具列表,不代表没有可选的工具",
   "install.confirmGo": "装到这里",
   "install.confirmAlready": "这个文件夹里已经有这个技能了",
   "install.recentAlready": "已装",

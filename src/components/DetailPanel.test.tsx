@@ -863,8 +863,10 @@ describe("商店详情的动作区(设计 §12 + Q44-A,`PanelBody` 一侧)", () 
     });
     render(<DetailPanel />);
 
-    // 「移除」是次要动作,商店宿主下照常摆出来。
-    expect(screen.getByRole("button", { name: "移除" })).toBeInTheDocument();
+    // 「移除」是次要动作,但 v7.6 任务 3(Q44-A 原文「「…」收危险动作」)起
+    // 它不再是商店宿主下的常驻可见按钮,收进「…」(`SkillRowMenu`)。
+    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "更多" })).toBeInTheDocument();
   });
 
   it("🔴 Q44-A:商店宿主下不摆 rowAction 的主按钮(「贡献更改」)——那一格让给 InstallPanel", async () => {

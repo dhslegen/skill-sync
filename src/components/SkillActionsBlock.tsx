@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { OutlineButton, PrimaryAction, rowMenuHandler } from "@/components/RowActionControls";
+import { SkillRowMenu, type SkillRowMenuItem } from "@/components/SkillRowMenu";
 import { t } from "@/i18n";
 import { isAppError, openLibraryUrl, skillReveal, type InstalledSkillView } from "@/lib/ipc";
 import { buildRowMenuItems, rowAction } from "@/lib/ownership";
@@ -46,9 +47,9 @@ import { useStoreIndex } from "@/store/store-index";
  *   失败也在这里渲染(见下面「动作搬进来了」一节)。
  * - `host="store"`:**不渲染自己的主按钮**——那一格让给 `InstallPanel`
  *   (它的 `cardState` 才是"拉"的语境:获取/更新/换成库里的版本)。这里返回的
- *   是**裸内容**(不带外层边框容器),由 `InstallPanel` 当作 `actions` prop
- *   接住、摆进它自己唯一的一层 `border-t` 容器——这才是"并进底部页脚"的
- *   字面意思,不是两个bordered 的 div 前后紧贴。**只贡献次要动作**
+ *   是**裸按钮**(不带外层容器、也不带自己的 row div,见下面「v7.6 任务 3」),
+ *   由 `InstallPanel` 直接插进它自己那一行——这才是"并进底部页脚"的字面意思,
+ *   不是两个 bordered 的 div 前后紧贴,也不是两行紧贴。**只贡献次要动作**
  *   (打开文件夹 / 在技能库里查看 / 移除):`items` 过滤掉除 `reveal`
  *   以外的所有 `buildRowMenuItems` 结果——分享/贡献更改/更新这些都是"推"的
  *   动作,v7.4 已拍板"推"的动作不摆在"拉"的界面里,`rowAction` 本身
@@ -57,6 +58,36 @@ import { useStoreIndex } from "@/store/store-index";
  *   摆出来要么是孤儿反馈,要么会把「我的技能」页上一次操作的陈旧结果
  *   带到商店详情里(归属校验挡的是"另一个技能",挡不住"同一个技能、
  *   另一个语境的旧结果")。
+ *
+ * ### 🔴 v7.6 任务 3(Q44-A 原文,逐字引用):「…」收危险动作
+ *
+ * 用户批的原文是「主按钮(获取／更新／已在电脑上)+ 次要动作(打开文件夹、
+ * 在技能库里查看)+ **「…」收危险动作(移除)**」——同一行。v7.6 任务 2 把
+ * `host="store"` 做成了 `<>{row}{messages}</>`,`row` 仍是一整条自带
+ * `flex flex-wrap` 的 div,「移除」是这条 row 里一颗常驻可见的 `OutlineButton`
+ * ——这是 task-2 brief 把用户批的原文转写成「——撑开——[移除]」时留下的偏差
+ * (原文里"「…」收危险动作"这半句没有被转写进去),实现照做,合并出来的页脚
+ * 变成了"一行主按钮 + 另起一行次要动作(末尾露着一颗移除)",不是用户批的
+ * "同一行,危险动作收进「…」"。
+ *
+ * 现在改正:`host="store"` 下不再有自己的 `row` div——`secondaryButtons`
+ * (reveal + libraryLink)与 `removeControl`(`ml-auto` 撑开的「…」触发器)都是
+ * 裸元素,直接作为 `SkillActionsBlock` 的返回值交给 `InstallPanel`,后者把它们
+ * 插进自己那唯一一行(与主按钮、「装到项目…」同排)。`removeControl` 按
+ * `caps.removeInMenu` 分流:`host="mine"` 仍是常驻可见的 `OutlineButton`
+ * (这个宿主行为一个字不变——用户批的原文只管商店/广场详情这一处页脚,
+ * 「我的技能」行尾本就另有一颗「更多」,§12 的裁定是"全部摆开、不收下拉",
+ * 两处是不同的裁定,不能顺手"统一");`host="store"` 换成 `SkillRowMenu`
+ * (单项菜单,`items` 只有「移除」一条,复用它现成的
+ * `aria-haspopup`/`Esc`/点外面关闭骨架,不重新发明一套下拉)。
+ *
+ * `messages`(`revealError`/`linkError`,`host="store"` 下仅有的两种反馈,
+ * `shareFeedback` 在这个宿主恒 `false`)给了 `basis-full`:这两段要和
+ * `secondaryButtons`/`removeControl` 一起插进 `InstallPanel` 的
+ * `flex flex-wrap` 行,`basis-full` 让它们在这个共享的换行容器里独占一整行、
+ * 排在按钮下方,不需要再拆一份"messages" ReactNode 单独往外传。`host="mine"`
+ * 下 `messages` 本来就是普通块级兄弟(不在 flex 容器里),`basis-full` 在那里
+ * 是无操作的安全属性,不影响既有布局。
  *
  * 🔴 **刻意是闭合联合,不是 `boolean`/可选 prop**:本项目连续两笔栽在
  * 这上面(v7.5 复审的 `InstallButtonVariant`、v7.6 任务 1 复审的
@@ -185,16 +216,31 @@ function capsOf(host: ActionsHost): {
   shareFeedback: boolean;
   /** 自己带不带外层容器(边框 + 内边距)。`false` = 交裸内容,由宿主包。 */
   ownWrapper: boolean;
+  /**
+   * 「移除」收进「…」(`SkillRowMenu`)还是摆成常驻可见按钮。
+   * v7.6 任务 3(Q44-A 原文「「…」收危险动作」):`host="store"` 下页脚并成
+   * 一行之后,「移除」不能再是同排里的一颗常驻按钮;`host="mine"` 的「移除」
+   * 与这条无关(那是详情面板固定页脚里的按钮,不是「我的技能」行尾的
+   * 「更多」——§12 对那一处的裁定是"全部摆开、不收下拉",这里不改)。
+   */
+  removeInMenu: boolean;
 } {
   switch (host) {
     case "mine":
-      return { ownPrimary: true, allSecondaryItems: true, shareFeedback: true, ownWrapper: true };
+      return {
+        ownPrimary: true,
+        allSecondaryItems: true,
+        shareFeedback: true,
+        ownWrapper: true,
+        removeInMenu: false,
+      };
     case "store":
       return {
         ownPrimary: false,
         allSecondaryItems: false,
         shareFeedback: false,
         ownWrapper: false,
+        removeInMenu: true,
       };
   }
 }
@@ -271,24 +317,13 @@ export function SkillActionsBlock({
       keepError: null,
     });
 
-  // `flex-wrap`:按钮数量随档位变(`host="mine"` 的 `conflict` 档有五颗),480px
-  // 宽的面板放不下时换行比压扁好。「移除」用 `ml-auto` 靠右——换行后它会在自己
-  // 那一行的最右边,与不换行时的效果一致(画布里它就在最右)。
-  const row = (
-    <div className="flex flex-wrap items-center gap-2">
-      {caps.ownPrimary && (
-        <PrimaryAction
-          action={action}
-          pulling={pulling}
-          sharing={sharing}
-          openVersions={openVersions}
-          size="footer"
-          onPull={onPull}
-          onShareChanges={onShareChanges}
-          onShare={onShare}
-          onChooseVersion={onChooseVersion}
-        />
-      )}
+  // 打开文件夹 / 在技能库里查看——host="store" 下这就是全部内容
+  // (`items` 已按 `caps.allSecondaryItems` 收窄到只剩 `reveal`);host="mine"
+  // 下它们是 `row` 的一部分。**裸元素,不带自己的 flex 容器**(v7.6 任务 3,
+  // 见组件文档「「…」收危险动作」一节)——`host="mine"` 把它们摆进自己的
+  // `row` div,`host="store"` 直接把它们交给 `InstallPanel` 的那一行。
+  const secondaryButtons = (
+    <>
       {items.map((spec) => (
         <OutlineButton
           key={spec.kind}
@@ -314,13 +349,47 @@ export function SkillActionsBlock({
           {t("mine.reviewLink")}
         </OutlineButton>
       )}
-      {removeItem && (
-        <div className="ml-auto">
-          <OutlineButton size="footer" onClick={onRemove}>
-            {t(removeItem.labelKey)}
-          </OutlineButton>
-        </div>
+    </>
+  );
+
+  // 「移除」永远靠右(`ml-auto`)。v7.6 任务 3 之前两个宿主都是常驻可见的
+  // `OutlineButton`;现在按 `caps.removeInMenu` 分流:`host="mine"` 不变,
+  // `host="store"` 收进 `SkillRowMenu`(「…」),见组件文档「「…」收危险动作」。
+  const removeMenuItems: SkillRowMenuItem[] = removeItem
+    ? [{ key: "remove", label: t(removeItem.labelKey), onClick: onRemove }]
+    : [];
+  const removeControl = removeItem && (
+    <div className="ml-auto">
+      {caps.removeInMenu ? (
+        <SkillRowMenu items={removeMenuItems} />
+      ) : (
+        <OutlineButton size="footer" onClick={onRemove}>
+          {t(removeItem.labelKey)}
+        </OutlineButton>
       )}
+    </div>
+  );
+
+  // `flex-wrap`:按钮数量随档位变(`host="mine"` 的 `conflict` 档有五颗),480px
+  // 宽的面板放不下时换行比压扁好。**只有 `host="mine"` 用到这个 `row`**
+  // ——`host="store"` 不再有自己的行容器,见下面的 return。
+  const row = (
+    <div className="flex flex-wrap items-center gap-2">
+      {caps.ownPrimary && (
+        <PrimaryAction
+          action={action}
+          pulling={pulling}
+          sharing={sharing}
+          openVersions={openVersions}
+          size="footer"
+          onPull={onPull}
+          onShareChanges={onShareChanges}
+          onShare={onShare}
+          onChooseVersion={onChooseVersion}
+        />
+      )}
+      {secondaryButtons}
+      {removeControl}
     </div>
   );
 
@@ -328,43 +397,50 @@ export function SkillActionsBlock({
   // 触发它们的按钮(`PrimaryAction`/`contributeOrShareChanges` 等)在
   // `host="store"` 下根本不存在,摆出来要么是孤儿反馈,要么会把「我的技能」页
   // 上一次操作的陈旧结果带进商店详情(见组件文档「两种宿主」一节)。
+  //
+  // `basis-full`:`host="store"` 下 `revealError`/`linkError` 要和
+  // `secondaryButtons`/`removeControl` 一起插进 `InstallPanel` 的
+  // `flex flex-wrap` 行,这个属性让它们在那个共享容器里独占一整行、排在
+  // 按钮下方。`host="mine"` 下 `messages` 是普通块级兄弟(不在 flex 容器里),
+  // 这个属性在那里是无操作的安全属性。
   const messages = (
     <>
       {revealError && (
-        <p className="mt-1.5 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+        <p className="mt-1.5 basis-full text-[12px] text-[#c0392b] dark:text-[#e0705f]">
           {t("mine.openFolderFailed")}
           {t("punct.labelSeparator")}
           {revealError}
         </p>
       )}
       {linkError && (
-        <p className="mt-1.5 text-[12px] text-[#c0392b] dark:text-[#e0705f]">{linkError}</p>
+        <p className="mt-1.5 basis-full text-[12px] text-[#c0392b] dark:text-[#e0705f]">{linkError}</p>
       )}
       {/* 分享的成功与失败:归属过滤后自己摆一份,理由见组件文档。
           文案按 `flow` 分流,**不按渲染那一刻的 `action` 反推**——首次分享成功后
           这一行的 section/rowAction 已经换档了,反推出来的答案恰恰在成功路径上是错的
           (见 `lib/share-block.ts::ShareFlow` 的文档)。 */}
       {caps.shareFeedback && shareError && (
-        <p className="mt-1.5 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
+        <p className="mt-1.5 basis-full text-[12px] text-[#c0392b] dark:text-[#e0705f]">
           {t(SHARE_FAILED_LABEL[shareError.flow])}
           {t("punct.labelSeparator")}
           {shareError.error.message}
         </p>
       )}
       {caps.shareFeedback && shareDone && (
-        <p className="mt-1.5 text-[12px] text-text-2">{t(SHARE_DONE_LABEL[shareDone.flow][shareDone.mode])}</p>
+        <p className="mt-1.5 basis-full text-[12px] text-text-2">
+          {t(SHARE_DONE_LABEL[shareDone.flow][shareDone.mode])}
+        </p>
       )}
       {caps.shareFeedback && action.kind === "shareBlocked" && (
-        <p className="mt-1.5 rounded-card border border-[#b8860b]/40 px-2.5 py-1.5 text-[11.5px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
+        <p className="mt-1.5 basis-full rounded-card border border-[#b8860b]/40 px-2.5 py-1.5 text-[11.5px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
           {t(SHARE_BLOCK_LABEL[action.reason])}
         </p>
       )}
     </>
   );
 
-  // `host="mine"`:完整的固定页脚,自己的边框/内边距(行为一个字不变)。
-  // `host="store"`:裸内容,没有外层容器——`InstallPanel` 把它当 `actions` prop
-  // 接住,摆进自己那唯一一层 `border-t` 容器(见组件文档「两种宿主」一节)。
+  // `host="mine"`:完整的固定页脚,自己的边框/内边距,`row` 是自己的一整条
+  // flex 行(行为一个字不变)。
   if (caps.ownWrapper) {
     return (
       <div className="flex-none border-t border-border px-5 py-3.5">
@@ -373,9 +449,12 @@ export function SkillActionsBlock({
       </div>
     );
   }
+  // `host="store"`:裸按钮(不含 `row` 这层容器)——`InstallPanel` 把它当
+  // `actions` prop 接住,直接插进自己那一行(见组件文档「「…」收危险动作」)。
   return (
     <>
-      {row}
+      {secondaryButtons}
+      {removeControl}
       {messages}
     </>
   );

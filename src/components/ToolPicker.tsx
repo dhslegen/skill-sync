@@ -131,6 +131,15 @@ export function orderForPicker(items: ToolPickerItem[]): ToolPickerItem[] {
  * ——"统一"这件事只有在同一个常量上才成立,给详情面板单开一档密度就等于又分叉。
  * 点击命中区仍然由 `<label>` 自己承担(block 级 flex,占满整行宽),v7 任务 7
  * 修的那个"边缘点不动"不会因为去掉 `px-3` 回来:横向留白本来就不属于这一行。
+ *
+ * ⚠️ **上面这句"四个调用方一起变"是 v7.1 任务 4 那一刻的实况,不是现在的**:
+ * v7.6 任务 3(B3)把 `InstallPanel.tsx` 的 `ConfirmBar`(项目确认条)从
+ * `list` 换成了 `inline`——它的 `item.path` 恒为 `""`(候选口径与
+ * `ProjectSections.tsx` 同一份,这一层没有项目内相对路径可穿),`list`
+ * 唯一的优势(带路径)在这个语境下买不到任何东西。现在用 `LIST_ROW_EXTRA`
+ * 的是 `ToolChecks`(「我的技能」)、`AgentChooser`(获取面板,`item.path` 是
+ * 真实的 `agent.globalSkillsDir`,R17 的理由在那里仍然成立)、
+ * `ProjectSections.tsx`(项目行事后改选)**三处**,`ConfirmBar` 退出。
  */
 export const LIST_ROW_EXTRA = "py-1.5";
 

@@ -52,9 +52,21 @@ const STAGE_LABEL: Record<InstallStage, MessageKey> = {
  * 传进来,这里只负责摆放位置,与既有的 `projectArea`(项目安装的进行态/提示/
  * 待确认)是同一种"顶层拼装、不下渗进子组件"的先例。
  *
- * `actions` **不分 phase**(running/choosing/error 时也渲染):这是既有能力的
- * 延续,不是新增——此前 `SkillActionsBlock` 本来就无条件挂在这个组件之上,
- * 不论 phase 如何都看得见「打开文件夹」「移除」,合并页脚不该让这个能力消失。
+ * ## 🔴 v7.6 任务 3(Q44-A 原文,逐字引用):`actions` 只在 idle / done 合并进主行
+ *
+ * 用户批的原文是「主按钮(获取／更新／已在电脑上)+ 次要动作(打开文件夹、
+ * 在技能库里查看)+「…」收危险动作(移除)」——**同一行**。task-2 的 brief 把
+ * 最后一段转写成了「——撑开——[移除]」,实现照做,变成了"一行主按钮 + 另起一行
+ * 次要动作(末尾露着一颗常驻可见的「移除」)",且这第二行**不分 phase 无条件
+ * 渲染**——running 档的进度条下面也会跟着出现「移除」,挨在一起很怪。
+ *
+ * 现在改正:`actions`(`SkillActionsBlock` host="store" 返回的裸按钮,见该组件
+ * 文档)只作为 `IdleFooter`/`DoneFooter` 自己那条 `flex flex-wrap` 行的**尾部
+ * 内联项**传入——`choosing`/`running`/`error`/`conflict` 这几个 phase 根本没有
+ * 一条"主按钮所在的行"可以合并,索性不摆,而不是继续用一个独立的第二行。
+ * 「移除」本身也已经不再是常驻按钮:`SkillActionsBlock` 把它收进了
+ * `SkillRowMenu`(「…」),`ml-auto` 撑开的是这颗菜单触发器,不是「移除」按钮
+ * 本身。
  */
 export function InstallPanel({
   dirSlug,
@@ -116,6 +128,7 @@ export function InstallPanel({
     body = (
       <IdleFooter
         {...scope}
+        actions={actions}
         onBegin={() =>
           plaza
             ? void beginFromPlaza(plaza.ownerRepo, dirSlug)
@@ -129,7 +142,7 @@ export function InstallPanel({
   } else if (phase === "running") {
     body = <Running />;
   } else if (phase === "done") {
-    body = <DoneFooter {...scope} />;
+    body = <DoneFooter {...scope} actions={actions} />;
     showProjectArea = true;
   } else if (phase === "error") {
     body = <ErrorFooter />;
@@ -139,13 +152,11 @@ export function InstallPanel({
   }
 
   // 🔴 唯一的一层 `border-t border-border`(Q44-A):各阶段的内容组件不再自带
-  // 边框,只留内边距——边框上提到这里,避免 `actions` 与阶段内容各画一条线,
-  // 看着又变回"两个页脚"。顺序 body → actions → projectArea:次要动作紧跟主
-  // 内容(与画布的 ASCII 布局一致),项目确认条这类"另一条独立的进行态"摆最后。
+  // 边框,只留内边距。`actions` 不再作为独立的第二行摆在这里——它已经被
+  // `IdleFooter`/`DoneFooter` 合并进各自的主行(见上面文档「v7.6 任务 3」)。
   return (
     <div className="flex-none border-t border-border" data-testid="detail-footer">
       {body}
-      {actions && <div className="px-5 pb-3.5">{actions}</div>}
       {showProjectArea && projectArea}
     </div>
   );
@@ -157,6 +168,7 @@ function IdleFooter({
   onBegin,
   activeRegistryId,
   activeRepoKey,
+  actions,
 }: {
   dirSlug: string;
   plaza?: { ownerRepo: string };
@@ -164,6 +176,8 @@ function IdleFooter({
   /** 当前浏览的库坐标(装到项目时要原样带上,否则会打到主仓)。 */
   activeRegistryId?: string | null;
   activeRepoKey?: string | null;
+  /** `SkillActionsBlock`(host="store")的裸按钮,合并进这一行的尾部(Q44-A)。 */
+  actions?: ReactNode;
 }) {
   const installed = useInstall((s) => s.installed);
   const index = useStoreIndex((s) => s.index);
@@ -204,7 +218,10 @@ function IdleFooter({
 
   return (
     <div className="px-5 py-3.5">
-      <div className="flex items-center gap-2.5">
+      {/* Q44-A(v7.6 任务 3):主按钮 + 装到项目 + 徽标 + 次要动作(打开文件夹/
+          在技能库里查看)+「…」全部同一行,`flex-wrap` 只是窄宽度下的降级
+          (结构上仍是一行,不是刻意的两行)。 */}
+      <div className="flex flex-wrap items-center gap-2.5">
         <InstallButton
           state={state}
           size="lg"
@@ -258,11 +275,15 @@ function IdleFooter({
             文档注释)。这条徽标因此不再按 state 过滤——本地改没改是与作者身份
             无关的独立信息,任何已装技能只要本体内容变了就提示,不再是曾经被
             mine* 状态吞掉的那一小部分。 */}
+        {/* 检查点 3(brief):徽标紧跟在主按钮组(获取/更新 + 装到项目)之后、
+            次要动作(actions)之前——它说的是"这个技能"的事,与"这一行还能
+            做什么"是两类信息,不掺进 `actions` 的 `ml-auto` 撑开区间里,
+            不会被「…」的靠右挤乱。 */}
         {record?.localModified && (
           <span className="text-[11.5px] text-text-3">{t("conflict.modifiedTitle")}</span>
         )}
+        {actions}
       </div>
-
     </div>
   );
 }
@@ -309,6 +330,36 @@ function ProjectStatus() {
  *
  * 它同时是**成功反馈的锚点**:点下去之后原地变成结果提示,视线不用移动——
  * 比在别处冒出一行小字可靠得多(用户另一条反馈:"安装提示不够明显")。
+ *
+ * ## 🔴 v7.6 任务 3(B1/B2/B3):竖排头行 + 删重复句 + picker 换 inline
+ *
+ * 此前是 `flex items-start` 两列:左列竖排五段(标题/文件夹名/路径/信息句/
+ * picker),右列三颗按钮——`items-start` 让左高右矮,右下方空出一大片。
+ *
+ * **B1**:头一行压成一句「将装到 <文件夹名> · <路径>」,与三颗按钮同排右对齐;
+ * picker(在场时)与信息句退到下面独占一整行——左列不再是五段堆叠,右下的
+ * 空白也就没有了。
+ *
+ * **B2**:`install.confirmAgents`(「会启用到 X、Y」)在 picker 上了确认条
+ * (终审 §15)之后成了同一份信息的死重复,**只在 picker 不在场时**才渲染。
+ * 另外两句(`confirmAlready`「已经装过」、`confirmNoAgents`「没有可选工具」)
+ * 与 picker 在不在场无关,不受影响;新增第四档
+ * `install.confirmToolsUnknown`——`pickableAgents === null`(探测失败)时,
+ * 如果 `confirm.agentLabels`(`requestInstall` 自己那次独立探测的结果,
+ * 与 `pickableAgents` 不是同一次探测,见下)仍然有值,那句话本身没说谎、继续用;
+ * 只有**两次探测都没拿到结果**时才落到这句降级句,不能说成 `confirmNoAgents`
+ * ——那是在探测失败时编造"没有可选的工具",CLAUDE.md 记过这条教训
+ * (`mine.projectToolsUnknown` 同款,但那句话里"已经启用的仍能取消"是「行改选」
+ * 场景专属的后半句,装前的确认条不适用,所以另起一个键而不是复用它)。
+ *
+ * **B3**:picker 从 `layout="list"` 换成 `layout="inline"`——这里的 `item.path`
+ * 恒为 `""`(候选口径与「行改选」`ProjectSections.tsx` 同一份,那一层同样没有
+ * 项目内相对路径可穿),`list` 相对 `inline` 唯一的优势就是带路径,在这个语境
+ * 下买不到任何东西。9 个工具约两行,`max-h-[140px]` 的滚动盒与"第一项被切
+ * 一半"这种滚动中态视觉一起消失。⚠️ **这是对设计画布 §15 的偏离**(画布给
+ * 确认条画的是 `list`),以本任务截图获批为准。`AgentChooser`(08 号截图)
+ * 不受影响,继续用 `list`——它的 `item.path` 是真实的 `agent.globalSkillsDir`,
+ * R17 的"带路径清单"理由在那里仍然成立。
  */
 function ConfirmBar() {
   const confirm = useProjects((s) => s.confirm)!;
@@ -324,9 +375,9 @@ function ConfirmBar() {
   // 工具的 skillsDir 与本体同一处,勾了也没用),落点路径这一层同样没有项目内
   // 相对路径可穿(与 `ProjectSections` 既有处置同一姿态,留空)。
   //
-  // 🔴 `pickableAgents === null`(探测失败)时不摆 picker——`confirm.agentLabels`
-  // 已经用文字把默认集合说清楚了,摆一个空的 picker 会让人以为"这台机器没有
-  // 可选的工具"(那是假话,只是探测失败,`mine.projectToolsUnknown` 同款教训)。
+  // 🔴 `pickableAgents === null`(探测失败)时不摆 picker——摆一个空的会让人
+  // 以为"这台机器没有可选的工具"(那是假话,只是探测失败)。文字那一侧的降级
+  // 见下面 `infoLine`。
   const items: ToolPickerItem[] = (pickableAgents ?? []).map((a) => ({
     agent: a.name,
     label: a.displayName,
@@ -334,51 +385,33 @@ function ConfirmBar() {
     state: (confirm.agentIds.includes(a.name) ? "linked" : "off") as ToolState,
   }));
 
+  // B2:`confirmAgents` 只在 picker 不在场时渲染,其余三档(已装过/降级/无可选)
+  // 与 picker 在不在场无关——它们本来就只在 `items.length === 0` 时才可能触发
+  // (items 由 `pickableAgents` 派生),不需要再额外拿 `items.length` 去挡。
+  const infoLine = confirm.alreadyInstalled
+    ? t("install.confirmAlready")
+    : items.length > 0
+      ? null
+      : confirm.agentLabels.length > 0
+        ? t("install.confirmAgents", { agents: confirm.agentLabels.join(t("common.listSep")) })
+        : pickableAgents === null
+          ? t("install.confirmToolsUnknown")
+          : t("install.confirmNoAgents");
+
   return (
     <div className="mt-2.5 rounded-card border border-border bg-surface-2 px-3 py-2.5">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="text-[12px] text-text-3">{t("install.confirmTitle")}</div>
-          <div className="truncate text-[13px] font-[550]">{folderNameOf(confirm.projectPath)}</div>
-          {/* 路径用等宽(UI 规范),完整值挂 title —— CSS 只能截尾 */}
-          <div className="truncate font-mono text-[10.5px] text-text-3" title={confirm.projectPath}>
-            {confirm.projectPath}
-          </div>
-          <div className="mt-1 text-[11.5px] text-text-3">
-            {confirm.alreadyInstalled
-              ? t("install.confirmAlready")
-              : confirm.agentLabels.length > 0
-                ? t("install.confirmAgents", {
-                    agents: confirm.agentLabels.join(t("common.listSep")),
-                  })
-                : t("install.confirmNoAgents")}
-          </div>
-          {/* 🔴 终审 I-2:`px-3` 是这个盒子自己的内边距。任务 4 把共享常量
-                `LIST_ROW_EXTRA` 从 `border-t … px-3 py-2 … hover:bg-surface-2`
-                压成 `py-1.5`(照画布的紧凑清单),而这个调用方把 picker 包在一个
-                **带边框的滚动盒**里、横向留白原本全靠那个 `px-3` 提供——常量一改,
-                checkbox 就贴上了左边框、mono 路径贴上了右边框。补在盒子上而不是
-                改回常量:画布(`ToolPicker.dc.html`)四处都是无分隔线、无 hover 底、
-                `padding:6px 0` 的裸清单,横向留白由**容器**给(画布里那四张演示卡片
-                自己的 `padding:14px 16px` 就是这个角色)。
-                ⚠️ 代价:这 12px 的留白不属于 `<label>`,点不动。与画布同款取舍
-                ——盒子的 padding 本来就不是那一行的一部分。 */}
-          {items.length > 0 && (
-            <div className="mt-1.5 max-h-[140px] overflow-y-auto rounded-ctl border border-border px-3">
-              {/* 🔴 key={confirm.projectPath}:`ToolPicker` 的"已勾排前面"只在
-                  拿到第一份非空 items 时排一次(见该组件文档),往后不重排。
-                  用户点「换个文件夹」时 `ConfirmBar` 实例不会卸载(只有换技能
-                  才会,见 `InstallPanel` 顶层那个按 dirSlug 收尾的 effect),
-                  换一个 key 强制它换成一份干净的 `useRef`,新项目默认勾选的
-                  那批工具才排得对,不会沿用上一个项目的排序。 */}
-              <ToolPicker
-                key={confirm.projectPath}
-                items={items}
-                onToggle={(agent) => toggleConfirmAgent(agent)}
-                layout="list"
-              />
-            </div>
-          )}
+      {/* B1:头一行,三颗按钮同排右对齐。 */}
+      <div className="flex items-center gap-3">
+        <div
+          className="min-w-0 flex-1 truncate text-[12.5px]"
+          title={confirm.projectPath}
+        >
+          <span className="text-text-3">{t("install.confirmTitle")}</span>{" "}
+          <span className="font-[550]">{folderNameOf(confirm.projectPath)}</span>
+          <span className="text-text-3">{t("punct.middleDot")}</span>
+          {/* 路径用等宽(UI 规范);整行 `truncate` 时子元素不必各自再截一遍,
+              完整值挂在外层容器的 `title` 上(CSS 只能截尾)。 */}
+          <span className="font-mono text-[11px] text-text-3">{confirm.projectPath}</span>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {/* 已经装过时主动作换成「覆盖重装」而不是撤掉按钮(2026-08-22 用户拍板:
@@ -427,6 +460,23 @@ function ConfirmBar() {
           </button>
         </div>
       </div>
+      {infoLine && <div className="mt-1.5 text-[11.5px] text-text-3">{infoLine}</div>}
+      {items.length > 0 && (
+        <div className="mt-1.5 max-h-[140px] overflow-y-auto rounded-ctl border border-border p-2">
+          {/* 🔴 key={confirm.projectPath}:`ToolPicker` 的"已勾排前面"只在
+              拿到第一份非空 items 时排一次(见该组件文档),往后不重排。
+              用户点「换个文件夹」时 `ConfirmBar` 实例不会卸载(只有换技能
+              才会,见 `InstallPanel` 顶层那个按 dirSlug 收尾的 effect),
+              换一个 key 强制它换成一份干净的 `useRef`,新项目默认勾选的
+              那批工具才排得对,不会沿用上一个项目的排序。 */}
+          <ToolPicker
+            key={confirm.projectPath}
+            items={items}
+            onToggle={(agent) => toggleConfirmAgent(agent)}
+            layout="inline"
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -514,11 +564,14 @@ function DoneFooter({
   plaza,
   activeRegistryId,
   activeRepoKey,
+  actions,
 }: {
   dirSlug: string;
   plaza?: { ownerRepo: string };
   activeRegistryId?: string | null;
   activeRepoKey?: string | null;
+  /** `SkillActionsBlock`(host="store")的裸按钮,合并进这一行的尾部(Q44-A)。 */
+  actions?: ReactNode;
 }) {
   const { report, localKept, mineKept, shareResult, agents: detected, begin, beginFromPlaza } =
     useInstall();
@@ -528,7 +581,9 @@ function DoneFooter({
 
   return (
     <div className="px-5 py-3.5">
-      <div className="flex items-center gap-2">
+      {/* Q44-A(v7.6 任务 3):`actions` 摆在这一行尾部,与「装到项目…」同排。
+          `flex-wrap` 是窄宽度下的降级。 */}
+      <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-1 items-center gap-2 text-[12.5px] font-medium text-ok">
           <Icon icon={Check} size={14} />
           {/* 🔴 `mineKept` 时 core 什么都没写——「已启用到…」「已安装到通用目录」
@@ -601,6 +656,7 @@ function DoneFooter({
             })
           }
         />
+        {actions}
       </div>
       {/* 「保留并分享」的结果盖过普通的"已保留":它把下一步也交代了 */}
       {shareResult ? (

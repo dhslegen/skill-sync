@@ -306,15 +306,17 @@ describe("页脚的「在技能库里查看」:core 拼得出地址才摆", () =
 });
 
 /**
- * Q44-A(v7.6 任务 2):商店/广场详情面板下这个组件不再摆自己的主按钮
+ * Q44-A(v7.6 任务 2 + 任务 3):商店/广场详情面板下这个组件不再摆自己的主按钮
  * ——那一格让给 `InstallPanel` 的 `cardState`(见 `InstallPanel.tsx` 的组件
  * 文档)。"推"的动作(分享/贡献更改/更新……都是 `rowAction`「我的技能」语境
- * 下的按钮)一律不在这个宿主下出现,打开文件夹/在技能库里查看/移除这三个
- * "不推不拉"的动作照常摆出来。每一条都配一个 `host="mine"` 的对照组
- * ——只测"store 下没有"证明不了这是 host 分流的结果,还可能是数据本身
- * 就不该出这颗按钮。
+ * 下的按钮)一律不在这个宿主下出现,打开文件夹/在技能库里查看这两个
+ * "不推不拉"的动作照常摆出来;「移除」是**危险动作**,Q44-A 用户批的原文
+ * 「「…」收危险动作(移除)」(任务 3 改正 task-2 把这半句转写丢的偏差)
+ * ——在这个宿主下不再是常驻可见按钮,收进「…」(`SkillRowMenu`)。每一条都配
+ * 一个 `host="mine"` 的对照组——只测"store 下没有"证明不了这是 host 分流的
+ * 结果,还可能是数据本身就不该出这颗按钮。
  */
-describe('host="store":只贡献次要动作(Q44-A,v7.6 任务 2)', () => {
+describe('host="store":只贡献次要动作(Q44-A,v7.6 任务 2 + 任务 3)', () => {
   it("不渲染自己的主按钮 —— 主按钮那一格让给 InstallPanel 的 cardState", () => {
     // rowAction(section="shareable", review=null, shareBlocked=null,
     // remoteChanged=true) → {kind:"update"},mine 宿主下是一颗「更新」的
@@ -344,10 +346,30 @@ describe('host="store":只贡献次要动作(Q44-A,v7.6 任务 2)', () => {
     expect(screen.getByRole("button", { name: "分享" })).toBeInTheDocument();
   });
 
-  it("打开文件夹 / 移除仍然摆出来 —— 这两个不是「推」的动作", () => {
+  it("打开文件夹仍然摆出来 —— 它不是「推」的动作", () => {
     render(<SkillActionsBlock skill={view()} remoteChanged={false} host="store" />);
     expect(screen.getByRole("button", { name: "打开文件夹" })).toBeInTheDocument();
+  });
+
+  it("🔴 v7.6 任务 3:「移除」不再是常驻可见按钮,收进「…」(Q44-A 原文「「…」收危险动作」)", async () => {
+    const skill = view();
+    render(<SkillActionsBlock skill={skill} remoteChanged={false} host="store" />);
+
+    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+    const menuTrigger = screen.getByRole("button", { name: "更多" });
+    expect(menuTrigger).toBeInTheDocument();
+
+    await userEvent.click(menuTrigger);
+    const item = screen.getByRole("menuitem", { name: "移除" });
+    await userEvent.click(item);
+
+    expect(useMySkills.getState().removeTarget).toBe(skill.dirSlug);
+  });
+
+  it('对照组:同一份数据,host="mine" 时「移除」仍是常驻可见按钮(§12 裁定不变)', () => {
+    render(<SkillActionsBlock skill={view()} remoteChanged={false} host="mine" />);
     expect(screen.getByRole("button", { name: "移除" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "更多" })).not.toBeInTheDocument();
   });
 
   it("在技能库里查看仍然摆出来 —— 它是一个链接,不是「推」的动作", () => {

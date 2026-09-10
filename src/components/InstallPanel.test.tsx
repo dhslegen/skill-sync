@@ -94,10 +94,12 @@ describe("装到项目的确认条", () => {
     // 确认条要说清装到哪、路径是什么、会关联哪些工具
     await screen.findByText("我的项目");
     expect(screen.getByText("/w/我的项目")).toBeTruthy();
-    // 🔴 design §15 前半加了 `ToolPicker` 之后,"Claude Code" 这串字会出现两处
-    // (说明文字 + picker 里的 checkbox label),不能再用宽泛的 /Claude Code/
-    // 子串匹配——精确匹配"会启用到 Claude Code"这一整句。
-    expect(screen.getByText("会启用到 Claude Code")).toBeTruthy();
+    // 🔴 v7.6 任务 3(B2):picker 摆上确认条之后,「会启用到 Claude Code」这句话
+    // 成了死重复,只在 picker 不在场时才渲染——这里 `pickableAgents` 探测成功
+    // 且非空(默认 beforeEach 的 `agents_detected` mock),picker 会渲染,
+    // 这句话因此不该再出现,取而代之的是可勾选的 checkbox。
+    expect(screen.queryByText("会启用到 Claude Code")).toBeNull();
+    expect(screen.getByRole("checkbox", { name: "Claude Code" })).toBeTruthy();
     expect(invoke.mock.calls.filter(([c]) => c === "project_skill_install")).toHaveLength(0);
   });
 
@@ -271,6 +273,15 @@ describe("装到项目的确认条", () => {
       expect(useProjects.getState().pickableAgents).toBeNull();
     });
     expect(screen.queryByRole("checkbox")).toBeNull();
+    // 🔴 v7.6 任务 3(B2):这个场景里 `requestInstall` 自己那次独立探测
+    // (`agentsDetected().catch(() => ({agents: []}))`)也失败了,`confirm.agentLabels`
+    // 因此同样是空——两次探测都没拿到结果时,文字要说"暂时读不到",不能说成
+    // `confirmNoAgents`("不必单独启用")那句假话(CLAUDE.md 记过这条:探测失败
+    // 时不能编造"没有可选的工具")。
+    expect(
+      screen.getByText("暂时读不到这台机器上的工具列表,不代表没有可选的工具"),
+    ).toBeTruthy();
+    expect(screen.queryByText("不必单独启用(这些工具直接读技能文件夹)")).toBeNull();
   });
 });
 
@@ -975,5 +986,69 @@ describe("v7.5:详情面板认得出'这台电脑上已经有了'(docs/v7.5-共�
 
     expect(screen.getByRole("button", { name: "已在电脑上" })).toBeTruthy();
     expect(screen.queryByText("与库里不同")).toBeNull();
+  });
+});
+
+describe("v7.6 任务 3(Q44-A):actions 并进主行,只在 idle/done 渲染", () => {
+  // 用一个可辨认的按钮代替真实的 `SkillActionsBlock`(host="store")产物——
+  // 这里只钉「摆在哪一行、哪个 phase 摆不摆」这两件版式问题,不重复
+  // `SkillActionsBlock.test.tsx` 已经钉过的"店铺宿主下具体哪些项"。
+  const actions = (
+    <button type="button" aria-label="测试次要动作">
+      次要动作
+    </button>
+  );
+
+  it("idle 档:actions 与主按钮、装到项目在同一行里", () => {
+    render(<InstallPanel dirSlug="weekly-report" actions={actions} />);
+
+    const primary = screen.getByRole("button", { name: "安装" });
+    const secondary = screen.getByRole("button", { name: "测试次要动作" });
+    // 是同一行的直接子元素(不是另起一行、也不是嵌在别的容器里)——
+    // `parentElement` 而不是 `closest`,防止"隔着好几层都算通过"这种宽松断言。
+    expect(secondary.parentElement).toBe(primary.parentElement);
+  });
+
+  it("🔴 running 档:actions 不渲染——不该挨着进度条(检查点 1)", () => {
+    useInstall.setState({ phase: "running", dirSlug: "weekly-report", stage: "writing" });
+    render(<InstallPanel dirSlug="weekly-report" actions={actions} />);
+
+    expect(screen.getByRole("progressbar")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "测试次要动作" })).toBeNull();
+  });
+
+  it("choosing 档:actions 同样不渲染——没有一条'主按钮所在的行'可以合并", () => {
+    useInstall.setState({ phase: "choosing", dirSlug: "weekly-report", agents: [] });
+    render(<InstallPanel dirSlug="weekly-report" actions={actions} />);
+
+    expect(screen.queryByRole("button", { name: "测试次要动作" })).toBeNull();
+  });
+
+  it("done 档:actions 与「装到项目…」在同一行里", () => {
+    // ⚠️ 与本文件既有的 `seedDone` 同一条纪律:**先 render 再 seed**——挂载时的
+    // 收尾 effect 会把 done/error 整个清掉,挂载时就是 done 是构造不出来的状态。
+    render(<InstallPanel dirSlug="weekly-report" actions={actions} />);
+    act(() => {
+      useInstall.setState({
+        phase: "done",
+        dirSlug: "weekly-report",
+        agents: [
+          { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, isUniversal: false, needsLink: true },
+        ],
+        report: {
+          dirSlug: "weekly-report",
+          links: [{ dir: "/x", result: { status: "linked", mode: "symlink" } }],
+        } as never,
+        localKept: false,
+        shareResult: null,
+      });
+    });
+
+    const scope = screen.getByRole("button", { name: "装到项目…" });
+    const secondary = screen.getByRole("button", { name: "测试次要动作" });
+    // `InstallScopeMenu` 自己的触发按钮外面包了一层 `relative` 定位 div
+    // (给它的下拉菜单当锚点),所以不能直接比 `parentElement`——用
+    // "actions 的父级(那一整行)包含 scope 按钮" 来断言两者同排。
+    expect(secondary.parentElement?.contains(scope)).toBe(true);
   });
 });
