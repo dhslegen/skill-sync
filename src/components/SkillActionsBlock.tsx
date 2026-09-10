@@ -164,6 +164,41 @@ import { useStoreIndex } from "@/store/store-index";
  *   `removeError`,而且那个弹窗是全局挂在 `App.tsx` 的,不依赖任何一页。
  *   真要摆得换个承载位置(比如提升成 App 级的一次性提示),超出本波边界。
  */
+/** 这个组件的两种宿主。见组件文档「两种宿主」一节。 */
+export type ActionsHost = "store" | "mine";
+
+/**
+ * 宿主能力表。**穷尽 switch、无 default**——`host` 加第三档时这里当场编译失败,
+ * 逼着人把三项能力逐个想清楚,而不是让新宿主默默继承 `host === "mine"` 这种
+ * 散落各处的布尔比较的另一半。
+ *
+ * 这是组件文档里那句「`host` 加第三档时编译器会指着你」的**兑现处**:v7.6 任务 2
+ * 复审指出,原实现三处都是裸的 `host === "mine"`,联合虽然是闭合的,但"加档时会
+ * 编译失败"这件事并不成立——那句话当时只是一条注释里的约定。
+ */
+function capsOf(host: ActionsHost): {
+  /** 摆不摆自己的 `rowAction` 主按钮(`host="store"` 下那一格让给 `InstallPanel`)。 */
+  ownPrimary: boolean;
+  /** 次要动作是否全摆(`false` = 只留 `reveal`「打开文件夹」)。 */
+  allSecondaryItems: boolean;
+  /** 摆不摆分享的成功/失败/受阻三段反馈。 */
+  shareFeedback: boolean;
+  /** 自己带不带外层容器(边框 + 内边距)。`false` = 交裸内容,由宿主包。 */
+  ownWrapper: boolean;
+} {
+  switch (host) {
+    case "mine":
+      return { ownPrimary: true, allSecondaryItems: true, shareFeedback: true, ownWrapper: true };
+    case "store":
+      return {
+        ownPrimary: false,
+        allSecondaryItems: false,
+        shareFeedback: false,
+        ownWrapper: false,
+      };
+  }
+}
+
 export function SkillActionsBlock({
   skill,
   remoteChanged,
@@ -180,7 +215,7 @@ export function SkillActionsBlock({
    * 文档「两种宿主」一节。`"mine"` = 「我的技能」详情,行为一个字不变;
    * `"store"` = 商店/广场详情,只贡献次要动作,嵌进 `InstallPanel` 的页脚里。
    */
-  host: "store" | "mine";
+  host: ActionsHost;
 }) {
   const index = useStoreIndex((s) => s.index);
   const pulling = useInstall((s) => s.dirSlug === skill.dirSlug && s.phase === "running");
@@ -204,8 +239,9 @@ export function SkillActionsBlock({
   // `update`/`share`/`useLibraryVersion` 都是"推"的动作(改库里的内容、或是
   // `rowAction` 语境下的取回),v7.4 已拍板"推"的动作不摆在"拉"的界面里,见组件
   // 文档「两种宿主」一节。
+  const caps = capsOf(host);
   const items = allItems.filter(
-    (spec) => spec.kind !== "remove" && (host === "mine" || spec.kind === "reveal"),
+    (spec) => spec.kind !== "remove" && (caps.allSecondaryItems || spec.kind === "reveal"),
   );
   const removeItem = allItems.find((spec) => spec.kind === "remove") ?? null;
 
@@ -240,7 +276,7 @@ export function SkillActionsBlock({
   // 那一行的最右边,与不换行时的效果一致(画布里它就在最右)。
   const row = (
     <div className="flex flex-wrap items-center gap-2">
-      {host === "mine" && (
+      {caps.ownPrimary && (
         <PrimaryAction
           action={action}
           pulling={pulling}
@@ -308,17 +344,17 @@ export function SkillActionsBlock({
           文案按 `flow` 分流,**不按渲染那一刻的 `action` 反推**——首次分享成功后
           这一行的 section/rowAction 已经换档了,反推出来的答案恰恰在成功路径上是错的
           (见 `lib/share-block.ts::ShareFlow` 的文档)。 */}
-      {host === "mine" && shareError && (
+      {caps.shareFeedback && shareError && (
         <p className="mt-1.5 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
           {t(SHARE_FAILED_LABEL[shareError.flow])}
           {t("punct.labelSeparator")}
           {shareError.error.message}
         </p>
       )}
-      {host === "mine" && shareDone && (
+      {caps.shareFeedback && shareDone && (
         <p className="mt-1.5 text-[12px] text-text-2">{t(SHARE_DONE_LABEL[shareDone.flow][shareDone.mode])}</p>
       )}
-      {host === "mine" && action.kind === "shareBlocked" && (
+      {caps.shareFeedback && action.kind === "shareBlocked" && (
         <p className="mt-1.5 rounded-card border border-[#b8860b]/40 px-2.5 py-1.5 text-[11.5px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
           {t(SHARE_BLOCK_LABEL[action.reason])}
         </p>
@@ -329,7 +365,7 @@ export function SkillActionsBlock({
   // `host="mine"`:完整的固定页脚,自己的边框/内边距(行为一个字不变)。
   // `host="store"`:裸内容,没有外层容器——`InstallPanel` 把它当 `actions` prop
   // 接住,摆进自己那唯一一层 `border-t` 容器(见组件文档「两种宿主」一节)。
-  if (host === "mine") {
+  if (caps.ownWrapper) {
     return (
       <div className="flex-none border-t border-border px-5 py-3.5">
         {row}

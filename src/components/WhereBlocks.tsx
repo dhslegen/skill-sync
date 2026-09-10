@@ -564,7 +564,8 @@ export function whereSummary(skill: InstalledSkillView, remoteChanged: boolean):
 }
 
 /**
- * 详情面板里的「在哪」:一行折叠头(默认收起)+ 展开后的三块(v7.1 任务 3,Q2)。
+ * 详情面板里的「在哪」:一行折叠头(默认收起)+ 展开后的各块(v7.1 任务 3,Q2;
+ * v7.6 任务 2 起是四块——「项目里」按需出现)。
  *
  * # 为什么默认收起
  *
@@ -579,7 +580,7 @@ export function whereSummary(skill: InstalledSkillView, remoteChanged: boolean):
  *
  * 折叠头是 `<button>`,可访问名就是它的可见文字(路径 + 结论),**刻意不加
  * `aria-label`**;`aria-expanded` 跟实际展示态走,`aria-controls` 指向下面
- * 那个三块容器的 `id`(与 `MySkillsPage` 的 `SectionHeader` 同一套写法)。
+ * 那个容器的 `id`(与 `MySkillsPage` 的 `SectionHeader` 同一套写法)。
  */
 export function WhereBlocks({
   skill,

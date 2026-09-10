@@ -125,10 +125,10 @@ export function DetailPanel() {
 }
 
 /**
- * 「在哪」三块要用的 `InstalledSkillView`——`PanelBody`(商店/广场详情)与
+ * 「在哪」各块要用的 `InstalledSkillView`——`PanelBody`(商店/广场详情)与
  * `LocalPanelBody`(本地详情,「我的技能」的行打开的就是这一条路径)共用同一份
  * 查找逻辑:按 `dirSlug` 在 `useMySkills().list` 里找。找不到(浏览商店里一个
- * 从没在这台电脑上出现过的技能)就不渲染「在哪」——那三块本就是在回答"这台电脑上
+ * 从没在这台电脑上出现过的技能)就不渲染「在哪」——那几块本就是在回答"这台电脑上
  * 这个技能的情况",没有 `InstalledSkillView` 就没有可回答的东西。
  *
  * `list` 在 App 启动时已经会加载一次(侧边栏角标需要它),这里的 `load()` 只是

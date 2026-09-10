@@ -97,7 +97,7 @@ src/
                  wizard/settings(agent 开关+更新档位+App 自更新)/prefs(偏好落盘协调)/
                  registries(多源)/local-detail(本地详情)/create(新建技能向导)
   components/    Sidebar/Toolbar/SearchBox/SkillCard/InstallButton/DetailPanel/CommandPalette/
-                 ChangelogCard(升级后的更新日志卡片)/InstalledScopes(详情页「已装到」)/
+                 ChangelogCard(升级后的更新日志卡片)/
                  InstallScopeMenu(作用域下拉)/ProjectSections(我的技能·项目分区)/
                  ProjectDecisionDialog(项目级替换/本地改动拍板)/
                  Markdown/Icon/SkillIcon/InstallPanel/Wizard +
@@ -1181,10 +1181,16 @@ v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
   - **换技能看详情时必须清掉 notice 与 confirm**:`dismissNotice` 此前定义了却
     一处没调用,提示永久留着、说的是另一个技能的事;待确认条不清更糟——
     点「装到这里」装的是上一个技能。
-- **详情面板的「已装到」是零新 IPC 的派生视图**(`components/InstalledScopes.tsx`):
-  全局那档来自 `install.ts` 的 `installed` map,项目那档来自 `project_list`。
-  位置是**一等信息**(同 Steam 的多库文件夹在游戏详情页写「已安装于…」),
-  不是安装动作的副产品。匹配用 `dirSlug`,目录已不在的项目不列。
+- **详情面板的「项目里」是零新 IPC 的派生视图**(`WhereBlocks.tsx::ProjectsBlock`,
+  v7.6 任务 2 起;此前是独立组件 `InstalledScopes.tsx`,已删除):数据来自
+  `project_list`。位置是**一等信息**(同 Steam 的多库文件夹在游戏详情页写
+  「已安装于…」),不是安装动作的副产品。匹配用 `dirSlug`(**不是项目 lock 的
+  `key`**——那是 frontmatter name,广场技能里 47 个有 8 个不同,按 key 匹配恰恰是
+  最热门的那批永远显示"没装过"),目录已不在的项目不列,一个项目都没有则整块不摆。
+  ⚠️ **旧组件里那行「这台电脑」(全局安装)已删除**:它是纯文本、不可点,判据是
+  `state.installed` **记账**——而同一面板的「这台电脑上」块用的是**磁盘事实**
+  (`localPresent`/`body`)且可点。"记账说有、磁盘上其实没有"时旧那行会撒谎,
+  正是 v7.6 Q47-A 要修的东西。删除未丢任何用户可达的信息或去处(已独立复核)。
 - **升级后的更新日志(M11)有四条不变量,破一条就是可见缺陷或假话**
   (`core/release_notes.rs` + `components/ChangelogCard.tsx`):
   - 🔴 **`RELEASE_NOTES.md` 必须打进安装包**(`bundle.resources`,**map 形式**
@@ -1467,6 +1473,79 @@ v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
     `record.contentHash`(安装基线)与 `remoteHash`(库里指纹),两者都不受本地
     改动影响。有测试正面钉住这一行——它是"推的动作不摆在拉的界面里"这条拍板
     唯一可验证的落点,别让人"补全"判定时把 `localModified` 加回商店。
+    ⚠️ **这一条的后半段已被 v7.6 取代**(见下):`cardState` 的入口从"问账本"
+    改成了"问磁盘",非-mine 分支这个说法本身也随之作废。保留这一条是因为
+    「商店不区分是不是我分享的」这条拍板仍然有效。
+
+  - 🔴 **磁盘是真相,记账只回答"从哪来"(v7.5 + v7.6,2026-09-09/10 用户第 10–15 轮
+    拷问拍板,顾问复核)**。设计在本地 `docs/v7.5-共识.md` 与 `docs/v7.6-共识.md`
+    (不受版本控制)。起因是用户真机截图:在 Claude Code 里原创、走评审分享的技能,
+    商店卡片对着他自己的原稿写「获取」——因为卡片问的是「我**装**过吗」(读
+    `state.installed` 记账),而那条路径 `adopt_into_management` 只认直推、根本没有记账。
+    **病灶更深**:v6 二期已把"本地实体"确立为一等公民,**商店卡片从来没学会这件事**。
+    - **第一性原理(拍板依据)**:把**事实**(可观测:磁盘的字节 vs 库里的字节)与
+      **能力**(依赖历史:从哪装的、装时什么样)分开。磁盘能回答全部事实;记账是
+      能力的**唯一载体**,磁盘上根本不存在。两条对称推论:**状态词只该讲事实**
+      (合并终态词)、**不能伪造历史去铸造能力**(不自动补账)。
+      一句话:**记账对「我有没有」只是加速,对「它从哪来」是全部。**
+    - **`cardState` 收敛成五档**,判据顺序不能变:`otherLibrary`(有账且来源库不同,
+      判在最前)→ **磁盘上没有本体** → `install` → `localHash === remoteHash`
+      (或任一为空 = 无从比较)→ `onDisk`「已在电脑上」→ 不同且**有账且
+      `localHash === contentHash`** → `update`「更新」→ 其余 → `differs`「与库里不同」。
+      🔴 **入口从 `!record` 变成"磁盘上没有本体"**,这是整条拍板的核心;副作用是
+      对的:装了又被手动删掉目录的技能,从「已启用」变成「获取」。
+      🔴 **「更新」比 v7.6 之前更准**:旧判据不看 `localHash`,用户改过的技能只要
+      库里也动了照样写「更新」,点下去才被 `precheck` 拦成拍板框;新判据下「更新」
+      只在**点下去真的安全**(本地未改、只是库里前进了)时出现。
+    - 🔴 **「还没探到」与「探过、没有」必须是两件事**(`LocalProbe` 可辨联合,
+      v7.6 复审):上一版把 `list == null`(还没加载 **或 `load()` 失败**)与
+      "找不到这一行"都返回 `undefined`,于是 `useMySkills.load()` 失败时,满屏
+      **确实在电脑上**的技能会**永久**显示「获取」——一个错误状态静默降级成假话。
+      现在磁盘的答案还没到时**不做任何关于磁盘的断言**,退回用记账当代理
+      (有账几乎总意味着磁盘上有)——这正是"记账只是加速判断"的字面兑现。
+      ⚠️ 缺陷的自白当时就写在那个函数的注释里(「…都返回 `undefined`,与
+      `cardState` 里"本机没有本体"是同一个信号」)。**诚实的注释保护不了错误的实现。**
+    - 🔴 **不自动补账**(Q48-B,推翻控制者初判,顾问指出):对**内容与库不同**的
+      无账技能自动补账 → 基线 = 发现那一刻的 `localHash` → 下一次 scheduler tick
+      判成 `Managed{up_to_date:false}` → **`acquire_batch` 按正常更新静默覆盖那份
+      与库不同的本地内容**。"发现"这个**零手势**动作会变成对用户从未交给本 app
+      管理的目录的自动改写。**这正是 R14 挡过一次的同一件事**(R14 给副作用建的账
+      刻意留空来源,补账等于填上真坐标绕过它)。补账的入口本来就存在:点一次
+      「更新 / 换成库里的版本」,那就是手势。
+    - **如实留下的残留,别说"全解决了"**:无账技能**不进定时更新**
+      (`scheduler.rs` 遍历 `state.installed`)、**移除摘不掉关联**
+      (`remove.rs` 靠 `record.links`)。这是"记账是历史唯一载体"的诚实代价。
+    - **三个刻意的取舍**:①**只认 `dirSlug`**(Q37-B):本机 `weekly-report` 草稿与
+      库里无关的同名技能撞名时会显示「与库里不同」,"与"字暗示是同一个技能——
+      **接受**,别顺手补 description/authors 判据(拿更多的猜去补一个猜);
+      ②**广场是漏报**(Q43-A):`PlazaSkillCard` 没有内容指纹,内容其实不同时也说
+      「已在电脑上」,与既有"宁可漏报不误报"同源;③**筛选器 chip 维持
+      「已安装/未安装」**(Q49-C):筛选与状态陈述服务于不同动作,刻意与按钮用词不同。
+    - **两个词在别处仍然正确,禁止全局替换**:「已启用到 X、Y」与工具勾组里的
+      「启用」描述的是**工具关联**,与本次无关。
+    - 一条支持性论据:「已启用」本来就是半句假话——`cardState` 从不查 links,
+      一个所有工具都没勾的技能照样写「已启用」。**新词反而更诚实。**
+
+  - **详情面板两条渲染路径同构:一个固定页脚**(v7.6 任务 2,Q44-A/Q46-A)。
+    此前商店那条路(`PanelBody`)在 `SkillActionsBlock` 之后还挂着 `InstalledScopes`
+    与 `InstallPanel`,于是**同一个组件在两个宿主里,一个是页脚,一个是夹层**
+    ——而它的文档注释写着「详情面板的**固定页脚**」,那句话在商店那条路上已经
+    是假话。现在:「在哪」四块 → 页签 → 正文(`flex:1`)→ **一个页脚**。
+    - **宿主用闭合联合 `ActionsHost = "store" | "mine"` + `capsOf()` 穷尽 switch**
+      (四项能力:`ownPrimary`/`allSecondaryItems`/`shareFeedback`/`ownWrapper`)。
+      复审第一版是三处裸的 `host === "mine"`,联合虽闭合,但组件文档说的"加第三档
+      时编译器会指着你"**并不成立**——那只是注释里的约定。这是本期第三次
+      「约定 → 类型」(前两次:`label?: string`→`variant`、
+      `string | undefined`→`LocalProbe`)。
+    - 🔴 **商店宿主下主按钮来自 `cardState`,不是 `rowAction`**:`rowAction` 是
+      「我的技能」的语境(分享/贡献更改),v7.4 已拍板**"推"的动作不摆在"拉"的
+      界面里**。所以 `host="store"` 下 `SkillActionsBlock` 不摆自己的主按钮、
+      次要动作收窄到只剩「打开文件夹」、分享三段反馈一概不渲染(摆出来要么是
+      孤儿反馈,要么会把「我的技能」页上一次操作的陈旧结果带进商店详情)。
+    - ⚠️ **`InstallPanel` 不是只有一颗按钮**:它承载 idle/choosing/running/done/error
+      五档外加项目安装确认条,每一档背后都有一条本文件的专条(「选完再确认」、
+      「已启用到 X、Y 是临时态」、「状态区在顶层渲染」、「换技能要清 notice 与
+      confirm」)。合并页脚时**一档都不能丢**——搬运是重复既有缺陷最快的方式。
   - 🔴 **`acquire::precheck` 里 `Mine` 判在 `Foreign` 之前、在 `Managed` 之后**:
     没有 `state.installed` 记账时(第一次遇到这个目录),先判 `is_mine`——是我
     就直接给 `Mine{local_changed:true, remote_changed:true}`,不是我才落进
