@@ -257,7 +257,7 @@ describe("详情面板底部的获取区", () => {
     useInstall.setState({ phase: "idle", dirSlug: null, installed: new Map() });
   });
 
-  it("装了且内容一致 → 已启用(终态,点不动)", () => {
+  it("装了且内容一致 → 已在电脑上(终态,点不动;v7.6 起 installed 并入 onDisk,不再叫「已启用」)", () => {
     const d = open();
     useStoreIndex.setState({
       index: { ...useStoreIndex.getState().index!, skills: [
@@ -267,11 +267,16 @@ describe("详情面板底部的获取区", () => {
     useInstall.setState({
       installed: new Map([[d.dirSlug, { commitSha: "x", contentHash: "sha256:same", localModified: false, registryId: "company", sourceOwner: "skills", sourceRepo: "skills" }]]),
     });
+    // v7.6:判定入口从"问账本"改成"问磁盘",要显式给出本机本体的实时指纹
+    // (`useMySkills` 的 list),否则 localHash 缺省为 undefined 会被判成「获取」。
+    useMySkills.setState({
+      list: [{ ...installedView({ dirSlug: d.dirSlug }), localPresent: true, localHash: "sha256:same" }],
+    });
     render(<DetailPanel />);
-    expect(screen.getByRole("button", { name: /已启用/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /已在电脑上/ })).toBeDisabled();
   });
 
-  it("装了但内容落后 → 「更新」且可点(曾经这里只有两档,点了毫无反应)", async () => {
+  it("装了但内容落后、本地未改 → 「更新」且可点(曾经这里只有两档,点了毫无反应)", async () => {
     // 2026-08-03 用户实测:商店卡片显示"更新",点进详情按钮却是禁用的「已启用」
     const d = open();
     useStoreIndex.setState({
@@ -282,11 +287,23 @@ describe("详情面板底部的获取区", () => {
     useInstall.setState({
       installed: new Map([[d.dirSlug, { commitSha: "x", contentHash: "sha256:old", localModified: false, registryId: "company", sourceOwner: "skills", sourceRepo: "skills" }]]),
     });
-    render(<DetailPanel />);
+    // localHash 与记账基线一致(用户没碰过本地文件)→ 「更新」这个词才是准的
+    // ——点下去真的安全,不会被 precheck 拦成拍板框(v7.6 共识)。
+    useMySkills.setState({
+      list: [{ ...installedView({ dirSlug: d.dirSlug }), localPresent: true, localHash: "sha256:old" }],
+    });
+    // ⚠️ 这份 useMySkills 数据同时会命中 DetailPanel 自己的 `list.find(dirSlug)`
+    // 查找(供 WhereBlocks/SkillActionsBlock 用,任务 2 的地盘,本任务不碰),
+    // 而那个区块在"installedFrom + remoteChanged"这个组合下**也会**渲染一颗
+    // 文案同为「更新」的按钮——两颗按钮的可访问名相同,只能靠 `aria-label`
+    // 属性精确定位这颗(`InstallButton` 的 panel 变体总会显式写 aria-label,
+    // `SkillActionsBlock` 的主按钮不写),不能用 `getByRole` 按名字查。
+    const { container } = render(<DetailPanel />);
 
-    const button = screen.getByRole("button", { name: /^更新/ });
+    const button = container.querySelector('button[aria-label="更新"]');
+    expect(button).toBeTruthy();
     expect(button).toBeEnabled();
-    await userEvent.click(button);
+    await userEvent.click(button!);
     // 点了要真的进入流程(展开 agent 勾选),不是死按钮
     await vi.waitFor(() => {
       expect(useInstall.getState().dirSlug).toBe(d.dirSlug);
@@ -1299,7 +1316,7 @@ describe("DetailPanel(技能广场详情态)", () => {
     await waitFor(() => expect(confirm).not.toBeDisabled());
   });
 
-  it("已装且指纹一致(广场坐标) → 已启用,终态点不动", () => {
+  it("已装(广场坐标) → 已在电脑上,终态点不动(v7.6 起 installed 并入 onDisk)", () => {
     usePlaza.setState({
       detailOwnerRepo: "vercel-labs/skills",
       detailWantedName: "React 最佳实践",
@@ -1322,8 +1339,19 @@ describe("DetailPanel(技能广场详情态)", () => {
         ],
       ]),
     });
+    // 广场详情态 remoteHash 恒为空串,判定完全靠 localHash 是不是"有值"——v7.6
+    // 起要显式给出本机本体的实时指纹,否则默认 undefined 会被判成「获取」。
+    useMySkills.setState({
+      list: [
+        {
+          ...installedView({ dirSlug: "react-best-practices" }),
+          localPresent: true,
+          localHash: "sha256:whatever",
+        },
+      ],
+    });
     render(<DetailPanel />);
-    expect(screen.getByRole("button", { name: /已启用/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /已在电脑上/ })).toBeDisabled();
   });
 
   it("同名技能装自另一个技能库(广场坐标) → 替换,不是安装/更新", () => {

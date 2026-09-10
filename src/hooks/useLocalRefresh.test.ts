@@ -48,7 +48,7 @@ describe("按页刷新", () => {
     await vi.waitFor(() => expect(sent()).toContain("installed_list"));
   });
 
-  it("商店页刷已装状态:技能可能在外部被删了,该显示「获取」而不是「已启用」", async () => {
+  it("商店页刷已装状态:技能可能在外部被删了,该显示「获取」而不是「已在电脑上」", async () => {
     refreshLocalFor("store");
     await vi.waitFor(() => expect(sent()).toContain("installed_list"));
   });

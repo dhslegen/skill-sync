@@ -16,18 +16,16 @@ import { cn } from "@/lib/cn";
  *  ——那份折叠机制原样留在 `core/acquire.rs`,这里删掉的只是曾经借按钮文案
  *  抢答的四个展示分支,不是背后的安全判定。
  *
- *  🔴 **v7.5 起新增 `onDisk`/`onDiskDiffers`**(`docs/v7.5-共识.md`):无记账但
- *  本机有本体的技能。`onDisk`(与库里逐字节相同或无从比较)是**终态**,与
- *  `installed` 同形;`onDiskDiffers`(与库里不同)可点、走既有的
- *  `acquire`——与 `otherLibrary` 同形(中性描边,不用强调色去引诱点击),
- *  理由相同:这一档点下去是**替换**,不是常规动作。 */
-export type InstallState =
-  | "install"
-  | "installed"
-  | "update"
-  | "otherLibrary"
-  | "onDisk"
-  | "onDiskDiffers";
+ *  🔴 **v7.6 起 `installed` 与 `onDisk` 合并成一档 `onDisk`,`onDiskDiffers`
+ *  改名 `differs` 并吸收"有账但本地确实改过"这一半**(`docs/v7.6-共识.md`
+ *  Q47-A:状态词只讲磁盘的事实,与有没有记账无关)。`onDisk`(与库里逐字节
+ *  相同、或任一侧指纹读不到无从比较)是**终态**;`differs`(与库里不同)
+ *  可点、走既有的 `acquire`——与 `otherLibrary` 同形(中性描边,不用强调色
+ *  去引诱点击),理由相同:这一档点下去是**替换**,不是常规动作。
+ *  ⚠️ **「已启用」这个词没有消失,只是不再是这颗按钮的文案**——它在
+ *  「已启用到 X、Y」、工具勾组那些地方描述的是**工具关联**,与本次改动无关,
+ *  禁止全局替换(见 `lib/update.ts::cardState` 文档注释「行为翻转 2」)。 */
+export type InstallState = "install" | "onDisk" | "update" | "differs" | "otherLibrary";
 
 /**
  * 这颗按钮长在哪儿。**只影响文案,不影响任何行为侧判定**
@@ -42,24 +40,23 @@ export type InstallState =
 export type InstallButtonVariant = "card" | "panel";
 
 /**
- * 文案表。`onDiskDiffers` 是**目前唯一两处不同词的档**:卡片上是状态陈述
+ * 文案表。`differs` 是**目前唯一两处不同词的档**:卡片上是状态陈述
  * (「与库里不同」),详情面板底部是动作(「换成库里的版本」)——两处不同词
- * 是有意的,见 `docs/v7.5-共识.md`。其余各档两处同词。
+ * 是有意的,见 `docs/v7.5-共识.md`(该判据本身 v7.6 未变,只是档名从
+ * `onDiskDiffers` 改成 `differs`)。其余各档两处同词。
  *
  * 没有 `default` 分支:加档时这里必须编译失败。
  */
 function labelOf(state: InstallState, variant: InstallButtonVariant): string {
   switch (state) {
-    case "installed":
-      return t("skill.actionInstalled");
     case "onDisk":
       return t("store.onDisk");
     case "update":
       return t("skill.actionUpdate");
     case "otherLibrary":
       return t("skill.actionReplace");
-    case "onDiskDiffers":
-      return variant === "panel" ? t("install.replaceWithLibrary") : t("store.onDiskDiffers");
+    case "differs":
+      return variant === "panel" ? t("install.replaceWithLibrary") : t("store.differs");
     case "install":
       return t("skill.actionInstall");
   }
@@ -92,9 +89,9 @@ export function InstallButton({
 }) {
   const label = labelOf(state, variant);
 
-  // onDisk 与 installed 是同一档"终态"(v7.5):本机这份内容与库里逐字节相同
-  // (或无从比较),没有下一步动作可点。
-  const terminal = state === "installed" || state === "onDisk";
+  // onDisk 是唯一的终态(v7.6:installed 已并入 onDisk):本机这份内容与库里
+  // 逐字节相同(或无从比较),没有下一步动作可点。
+  const terminal = state === "onDisk";
 
   // 置灰的主按钮不能只是"半透明的实心强调色":深色主题下它看着还是个能点的主按钮,
   // 用户会反复去点。降级成 ghost 灰,一眼就知道现在不可用。
@@ -126,12 +123,12 @@ export function InstallButton({
         !inert && state === "install" && "bg-accent-soft text-accent hover:opacity-80",
         !inert && state === "update" && "bg-accent text-white hover:bg-accent-hover",
         // 替换不是常规动作:给中性描边,不用强调色去引诱点击。
-        // onDiskDiffers 同一条理由(用户 Q40-B 拍板):点下去也是替换,不该用
-        // 实心去引诱——这一档的问题在别处("与库里不同"是不是同一个技能都
-        // 未必确定,见 lib/update.ts 的 Q37-B 注释),不该借形态显得比"有更新"
-        // 更紧急。
+        // differs(v7.6 前叫 onDiskDiffers)同一条理由(用户 Q40-B 拍板):点下去
+        // 也是替换,不该用实心去引诱——这一档的问题在别处("与库里不同"是不是
+        // 同一个技能都未必确定,见 lib/update.ts 的 Q37-B 注释),不该借形态显得
+        // 比"有更新"更紧急。
         !inert &&
-          (state === "otherLibrary" || state === "onDiskDiffers") &&
+          (state === "otherLibrary" || state === "differs") &&
           "border-border bg-transparent text-text-2 hover:border-border-strong hover:text-text",
         terminal && "bg-transparent font-medium text-ok",
         inert && "cursor-default border-border bg-transparent font-medium text-text-3",

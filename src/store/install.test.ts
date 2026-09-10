@@ -859,8 +859,12 @@ describe("已装记账的来源坐标(M4 一源多仓)", () => {
   it("refreshInstalled 必须排除没有记账的本地目录(别的工具装的)", async () => {
     // 用户用 npx skills 装过 weekly-report,公司库里也有同名技能(作者是同事)。
     // 这一行 relation 是 installed、本体也在,但**没有 state.installed 记账**。
-    // 混进 map 的后果:contentHash 为空 → cardState 返回 "installed" →
-    // 商店卡片显示**禁用的**「已启用」,用户永远无法从商店获取库里那一版。
+    // ⚠️ v7.6 起判定入口改成"问磁盘"(见 `lib/update.ts::cardState`),混进 map
+    // 不再必然让按钮卡死在禁用态——localHash 与库里不同时反而会显示可点的
+    // 「与库里不同」。这条过滤真正要挡的是:一份没有真实来源坐标、
+    // contentHash 空串的**假记账**冒充"有记账"去参与 `otherLibrary` 判定与
+    // 「已装到」这类派生视图(`InstalledScopes`),那些地方仍然把空坐标/空基线
+    // 当成"这条记账真实存在"来用,会产生与实际归属不符的展示。
     invoke.mockResolvedValueOnce([
       recordedRow("from-library"),
       { ...row("npx-installed"), relation: "installed", localPresent: true },
@@ -893,7 +897,7 @@ describe("已装记账的来源坐标(M4 一源多仓)", () => {
 
     const map = useInstall.getState().installed;
     expect(map.has("from-library")).toBe(true);
-    // 这台电脑上什么都没有,"已启用"更是无从谈起
+    // 这台电脑上什么都没有,"已在电脑上"更是无从谈起
     expect(map.has("not-here")).toBe(false);
   });
 });

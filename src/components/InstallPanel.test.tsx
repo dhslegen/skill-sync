@@ -385,14 +385,19 @@ describe("已经装过之后的入口可见性", () => {
       ]),
     });
     useStoreIndex.setState({ index: null, activeRegistry: "company", activeRepo: "skills/skills" });
+    // v7.6:判定入口从"问账本"改成"问磁盘",要显式给出本机本体的实时指纹,
+    // 否则 localHash 缺省为 undefined 会被判成「获取」而不是这里要的终态。
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha:whatever" })],
+    });
   }
 
   it("全局已装时,作用域入口是**看得懂的文字按钮**,不是一个小三角", async () => {
     seedInstalledGlobally();
     render(<InstallPanel dirSlug="weekly-report" />);
 
-    // 主按钮仍如实显示终态
-    expect(screen.getByRole("button", { name: /已启用/ })).toBeTruthy();
+    // 主按钮仍如实显示终态(v7.6 起 installed 并入 onDisk,文案是「已在电脑上」)
+    expect(screen.getByRole("button", { name: /已在电脑上/ })).toBeTruthy();
     // 但"还能装到项目"必须一眼看得出来
     const entry = screen.getByRole("button", { name: "装到项目…" });
     expect(entry.getAttribute("aria-haspopup")).toBe("menu");
@@ -679,9 +684,15 @@ describe("本次安装结果是临时态", () => {
       shareResult: null,
     });
     useStoreIndex.setState({ index: null, activeRegistry: "company", activeRepo: "skills/skills" });
+    // v7.6:判定入口从"问账本"改成"问磁盘",再打开这一屏走的是 IdleFooter/
+    // cardState,要显式给出本机本体的实时指纹,否则 localHash 缺省为
+    // undefined 会被判成「获取」。
+    useMySkills.setState({
+      list: [localSkill({ dirSlug, localPresent: true, localHash: "sha:whatever" })],
+    });
   }
 
-  it("关掉详情面板再打开:回到简易的「已启用」,不再挂着上次的结果报告", async () => {
+  it("关掉详情面板再打开:回到简易的「已在电脑上」,不再挂着上次的结果报告", async () => {
     // ⚠️ 顺序必须真实:面板先以「未安装」挂载,用户点了安装才变成 done。
     // 直接"挂载时就是 done"是构造不出来的状态,那样测的是另一回事。
     const first = render(<InstallPanel dirSlug="weekly-report" />);
@@ -692,7 +703,9 @@ describe("本次安装结果是临时态", () => {
     render(<InstallPanel dirSlug="weekly-report" />); // 再打开
 
     expect(screen.queryByText(/已启用到/)).toBeNull();
-    expect(screen.getByRole("button", { name: /已启用/ })).toBeTruthy();
+    // v7.6 起 installed 并入 onDisk,简易终态的文案是「已在电脑上」——
+    // 「已启用」这个词没有消失,只是不再是这颗按钮的文案。
+    expect(screen.getByRole("button", { name: /已在电脑上/ })).toBeTruthy();
   });
 
   it("切到别的技能再切回来也一样", async () => {
@@ -726,7 +739,7 @@ describe("本次安装结果是临时态", () => {
   });
 });
 
-describe("v7.4:商店不再按「是不是我的」分流", () => {
+describe("v7.4:商店不再按「是不是我的」分流(v7.6 起按钮文案随「行为翻转 1」更新)", () => {
   // v6 任务 5 加的 mine* 四档已随 v7.4 撤销(用户第 9 轮拷问拍板:「取回」一词
   // 背三种意思、「已同步」回答的是没人问的问题,商店只该回答"我有没有 / 我要不要")。
   // 这一对用例是这条拍板在组件层面的钉子:同样的本地改动 + 相同的内容指纹,
@@ -734,6 +747,13 @@ describe("v7.4:商店不再按「是不是我的」分流", () => {
   // 也不再改变徽标的显隐(徽标本身与"是不是我的"无关,任何已装技能只要本体
   // 内容变了就提示,`IdleFooter` 已删掉 `!state.startsWith("mine")` 那道
   // 现在恒真的死判据)。
+  //
+  // 🔴 v7.6 行为翻转(`docs/v7.6-共识.md`):v7.4/v7.5 时按钮文案钉的是「已启用」
+  // ——那时"本地改没改"完全不参与 cardState 判定,只看 record.contentHash 与
+  // remoteHash 是否相等。v7.6 拍板后状态词只讲磁盘的事实:这里的"本地也改过"
+  // 现在要靠 `useMySkills` 的实时指纹(localHash)与记账基线不同来表达,而这
+  // 恰好命中新判据的第 5 条——正确结果因此从「已启用」翻成「与库里不同」。
+  // 这不是回归,是拍板的直接推论(见「三个行为翻转」第 1 条)。
 
   const baseIndex = {
     registryId: "company",
@@ -749,7 +769,7 @@ describe("v7.4:商店不再按「是不是我的」分流", () => {
     curated: [],
   };
 
-  it("是我分享的技能、本地也改过 → 按钮仍是「已启用」(终态),徽标照常出现", () => {
+  it("🔴 是我分享的技能、本地也改过 → 按钮是「与库里不同」(v7.6 前是「已启用」),徽标照常出现", () => {
     useSession.setState({
       status: "signedIn",
       user: { login: "wenhao", displayName: "赵文昊", avatarUrl: "" },
@@ -779,13 +799,20 @@ describe("v7.4:商店不再按「是不是我的」分流", () => {
         ["weekly-report", { dirSlug: "weekly-report", contentHash: "sha:same", localModified: true } as never],
       ]),
     });
+    // localHash 与记账基线("sha:same")不同 → 磁盘上这份内容确实被改过。
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha:local-edit" })],
+    });
 
     render(<InstallPanel dirSlug="weekly-report" />);
 
-    // 按钮不再借"是不是我的"另开分支:内容指纹相等就是「已启用」终态,
-    // 曾经的「分享更新」「取回」「已同步」三个词都不该再出现。
-    expect(screen.getByRole("button", { name: /已启用/ })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /分享更新|取回|已同步/ })).toBeNull();
+    // 按钮不再借"是不是我的"另开分支:曾经的「分享更新」「取回」「已同步」
+    // 三个词不该出现,「已启用」也不该出现(v7.6 起那不是准确的状态词)。
+    // 详情面板底部走 panel 变体,differs 档的文案是动作词「换成库里的版本」,
+    // 不是卡片上那句状态陈述「与库里不同」(两处不同词是有意的,见
+    // InstallButton.tsx::labelOf)。
+    expect(screen.getByRole("button", { name: "换成库里的版本" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /分享更新|取回|已同步|已启用/ })).toBeNull();
     // 徽标不再按"是不是我的"过滤——本地改没改是与作者身份无关的信息。
     expect(screen.getByText("你修改过这个技能")).toBeTruthy();
   });
@@ -817,10 +844,13 @@ describe("v7.4:商店不再按「是不是我的」分流", () => {
         ["weekly-report", { dirSlug: "weekly-report", contentHash: "sha:same", localModified: true } as never],
       ]),
     });
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha:local-edit" })],
+    });
 
     render(<InstallPanel dirSlug="weekly-report" />);
 
-    expect(screen.getByRole("button", { name: /已启用/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "换成库里的版本" })).toBeTruthy();
     expect(screen.getByText("你修改过这个技能")).toBeTruthy();
   });
 });

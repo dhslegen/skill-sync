@@ -134,19 +134,19 @@ function IdleFooter({
   const installed = useInstall((s) => s.installed);
   const index = useStoreIndex((s) => s.index);
   const record = installed.get(dirSlug);
-  // v7.5:这台电脑上这个 dirSlug 的本体指纹,供 `cardState` 判"无记账但本机有
-  // 本体"那两档(`onDisk`/`onDiskDiffers`)。数据来自 `useMySkills` 的 `list`
-  // ——**这里不主动 load()**,商店页挂载时已经 load 过一次(见 `StorePage.tsx`),
-  // 而 `InstallPanel` 只会从商店(含广场搜索结果)打开,那时 `list` 要么已经在
-  // 加载、要么已经加载完。
+  // v7.6:这台电脑上这个 dirSlug 的本体指纹——`cardState` 起,判定入口从"问账本"
+  // 改成"问磁盘",这个值不论有没有记账都要读取(见 `lib/update.ts::cardState`
+  // 文档注释)。数据来自 `useMySkills` 的 `list`——**这里不主动 load()**,商店页
+  // 挂载时已经 load 过一次(见 `StorePage.tsx`),而 `InstallPanel` 只会从商店
+  // (含广场搜索结果)打开,那时 `list` 要么已经在加载、要么已经加载完。
   const myList = useMySkills((s) => s.list);
   const localHash = localHashOf(myList, dirSlug);
   // 与商店卡片同一条判定。曾经这里只算 install/installed 两档,于是卡片显示
   // "更新"、点进来按钮却是禁用的「已启用」——用户点了毫无反应(2026-08-03 实测缺陷)。
   //
   // 广场详情态没有索引可比(广场是搜索态,不建索引——设计文档 §2.4):remoteHash
-  // 传空串,`cardState` 对指纹缺失按"已启用"(或 v7.5 新增的 `onDisk`)处理,
-  // 宁可漏报"有更新"也不能编造一个。真正精确的"有更新"判定,要等这个仓被挂上、
+  // 传空串,`cardState` 对指纹缺失按「已在电脑上」(`onDisk`)处理,宁可漏报
+  // "有更新"也不能编造一个。真正精确的"有更新"判定,要等这个仓被挂上、
   // 用户切到它按普通库浏览时才出现(那条路走的是 store_index,自然有指纹可比,
   // §2.4 说的正是这件事)。
   //
@@ -175,9 +175,10 @@ function IdleFooter({
           state={state}
           size="lg"
           onClick={onBegin}
-          // 详情面板底部的 onDiskDiffers 说的是**动作**「换成库里的版本」,不是
-          // 卡片上那句状态陈述「与库里不同」——两处不同词是有意的(v7.5 共识)。
-          // 文案表在 `InstallButton.tsx::labelOf`,这里只说"我是哪一处"。
+          // 详情面板底部的 differs(v7.6 前叫 onDiskDiffers)说的是**动作**
+          // 「换成库里的版本」,不是卡片上那句状态陈述「与库里不同」——两处不同词
+          // 是有意的(v7.5 共识,v7.6 未变)。文案表在 `InstallButton.tsx::labelOf`,
+          // 这里只说"我是哪一处"。
           variant="panel"
           hint={
             state === "otherLibrary" && record
@@ -189,11 +190,11 @@ function IdleFooter({
         />
         <InstallScopeMenu
           dirSlug={dirSlug}
-          // 主按钮是终态(「已启用」/v7.5 新增的「已在电脑上」不可点)时,把作用域
-          // 入口显性化成文字按钮——那一档整块看起来就是"做完了",小三角不足以
-          // 让人想到还能装到项目(2026-08-22 用户反馈,v7.5 Q39-A 沿用同一条判据)。
-          // 可点动作那几档保持图标,免得抢注意力。
-          label={state === "installed" || state === "onDisk" ? t("install.scopeProject") : undefined}
+          // 主按钮是终态(「已在电脑上」,v7.6 起 `onDisk` 是唯一终态)不可点时,
+          // 把作用域入口显性化成文字按钮——那一档整块看起来就是"做完了",小三角
+          // 不足以让人想到还能装到项目(2026-08-22 用户反馈,v7.5 Q39-A 沿用同一条
+          // 判据,v7.6 未变)。可点动作那几档保持图标,免得抢注意力。
+          label={state === "onDisk" ? t("install.scopeProject") : undefined}
           disabled={!!installing}
           onGlobal={onBegin}
           onPickProject={() => {

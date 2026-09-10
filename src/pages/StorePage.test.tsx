@@ -258,20 +258,29 @@ describe("卡片安装状态", () => {
     expect(screen.getAllByRole("button", { name: /^安装 —/ })).toHaveLength(3);
   });
 
-  it("装了且版本一致 → 已启用(且点不动,那是终态)", () => {
+  it("装了且版本一致 → 已在电脑上(且点不动,那是终态;v7.6 起 installed 并入 onDisk)", () => {
     useInstall.setState({
       installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", contentHash: "sha256:weekly", localModified: false, registryId: "company", sourceOwner: "skills", sourceRepo: "skills" }]]),
     });
+    // v7.6:判定入口从"问账本"改成"问磁盘",要显式给出本机本体的实时指纹,
+    // 否则 localHash 缺省为 undefined 会被判成「获取」。
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha256:weekly" })],
+    });
     render(<StorePage />);
-    const done = screen.getByRole("button", { name: /已启用/ });
+    const done = screen.getByRole("button", { name: /已在电脑上/ });
     expect(done).toBeDisabled();
     expect(screen.getAllByRole("button", { name: /^安装 —/ })).toHaveLength(2);
   });
 
-  it("装了但版本落后 → 更新", () => {
+  it("装了但版本落后、本地未改 → 更新", () => {
     // 这一档在任务 8 里没有数据源、只能永远显示"安装";接上 installed_list 后才真正可达
     useInstall.setState({
       installed: new Map([["weekly-report", { commitSha: "a1b2c3d4e5", contentHash: "sha256:老版本", localModified: false, registryId: "company", sourceOwner: "skills", sourceRepo: "skills" }]]),
+    });
+    // localHash 与记账基线一致(用户没碰过本地文件)→ 「更新」这个词才是准的。
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha256:老版本" })],
     });
     render(<StorePage />);
     expect(screen.getByRole("button", { name: /^更新 —/ })).toBeInTheDocument();
@@ -367,7 +376,13 @@ describe("v7.5:商店认得出'这台电脑上已经有了'(docs/v7.5-共识.md)
     expect(screen.getByRole("button", { name: /^与库里不同/ })).toBeInTheDocument();
   });
 
-  it("🔴 有记账时新逻辑不介入——既有的「已启用」判定不受本机本体数据影响", () => {
+  // 🔴 v7.6 行为翻转:这一条此前叫"有记账时新逻辑不介入",断言的是"本机本体
+  // 数据(localHash)不影响既有的「已启用」判定"。v7.6 拍板后那句话不再成立
+  // ——判定入口从"问账本"改成"问磁盘",localHash 现在是**唯一**入口依据,
+  // 不论有没有记账都要读取。下面改写成实际(新)行为:localHash 真的参与判定,
+  // 与记账基线一致才是安全的终态,不一致会如实显示「与库里不同」。
+
+  it("有记账 + localHash 与记账基线一致 → 「已在电脑上」(installed 并入 onDisk)", () => {
     useInstall.setState({
       installed: new Map([
         [
@@ -377,13 +392,31 @@ describe("v7.5:商店认得出'这台电脑上已经有了'(docs/v7.5-共识.md)
       ]),
     });
     useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha256:weekly" })],
+    });
+    render(<StorePage />);
+
+    expect(screen.getByRole("button", { name: /^已在电脑上/ })).toBeInTheDocument();
+    expect(screen.queryByText("与库里不同")).not.toBeInTheDocument();
+  });
+
+  it("🔴 有记账 + localHash 与记账基线不同(本地确实改过)→ 「与库里不同」,不再是「已启用」", () => {
+    useInstall.setState({
+      installed: new Map([
+        [
+          "weekly-report",
+          { commitSha: "a1b2c3d4e5", contentHash: "sha256:weekly", localModified: false, registryId: "company", sourceOwner: "skills", sourceRepo: "skills" },
+        ],
+      ]),
+    });
+    // localHash 既不等于记账基线,也不等于远端指纹——磁盘上这份内容被改过了。
+    useMySkills.setState({
       list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "随便什么值" })],
     });
     render(<StorePage />);
 
-    expect(screen.getByRole("button", { name: /已启用/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^与库里不同/ })).toBeInTheDocument();
     expect(screen.queryByText("已在电脑上")).not.toBeInTheDocument();
-    expect(screen.queryByText("与库里不同")).not.toBeInTheDocument();
   });
 
   describe("筛选器换同一把尺子(Q42-A)", () => {

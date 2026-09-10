@@ -8,15 +8,17 @@ describe("InstallButton 状态机", () => {
   it("三档各有自己的文案", () => {
     const { rerender } = render(<InstallButton state="install" />);
     expect(screen.getByRole("button")).toHaveTextContent("安装");
-    rerender(<InstallButton state="installed" />);
-    expect(screen.getByRole("button")).toHaveTextContent("已启用");
+    // v7.6:installed 已并入 onDisk,文案是「已在电脑上」,不再是「已启用」
+    // ——「已启用」这个词没有消失,只是不再是这颗按钮的文案(见 update.ts 文档)。
+    rerender(<InstallButton state="onDisk" />);
+    expect(screen.getByRole("button")).toHaveTextContent("已在电脑上");
     rerender(<InstallButton state="update" />);
     expect(screen.getByRole("button")).toHaveTextContent("更新");
   });
 
-  it("已启用是终态,不接受点击", async () => {
+  it("已在电脑上(onDisk)是终态,不接受点击", async () => {
     const onClick = vi.fn();
-    render(<InstallButton state="installed" onClick={onClick} />);
+    render(<InstallButton state="onDisk" onClick={onClick} />);
     const button = screen.getByRole("button");
     expect(button).toBeDisabled();
     await userEvent.click(button);
@@ -42,7 +44,7 @@ describe("InstallButton 状态机", () => {
   });
 
   it("三档都保持同一个宽度下限,切换时不让整行跳动", () => {
-    for (const state of ["install", "installed", "update"] as const) {
+    for (const state of ["install", "onDisk", "update"] as const) {
       const { unmount } = render(<InstallButton state={state} />);
       expect(screen.getByRole("button").className).toContain("min-w-[52px]");
       unmount();
@@ -55,7 +57,13 @@ describe("InstallButton 状态机", () => {
 // 回答"这是不是我的")。四档专属的文案/可点性用例随之整段删除——`InstallState`
 // 类型已经不含这四个成员,继续断言它们连编译都过不去,不是"删测试图省事"。
 
-describe("v7.5:商店认得出'这台电脑上已经有了'", () => {
+describe("v7.6:状态词只讲磁盘(docs/v7.6-共识.md)——installed 并入 onDisk,onDiskDiffers 改名 differs", () => {
+  // 🔴 v7.5 曾把这一段的标题写成"商店认得出'这台电脑上已经有了'"、把 onDisk 与
+  //   installed 当成两个不同档钉住"同形但不同名"。v7.6 拍板后它们是**同一档**
+  //   (`docs/v7.6-共识.md` Q47-A:状态词只讲磁盘,与有没有记账无关),所以"两档
+  //   同形"这条用例本身已经没有意义——onDisk 现在既服务"无记账、本机有本体"
+  //   也服务"有记账、内容一致",不需要再证明它们长得一样,因为它们就是同一个值。
+
   it("onDisk 的文案是「已在电脑上」,且是终态(不接受点击)", async () => {
     const onClick = vi.fn();
     render(<InstallButton state="onDisk" onClick={onClick} />);
@@ -66,9 +74,9 @@ describe("v7.5:商店认得出'这台电脑上已经有了'", () => {
     expect(onClick).not.toHaveBeenCalled();
   });
 
-  it("onDiskDiffers 的文案是「与库里不同」,且可点(不是终态)", async () => {
+  it("differs 的文案是「与库里不同」,且可点(不是终态)", async () => {
     const onClick = vi.fn();
-    render(<InstallButton state="onDiskDiffers" onClick={onClick} />);
+    render(<InstallButton state="differs" onClick={onClick} />);
     const button = screen.getByRole("button");
     expect(button).toHaveTextContent("与库里不同");
     expect(button).not.toBeDisabled();
@@ -76,44 +84,38 @@ describe("v7.5:商店认得出'这台电脑上已经有了'", () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
-  it("🔴 Q40-B:onDiskDiffers 用中性描边,不是实心橙——它点下去是替换,不是常规动作", () => {
+  it("🔴 Q40-B:differs 用中性描边,不是实心橙——它点下去是替换,不是常规动作", () => {
     const classes = (el: HTMLElement) => el.className.split(/\s+/);
-    render(<InstallButton state="onDiskDiffers" onClick={() => {}} />);
+    render(<InstallButton state="differs" onClick={() => {}} />);
     const button = screen.getByRole("button");
     expect(classes(button)).toContain("border-border");
     expect(classes(button)).not.toContain("bg-accent");
   });
 
-  it("onDisk 与 installed 同形:透明终态 + 对勾图标,不是中性描边", () => {
+  it("onDisk 是透明终态 + 对勾图标,不是中性描边", () => {
     // 🔴 按空白切分类名逐个比,不用子串 toContain(既有教训:`"bg-accent-soft"`
     // 含有子串 `"bg-accent"`,`border-border` 与 `border-border-strong` 同理)。
     const classesOf = (el: HTMLElement) => el.className.split(/\s+/);
-    const { unmount } = render(<InstallButton state="onDisk" />);
+    render(<InstallButton state="onDisk" />);
     const onDiskButton = screen.getByRole("button");
     expect(onDiskButton.querySelector("svg")).toBeTruthy();
     expect(classesOf(onDiskButton)).not.toContain("border-border");
     expect(classesOf(onDiskButton)).toContain("text-ok");
-    unmount();
-
-    render(<InstallButton state="installed" />);
-    const installedButton = screen.getByRole("button");
-    expect(installedButton.querySelector("svg")).toBeTruthy();
-    expect(classesOf(installedButton)).toEqual(classesOf(onDiskButton));
   });
 
-  it("🔴 onDiskDiffers 两处不同词:卡片是陈述,详情面板是动作", () => {
-    const { unmount } = render(<InstallButton state="onDiskDiffers" onClick={() => {}} />);
+  it("🔴 differs 两处不同词:卡片是陈述,详情面板是动作", () => {
+    const { unmount } = render(<InstallButton state="differs" onClick={() => {}} />);
     expect(screen.getByRole("button")).toHaveTextContent("与库里不同");
     expect(screen.queryByText("换成库里的版本")).toBeNull();
     unmount();
 
-    render(<InstallButton state="onDiskDiffers" variant="panel" onClick={() => {}} />);
+    render(<InstallButton state="differs" variant="panel" onClick={() => {}} />);
     expect(screen.getByRole("button")).toHaveTextContent("换成库里的版本");
     expect(screen.queryByText("与库里不同")).toBeNull();
   });
 
-  it("其余各档两处同词——variant 只在 onDiskDiffers 上有分歧", () => {
-    const states = ["install", "installed", "update", "otherLibrary", "onDisk"] as const;
+  it("其余各档两处同词——variant 只在 differs 上有分歧", () => {
+    const states = ["install", "update", "otherLibrary", "onDisk"] as const;
     for (const state of states) {
       const card = render(<InstallButton state={state} />);
       const cardText = screen.getByRole("button").textContent;
