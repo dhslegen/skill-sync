@@ -1,25 +1,35 @@
 import {
+  ArrowRight,
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  FolderOpen,
   Laptop,
   Library,
   MoreHorizontal,
   Wrench,
   type LucideIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Icon } from "@/components/Icon";
 import { ToolChecks } from "@/components/ToolChecks";
 import { t } from "@/i18n";
 import { isAppError, openLibraryUrl, skillReveal, type InstalledSkillView, type Section } from "@/lib/ipc";
 import { useMySkills, visibleTools } from "@/store/my-skills";
+import { useProjects } from "@/store/project";
+import { useUi } from "@/store/ui";
 
 /**
- * 详情面板「在哪」三块(v7 任务 6):产品语言「一个技能,三个在哪」的落点
+ * 详情面板「在哪」的块(v7 任务 6):产品语言「一个技能,三个在哪」的落点
  * ——这台电脑上 / 各个工具里 / 技能库里。顺序固定,标题恒渲染(`data-testid`
  * 供测试断言顺序),内容按数据稀疏程度各自降级,不摆比编造好。
+ *
+ * 🔴 **v7.6 任务 2(Q46-A)加了第四块「项目里」**——原是独立组件
+ * `InstalledScopes`,夹在页脚与 `InstallPanel` 之间,现在并进这里,与前三块
+ * 共用同一副 `BlockShell` 骨架。它是**可选**的:没有任何项目装过这个技能时
+ * 整块不摆(见 {@link ProjectsBlock}),所以"三个在哪"这句产品话术不改
+ * ——它说的是恒在的三块,项目里是第四块、按需出现。
  *
  * # 🔴 `bodyLocationText` 是修 Zed 缺陷的核心,必须先比 canonical 再查工具目录
  *
@@ -82,7 +92,7 @@ function BlockShell({
 }: {
   icon: LucideIcon;
   title: string;
-  /** 给测试用的容器钩子(把断言限定在这一块里,别误伤同屏另外两块)。 */
+  /** 给测试用的容器钩子(把断言限定在这一块里,别误伤同屏另外几块)。 */
   testId?: string;
   children: React.ReactNode;
 }) {
@@ -451,6 +461,75 @@ function ReviewLink({ url }: { url: string }) {
 }
 
 /**
+ * 块 4:项目里(Q46-A,v7.6 任务 2)。原是独立组件 `InstalledScopes`(77 行),
+ * 夹在页脚(`SkillActionsBlock`)与 `InstallPanel` 之间——用户截图里三处动作区
+ * 打架的元凶之一。现并进这里,与前三块共用同一副 `BlockShell` 骨架。
+ *
+ * # 为什么只列项目,不带原组件里的「这台电脑」那一行
+ *
+ * `InstalledScopes` 原来还有一行「这台电脑」,数据来自 `useInstall().installed`
+ * (全局安装的**记账**)。并进「在哪」之后这一行是多余的、甚至有点跑题:块 1
+ * 「这台电脑上」已经用**磁盘**(`skill.localPresent`/`skill.body`)回答了"本体
+ * 在不在这台电脑上、在哪个位置"——这正是 v7.6 拍板"状态词只讲磁盘,记账只回答
+ * 从哪来"的落点,`installed` map 是账本,不是磁盘的第二个真相,块 4 标题也叫
+ * 「项目里」而不是「已装到」,再摆一行"这台电脑"会文不对题。所以这一块
+ * **只列项目行**,门控也相应改成"没有任何项目装过 → 整块不摆"(与「技能库里」
+ * 那块拿不到链接时不摆同一条口径,brief 原句"没有任何**项目**装过时不摆"
+ * 字面上也只提了这一个条件)。原组件那句"数据仍是 `installed` map + `project_list`"
+ * 与这里的取舍不完全一致——那半句 `installed` map 保留在文档里是为了如实记下
+ * 这个分歧,不是被忽略:两条 bullet 的冲突已按门控这一条 + v7.6 的
+ * Q47-A(状态词只讲磁盘)处置,`detail.scopeGlobal` 这个此前专给那一行用的文案键
+ * 随之成了孤儿,一并删除。
+ *
+ * # 零新 IPC / 按目录名匹配(原 `InstalledScopes` 文档,原样带走)
+ *
+ * 数据来自 `project_list`(项目分区已经在用)。
+ *
+ * 🔴 **匹配用仓库目录名 `dirSlug`,不能用项目 lock 的 `key`**:`key` 是
+ * frontmatter name,两者在广场技能里经常不同(实测 47 个里 8 个)。按 key 匹配的话,
+ * 恰恰是那批最热门的技能永远显示"没装过"。
+ *
+ * 目录已经不在的项目不列——它不再是一个能去的地方,列出来只会让用户点一个死链接。
+ */
+function ProjectsBlock({ skill }: { skill: InstalledSkillView }) {
+  const groups = useProjects((s) => s.groups);
+  const loadProjects = useProjects((s) => s.load);
+  const setPage = useUi((s) => s.setPage);
+
+  useEffect(() => {
+    void loadProjects();
+  }, [loadProjects]);
+
+  // 在组件里派生:selector 里造新数组会让 Zustand 每次都判"变了"(见 project
+  // store 里的说明,`InstalledScopes` 当年就是这么写的)。
+  const inProjects = useMemo(
+    () =>
+      groups.filter((g) => !g.missing && (g.skills ?? []).some((s) => s.dirSlug === skill.dirSlug)),
+    [groups, skill.dirSlug],
+  );
+
+  if (inProjects.length === 0) return null;
+
+  return (
+    <BlockShell icon={FolderOpen} title={t("detail.whereProjects")} testId="where-block-projects">
+      {inProjects.map((g) => (
+        <button
+          key={g.path}
+          type="button"
+          title={g.path}
+          onClick={() => setPage("mine")}
+          className="flex w-full items-center gap-1.5 rounded-ctl py-0.5 text-left hover:text-text"
+        >
+          <Icon icon={FolderOpen} size={13} className="shrink-0 text-text-3" />
+          <span className="min-w-0 flex-1 truncate">{g.folderName}</span>
+          <Icon icon={ArrowRight} size={12} className="shrink-0 text-text-3" />
+        </button>
+      ))}
+    </BlockShell>
+  );
+}
+
+/**
  * 折叠头上那一句结论的**唯一实现**(v7.1 任务 3,Q2)。
  *
  * # 🔴 收起来的东西里"有没有在等我",必须在这一行里说出来
@@ -559,6 +638,7 @@ export function WhereBlocks({
           <ThisComputerBlock skill={skill} agentNames={agentNames} />
           <EachToolBlock skill={skill} agentNames={agentNames} />
           <LibraryBlock skill={skill} remoteChanged={remoteChanged} />
+          <ProjectsBlock skill={skill} />
         </div>
       )}
     </div>

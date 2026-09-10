@@ -8,6 +8,7 @@ import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { useMySkills } from "@/store/my-skills";
 import { usePlaza } from "@/store/plaza";
+import { useProjects } from "@/store/project";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
 
@@ -24,11 +25,16 @@ const invokeMock = vi.fn(async (cmd: string, args?: unknown): Promise<unknown> =
     };
   }
   if (cmd === "installed_list") return [];
-  // `InstalledScopes`(详情面板的「已装到」)在挂载时无条件拉一次项目清单
-  // (零新 IPC,复用既有的 project_list)——不给默认值的话,任何渲染 DetailPanel
-  // 的用例都会多打出一个不相关的 invoke 调用,把用 mockImplementationOnce
-  // 按"下一次调用"排队的用例带偏(v6 任务 5 真实撞过这个坑)。
-  if (cmd === "project_list") return [];
+  // 「在哪」块 4「项目里」(`WhereBlocks.tsx` 的 `ProjectsBlock`,v7.6 任务 2
+  // 并自原 `InstalledScopes`)在挂载时无条件拉一次项目清单(零新 IPC,复用既有
+  // 的 project_list)——不给默认值的话,任何渲染 DetailPanel 的用例都会多打出
+  // 一个不相关的 invoke 调用,把用 mockImplementationOnce 按"下一次调用"排队的
+  // 用例带偏(v6 任务 5 真实撞过这个坑)。
+  // 🔴 v7.6 任务 2 起**必须回读** `useProjects.getState().groups`,不能固定
+  // 返回 `[]`——固定值会把用例刚 `setState` 喂的 groups 整体冲掉,变成
+  // CLAUDE.md 记的那种"时绿时红"(`InstalledScopes.test.tsx` 当年就是这么
+  // 写的,并入本文件时原样带走)。
+  if (cmd === "project_list") return useProjects.getState().groups;
   return null;
 });
 vi.mock("@tauri-apps/api/core", () => ({
@@ -37,6 +43,16 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 const openUrl = vi.fn();
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: (url: string) => openUrl(url) }));
+
+// 🔴 v7.6 任务 2:「项目里」块(`ProjectsBlock`)读的是全局单例 `useProjects`,
+// 这个文件此前从不碰它。不在文件级重置的话,任意一条 `describe` 里 `setState`
+// 过 `groups` 的用例会把状态漏给声明顺序在它之后的其他 `describe`——那些
+// describe 各自的 `beforeEach` 并不知道要清这份状态。挂在最外层,对每一条用例
+// 都先重置一次,与各 `describe` 自己的 `beforeEach` 不冲突(vitest 按注册顺序
+// outer-to-inner 执行)。
+beforeEach(() => {
+  useProjects.setState({ groups: [] });
+});
 
 const detail = (over: Partial<SkillDetail> = {}): SkillDetail => ({
   name: "周报生成",
@@ -418,6 +434,44 @@ describe("DetailPanel(本地详情模式)", () => {
     expect(screen.getByText(/统一技能目录/)).toBeInTheDocument();
   });
 
+  // 🔴 Q46-A(v7.6 任务 2):「项目里」并进「在哪」之后,「我的技能」详情
+  // (本地详情模式)也会多出这第四块——`WhereBlocks` 在两条渲染路径下都渲染,
+  // 不分 host。**这是并入的直接后果,不是回归**:原 `InstalledScopes` 组件
+  // 此前只挂在 `PanelBody`(商店/广场详情)一侧,「我的技能」详情看不到"装到了
+  // 哪些项目";现在两侧共用同一份「在哪」,信息终于对称了。
+  it("「我的技能」详情(本地模式)里,装过项目时也能看到第四块「项目里」(Q46-A 的直接后果)", () => {
+    useMySkills.setState({
+      list: [installedView()],
+      agentNames: new Map([["claude-code", "Claude Code"]]),
+      installedAgents: null,
+      canonicalDir: "/home/u/.agents/skills",
+      toolDirs: new Map([["claude-code", "/home/u/.claude/skills"]]),
+    });
+    useProjects.setState({
+      groups: [
+        {
+          path: "/w/我的项目",
+          folderName: "我的项目",
+          missing: false,
+          readOnly: false,
+          skills: [
+            {
+              key: "weekly-report", displayName: "周报生成", description: "",
+              source: "skills/skills", sourceType: "git", dirSlug: "weekly-report",
+              registryId: "company", repo: "skills/skills", updatable: true, agents: [],
+            },
+          ],
+        },
+      ],
+    });
+    openLocal();
+    render(<DetailPanel />);
+    fireEvent.click(screen.getByTestId("where-toggle"));
+    const titles = screen.getAllByTestId("where-title").map((e) => e.textContent);
+    expect(titles).toEqual(["这台电脑上", "各个工具里", "技能库里", "项目里"]);
+    expect(screen.getByRole("button", { name: /我的项目/ })).toBeInTheDocument();
+  });
+
   // v7.1 Q2:折叠头默认收起,md 正文才是首屏主角。
   it("默认收起「在哪」,首屏直接是正文;结论行仍然说清区名与工具数", () => {
     useMySkills.setState({
@@ -777,7 +831,17 @@ describe("DetailPanel(本地详情模式)", () => {
   });
 });
 
-describe("商店详情的动作区(设计 §12,`PanelBody` 一侧)", () => {
+/**
+ * 商店详情的动作区(设计 §12,`PanelBody` 一侧)——**v7.6 任务 2(Q44-A)整段
+ * 重写**,不是照旧润色。此前这里断言"贡献更改"这颗主按钮会出现在商店详情面板,
+ * 那正是 Q44-A 要消灭的现象本身:`SkillActionsBlock`(`rowAction` 驱动)与
+ * `InstallPanel`(`cardState` 驱动)各摆一份自己的边框 + 主按钮,同屏出现两个
+ * 看着都像主按钮的东西,是用户真机截图里那个 bug。改法见 `SkillActionsBlock.tsx`
+ * / `InstallPanel.tsx` 的组件文档「两种宿主」/「actions」两节:商店宿主下
+ * `SkillActionsBlock` 只贡献次要动作(打开文件夹/在技能库里查看/移除),嵌进
+ * `InstallPanel` 唯一的一层页脚容器,主按钮那一格让给 `cardState`。
+ */
+describe("商店详情的动作区(设计 §12 + Q44-A,`PanelBody` 一侧)", () => {
   beforeEach(() => {
     useLocalDetail.setState({ target: null, detail: null, error: null });
     useMySkills.setState({
@@ -789,7 +853,7 @@ describe("商店详情的动作区(设计 §12,`PanelBody` 一侧)", () => {
     });
   });
 
-  it("这台电脑上装着这个技能时,商店详情面板也有动作区——此前 PanelBody 完全没有", async () => {
+  it("这台电脑上装着这个技能时,商店详情面板有次要动作(移除)——此前 PanelBody 完全没有", async () => {
     const d = open();
     useMySkills.setState({
       list: [installedView({ dirSlug: d.dirSlug, localModified: true })],
@@ -799,17 +863,66 @@ describe("商店详情的动作区(设计 §12,`PanelBody` 一侧)", () => {
     });
     render(<DetailPanel />);
 
-    expect(screen.getByRole("button", { name: "贡献更改" })).toBeInTheDocument();
-    // 「移除」是动作区独有的项(「打开文件夹」属于紧邻的 WhereBlocks 块,
-    // 动作区自己把这一项过滤掉了,见 `SkillActionsBlock` 模块头)。
+    // 「移除」是次要动作,商店宿主下照常摆出来。
     expect(screen.getByRole("button", { name: "移除" })).toBeInTheDocument();
   });
 
-  it("这台电脑上没有这个技能(纯浏览)时,动作区不出现——没有可回答的「在哪」", () => {
+  it("🔴 Q44-A:商店宿主下不摆 rowAction 的主按钮(「贡献更改」)——那一格让给 InstallPanel", async () => {
+    const d = open();
+    useMySkills.setState({
+      // localModified:true 且 section 落 installedFrom 时,rowAction 会给出
+      // {kind:"contribute"}(mine 宿主下渲染成「贡献更改」)——正面构造这个
+      // 档,确认它在商店宿主下确实不出现,不是靠数据本身没有主按钮蒙混过关。
+      list: [installedView({ dirSlug: d.dirSlug, localModified: true })],
+      agentNames: new Map(),
+      canonicalDir: "/home/u/.agents/skills",
+      toolDirs: new Map(),
+    });
+    render(<DetailPanel />);
+
+    expect(screen.queryByRole("button", { name: "贡献更改" })).not.toBeInTheDocument();
+  });
+
+  it("对照组:同一份数据,「我的技能」详情(本地模式)里「贡献更改」照常渲染", async () => {
+    // 与上一条断言的是同一个 rowAction 判定,只是宿主换成 mine——证明"商店
+    // 宿主下不摆"确实是 host 分流的结果,不是这份数据本身判不出主按钮。
+    useMySkills.setState({
+      list: [installedView({ localModified: true })],
+      agentNames: new Map([["claude-code", "Claude Code"]]),
+      canonicalDir: "/home/u/.agents/skills",
+      toolDirs: new Map(),
+    });
+    openLocal();
+    render(<DetailPanel />);
+
+    expect(screen.getByRole("button", { name: "贡献更改" })).toBeInTheDocument();
+  });
+
+  it("这台电脑上没有这个技能(纯浏览)时,「移除」不出现——没有可回答的「在哪」", () => {
     open();
     // useMySkills.list 保持 null(beforeEach 已重置):这个技能从没在这台电脑上出现过。
     render(<DetailPanel />);
     expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+  });
+
+  it("🔴 Q44-A:页脚只有一个——SkillActionsBlock 不再是独立的一层,只有 InstallPanel 那唯一一层 border-t 容器", () => {
+    const d = open();
+    useMySkills.setState({
+      list: [installedView({ dirSlug: d.dirSlug, localModified: true })],
+      agentNames: new Map(),
+      canonicalDir: "/home/u/.agents/skills",
+      toolDirs: new Map(),
+    });
+    render(<DetailPanel />);
+    expect(screen.getAllByTestId("detail-footer")).toHaveLength(1);
+  });
+
+  it("Q46-A 的另一半:「已装到」不再是夹在正文与页脚之间的独立第三块(并进了「在哪」第四块)", () => {
+    open();
+    render(<DetailPanel />);
+    // 旧组件 `InstalledScopes` 的标题「已装到」已删键(孤儿键守卫会拦这一点,
+    // 这里正面断言它不出现在 DOM 里)。
+    expect(screen.queryByText("已装到")).not.toBeInTheDocument();
   });
 });
 

@@ -862,9 +862,9 @@ describe("已装记账的来源坐标(M4 一源多仓)", () => {
     // ⚠️ v7.6 起判定入口改成"问磁盘"(见 `lib/update.ts::cardState`),混进 map
     // 不再必然让按钮卡死在禁用态——localHash 与库里不同时反而会显示可点的
     // 「与库里不同」。这条过滤真正要挡的是:一份没有真实来源坐标、
-    // contentHash 空串的**假记账**冒充"有记账"去参与 `otherLibrary` 判定与
-    // 「已装到」这类派生视图(`InstalledScopes`),那些地方仍然把空坐标/空基线
-    // 当成"这条记账真实存在"来用,会产生与实际归属不符的展示。
+    // contentHash 空串的**假记账**冒充"有记账"去参与 `otherLibrary` 判定——
+    // 那类判定仍然会把空坐标/空基线当成"这条记账真实存在"来用,产生与实际
+    // 归属不符的展示。
     invoke.mockResolvedValueOnce([
       recordedRow("from-library"),
       { ...row("npx-installed"), relation: "installed", localPresent: true },

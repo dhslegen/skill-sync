@@ -7,7 +7,9 @@ import type { ReactElement } from "react";
 import { bodyLocationText, WhereBlocks, whereSummary } from "./WhereBlocks";
 import type { InstalledSkillView, Section } from "@/lib/ipc";
 import { useMySkills } from "@/store/my-skills";
+import { useProjects } from "@/store/project";
 import { useStoreIndex } from "@/store/store-index";
+import { useUi } from "@/store/ui";
 
 async function defaultInvoke(cmd: string, args?: unknown): Promise<unknown> {
   void args;
@@ -18,6 +20,11 @@ async function defaultInvoke(cmd: string, args?: unknown): Promise<unknown> {
   // 把 setAgentsBusy/toolFailures 带偏。
   if (cmd === "installed_list") return [];
   if (cmd === "agents_detected") return { agents: [], canonicalDir: "" };
+  // 🔴 v7.6 任务 2:块 4「项目里」(`ProjectsBlock`)挂载即 `load()` 一次,
+  // 必须**回读** `useProjects.getState().groups`,不能固定返回 `[]`——
+  // 固定值会把用例刚 `setState` 喂的 groups 整体冲掉,变成 CLAUDE.md 记的
+  // 那种"时绿时红"(`InstalledScopes.test.tsx` 当年就是这么写的,原样照抄)。
+  if (cmd === "project_list") return useProjects.getState().groups;
   return null;
 }
 const invoke = vi.fn(defaultInvoke);
@@ -140,6 +147,10 @@ beforeEach(() => {
     toolFailuresFor: null,
   });
   useStoreIndex.setState({ index: null });
+  // 🔴 v7.6 任务 2:块 4「项目里」读这个 store,每条用例显式重置——不重置的话
+  // 上一条用例 `setState` 的 groups 会残留到下一条(全局单例,见 CLAUDE.md
+  // 「注入脚本自己会骗人」附近那条"时绿时红"教训的同款处置)。
+  useProjects.setState({ groups: [] });
   // 折叠头默认收起(v7.1 任务 3;v7.2 需求 3 起它是组件本地 state,不再有
   // 可以 setState 的 store)。下面这一大批用例断言的是**展开之后**的三块,
   // 所以统一走 {@link renderExpanded} 真点一下折叠头——这是给测试补一步交互,
@@ -431,6 +442,88 @@ describe("WhereBlocks", () => {
       <WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />,
     );
     expect(container.firstElementChild?.className).toContain("px-5");
+  });
+});
+
+/** 项目分组 fixture,与 `InstalledScopes.test.tsx`(已删,并进本文件)当年的
+ *  同名 helper 逐字同构。 */
+function projectWith(dirSlug: string | null, path = "/w/我的项目", folderName = "我的项目") {
+  return {
+    path,
+    folderName,
+    missing: false,
+    readOnly: false,
+    skills: dirSlug
+      ? [
+          {
+            key: "k", displayName: "周报生成", description: "",
+            source: "skills/skills", sourceType: "git", dirSlug,
+            registryId: "company", repo: "skills/skills", updatable: true, agents: [],
+          },
+        ]
+      : [],
+  };
+}
+
+/**
+ * 块 4:项目里(Q46-A,v7.6 任务 2)。原是 `InstalledScopes.test.tsx` 的用例
+ * (已删,并进本文件),门控改成了"只看项目行"(见 `ProjectsBlock` 的组件文档
+ * ——不再带原组件的「这台电脑」那一行,那半句判断权交给块 1)。
+ */
+describe("WhereBlocks · 块 4「项目里」(Q46-A)", () => {
+  it("没有任何项目装过时,整块不摆——不要摆一个空块", () => {
+    renderExpanded(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
+    expect(screen.queryByText("项目里")).not.toBeInTheDocument();
+  });
+
+  it("有项目装过时,列出块 4,标题「项目里」,完整路径挂 title", () => {
+    useProjects.setState({ groups: [projectWith("weekly-report")] });
+    renderExpanded(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
+
+    const blocks = within(screen.getByTestId("where-blocks"));
+    expect(blocks.getByText("项目里")).toBeInTheDocument();
+    const row = blocks.getByRole("button", { name: /我的项目/ });
+    expect(row.getAttribute("title")).toBe("/w/我的项目");
+  });
+
+  it("按仓库目录名匹配,不按安装键——广场技能两者经常不同", () => {
+    // key 是 frontmatter name(vercel-react-best-practices),商店与详情面板用的
+    // 是仓库目录名(react-best-practices)。按 key 匹配会全都对不上。
+    useProjects.setState({
+      groups: [
+        {
+          ...projectWith(null),
+          skills: [
+            {
+              key: "vercel-react-best-practices", displayName: "React 最佳实践", description: "",
+              source: "vercel-labs/agent-skills", sourceType: "github",
+              dirSlug: "react-best-practices", registryId: "plaza",
+              repo: "vercel-labs/agent-skills", updatable: true, agents: [],
+            },
+          ],
+        },
+      ],
+    });
+    renderExpanded(
+      <WhereBlocks skill={mk("react-best-practices", "installedFrom")} agentNames={NAMES} remoteChanged={false} />,
+    );
+    expect(screen.getByRole("button", { name: /我的项目/ })).toBeInTheDocument();
+  });
+
+  it("目录不在了的项目不列——它已经不是一个能去的地方", () => {
+    useProjects.setState({
+      groups: [{ ...projectWith("weekly-report", "/w/没了", "没了"), missing: true }],
+    });
+    renderExpanded(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
+    expect(screen.queryByText("项目里")).not.toBeInTheDocument();
+  });
+
+  it("点项目一行跳到「我的技能」", async () => {
+    useProjects.setState({ groups: [projectWith("weekly-report")] });
+    renderExpanded(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /我的项目/ }));
+    expect(useUi.getState().page).toBe("mine");
   });
 });
 

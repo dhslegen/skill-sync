@@ -34,6 +34,35 @@ import { useStoreIndex } from "@/store/store-index";
  * 它不再夹在「在哪」与页签之间(那个位置把 md 正文挤出首屏,违反 Q1A
  * 「md 是主角」),而是钉在面板底部,正文区 `flex:1`。
  *
+ * ## 🔴 v7.6 任务 2(Q44-A):两种宿主,`host` 是闭合联合而不是可选 prop
+ *
+ * 「我的技能」详情(`LocalPanelBody`)与商店/广场详情(`PanelBody`)此前各自
+ * 摆出一份"固定页脚"——后者其实是**两份**同时挂着(这个块的主按钮 + 底下
+ * `InstallPanel` 自己的主按钮),用户截图里同屏出现两个看着都像主按钮的东西。
+ * `host: "store" | "mine"` 拍板不复议:
+ * - `host="mine"`(「我的技能」详情,行为**一个字不变**):这个组件仍然是
+ *   **完整的**固定页脚——自己的边框/内边距、主按钮走 `rowAction`
+ *   (分享/贡献更改/取回……这些都是「我的技能」的语境)、分享结果的成功与
+ *   失败也在这里渲染(见下面「动作搬进来了」一节)。
+ * - `host="store"`:**不渲染自己的主按钮**——那一格让给 `InstallPanel`
+ *   (它的 `cardState` 才是"拉"的语境:获取/更新/换成库里的版本)。这里返回的
+ *   是**裸内容**(不带外层边框容器),由 `InstallPanel` 当作 `actions` prop
+ *   接住、摆进它自己唯一的一层 `border-t` 容器——这才是"并进底部页脚"的
+ *   字面意思,不是两个bordered 的 div 前后紧贴。**只贡献次要动作**
+ *   (打开文件夹 / 在技能库里查看 / 移除):`items` 过滤掉除 `reveal`
+ *   以外的所有 `buildRowMenuItems` 结果——分享/贡献更改/更新这些都是"推"的
+ *   动作,v7.4 已拍板"推"的动作不摆在"拉"的界面里,`rowAction` 本身
+ *   也不该在这个宿主下驱动任何按钮。分享结果(`shareError`/`shareDone`/
+ *   `shareBlocked` 的原因)同理不渲染——触发它们的按钮在这个宿主下根本不存在,
+ *   摆出来要么是孤儿反馈,要么会把「我的技能」页上一次操作的陈旧结果
+ *   带到商店详情里(归属校验挡的是"另一个技能",挡不住"同一个技能、
+ *   另一个语境的旧结果")。
+ *
+ * 🔴 **刻意是闭合联合,不是 `boolean`/可选 prop**:本项目连续两笔栽在
+ * 这上面(v7.5 复审的 `InstallButtonVariant`、v7.6 任务 1 复审的
+ * `LocalProbe`)——"约定会被下一个人无声打破,类型不会"。`host` 加第三档时
+ * 这里与调用方的每一处判断都会被 `tsc` 逼着表态。
+ *
  * `reveal` 此前**被过滤掉**,理由是 `WhereBlocks`「这台电脑上」那一块里已经有
  * 一颗同样的按钮。Q3 拍板反过来:那一块里的按钮删掉、面板底部那颗「在访达中
  * 打开」也删掉,**动作只留页脚这一处**——此前是同一个动作两个入口两种叫法,
@@ -103,15 +132,23 @@ import { useStoreIndex } from "@/store/store-index";
  *
  * ⚠️ **这里没有"没东西可摆就整块 return null"的早退,是有意删掉的**
  * (终审复审轮 1,#2 裁定)。原先那句 `action.kind === "none" && items.length === 0`
- * **今天不可达**:`localPresent` 为真时 `buildRowMenuItems` 必然产出「移除」一项,
- * 为假时 `rowAction` 必然是 `pull`,两边都进不了"无动作且无菜单项"。一个不可达、
- * 没有测试覆盖、只能靠注释声明自己存在意义的防御分支,正是本项目记的空转模式 ①
- * (同一条规则查了两遍,其中一遍永远不触发)——**它最大的危害是会兜住本该打红的
- * 注入信号**。所以整条删掉,`return` 的形状交给上面那两条前提保证。
+ * 在 `host="mine"` 下**不可达**:`localPresent` 为真时 `buildRowMenuItems` 必然
+ * 产出「移除」一项,为假时 `rowAction` 必然是 `pull`,两边都进不了"无动作且无
+ * 菜单项"。一个不可达、没有测试覆盖、只能靠注释声明自己存在意义的防御分支,
+ * 正是本项目记的空转模式 ①(同一条规则查了两遍,其中一遍永远不触发)——
+ * **它最大的危害是会兜住本该打红的注入信号**。所以整条删掉,`return` 的形状
+ * 交给上面那两条前提保证。
  * 🔴 如果将来真的出现"这个块渲染成一个空壳"的现象,说明那两条前提之一变了,
  * 那时它就是一条**真实分支**,该配测试正面处理,而不是再补一道防御性早退。
+ * ⚠️ **`host="store"` 下这条不变量不成立**——items 被收窄到只剩 `reveal`,
+ * `skill.localPresent` 为真但 `skill.body` 恰好为空这类边缘情况下确实可能渲染
+ * 出一个空 Fragment。这**不是问题**:`host="store"` 下这个组件从来不是一个
+ * 独立的、必须有内容的块,它是嵌进 `InstallPanel` 自己那层容器的可选内容
+ * (见上面「两种宿主」一节),空了就是空了,`InstallPanel` 的边框与内边距
+ * 不依赖它是否有内容。
  *
- * # 不在这里摆的两样(有意为之)
+ * # 不在这里摆的两样(有意为之,均只谈 `host="mine"`——`host="store"` 下
+ * 这些反馈本来就不会产生,见上面「两种宿主」一节)
  *
  * - **取回/更新的失败**:`PanelBody`(商店/广场详情)下方的 `InstallPanel` 已有
  *   `ErrorFooter`,摆在这里就是同屏两份。`LocalPanelBody` 那条路没有
@@ -130,6 +167,7 @@ import { useStoreIndex } from "@/store/store-index";
 export function SkillActionsBlock({
   skill,
   remoteChanged,
+  host,
 }: {
   skill: InstalledSkillView;
   /** 「库里那一版变了没有」。**由调用方按 section 分流算好**(`hasUpdate` /
@@ -137,12 +175,20 @@ export function SkillActionsBlock({
    *  同一个布尔量——三处各算一遍就是本项目记的空转模式 ①,而且「可分享到」区
    *  外部来源的行会在其中一处静默丢掉"有新版"。 */
   remoteChanged: boolean;
+  /**
+   * 宿主区分(Q44-A,v7.6 任务 2)。闭合联合,不是布尔/可选 prop——理由见组件
+   * 文档「两种宿主」一节。`"mine"` = 「我的技能」详情,行为一个字不变;
+   * `"store"` = 商店/广场详情,只贡献次要动作,嵌进 `InstallPanel` 的页脚里。
+   */
+  host: "store" | "mine";
 }) {
   const index = useStoreIndex((s) => s.index);
   const pulling = useInstall((s) => s.dirSlug === skill.dirSlug && s.phase === "running");
   const sharing = useMySkills((s) => s.shareBusy === skill.dirSlug);
   const openVersions = useMySkills((s) => s.versionChoice !== null);
   // 🔴 归属校验:两个字段都是全局的,只认自己这一行的那一条(见组件文档)。
+  // `host="store"` 下这两个值从不渲染(见下面 `messages`),但仍然无条件调用
+  // 这两个 hook——hook 顺序不能按 host 分支跳过。
   const rawShareError = useMySkills((s) => s.shareError);
   const rawShareDone = useMySkills((s) => s.shareDone);
   const shareError = rawShareError?.dirSlug === skill.dirSlug ? rawShareError : null;
@@ -154,7 +200,13 @@ export function SkillActionsBlock({
   // 「移除」单独摘出来靠右摆,其余按 `buildRowMenuItems` 的自然顺序排在左边
   // ——那个顺序本来就是「打开文件夹」在前、「移除」在末,与画布一致。
   const allItems = buildRowMenuItems(skill, action, remoteChanged, noBaselineDiffers);
-  const items = allItems.filter((spec) => spec.kind !== "remove");
+  // 🔴 `host="store"` 下只留 `reveal`(打开文件夹)——`contributeOrShareChanges`/
+  // `update`/`share`/`useLibraryVersion` 都是"推"的动作(改库里的内容、或是
+  // `rowAction` 语境下的取回),v7.4 已拍板"推"的动作不摆在"拉"的界面里,见组件
+  // 文档「两种宿主」一节。
+  const items = allItems.filter(
+    (spec) => spec.kind !== "remove" && (host === "mine" || spec.kind === "reveal"),
+  );
   const removeItem = allItems.find((spec) => spec.kind === "remove") ?? null;
 
   // 🔴 终审 I-1:审核中那一档 `libraryUrl` 恒 null(见组件文档),库入口退回
@@ -183,12 +235,12 @@ export function SkillActionsBlock({
       keepError: null,
     });
 
-  return (
-    <div className="flex-none border-t border-border px-5 py-3.5">
-      {/* `flex-wrap`:按钮数量随档位变(`conflict` 档有五颗),480px 宽的面板放不下时
-          换行比压扁好。「移除」用 `ml-auto` 靠右——换行后它会在自己那一行的最右边,
-          与不换行时的效果一致(画布里它就在最右)。 */}
-      <div className="flex flex-wrap items-center gap-2">
+  // `flex-wrap`:按钮数量随档位变(`host="mine"` 的 `conflict` 档有五颗),480px
+  // 宽的面板放不下时换行比压扁好。「移除」用 `ml-auto` 靠右——换行后它会在自己
+  // 那一行的最右边,与不换行时的效果一致(画布里它就在最右)。
+  const row = (
+    <div className="flex flex-wrap items-center gap-2">
+      {host === "mine" && (
         <PrimaryAction
           action={action}
           pulling={pulling}
@@ -200,39 +252,48 @@ export function SkillActionsBlock({
           onShare={onShare}
           onChooseVersion={onChooseVersion}
         />
-        {items.map((spec) => (
-          <OutlineButton
-            key={spec.kind}
-            size="footer"
-            title={spec.titleKey ? t(spec.titleKey) : undefined}
-            onClick={rowMenuHandler(spec.kind, { onReveal, onShareChanges, onPull, onShare, onRemove })}
-          >
-            {t(spec.labelKey)}
+      )}
+      {items.map((spec) => (
+        <OutlineButton
+          key={spec.kind}
+          size="footer"
+          title={spec.titleKey ? t(spec.titleKey) : undefined}
+          onClick={rowMenuHandler(spec.kind, { onReveal, onShareChanges, onPull, onShare, onRemove })}
+        >
+          {t(spec.labelKey)}
+        </OutlineButton>
+      ))}
+      {libraryLink && (
+        <OutlineButton
+          size="footer"
+          onClick={() => {
+            setLinkError(null);
+            // core 已经保证这个串与内建 Gitea 同源;`open_library_url` 自己
+            // 还有一道同源白名单守卫,这里不重复判,失败如实说出来。
+            openLibraryUrl(libraryLink).catch((raw: unknown) =>
+              setLinkError(isAppError(raw) ? raw.message : t("error.generic")),
+            );
+          }}
+        >
+          {t("mine.reviewLink")}
+        </OutlineButton>
+      )}
+      {removeItem && (
+        <div className="ml-auto">
+          <OutlineButton size="footer" onClick={onRemove}>
+            {t(removeItem.labelKey)}
           </OutlineButton>
-        ))}
-        {libraryLink && (
-          <OutlineButton
-            size="footer"
-            onClick={() => {
-              setLinkError(null);
-              // core 已经保证这个串与内建 Gitea 同源;`open_library_url` 自己
-              // 还有一道同源白名单守卫,这里不重复判,失败如实说出来。
-              openLibraryUrl(libraryLink).catch((raw: unknown) =>
-                setLinkError(isAppError(raw) ? raw.message : t("error.generic")),
-              );
-            }}
-          >
-            {t("mine.reviewLink")}
-          </OutlineButton>
-        )}
-        {removeItem && (
-          <div className="ml-auto">
-            <OutlineButton size="footer" onClick={onRemove}>
-              {t(removeItem.labelKey)}
-            </OutlineButton>
-          </div>
-        )}
-      </div>
+        </div>
+      )}
+    </div>
+  );
+
+  // 🔴 `shareError`/`shareDone`/`shareBlocked` 三段只在 `host="mine"` 下渲染:
+  // 触发它们的按钮(`PrimaryAction`/`contributeOrShareChanges` 等)在
+  // `host="store"` 下根本不存在,摆出来要么是孤儿反馈,要么会把「我的技能」页
+  // 上一次操作的陈旧结果带进商店详情(见组件文档「两种宿主」一节)。
+  const messages = (
+    <>
       {revealError && (
         <p className="mt-1.5 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
           {t("mine.openFolderFailed")}
@@ -243,25 +304,43 @@ export function SkillActionsBlock({
       {linkError && (
         <p className="mt-1.5 text-[12px] text-[#c0392b] dark:text-[#e0705f]">{linkError}</p>
       )}
-      {/* 🔴 分享的成功与失败:归属过滤后自己摆一份,理由见组件文档。
+      {/* 分享的成功与失败:归属过滤后自己摆一份,理由见组件文档。
           文案按 `flow` 分流,**不按渲染那一刻的 `action` 反推**——首次分享成功后
           这一行的 section/rowAction 已经换档了,反推出来的答案恰恰在成功路径上是错的
           (见 `lib/share-block.ts::ShareFlow` 的文档)。 */}
-      {shareError && (
+      {host === "mine" && shareError && (
         <p className="mt-1.5 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
           {t(SHARE_FAILED_LABEL[shareError.flow])}
           {t("punct.labelSeparator")}
           {shareError.error.message}
         </p>
       )}
-      {shareDone && (
+      {host === "mine" && shareDone && (
         <p className="mt-1.5 text-[12px] text-text-2">{t(SHARE_DONE_LABEL[shareDone.flow][shareDone.mode])}</p>
       )}
-      {action.kind === "shareBlocked" && (
+      {host === "mine" && action.kind === "shareBlocked" && (
         <p className="mt-1.5 rounded-card border border-[#b8860b]/40 px-2.5 py-1.5 text-[11.5px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
           {t(SHARE_BLOCK_LABEL[action.reason])}
         </p>
       )}
-    </div>
+    </>
+  );
+
+  // `host="mine"`:完整的固定页脚,自己的边框/内边距(行为一个字不变)。
+  // `host="store"`:裸内容,没有外层容器——`InstallPanel` 把它当 `actions` prop
+  // 接住,摆进自己那唯一一层 `border-t` 容器(见组件文档「两种宿主」一节)。
+  if (host === "mine") {
+    return (
+      <div className="flex-none border-t border-border px-5 py-3.5">
+        {row}
+        {messages}
+      </div>
+    );
+  }
+  return (
+    <>
+      {row}
+      {messages}
+    </>
   );
 }

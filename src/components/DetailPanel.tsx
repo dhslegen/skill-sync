@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from "react";
 
 import { Icon } from "@/components/Icon";
 import { InstallPanel } from "@/components/InstallPanel";
-import { InstalledScopes } from "@/components/InstalledScopes";
 import { Markdown } from "@/components/Markdown";
 import { SkillActionsBlock } from "@/components/SkillActionsBlock";
 import { SkillIcon } from "@/components/SkillIcon";
@@ -303,7 +302,7 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
           叫法,且"访达"在 Windows 上是错的。两颗都删,动作统一收进页脚的
           `SkillActionsBlock`(它自己会摆「打开文件夹」并接住失败)。 */}
       {skill ? (
-        <SkillActionsBlock skill={skill} remoteChanged={remoteChanged} />
+        <SkillActionsBlock skill={skill} remoteChanged={remoteChanged} host="mine" />
       ) : (
         <RevealOnlyFooter path={detail.path} />
       )}
@@ -598,14 +597,26 @@ function PanelBody({
         </div>
       </ScrollArea>
 
-      {/* 设计 §12 的动作区,v7.1 起搬到正文之下(md 是主角)。商店/广场这条路
-          的页脚仍然是 `InstallPanel`——把它并进 `SkillActionsBlock` 超出本任务
-          边界(那是"获取/安装"的整条流程,不只是一排按钮),两者上下并存。 */}
-      {whereSkill && <SkillActionsBlock skill={whereSkill} remoteChanged={whereRemoteChanged} />}
-
-      <InstalledScopes dirSlug={detail.dirSlug} />
-
-      <InstallPanel dirSlug={detail.dirSlug} plaza={plaza ? { ownerRepo: plaza.ownerRepo } : undefined} />
+      {/* 设计 §12 的动作区,v7.1 起搬到正文之下(md 是主角)。
+          🔴 v7.6 任务 2(Q44-A):此前这里还有一段注释说"两者上下并存"——那是
+          在承认欠账:`SkillActionsBlock`(自己的边框 + 主按钮)与下面的
+          `InstallPanel`(自己的边框 + 主按钮)分别渲染,商店详情面板同屏出现
+          两个看着都像主按钮的东西,正是用户截图里那个 bug。现在真正并了进去:
+          `SkillActionsBlock` 不再单独出现在这里,而是以 `host="store"` 算出
+          一份**只有次要动作**(打开文件夹/在技能库里查看/移除,不含主按钮)的
+          `ReactNode`,交给 `InstallPanel` 的 `actions` prop——`InstallPanel`
+          自己**唯一**的一层 `border-t` 容器才是这条路真正的、单一的页脚。
+          「已装到」(原 `InstalledScopes`)已经并进 `WhereBlocks` 的第四块
+          「项目里」(Q46-A),不再是夹在正文与页脚之间的第三个独立块。 */}
+      <InstallPanel
+        dirSlug={detail.dirSlug}
+        plaza={plaza ? { ownerRepo: plaza.ownerRepo } : undefined}
+        actions={
+          whereSkill ? (
+            <SkillActionsBlock skill={whereSkill} remoteChanged={whereRemoteChanged} host="store" />
+          ) : undefined
+        }
+      />
     </>
   );
 }

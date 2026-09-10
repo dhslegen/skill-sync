@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { Check, TriangleAlert } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
@@ -32,14 +32,34 @@ const STAGE_LABEL: Record<InstallStage, MessageKey> = {
 };
 
 /**
- * 详情面板底部的获取区。
+ * 详情面板底部的获取区,**也是商店/广场详情面板唯一的一层页脚容器**
+ * (Q44-A,v7.6 任务 2)。
  *
  * agent 多选做成**行内展开**而不是弹窗:面板本身已经是一层浮层,再叠一个模态
  * 在桌面应用里既挡视线又难退出。冲突那一档才用弹窗——它是必须打断的决策。
+ *
+ * # 🔴 `actions`:`SkillActionsBlock`(host="store")的并入点
+ *
+ * 此前商店/广场详情面板同时挂着 `SkillActionsBlock`(自己的边框 + 主按钮)
+ * 与这个组件(自己的边框 + 主按钮)——两份看着都像"这一行的主按钮"堆在一起,
+ * 是用户截图里那个 bug 的直接成因。Q44-A 拍板"只留一个页脚",做法是把
+ * `SkillActionsBlock` 的次要动作(打开文件夹/在技能库里查看/移除)当作一个
+ * `ReactNode` 传进来,摆进这个组件**唯一**的边框容器里(`border-t border-border`
+ * 上提到最外层,各阶段自己的内容不再各带一份)。
+ *
+ * 这个组件**不需要知道** `InstalledSkillView`/`rowAction` 这些「我的技能」
+ * 语境的类型——调用方(`DetailPanel.tsx` 的 `PanelBody`)算好一个 `ReactNode`
+ * 传进来,这里只负责摆放位置,与既有的 `projectArea`(项目安装的进行态/提示/
+ * 待确认)是同一种"顶层拼装、不下渗进子组件"的先例。
+ *
+ * `actions` **不分 phase**(running/choosing/error 时也渲染):这是既有能力的
+ * 延续,不是新增——此前 `SkillActionsBlock` 本来就无条件挂在这个组件之上,
+ * 不论 phase 如何都看得见「打开文件夹」「移除」,合并页脚不该让这个能力消失。
  */
 export function InstallPanel({
   dirSlug,
   plaza,
+  actions,
 }: {
   dirSlug: string;
   /**
@@ -48,6 +68,8 @@ export function InstallPanel({
    * ——除了触发方式与"这个技能属于哪个库"的判定来源,其余阶段渲染与普通安装完全一样。
    */
   plaza?: { ownerRepo: string };
+  /** `SkillActionsBlock`(host="store")算好的次要动作行,见组件文档「actions」一节。 */
+  actions?: ReactNode;
 }) {
   const { phase, dirSlug: active, begin, beginFromPlaza, cancel } = useInstall();
   // 详情面板只会从商店打开:装的就是商店当前浏览的那个库(M3 多源 + M4 多仓)。
@@ -84,37 +106,49 @@ export function InstallPanel({
 
   // 项目安装的进行态/提示/待确认与**全局安装的 phase 无关**,所以在顶层渲染。
   // 🔴 此前它们挂在 `IdleFooter` 内部,于是"装完那一屏"(done)里点最近项目,
-  // 确认条整个渲染不出来——用户看得到入口、点了却没反应。
+  // 确认条整个渲染不出来——用户看得到入口、点了却没反应。只在 idle/done 两档
+  // 摆出来,与合并页脚之前的既有行为逐字相同。
   const projectArea = <ProjectStatus />;
 
+  let body: ReactNode;
+  let showProjectArea = false;
   if (!mine || phase === "idle") {
-    return (
-      <>
-        <IdleFooter
-          {...scope}
-          onBegin={() =>
-            plaza
-              ? void beginFromPlaza(plaza.ownerRepo, dirSlug)
-              : void begin(dirSlug, activeRegistry, activeRepo)
-          }
-        />
-        {projectArea}
-      </>
+    body = (
+      <IdleFooter
+        {...scope}
+        onBegin={() =>
+          plaza
+            ? void beginFromPlaza(plaza.ownerRepo, dirSlug)
+            : void begin(dirSlug, activeRegistry, activeRepo)
+        }
+      />
     );
+    showProjectArea = true;
+  } else if (phase === "choosing") {
+    body = <AgentChooser onCancel={cancel} />;
+  } else if (phase === "running") {
+    body = <Running />;
+  } else if (phase === "done") {
+    body = <DoneFooter {...scope} />;
+    showProjectArea = true;
+  } else if (phase === "error") {
+    body = <ErrorFooter />;
+  } else {
+    // conflict 由 ConflictDialog 接管,底部保持"安装中"的静态样子
+    body = <Running />;
   }
-  if (phase === "choosing") return <AgentChooser onCancel={cancel} />;
-  if (phase === "running") return <Running />;
-  if (phase === "done") {
-    return (
-      <>
-        <DoneFooter {...scope} />
-        {projectArea}
-      </>
-    );
-  }
-  if (phase === "error") return <ErrorFooter />;
-  // conflict 由 ConflictDialog 接管,底部保持"安装中"的静态样子
-  return <Running />;
+
+  // 🔴 唯一的一层 `border-t border-border`(Q44-A):各阶段的内容组件不再自带
+  // 边框,只留内边距——边框上提到这里,避免 `actions` 与阶段内容各画一条线,
+  // 看着又变回"两个页脚"。顺序 body → actions → projectArea:次要动作紧跟主
+  // 内容(与画布的 ASCII 布局一致),项目确认条这类"另一条独立的进行态"摆最后。
+  return (
+    <div className="flex-none border-t border-border" data-testid="detail-footer">
+      {body}
+      {actions && <div className="px-5 pb-3.5">{actions}</div>}
+      {showProjectArea && projectArea}
+    </div>
+  );
 }
 
 function IdleFooter({
@@ -169,7 +203,7 @@ function IdleFooter({
   // 口径与全局安装共用 `defaultSelectedAgents`,不另写一份。
 
   return (
-    <div className="border-t border-border px-5 py-3.5">
+    <div className="px-5 py-3.5">
       <div className="flex items-center gap-2.5">
         <InstallButton
           state={state}
@@ -420,7 +454,7 @@ function AgentChooser({ onCancel }: { onCancel: () => void }) {
   }));
 
   return (
-    <div className="border-t border-border px-5 py-3.5">
+    <div className="px-5 py-3.5">
       <div className="mb-2 text-[12px] font-[550]">{t("install.choose")}</div>
       {/* `px-3` 的理由与 `ConfirmBar` 那个盒子逐字相同(终审 I-2,见那里的注释)。 */}
       <div className="max-h-[168px] overflow-y-auto rounded-card border border-border px-3">
@@ -457,7 +491,7 @@ function Running() {
   const percent = Math.round((done / STAGE_ORDER.length) * 100);
 
   return (
-    <div className="border-t border-border px-5 py-3.5">
+    <div className="px-5 py-3.5">
       <div className="mb-2 flex items-center gap-2 text-[12.5px] text-text-2">
         <span>{stage ? t(STAGE_LABEL[stage]) : t("install.installing")}</span>
       </div>
@@ -493,7 +527,7 @@ function DoneFooter({
   const agents = linkedAgents(report, detected);
 
   return (
-    <div className="border-t border-border px-5 py-3.5">
+    <div className="px-5 py-3.5">
       <div className="flex items-center gap-2">
         <div className="flex flex-1 items-center gap-2 text-[12.5px] font-medium text-ok">
           <Icon icon={Check} size={14} />
@@ -650,7 +684,7 @@ function FailedLinkRow({ dir, message }: { dir: string; message: string }) {
 function ErrorFooter() {
   const { error, run, cancel } = useInstall();
   return (
-    <div className="border-t border-border px-5 py-3.5">
+    <div className="px-5 py-3.5">
       <p className={cn("text-[12.5px]", "text-text-2")}>{error?.message ?? t("error.generic")}</p>
       <div className="mt-2 flex gap-2">
         <button
