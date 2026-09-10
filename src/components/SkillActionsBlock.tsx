@@ -224,6 +224,21 @@ function capsOf(host: ActionsHost): {
    * 「更多」——§12 对那一处的裁定是"全部摆开、不收下拉",这里不改)。
    */
   removeInMenu: boolean;
+  /**
+   * 「在技能库里查看」收不收进「…」。
+   *
+   * 🔴 起因是**硬约束**(2026-09-10 用户真机):详情面板固定宽 480px
+   * (`DetailPanel.tsx`),页脚可用 440px,而 `[主按钮][装到项目…][打开文件夹]
+   * [在技能库里查看][⋯]` 在主按钮是「已在电脑上」(5 字 + 绿勾)那一档合计约
+   * 472px——`flex-wrap` 把「…」挤到第二行,**省了「移除」的位置却赔上整行给一个
+   * 24px 的图标**,用户原话"白折叠了"。
+   *
+   * 砍掉「在技能库里查看」而不是「打开文件夹」:后者是这个应用最常用的出口之一
+   * (v7.1 Q3 拍板「动作只留页脚这一处」时特意为它删掉了别处的重复入口),
+   * 前者是去浏览器看网页、低频。⚠️ 这是对 Q44-A 原文(「次要动作(打开文件夹、
+   * 在技能库里查看)」都在行上)的偏离,**用户 2026-09-10 看过测算后拍板同意**。
+   */
+  libraryLinkInMenu: boolean;
 } {
   switch (host) {
     case "mine":
@@ -233,6 +248,7 @@ function capsOf(host: ActionsHost): {
         shareFeedback: true,
         ownWrapper: true,
         removeInMenu: false,
+        libraryLinkInMenu: false,
       };
     case "store":
       return {
@@ -241,6 +257,7 @@ function capsOf(host: ActionsHost): {
         shareFeedback: false,
         ownWrapper: false,
         removeInMenu: true,
+        libraryLinkInMenu: true,
       };
   }
 }
@@ -334,7 +351,7 @@ export function SkillActionsBlock({
           {t(spec.labelKey)}
         </OutlineButton>
       ))}
-      {libraryLink && (
+      {libraryLink && !caps.libraryLinkInMenu && (
         <OutlineButton
           size="footer"
           onClick={() => {
@@ -355,20 +372,47 @@ export function SkillActionsBlock({
   // 「移除」永远靠右(`ml-auto`)。v7.6 任务 3 之前两个宿主都是常驻可见的
   // `OutlineButton`;现在按 `caps.removeInMenu` 分流:`host="mine"` 不变,
   // `host="store"` 收进 `SkillRowMenu`(「…」),见组件文档「「…」收危险动作」。
-  const removeMenuItems: SkillRowMenuItem[] = removeItem
-    ? [{ key: "remove", label: t(removeItem.labelKey), onClick: onRemove }]
-    : [];
-  const removeControl = removeItem && (
+  const openLibrary = () => {
+    if (!libraryLink) return;
+    setLinkError(null);
+    openLibraryUrl(libraryLink).catch((raw: unknown) =>
+      setLinkError(isAppError(raw) ? raw.message : t("error.generic")),
+    );
+  };
+  // 「…」里的项:库链接(如果收进来了)在前、「移除」在末并带分隔线
+  // ——与 `buildRowMenuItems` 的自然顺序一致(破坏性动作永远在最后)。
+  const menuItems: SkillRowMenuItem[] = [
+    ...(libraryLink && caps.libraryLinkInMenu
+      ? [{ key: "library", label: t("mine.reviewLink"), onClick: openLibrary }]
+      : []),
+    ...(removeItem
+      ? [
+          {
+            key: "remove",
+            label: t(removeItem.labelKey),
+            onClick: onRemove,
+            separatorBefore: true,
+          },
+        ]
+      : []),
+  ];
+  // `host="mine"`:「移除」仍是常驻可见的 `OutlineButton`(§12「全部摆开」);
+  // `host="store"`:「…」收下库链接与「移除」——两支的**存在条件不同**,
+  // 所以分开写而不是共用一个 `menuItems.length > 0`(mine 那支要的是
+  // `removeItem` 本身,而 menuItems 非空也可能只是因为有库链接)。
+  const removeControl = caps.removeInMenu ? (
+    menuItems.length > 0 && (
+      <div className="ml-auto">
+        <SkillRowMenu items={menuItems} placement={"up"} />
+      </div>
+    )
+  ) : removeItem ? (
     <div className="ml-auto">
-      {caps.removeInMenu ? (
-        <SkillRowMenu items={removeMenuItems} placement={"up"} />
-      ) : (
-        <OutlineButton size="footer" onClick={onRemove}>
-          {t(removeItem.labelKey)}
-        </OutlineButton>
-      )}
+      <OutlineButton size="footer" onClick={onRemove}>
+        {t(removeItem.labelKey)}
+      </OutlineButton>
     </div>
-  );
+  ) : null;
 
   // `flex-wrap`:按钮数量随档位变(`host="mine"` 的 `conflict` 档有五颗),480px
   // 宽的面板放不下时换行比压扁好。**只有 `host="mine"` 用到这个 `row`**

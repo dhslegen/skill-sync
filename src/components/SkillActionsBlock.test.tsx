@@ -372,12 +372,31 @@ describe('host="store":只贡献次要动作(Q44-A,v7.6 任务 2 + 任务 3)', (
     expect(screen.queryByRole("button", { name: "更多" })).not.toBeInTheDocument();
   });
 
-  it("在技能库里查看仍然摆出来 —— 它是一个链接,不是「推」的动作", () => {
+  it("🔴 在技能库里查看收进「…」,不占行上的位置(2026-09-10 用户真机拍板)", async () => {
+    // 它仍然到得了 —— 只是从行上挪进了菜单。改的是位置不是可达性。
+    // 起因是硬约束:面板固定宽 480px、页脚可用 440px,而主按钮是「已在电脑上」
+    // (5 字 + 绿勾)那一档,五个元素合计约 472px,`flex-wrap` 把「…」挤到第二行
+    // ——省了「移除」的位置却赔上整行给一个 24px 的图标(用户原话"白折叠了")。
     render(
       <SkillActionsBlock
         skill={view({ libraryUrl: "http://g.local/x" })}
         remoteChanged={false}
         host="store"
+      />,
+    );
+    // 行上没有
+    expect(screen.queryByRole("button", { name: "在技能库里查看" })).toBeNull();
+    // 菜单里有 —— 改的是位置,不是可达性
+    await userEvent.setup().click(screen.getByRole("button", { name: /更多/ }));
+    expect(screen.getByRole("menuitem", { name: "在技能库里查看" })).toBeInTheDocument();
+  });
+
+  it("host=\"mine\" 不受影响:在技能库里查看仍在行上(§12「全部摆开」)", () => {
+    render(
+      <SkillActionsBlock
+        skill={view({ libraryUrl: "http://g.local/x" })}
+        remoteChanged={false}
+        host="mine"
       />,
     );
     expect(screen.getByRole("button", { name: "在技能库里查看" })).toBeInTheDocument();
