@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { Icon } from "@/components/Icon";
 import { t } from "@/i18n";
+import { cn } from "@/lib/cn";
 
 /**
  * 「更多」下拉菜单——「我的技能」每一行「至多一颗主按钮,其余在「…」里」这条
@@ -45,7 +46,25 @@ export interface SkillRowMenuItem {
   separatorBefore?: boolean;
 }
 
-export function SkillRowMenu({ items }: { items: SkillRowMenuItem[] }) {
+/**
+ * 菜单往哪个方向展开。**必填、闭合联合、无默认值**——加这个参数的起因是
+ * v7.6 任务 3 把「移除」收进这个菜单、又把菜单摆在了详情面板的**最底部**:
+ * 那里向下展开必然画到视口外,用户点了「…」什么都看不到。
+ *
+ * 🔴 **刻意不给默认值**:给了 `"down"` 默认,下一个把这个菜单摆在贴底容器里的人
+ * 会原样复现同一个缺陷,而且照样编译通过、照样测试全绿(jsdom 没有视口)。
+ * 必填就逼着每个调用方回答一句"我这一处离底边有多远"。
+ * 对照组 `InstallScopeMenu` 一直是硬编码的 `bottom-full`——它从设计上就贴底。
+ */
+export type MenuPlacement = "down" | "up";
+
+export function SkillRowMenu({
+  items,
+  placement,
+}: {
+  items: SkillRowMenuItem[];
+  placement: MenuPlacement;
+}) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -105,7 +124,10 @@ export function SkillRowMenu({ items }: { items: SkillRowMenuItem[] }) {
               close();
             }
           }}
-          className="absolute right-0 top-full z-20 mt-1 min-w-[160px] rounded-card border border-border bg-surface-1 py-1 shadow-[var(--shadow-panel)]"
+          className={cn(
+            "absolute right-0 z-20 min-w-[160px] rounded-card border border-border bg-surface-1 py-1 shadow-[var(--shadow-panel)]",
+            placement === "down" ? "top-full mt-1" : "bottom-full mb-1",
+          )}
         >
           {items.map((item) => (
             <button

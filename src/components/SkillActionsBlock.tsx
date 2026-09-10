@@ -361,7 +361,7 @@ export function SkillActionsBlock({
   const removeControl = removeItem && (
     <div className="ml-auto">
       {caps.removeInMenu ? (
-        <SkillRowMenu items={removeMenuItems} />
+        <SkillRowMenu items={removeMenuItems} placement={"up"} />
       ) : (
         <OutlineButton size="footer" onClick={onRemove}>
           {t(removeItem.labelKey)}

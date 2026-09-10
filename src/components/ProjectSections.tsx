@@ -126,7 +126,7 @@ function ProjectGroup({ group, query }: { group: ProjectGroupView; query: string
             {t("mine.projectSkillCount", { count: String(group.skills?.length ?? 0) })}
           </span>
         )}
-        <SkillRowMenu items={menuItems} />
+        <SkillRowMenu items={menuItems} placement={"down"} />
       </div>
 
       {group.missing ? (
@@ -310,7 +310,7 @@ function ProjectSkillRow({
                 {busy ? t("mine.projectUpdating") : t("mine.projectUpdate")}
               </button>
             )}
-            <SkillRowMenu items={menuItems} />
+            <SkillRowMenu items={menuItems} placement={"down"} />
           </div>
         )}
       </div>
