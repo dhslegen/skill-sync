@@ -23,7 +23,7 @@ describe("SkillRowMenu · portal 结构", () => {
   const openMenu = async (extraItems: { key: string; label: string; onClick: () => void }[] = []) => {
     const onClick = vi.fn();
     const items = [{ key: "remove", label: "移除", onClick }, ...extraItems];
-    render(<SkillRowMenu items={items} placement={"down"} />);
+    render(<SkillRowMenu items={items} preferredPlacement={"down"} />);
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /更多/ }));
     return { onClick, user };
@@ -82,7 +82,7 @@ describe("SkillRowMenu · portal 结构", () => {
   });
 
   it("没有条目时不渲染触发按钮", () => {
-    render(<SkillRowMenu items={[]} placement={"down"} />);
+    render(<SkillRowMenu items={[]} preferredPlacement={"down"} />);
     expect(screen.queryByRole("button", { name: /更多/ })).not.toBeInTheDocument();
   });
 
@@ -110,7 +110,7 @@ describe("SkillRowMenu · 方向接线(mock rect)", () => {
       .mockReturnValue({ top: 780, bottom: 796, left: 0, right: 0, width: 24, height: 16, x: 0, y: 0, toJSON() {} });
     const offsetHeightSpy = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(100);
 
-    render(<SkillRowMenu items={[{ key: "remove", label: "移除", onClick: vi.fn() }]} placement={"down"} />);
+    render(<SkillRowMenu items={[{ key: "remove", label: "移除", onClick: vi.fn() }]} preferredPlacement={"down"} />);
     await userEvent.setup().click(screen.getByRole("button", { name: /更多/ }));
 
     const menu = screen.getByRole("menu");

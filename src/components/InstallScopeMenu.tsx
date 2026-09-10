@@ -3,8 +3,9 @@ import { ChevronDown } from "lucide-react";
 import { createPortal } from "react-dom";
 
 import { Icon } from "@/components/Icon";
-import { useFloatingMenu } from "@/hooks/useFloatingMenu";
+import { useFloatingMenu , FLOATING_MENU_Z } from "@/hooks/useFloatingMenu";
 import { t } from "@/i18n";
+import { cn } from "@/lib/cn";
 import { recentProjects, useProjects } from "@/store/project";
 
 /**
@@ -121,7 +122,7 @@ export function InstallScopeMenu({
             // portal 之后这个 div 与 `DetailPanel` 的 `fixed z-51` 面板是
             // 根层叠上下文里的兄弟,`z-20` 会被面板整个盖住——harness 真机截图
             // 抓到过一次(菜单量得到正确的 rect,截图却是空的)。
-            className="z-90 min-w-[220px] rounded-card border border-border bg-surface-1 py-1 shadow-[var(--shadow-panel)]"
+            className={cn(FLOATING_MENU_Z, "min-w-[220px] rounded-card border border-border bg-surface-1 py-1 shadow-[var(--shadow-panel)]")}
           >
             <button
               type="button"

@@ -989,7 +989,7 @@ function Row({
               })
             }
           />
-          <SkillRowMenu items={menuItems} placement={"down"} />
+          <SkillRowMenu items={menuItems} preferredPlacement={"down"} />
         </div>
       </div>
     </div>

@@ -30,6 +30,34 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "re
 
 import { computeMenuVerticalPosition } from "@/lib/floating-menu-position";
 
+/**
+ * 浮层的层叠档位。**两个菜单共用这一个常量,不各写一份字面量**
+ * ——同一条规则查两遍的空间版(v7.7 复审抽出来的;实现时两个组件各写了
+ * 一份 `z-90` 与一段等价的推理注释)。
+ *
+ * 项目里现役的层叠台阶(截至 v7.7,散落在各组件的 className 里,**这里是
+ * 唯一一份完整清单**,加新层时先读它):
+ *
+ * | 档 | 谁 |
+ * |---|---|
+ * | 10 / 20 / 40 | 页面内的局部浮层与遮挡(卡片角标、吸顶头等) |
+ * | 50 | 详情面板的遮罩 |
+ * | 51 | 详情面板本体(`DetailPanel`,`fixed inset-y-0`) |
+ * | 60 / 70 | 各类模态对话框(冲突/移除/版本选择/分享确认…) |
+ * | 80 | 向导(`Wizard`,全屏接管) |
+ * | **90** | **portal 出去的浮层菜单(本常量)** |
+ *
+ * 🔴 为什么必须是最高档:portal 之后菜单是 `document.body` 的**直接子元素**,
+ * 与 `DetailPanel` 的 `fixed z-51` 成了同级兄弟,z-index 直接在根层叠上下文里
+ * 比大小。改造前的 `z-20` 只在"菜单是面板的子孙"时才够用。这个缺陷是
+ * **harness 截图**发现的(位置算对了、截图里却看不见),jsdom 一点感觉都没有。
+ *
+ * ⚠️ 其余那些档位仍散落在各组件里、没有常量化——**这是既有状态,本次没动**,
+ * 因为逐个替换要动十几处而每改错一处就是一个 jsdom 测不出的遮挡缺陷。
+ * 新增层叠时请回来更新上面这张表。
+ */
+export const FLOATING_MENU_Z = "z-90";
+
 export interface FloatingMenuStyle {
   position: "fixed";
   top?: number;

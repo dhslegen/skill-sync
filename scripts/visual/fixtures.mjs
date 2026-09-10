@@ -463,6 +463,13 @@ export function buildFixtures() {
       // 更新日志卡片:pending 为空 = 不显示(否则它会盖在商店页顶部)
       release_notes_state: { current: "0.6.0", pending: [], all: [] },
       release_notes_ack: null,
+      // 🔴 **空数组不是"这一档没数据"，是一个覆盖空洞**（v7.7 复审登记）：
+      //   「项目里的技能」整页在 harness 里因此**永远渲染空态**，也就是说
+      //   v7 任务 8（项目页签）、v7.6 的项目行菜单，**从来没有被截图验证过**
+      //   ——而每一轮报告里"截图全部产出正常"这句话都成立，因为空页也能截。
+      //   这是本项目记的「声称的范围大于实际」在 harness 上的复现。
+      //   要填它得造一组 ProjectGroupView（含 skills 与 agents），不在 v7.7 范围，
+      //   已写进走查清单当"只能真机验"的一条。
       project_list: [],
       // 「装到项目…」→ 系统选择框。harness 里直接给一个路径,
       // `useProjects.requestInstall` 据此摆出确认条(终审 I-2 的第二屏)。

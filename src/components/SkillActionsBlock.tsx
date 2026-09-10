@@ -403,7 +403,7 @@ export function SkillActionsBlock({
   const removeControl = caps.removeInMenu ? (
     menuItems.length > 0 && (
       <div className="ml-auto">
-        <SkillRowMenu items={menuItems} placement={"up"} />
+        <SkillRowMenu items={menuItems} preferredPlacement={"up"} />
       </div>
     )
   ) : removeItem ? (

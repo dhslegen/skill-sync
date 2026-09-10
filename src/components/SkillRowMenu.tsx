@@ -3,8 +3,9 @@ import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { Icon } from "@/components/Icon";
-import { useFloatingMenu } from "@/hooks/useFloatingMenu";
+import { useFloatingMenu , FLOATING_MENU_Z } from "@/hooks/useFloatingMenu";
 import { t } from "@/i18n";
+import { cn } from "@/lib/cn";
 
 /**
  * 「更多」下拉菜单——「我的技能」每一行「至多一颗主按钮,其余在「…」里」这条
@@ -87,11 +88,11 @@ export type MenuPlacement = "down" | "up";
 
 export function SkillRowMenu({
   items,
-  placement,
+  preferredPlacement,
 }: {
   items: SkillRowMenuItem[];
   /** 见 `MenuPlacement` 的文档——现在只是首选方向,不是最终结果。 */
-  placement: MenuPlacement;
+  preferredPlacement: MenuPlacement;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -106,7 +107,7 @@ export function SkillRowMenu({
     open,
     onClose: close,
     anchorRef: wrapRef,
-    preferred: placement,
+    preferred: preferredPlacement,
   });
 
   if (items.length === 0) return null;
@@ -155,7 +156,7 @@ export function SkillRowMenu({
             // portal 之后它要压过**整个面板**,而项目里已有的最高层叠是 Wizard
             // 的 `z-80`(全屏接管)。90 留出一档余量,不与既有的
             // 50/51/60/70/80 台阶相撞。
-            className="z-90 min-w-[160px] rounded-card border border-border bg-surface-1 py-1 shadow-[var(--shadow-panel)]"
+            className={cn(FLOATING_MENU_Z, "min-w-[160px] rounded-card border border-border bg-surface-1 py-1 shadow-[var(--shadow-panel)]")}
           >
             {items.map((item) => (
               <button
