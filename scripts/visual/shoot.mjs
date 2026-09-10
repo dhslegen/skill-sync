@@ -285,6 +285,49 @@ const SCREENS = [
       await page.waitForTimeout(300);
     },
   },
+  // ---------------------------------------------------------------- v7.7
+  // 用户真机报告:「我的技能」列表**倒数第二行**点「…」,菜单被 `RowCard` 的
+  // `overflow-hidden` 裁掉一半(那个 `overflow-hidden` 的本职是裁圆角,不是
+  // 拿来防菜单的)。改成 portal 到 `document.body` 之后,`page.screenshot()`
+  // **终于能截到菜单展开态**了——此前(见上面 20/21 两屏之间那段教训注释)
+  // 这类"菜单画到容器外/被裁"的场景,harness 记的是"截不到",这一屏正是补上
+  // 那段历史欠账:不用行号写死("接口测试专家"这类具体技能名会随 fixture 改动
+  // 漂移),而是动态取"当前渲染的最后一行往前数第二行",真实还原用户报告的
+  // 那个操作("倒数第二行"),不是随便挑一行。
+  {
+    id: "22-my-skills-row-menu",
+    title: "「我的技能」· 倒数第二行点开「…」(v7.7:portal 之后菜单完整可见,不再被 RowCard 裁剪)",
+    viewport: { width: 1200, height: 1000 },
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      // 行容器是 `row-<dirSlug>`,名字块另有 `row-<dirSlug>-body`——排除后者
+      // 才是"一行"的计数口径。
+      const rows = page.locator('[data-testid^="row-"]:not([data-testid$="-body"])');
+      const count = await rows.count();
+      await rows
+        .nth(count - 2)
+        .getByRole("button", { name: "更多" })
+        .click();
+      await page.getByRole("menu").waitFor({ state: "visible" });
+    },
+  },
+  {
+    id: "23-detail-footer-row-menu-up",
+    title: "商店详情面板 · 页脚「…」仍向上开(v7.7:portal 之后正面验证 preferred=up 这条路)",
+    async run(page, ctx) {
+      // 🔴 这一屏的存在有个原委:第一版接线时 `SkillRowMenu` 的菜单量得到了
+      // 完全正确的 rect(`boundingBox()` 与 `style` 都对),但截图里却是空的
+      // ——真因是 portal 到 `document.body` 之后,这个 div 与
+      // `DetailPanel` 的 `fixed z-51` 面板成了根层叠上下文里的兄弟,旧的
+      // `z-20`(只在"菜单是面板子孙"时才够用)被面板整个盖住。改成 `z-90`
+      // 之后才补上这一屏——只有真机(或这个 harness)截得到这类"量对了、
+      // 层叠错了"的缺陷,jsdom 不画层叠、看不见这一类问题。
+      await ctx.openStoreDetail(page, "Word 转 Markdown");
+      await page.waitForTimeout(300);
+      await page.getByRole("button", { name: "更多" }).click();
+      await page.getByRole("menu").waitFor({ state: "visible" });
+    },
+  },
 ];
 
 // ---------------------------------------------------------------- 交互小工具

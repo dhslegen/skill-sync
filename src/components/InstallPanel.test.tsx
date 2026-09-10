@@ -1046,9 +1046,10 @@ describe("v7.6 任务 3(Q44-A):actions 并进主行,只在 idle/done 渲染", ()
 
     const scope = screen.getByRole("button", { name: "装到项目…" });
     const secondary = screen.getByRole("button", { name: "测试次要动作" });
-    // `InstallScopeMenu` 自己的触发按钮外面包了一层 `relative` 定位 div
-    // (给它的下拉菜单当锚点),所以不能直接比 `parentElement`——用
-    // "actions 的父级(那一整行)包含 scope 按钮" 来断言两者同排。
+    // `InstallScopeMenu` 自己的触发按钮外面包了一层 div(v7.7 起是
+    // `useFloatingMenu` 的 rect 来源,不再靠 `position:relative` 当定位上下文
+    // ——菜单已经 portal 到 `document.body`),所以不能直接比 `parentElement`
+    // ——用 "actions 的父级(那一整行)包含 scope 按钮" 来断言两者同排。
     expect(secondary.parentElement?.contains(scope)).toBe(true);
   });
 });

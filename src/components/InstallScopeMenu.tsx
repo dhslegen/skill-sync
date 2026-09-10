@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
+import { createPortal } from "react-dom";
 
 import { Icon } from "@/components/Icon";
+import { useFloatingMenu } from "@/hooks/useFloatingMenu";
 import { t } from "@/i18n";
 import { recentProjects, useProjects } from "@/store/project";
 
@@ -14,6 +16,17 @@ import { recentProjects, useProjects } from "@/store/project";
  * agent 选择**沿用全局默认**(设置页没禁用的那些),不再单独问一次:
  * 项目级安装本来就是"给这个文件夹配技能"的快捷动作,再叠一层勾选就失去了快捷的意义。
  * 要改关联去「我的技能」里改。
+ *
+ * # v7.7:菜单同样改成 portal
+ *
+ * 此前的每一处用法都在详情面板**最底部**,`bottom-full`(向上展开)硬编码
+ * 恰好一直是对的;但它仍然是 `position: absolute`,一旦哪天详情面板改动
+ * 让这个组件挪出贴底位置,或者外层容器加了 `overflow-hidden`,同一类缺陷
+ * 会原样复现(`SkillRowMenu` 当初就是这么栽的)。既然定位逻辑已经抽成了
+ * `useFloatingMenu` 共享实现(见该文件与 `SkillRowMenu.tsx` 的文档),这里
+ * 顺带接上,不留"两个下拉一个用了新机制、一个还在用旧机制"的不一致。
+ * 首选方向仍是 `"up"`——这个组件的设计前提就是贴底,与旧行为逐字一致;
+ * 真正的翻转判据现在由触发器的真实 rect 现算,不再是写死的 CSS 类。
  */
 export function InstallScopeMenu({
   dirSlug,
@@ -54,23 +67,20 @@ export function InstallScopeMenu({
     if (open) void load();
   }, [open, load]);
 
-  // 点外面关掉。捕获阶段监听:内部按钮的 onClick 先跑完再关,不会被抢先。
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
-
   const close = () => {
     setOpen(false);
     buttonRef.current?.focus(); // 焦点回到触发处,键盘用户不会掉到页面开头
   };
 
+  const { menuRef, style } = useFloatingMenu({
+    open,
+    onClose: close,
+    anchorRef: wrapRef,
+    preferred: "up",
+  });
+
   return (
-    <div ref={wrapRef} className="relative">
+    <div ref={wrapRef}>
       <button
         ref={buttonRef}
         type="button"
@@ -95,87 +105,95 @@ export function InstallScopeMenu({
         <Icon icon={ChevronDown} size={13} />
       </button>
 
-      {open && (
-        <div
-          role="menu"
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              e.preventDefault();
-              close();
-            }
-          }}
-          className="absolute bottom-full right-0 z-20 mb-1 min-w-[220px] rounded-card border border-border bg-surface-1 py-1 shadow-[var(--shadow-panel)]"
-        >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onGlobal();
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            style={style}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                close();
+              }
             }}
-            className="block w-full px-3 py-1.5 text-left text-[12.5px] text-text hover:bg-surface-2"
+            // `z-90`,与 `SkillRowMenu` 同一个理由(见该组件同一处注释):
+            // portal 之后这个 div 与 `DetailPanel` 的 `fixed z-51` 面板是
+            // 根层叠上下文里的兄弟,`z-20` 会被面板整个盖住——harness 真机截图
+            // 抓到过一次(菜单量得到正确的 rect,截图却是空的)。
+            className="z-90 min-w-[220px] rounded-card border border-border bg-surface-1 py-1 shadow-[var(--shadow-panel)]"
           >
-            {t("install.scopeGlobal")}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onPickProject();
-            }}
-            className="block w-full px-3 py-1.5 text-left text-[12.5px] text-text hover:bg-surface-2"
-          >
-            {t("install.scopeProject")}
-          </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onGlobal();
+              }}
+              className="block w-full px-3 py-1.5 text-left text-[12.5px] text-text hover:bg-surface-2"
+            >
+              {t("install.scopeGlobal")}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onPickProject();
+              }}
+              className="block w-full px-3 py-1.5 text-left text-[12.5px] text-text hover:bg-surface-2"
+            >
+              {t("install.scopeProject")}
+            </button>
 
-          {recent.length > 0 && (
-            <>
-              <div className="mt-1 border-t border-border px-3 pb-1 pt-1.5 text-[11px] text-text-3">
-                {t("install.recentProjects")}
-              </div>
-              {recent.map((g) => {
-                // 标出"这个项目已经装过它了",让用户**在点之前就知道**——省掉一整轮
-                // 网络请求(下压缩包、建索引)才被告知"已经有了"。
-                // ⚠️ **标注是知情,不是禁止**(2026-08-22 用户拍板:"保留足够权利"):
-                // 点它照样进确认条,在那里给「覆盖重装」。第一版做成 disabled,
-                // 把"已经装过"变成了死路。
-                // 判据是仓库目录名而不是安装键——两者在广场技能里经常不同。
-                const already = (g.skills ?? []).some((s) => s.dirSlug === dirSlug);
-                return (
-                <button
-                  key={g.path}
-                  type="button"
-                  role="menuitem"
-                  title={g.path}
-                  onClick={() => {
-                    setOpen(false);
-                    onChooseRecent(g.path);
-                  }}
-                  className="block w-full px-3 py-1.5 text-left hover:bg-surface-2"
-                >
-                  <span className="flex items-center gap-1.5">
-                    <span className="min-w-0 flex-1 truncate text-[12.5px] text-text">
-                      {g.folderName}
-                    </span>
-                    {already && (
-                      <span className="shrink-0 text-[10.5px] text-text-3">
-                        {t("install.recentAlready")}
+            {recent.length > 0 && (
+              <>
+                <div className="mt-1 border-t border-border px-3 pb-1 pt-1.5 text-[11px] text-text-3">
+                  {t("install.recentProjects")}
+                </div>
+                {recent.map((g) => {
+                  // 标出"这个项目已经装过它了",让用户**在点之前就知道**——省掉一整轮
+                  // 网络请求(下压缩包、建索引)才被告知"已经有了"。
+                  // ⚠️ **标注是知情,不是禁止**(2026-08-22 用户拍板:"保留足够权利"):
+                  // 点它照样进确认条,在那里给「覆盖重装」。第一版做成 disabled,
+                  // 把"已经装过"变成了死路。
+                  // 判据是仓库目录名而不是安装键——两者在广场技能里经常不同。
+                  const already = (g.skills ?? []).some((s) => s.dirSlug === dirSlug);
+                  return (
+                    <button
+                      key={g.path}
+                      type="button"
+                      role="menuitem"
+                      title={g.path}
+                      onClick={() => {
+                        setOpen(false);
+                        onChooseRecent(g.path);
+                      }}
+                      className="block w-full px-3 py-1.5 text-left hover:bg-surface-2"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className="min-w-0 flex-1 truncate text-[12.5px] text-text">
+                          {g.folderName}
+                        </span>
+                        {already && (
+                          <span className="shrink-0 text-[10.5px] text-text-3">
+                            {t("install.recentAlready")}
+                          </span>
+                        )}
                       </span>
-                    )}
-                  </span>
-                  {/* 路径用等宽字体(UI 规范:slug/路径类一律等宽),截断显示尾部更有用,
-                      但 CSS 只能截尾——完整路径挂在 title 上 */}
-                  <span className="block truncate font-mono text-[10.5px] text-text-3">
-                    {g.path}
-                  </span>
-                </button>
-                );
-              })}
-            </>
-          )}
-        </div>
-      )}
+                      {/* 路径用等宽字体(UI 规范:slug/路径类一律等宽),截断显示尾部更有用,
+                          但 CSS 只能截尾——完整路径挂在 title 上 */}
+                      <span className="block truncate font-mono text-[10.5px] text-text-3">
+                        {g.path}
+                      </span>
+                    </button>
+                  );
+                })}
+              </>
+            )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
