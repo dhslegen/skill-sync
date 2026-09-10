@@ -247,7 +247,9 @@ function StoreBody() {
                 records.get(skill.dirSlug),
                 skill.contentHash,
                 { registryId: index.registryId, owner: index.owner, repo: index.repo },
-                localHashes.get(skill.dirSlug),
+                myList == null
+                  ? { known: false as const }
+                  : { known: true as const, hash: localHashes.get(skill.dirSlug) },
               )}
               onOpen={() => void openDetail(skill.dirSlug)}
             />

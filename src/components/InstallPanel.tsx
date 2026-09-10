@@ -9,7 +9,7 @@ import { t, type MessageKey } from "@/i18n";
 import { failedLinks, linkedAgents, useInstall } from "@/store/install";
 import { cn } from "@/lib/cn";
 import { PLAZA_REGISTRY_ID, type InstallStage, type ToolState } from "@/lib/ipc";
-import { cardState, localHashOf, remoteHashOf, type LibraryRef } from "@/lib/update";
+import { cardState, localProbeOf, remoteHashOf, type LibraryRef } from "@/lib/update";
 import { useLocalDetail } from "@/store/local-detail";
 import { useMySkills } from "@/store/my-skills";
 import { useProjects } from "@/store/project";
@@ -140,7 +140,7 @@ function IdleFooter({
   // 挂载时已经 load 过一次(见 `StorePage.tsx`),而 `InstallPanel` 只会从商店
   // (含广场搜索结果)打开,那时 `list` 要么已经在加载、要么已经加载完。
   const myList = useMySkills((s) => s.list);
-  const localHash = localHashOf(myList, dirSlug);
+  const local = localProbeOf(myList, dirSlug);
   // 与商店卡片同一条判定。曾经这里只算 install/installed 两档,于是卡片显示
   // "更新"、点进来按钮却是禁用的「已启用」——用户点了毫无反应(2026-08-03 实测缺陷)。
   //
@@ -154,12 +154,12 @@ function IdleFooter({
   // 卡片的作者四档,见 `lib/update.ts` 文档注释):商店只回答"我有没有 / 我要不要",
   // "这是不是我分享的"这件事交给 core 的 `acquire::precheck` 在点下去之后判定。
   const state = plaza
-    ? cardState(record, "", ownerRepoToLibrary(plaza.ownerRepo), localHash)
+    ? cardState(record, "", ownerRepoToLibrary(plaza.ownerRepo), local)
     : cardState(
         record,
         remoteHashOf(index, dirSlug),
         index ? { registryId: index.registryId, owner: index.owner, repo: index.repo } : undefined,
-        localHash,
+        local,
       );
   const requestInstall = useProjects((s) => s.requestInstall);
   const installing = useProjects((s) => s.installing);

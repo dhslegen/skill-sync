@@ -11,19 +11,25 @@ export function remoteHashOf(
 }
 
 /**
- * 这台电脑上某个 dirSlug 本体此刻的实时指纹(v7.5,`cardState` 新形参
- * `localHash` 的数据来源)。数据来自 `useMySkills` 的 `list`,只取
- * `localPresent === true` 的行——`list` 为 `null`(还没加载过)或找不到这一行
- * 都返回 `undefined`,与 `cardState` 里"本机没有本体"是同一个信号。
+ * 这台电脑上某个 dirSlug 的**磁盘探测结果**(`cardState` 的 `local` 形参的
+ * 唯一数据来源)。数据来自 `useMySkills` 的 `list`,只取 `localPresent === true`
+ * 的行。
+ *
+ * 🔴 **`list == null` 与"找不到这一行"必须是两个不同的返回**(v7.6 复审)。
+ * 这个函数的上一版把两者都返回 `undefined`,注释里还写着"与 cardState 里
+ * '本机没有本体'是同一个信号"——那句自白就是缺陷本身:`list` 为 `null` 既可能是
+ * 还没加载,**也可能是 `load()` 失败**,后者下满屏确实在电脑上的技能会永久显示
+ * 「获取」,而用户看不出来。见 {@link LocalProbe}。
  *
  * 与 `remoteHashOf` 同一种"单一实现供多处复用"的姿势,但语义相反:那个答的是
- * "库里这一版长什么样",这个答的是"这台电脑上现在长什么样"。
+ * "库里这一版长什么样",这个答的是"这台电脑上现在长什么样、以及我们知不知道"。
  */
-export function localHashOf(
+export function localProbeOf(
   list: { dirSlug: string; localPresent: boolean; localHash: string }[] | null | undefined,
   dirSlug: string,
-): string | undefined {
-  return list?.find((s) => s.dirSlug === dirSlug && s.localPresent)?.localHash;
+): LocalProbe {
+  if (list == null) return { known: false };
+  return { known: true, hash: list.find((s) => s.dirSlug === dirSlug && s.localPresent)?.localHash };
 }
 
 /** 当前浏览的技能库坐标。判定要比到库,不只是源(M4 一源多仓)。 */
@@ -162,22 +168,35 @@ export type CardState = "install" | "onDisk" | "update" | "differs" | "otherLibr
  * **移除摘不掉关联**(`remove.rs` 靠 `record.links`)——这是"记账是历史唯一
  * 载体"的诚实代价,不在本次改动范围内解决。
  */
+/**
+ * 「这台电脑上有没有这个技能的本体」的探测结果。
+ *
+ * 🔴 **刻意是可辨联合,不是一个 `string | undefined`**(v7.6 复审):
+ * `Map.get()` 的 `undefined` 同时表示「查过,没有」与「还没查」,而这两件事在
+ * `cardState` 里的后果**恰好相反**——前者该说「获取」,后者绝不能做任何关于
+ * 磁盘的断言。用同一个值表示它们,`useMySkills` 加载失败时就会对满屏确实在
+ * 电脑上的技能永久显示「获取」。CLAUDE.md 记着「约定会被下一个人无声打破,
+ * 类型不会」,这里让类型来管。
+ *
+ * - `{ known: false }` —— 「我的技能」列表还没加载,或加载失败。
+ * - `{ known: true, hash: undefined }` —— 探过了,磁盘上没有这个本体。
+ * - `{ known: true, hash: "" }` —— 有本体但指纹读不到,按"无从比较"处理。
+ * - `{ known: true, hash: "abc…" }` —— 有本体,这是它此刻的实时指纹。
+ */
+export type LocalProbe = { known: false } | { known: true; hash?: string };
+
 export function cardState(
   record: InstalledRecord | undefined,
   remoteHash: string,
   /** 当前浏览的库;省略 = 调用方不区分库(判定退回 M3 口径)。 */
   library?: LibraryRef,
   /**
-   * 这台电脑上这个 dirSlug 的本体指纹(来自 `useMySkills` 的 `list`,
-   * `localPresent === true` 的行);`undefined` = 本机没有本体。
-   * 空串 = 有本体但指纹读不到,按"无从比较"处理。
-   *
-   * 🔴 v7.6 起**无论有没有 `record` 都要读取**——它是新入口(第 2 条判据)的
-   * 唯一依据,不再只在 `!record` 时才有意义。
+   * 磁盘探测结果。见 {@link LocalProbe}——**「还没探到」与「探过、没有」是
+   * 两件后果相反的事**,不能都用 `undefined` 表示。
    */
-  localHash?: string,
+  local: LocalProbe = { known: false },
 ): CardState {
-  // 1. otherLibrary 判在最前,与 localHash 无关(见上方文档注释)。
+  // 1. otherLibrary 判在最前,与磁盘探测无关(见上方文档注释)。
   if (record && library && record.registryId && record.sourceOwner && record.sourceRepo) {
     const sameLibrary =
       record.registryId === library.registryId &&
@@ -185,6 +204,21 @@ export function cardState(
       record.sourceRepo === library.repo;
     if (!sameLibrary) return "otherLibrary";
   }
+  // 1.5 磁盘的答案还没到(「我的技能」列表未加载,**或加载失败**)。这时**不做
+  //     任何关于磁盘的断言**,退回用记账当代理:有账几乎总意味着磁盘上有。
+  //
+  //     🔴 这正是本次拍板那句话的字面兑现——「平台记账只是加速判断而不是世界
+  //     本身」:真相还没到时用最好的代理,到了就用真相。
+  //
+  //     🔴 **不修这一档的后果不是"闪一下"**:`useMySkills.load()` 失败时
+  //     `list` 永远是 `null`,按"磁盘上没有"判就会对满屏**确实在电脑上**的技能
+  //     永久显示「获取」——一个错误状态静默降级成了假话,而用户看不出来。
+  if (!local.known) {
+    if (!record) return "install";
+    if (!remoteHash || !record.contentHash || record.contentHash === remoteHash) return "onDisk";
+    return "update";
+  }
+  const localHash = local.hash;
   // 2. 入口从"问账本"改成"问磁盘":不论有没有记账,磁盘上真的没有本体就是
   //    「获取」。装了又被手动删掉目录的技能,从「已启用」变成「获取」——这是
   //    拍板的核心推论,不是回归(`docs/v7.6-共识.md` Q47-A)。
