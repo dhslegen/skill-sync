@@ -118,7 +118,8 @@ src/
   pages/         StorePage / MySkillsPage / SettingsPage(v6 二期删掉 SharePage:
                  新建与分享都并进「我的技能」)
   hooks/         useDesktopChrome(快捷键 + 右键拦截)、
-                 useLocalRefresh(本地技能变更的三级刷新:焦点/切页/文件监听)
+                 useLocalRefresh(刷新的四级:焦点/切页/文件监听/5 分钟只读兜底,
+                 另有顶栏刷新按钮的按页语义 `refreshManuallyFor`)
 src-tauri/src/
   core/builtin.rs    编译期注入的常量(内网地址/ClientID/仓库坐标/更新源+公钥)
   core/agents.rs     agent 注册表加载与探测 + disabled 标记(数据在 resources/agents.json)
@@ -2442,7 +2443,21 @@ v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
   ——**别拿 `commit_sha.is_empty()` 当"有没有记账"的判据**(当年只有 claim 留空 sha,
   那些行的 `content_hash` 是有值的、remove/repair 对它们照常有效)。要判"有没有
   `state.installed` 记账"用 `content_hash`,前端同理用 `contentHash !== ""`。
-- **本地技能变更的三级刷新**(M4 任务 6c):
+- 🔴 **刷新按页各自的语义 + 5 分钟只读兜底**(0.6.x,2026-09-14 用户拍板):此前顶栏刷新
+  按钮在三页都只重建商店索引,「我的技能」「项目」页点了等于没点——**一个图标在三页承诺
+  同一件这一页不会发生的事是不诚实的**。现在 `refreshManuallyFor(page)`:商店 `load(true)`
+  (M7 缓存逃生口)+ 重读已装;我的技能 重扫 + 非强制查索引 + 外源**不看节流**;项目 重读文件夹;
+  **设置页不摆按钮**;名字说清刷什么,转圈跟这一页自己的 loading。
+  级别 4 `refreshPeriodicallyFor`:每 `PERIODIC_REFRESH_MS` = 5 分钟刷当前页,**只读**
+  (绝不走 `updateAll`/`acquire`,安装与否仍只由设置档位决定),**与设置里的技能检查档位
+  分开**(那个会装、手动档时整个不跑);窗口 `visibilityState==="hidden"` 或 `isVisible()`
+  为假时暂停(两道都查,WebView 对 hide 未必同步报 hidden)。与 scheduler tick 撞同一分钟
+  各查一次 head,无害,不协调。
+  ⚠️ **登记的既有缺口(未修)**:①「我的技能」的 `hasUpdate` 比对的是**商店页此刻选中**的
+  那个库的索引(`useStoreIndex.index`),商店切到别的库后「我的技能」的更新判断跟着漂;
+  ②`attachReportListener` 在 scheduler 检查完成后不刷新项目页;③文件监听不含项目目录
+  ——项目页的被动刷新只有焦点与这 5 分钟兜底。
+- **本地技能变更的三级刷新**(M4 任务 6c,0.6.x 起多一级兜底,见上一条):
   1. 窗口重获焦点(`hooks/useLocalRefresh.ts`,只刷当前页,用 ref 存页面避免重复注册);
   2. 切页(页面组件挂载时 load,有测试钉住,不再是"靠组件重挂"的巧合);
   3. 文件监听(`core/watcher.rs` + `commands::spawn_watcher`)。

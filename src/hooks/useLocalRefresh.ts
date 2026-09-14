@@ -13,6 +13,8 @@
 //   2. 切换页面 —— 页面组件挂载时 load,由 `refreshes-on-page-switch` 测试钉住,
 //      不再是"靠组件卸载重挂"的巧合;
 //   3. 文件系统监听 —— core 侧 watcher,另行接入。
+//   4. 5 分钟只读兜底(0.6.x)—— 覆盖"库里变了"这件前三级都收不到信号的事,
+//      见 `refreshPeriodicallyFor`。顶栏刷新按钮的按页语义见 `refreshManuallyFor`。
 //
 // **只刷当前页需要的东西**:无脑全刷会在每次切窗口时打三次 IPC,而其中两次的结果
 // 没人看。`load` 只写列表不碰表单(已确认),所以刷新不会打断正在填的分享表单。
@@ -57,6 +59,44 @@ export function refreshLocalFor(page: PageId): void {
       break;
     case "settings":
       // 设置页不展示技能,无需刷新
+      break;
+  }
+}
+
+/** 只读兜底刷新的间隔。与设置里「技能更新检查」档位无关(那个会安装)。 */
+export const PERIODIC_REFRESH_MS = 5 * 60_000;
+
+/**
+ * 5 分钟只读兜底(级别 4,0.6.x,2026-09-14 用户拍板「只读刷新恒定 5 分钟」)。
+ *
+ * 焦点/切页/文件监听三级都是"本地变了"的信号;**库里变了**(同事分享了新版)
+ * 之前没有任何信号能让打开着的页面知道——scheduler 只在有已装技能、且档位不是
+ * 「手动」时才跑,而且它的职责是安装。这一级补上"不点也会跟上"。
+ *
+ * 🔴 **只读**:只调各页已有的读取路径,绝不走 `updateAll`/`acquire`——安装与否仍然
+ * 只由设置里的档位决定。
+ * - `store`:非强制检查当前技能库(head 没变就零下载)+ 重读已装状态;广场搜索态
+ *   `load` 自己早退,不会替用户重新搜索。
+ * - `mine`:与级别 1 相同(重扫 + 外源每小时节流)再加非强制检查技能库——「有更新」
+ *   比对的正是那份索引。
+ * - `projects`:重读项目文件夹(项目目录不在文件监听里,这是它唯一的被动刷新)。
+ *
+ * ⚠️ 与 scheduler 的 tick 可能撞在同一分钟,各查一次 head,无害,不去协调。
+ */
+export function refreshPeriodicallyFor(page: PageId): void {
+  switch (page) {
+    case "store":
+      void useStoreIndex.getState().load(false);
+      refreshLocalFor("store");
+      break;
+    case "mine":
+      void useStoreIndex.getState().load(false);
+      refreshLocalFor("mine");
+      break;
+    case "projects":
+      refreshLocalFor("projects");
+      break;
+    case "settings":
       break;
   }
 }
@@ -134,6 +174,25 @@ export function useLocalRefresh(): void {
       cancelled = true;
       unlisten?.();
     };
+  }, []);
+
+  // 级别 4:5 分钟只读兜底(0.6.x)。见 `refreshPeriodicallyFor`。
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void (async () => {
+        // 缩到托盘时暂停。两道都查:WebView 对"窗口被 hide"未必同步报 visibilityState,
+        // 而 Tauri 的 isVisible 在浏览器环境里取不到——哪道说"看不见"都不刷。
+        if (document.visibilityState === "hidden") return;
+        try {
+          const { getCurrentWindow } = await import("@tauri-apps/api/window");
+          if (!(await getCurrentWindow().isVisible())) return;
+        } catch {
+          // 取不到窗口状态就按可见处理:只读刷新,多刷一次无害
+        }
+        refreshPeriodicallyFor(pageRef.current);
+      })();
+    }, PERIODIC_REFRESH_MS);
+    return () => clearInterval(timer);
   }, []);
 
   // 级别 3:core 侧的文件监听。窗口有焦点时改动也能立刻反映

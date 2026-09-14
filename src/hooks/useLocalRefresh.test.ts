@@ -1,9 +1,11 @@
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { refreshLocalFor, useLocalRefresh } from "./useLocalRefresh";
+import { PERIODIC_REFRESH_MS, refreshLocalFor, useLocalRefresh } from "./useLocalRefresh";
 import { useInstall } from "@/store/install";
 import { useMySkills } from "@/store/my-skills";
+import { useProjects } from "@/store/project";
+import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
 
 const invoke = vi.fn();
@@ -18,6 +20,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 // 捕获注册进来的焦点回调,好在测试里手动触发
+let windowVisible = true;
 let focusCb: ((e: { payload: boolean }) => void) | null = null;
 const unlistenSpy = vi.fn();
 vi.mock("@tauri-apps/api/window", () => ({
@@ -26,6 +29,7 @@ vi.mock("@tauri-apps/api/window", () => ({
       focusCb = cb;
       return unlistenSpy;
     },
+    isVisible: async () => windowVisible,
   }),
 }));
 
@@ -224,5 +228,110 @@ describe("文件监听(级别 3)", () => {
     await vi.waitFor(() => expect(changedCb).not.toBeNull());
     unmount();
     expect(eventUnlisten).toHaveBeenCalled();
+  });
+});
+
+// 0.6.x(2026-09-14 用户拍板「只读刷新恒定 5 分钟」):不能指望用户频繁点刷新。
+// 与设置里「技能更新检查」档位分开——那个会**安装**,这个只读、从不装任何东西。
+describe("5 分钟只读兜底刷新", () => {
+  beforeEach(() => {
+    reset();
+    windowVisible = true;
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    vi.useFakeTimers();
+    useStoreIndex.setState({ activeRegistry: "company", activeRepo: null });
+    useProjects.setState({ loading: false });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+  });
+
+  async function tick() {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PERIODIC_REFRESH_MS);
+    });
+  }
+
+  it("间隔就是 5 分钟", () => {
+    expect(PERIODIC_REFRESH_MS).toBe(5 * 60_000);
+  });
+
+  it("到点刷新当前页:项目页重读项目清单,不碰别页", async () => {
+    useUi.setState({ page: "projects" });
+    const { unmount } = renderHook(() => useLocalRefresh());
+    invoke.mockClear();
+    await tick();
+    expect(sent()).toContain("project_list");
+    expect(sent()).not.toContain("installed_list");
+    unmount();
+  });
+
+  it("商店页:非强制检查技能库(head 没变就不下载),并重读已装状态", async () => {
+    useUi.setState({ page: "store" });
+    const { unmount } = renderHook(() => useLocalRefresh());
+    invoke.mockClear();
+    await tick();
+    const indexCall = invoke.mock.calls.find(([cmd]) => cmd === "store_index");
+    expect(indexCall?.[1]).toMatchObject({ args: { force: false } });
+    expect(sent()).toContain("installed_list");
+    unmount();
+  });
+
+  it("我的技能页:重扫本地并检查技能库", async () => {
+    useUi.setState({ page: "mine" });
+    const { unmount } = renderHook(() => useLocalRefresh());
+    invoke.mockClear();
+    await tick();
+    expect(sent()).toContain("installed_list");
+    expect(invoke.mock.calls.find(([cmd]) => cmd === "store_index")?.[1]).toMatchObject({ args: { force: false } });
+    unmount();
+  });
+
+  it("🔴 只读:兜底刷新绝不安装任何东西", async () => {
+    useUi.setState({ page: "mine" });
+    const { unmount } = renderHook(() => useLocalRefresh());
+    await tick();
+    await tick();
+    expect(sent().some((c) => /acquire|install_batch|skill_install|update_check_now/.test(c))).toBe(false);
+    unmount();
+  });
+
+  it("页面被隐藏(缩到托盘)时暂停", async () => {
+    useUi.setState({ page: "projects" });
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    const { unmount } = renderHook(() => useLocalRefresh());
+    invoke.mockClear();
+    await tick();
+    expect(sent()).not.toContain("project_list");
+    unmount();
+  });
+
+  it("窗口不可见时暂停(webview 未必把隐藏窗口报成 hidden,两道都查)", async () => {
+    useUi.setState({ page: "projects" });
+    windowVisible = false;
+    const { unmount } = renderHook(() => useLocalRefresh());
+    invoke.mockClear();
+    await tick();
+    expect(sent()).not.toContain("project_list");
+    unmount();
+  });
+
+  it("设置页不刷新", async () => {
+    useUi.setState({ page: "settings" });
+    const { unmount } = renderHook(() => useLocalRefresh());
+    invoke.mockClear();
+    await tick();
+    expect(sent()).toEqual([]);
+    unmount();
+  });
+
+  it("卸载后定时器停掉", async () => {
+    useUi.setState({ page: "projects" });
+    const { unmount } = renderHook(() => useLocalRefresh());
+    unmount();
+    invoke.mockClear();
+    await tick();
+    expect(sent()).not.toContain("project_list");
   });
 });
