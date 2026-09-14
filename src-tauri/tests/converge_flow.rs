@@ -13,6 +13,17 @@ use skillsync_lib::core::fsops::{self, LinkKind};
 use skillsync_lib::core::installer::Installer;
 use skillsync_lib::core::state::{self, State};
 
+/// 把 `"a/b/c"` 这种**字面带斜杠**的相对路径按段 join 到 `base` 上。
+///
+/// 🔴 **不能直接写成 `base.join` 传一个含斜杠的串**(2026-09-11 与 09-14 两轮
+/// Windows CI 实测):`Path::join` 对含 `/` 的字符串**原样保留那个斜杠**,
+/// Windows 上产出 `...\.claude/skills\x`,而 core 自己分段拼出来的是
+/// `...\.claude\skills\x` ——**同一个目录,字符串却不等**,凡是拿 fixture
+/// 路径去和账上字符串比的断言全红。macOS 上两种写法恰好相同,本机怎么跑都是绿的。
+fn join_rel<P: AsRef<Path>>(base: P, rel: &str) -> PathBuf {
+    rel.split('/').filter(|s| !s.is_empty()).fold(base.as_ref().to_path_buf(), |p, s| p.join(s))
+}
+
 const NOW: &str = "2026-08-24T12:00:00.000Z";
 
 struct TmpEnv {
@@ -124,7 +135,7 @@ fn converge_links_when_target_is_absent_or_dangling() {
     let (c, env) = ctx();
     let inst = c.installer(&env);
     let body = skill_dir(&env.home, ".claude/skills/s", "v1");
-    let target = env.home.join(".trae/skills/s");
+    let target = join_rel(&env.home, ".trae/skills/s");
     assert!(matches!(
         converge::converge(&inst, &target, &body).unwrap(),
         Converged::Linked { .. }
@@ -247,8 +258,8 @@ fn locate_ignores_links_and_dirs_without_skill_md() {
     let (c, env) = ctx();
     let inst = c.installer(&env);
     let body = skill_dir(&env.home, ".agents/skills/s", "v1");
-    link(&body, &env.home.join(".claude/skills/s"));
-    std::fs::create_dir_all(env.home.join(".trae/skills/s")).unwrap(); // 没有 SKILL.md
+    link(&body, &join_rel(&env.home, ".claude/skills/s"));
+    std::fs::create_dir_all(join_rel(&env.home, ".trae/skills/s")).unwrap(); // 没有 SKILL.md
 
     let l = converge::locate(&inst, &c.registry, &env, &State::default(), "s").unwrap();
 
@@ -314,7 +325,7 @@ fn set_agents_adds_links_removes_links_and_never_removes_the_body_tool() {
     };
     assert!(matches!(&results[0], (a, Ok(Converged::Linked { .. })) if a == "trae"));
     assert_eq!(
-        fsops::read_link_target(&env.home.join(".agents/skills/s")),
+        fsops::read_link_target(&join_rel(&env.home, ".agents/skills/s")),
         Some(fsops::normalize(&body)),
         "首次勾就把 canonical 链接补上"
     );
@@ -325,7 +336,7 @@ fn set_agents_adds_links_removes_links_and_never_removes_the_body_tool() {
         panic!("expected Done")
     };
     assert_eq!(unlinked, vec!["trae".to_string()]);
-    assert!(std::fs::symlink_metadata(env.home.join(".trae/skills/s")).is_err());
+    assert!(std::fs::symlink_metadata(join_rel(&env.home, ".trae/skills/s")).is_err());
     assert!(body.join("SKILL.md").is_file(), "本体不动");
 
     // 试图取消本体所在的 claude-code:静默保留,账上 agents 仍含 claude-code。
@@ -366,7 +377,7 @@ fn set_agents_self_heals_a_link_that_was_repointed_elsewhere() {
     let body = skill_dir(&env.home, ".claude/skills/s", "v1");
 
     converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &["trae".into()], NOW).unwrap();
-    let trae_link = env.home.join(".trae/skills/s");
+    let trae_link = join_rel(&env.home, ".trae/skills/s");
     assert_eq!(fsops::read_link_target(&trae_link), Some(fsops::normalize(&body)));
 
     // 有人把 trae 的关联改指到了别处(比如另一个技能的目录)——trae 一直都在账上,
@@ -399,7 +410,7 @@ fn set_agents_reports_differs_without_touching_disk_when_a_wanted_position_holds
     skill_dir(&env.home, ".claude/skills/s", "v1");
 
     converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &["trae".into()], NOW).unwrap();
-    let trae_link = env.home.join(".trae/skills/s");
+    let trae_link = join_rel(&env.home, ".trae/skills/s");
     fsops::unlink_dir(&trae_link).unwrap();
     std::fs::create_dir_all(&trae_link).unwrap();
     std::fs::write(trae_link.join("SKILL.md"), skill_md("v9")).unwrap();
@@ -438,7 +449,7 @@ fn keep_version_rejects_a_path_that_is_not_a_candidate() {
     // 那个洞。真正危险的形状是**同叶子名**的无关目录——那种形状下没有旁的守卫
     // 能兜底,零报错、两处本体全进废纸篓、账上写成无关路径。
     let unrelated = skill_dir(&env.home, ".elsewhere/s", "v9");
-    let missing = env.home.join(".nowhere/skills/s");
+    let missing = join_rel(&env.home, ".nowhere/skills/s");
 
     let before_a = fsops::dir_content_hash(&a).unwrap();
     let before_b = fsops::dir_content_hash(&b).unwrap();
@@ -479,7 +490,7 @@ fn set_agents_errors_instead_of_dangling_when_the_recorded_body_is_gone() {
     let err = converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &["trae".into()], NOW).unwrap_err();
 
     assert_eq!(err.code, "FS_MISSING_SKILL");
-    let trae_link = env.home.join(".trae/skills/s");
+    let trae_link = join_rel(&env.home, ".trae/skills/s");
     assert!(
         std::fs::symlink_metadata(&trae_link).is_err(),
         "不该在本体缺失的情况下建出悬空链接"
@@ -496,7 +507,7 @@ fn keep_version_links_canonical_even_when_canonical_is_not_a_candidate() {
     let inst = c.installer(&env);
     let a = skill_dir(&env.home, ".claude/skills/s", "v1");
     let b = skill_dir(&env.home, ".trae/skills/s", "v2");
-    let canonical = env.home.join(".agents/skills/s");
+    let canonical = join_rel(&env.home, ".agents/skills/s");
     assert!(!canonical.exists(), "sanity: canonical 一开始没有任何实体或链接");
 
     let r = converge::keep_version(&inst, &c.registry, &env, &c.store, "s", &a, NOW).unwrap();
@@ -518,13 +529,13 @@ fn keep_version_preserves_an_agent_whose_link_is_healthy_and_not_a_candidate() {
     let (c, env) = ctx();
     let inst = c.installer(&env);
     let claude_body = skill_dir(&env.home, ".claude/skills/s", "v1");
-    let trae_link = env.home.join(".trae/skills/s");
+    let trae_link = join_rel(&env.home, ".trae/skills/s");
     link(&claude_body, &trae_link); // 健康链接,不是 scan_all 的候选
 
     let mut state = state_with_body("s", &claude_body);
     state.installed[0].agents = vec!["claude-code".into(), "trae".into()];
     state.installed[0].links = vec![state::LinkRecord {
-        dir: env.home.join(".trae/skills").to_string_lossy().into_owned(),
+        dir: join_rel(&env.home, ".trae/skills").to_string_lossy().into_owned(),
         mode: "symlink".into(),
     }];
     c.store.save_state(&state).unwrap();
@@ -640,7 +651,7 @@ fn set_agents_removes_a_copy_degraded_link_via_trash_instead_of_crashing() {
 
     converge::set_agents(&inst_copy, &c.registry, &env, &c.store, "s", &["trae".into()], NOW).unwrap();
 
-    let trae_link = env.home.join(".trae/skills/s");
+    let trae_link = join_rel(&env.home, ".trae/skills/s");
     assert!(trae_link.is_dir(), "sanity: 降级复制落盘是实体目录");
     assert!(fsops::read_link_target(&trae_link).is_none(), "sanity: 不是链接");
     let st = c.store.load_state().unwrap().value;
@@ -648,7 +659,7 @@ fn set_agents_removes_a_copy_degraded_link_via_trash_instead_of_crashing() {
     assert_eq!(
         rec.links
             .iter()
-            .find(|l| Path::new(&l.dir) == env.home.join(".trae/skills"))
+            .find(|l| Path::new(&l.dir) == join_rel(&env.home, ".trae/skills"))
             .map(|l| l.mode.as_str()),
         Some("copy")
     );
@@ -671,7 +682,7 @@ fn converge_reports_differs_without_touching_disk_when_target_is_a_file() {
     let (c, env) = ctx();
     let inst = c.installer(&env);
     let body = skill_dir(&env.home, ".claude/skills/s", "v1");
-    let target = env.home.join(".agents/skills/s");
+    let target = join_rel(&env.home, ".agents/skills/s");
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
     std::fs::write(&target, b"not a skill directory").unwrap();
 
@@ -716,7 +727,7 @@ fn set_agents_still_records_new_links_when_an_unrelated_removal_fails() {
     let body = skill_dir(&env.home, ".claude/skills/s", "v1");
 
     converge::set_agents(&inst, &c.registry, &env, &c.store, "s", &["trae".into()], NOW).unwrap();
-    let trae_link = env.home.join(".trae/skills/s");
+    let trae_link = join_rel(&env.home, ".trae/skills/s");
     assert!(fsops::read_link_target(&trae_link).is_some(), "sanity: trae 目前是链接");
 
     // 外部把这条链接换成了一个实体目录,账上仍记着 symlink。
@@ -746,7 +757,7 @@ fn set_agents_still_records_new_links_when_an_unrelated_removal_fails() {
 
     // ② 新勾的 trae-cn 已经进账——不能因为 trae 那条失败就中途夭折。
     assert!(matches!(&results[0], (a, Ok(Converged::Linked { .. })) if a == "trae-cn"));
-    let trae_cn_link = env.home.join(".trae-cn/skills/s");
+    let trae_cn_link = join_rel(&env.home, ".trae-cn/skills/s");
     assert_eq!(
         fsops::read_link_target(&trae_cn_link),
         Some(fsops::normalize(&body)),
@@ -757,7 +768,7 @@ fn set_agents_still_records_new_links_when_an_unrelated_removal_fails() {
     assert!(
         rec.links
             .iter()
-            .any(|l| Path::new(&l.dir) == env.home.join(".trae-cn/skills")),
+            .any(|l| Path::new(&l.dir) == join_rel(&env.home, ".trae-cn/skills")),
         "trae-cn 的链接必须进账,否则 remove 找不到它: {:?}",
         rec.links
     );
@@ -806,7 +817,7 @@ fn set_agents_does_not_abort_when_one_targets_link_dir_is_blocked_by_a_file() {
     );
 
     // 成功的那条(trae)确实进了账,否则 remove 永远摘不掉它。
-    let trae_link = env.home.join(".trae/skills/s");
+    let trae_link = join_rel(&env.home, ".trae/skills/s");
     assert_eq!(
         fsops::read_link_target(&trae_link),
         Some(fsops::normalize(&body)),
@@ -815,7 +826,7 @@ fn set_agents_does_not_abort_when_one_targets_link_dir_is_blocked_by_a_file() {
     let st = c.store.load_state().unwrap().value;
     let rec = st.installed.iter().find(|s| s.name == "s").unwrap();
     assert!(
-        rec.links.iter().any(|l| Path::new(&l.dir) == env.home.join(".trae/skills")),
+        rec.links.iter().any(|l| Path::new(&l.dir) == join_rel(&env.home, ".trae/skills")),
         "trae 的链接必须进账: {:?}",
         rec.links
     );
@@ -842,11 +853,11 @@ fn set_agents_computes_the_fresh_hash_before_touching_disk_for_a_new_account() {
     assert_eq!(err.code, "FS_HASH_FAILED");
     // 磁盘零写入:hash 失败必须发生在任何 converge/canonical 调用之前。
     assert!(
-        fsops::read_link_target(&env.home.join(".agents/skills/s")).is_none(),
+        fsops::read_link_target(&join_rel(&env.home, ".agents/skills/s")).is_none(),
         "canonical 不该被建"
     );
     assert!(
-        std::fs::symlink_metadata(env.home.join(".trae/skills/s")).is_err(),
+        std::fs::symlink_metadata(join_rel(&env.home, ".trae/skills/s")).is_err(),
         "trae 不该被建"
     );
     assert!(c.store.load_state().unwrap().value.installed.is_empty(), "账不该被写");
@@ -893,7 +904,7 @@ fn set_agents_does_not_abort_when_an_unknown_agent_name_is_requested() {
         "一个坏名字不得把 trae 一起判死: {results:?}"
     );
     assert_eq!(
-        fsops::read_link_target(&env.home.join(".trae/skills/s")),
+        fsops::read_link_target(&join_rel(&env.home, ".trae/skills/s")),
         Some(fsops::normalize(&body)),
         "trae 的链接必须真的落盘,不能只是回报了个 Ok"
     );
@@ -930,12 +941,12 @@ fn set_agents_does_not_abort_when_the_account_has_a_stale_unknown_agent_name() {
     // trae 是一条真实的、账上有记录的健康链接:它必须照常被摘掉,不能因为
     // 同一份 `removed` 里混着一个陈旧名字就整批作废(审查修复轮 4:摘链侧
     // 与建链侧是同一个结构问题,一起按 agent 逐个 resolve)。
-    let trae_link = env.home.join(".trae/skills/s");
+    let trae_link = join_rel(&env.home, ".trae/skills/s");
     link(&body, &trae_link);
     let mut state = state_with_body("s", &body);
     state.installed[0].agents = vec!["claude-code".into(), "trae".into(), "早已下线的工具".into()];
     state.installed[0].links = vec![state::LinkRecord {
-        dir: env.home.join(".trae/skills").to_string_lossy().into_owned(),
+        dir: join_rel(&env.home, ".trae/skills").to_string_lossy().into_owned(),
         mode: "symlink".into(),
     }];
     c.store.save_state(&state).unwrap();
@@ -998,7 +1009,7 @@ fn set_agents_does_not_abort_when_the_canonical_link_itself_fails() {
             .any(|(a, r)| a == "trae" && matches!(r, Ok(Converged::Linked { .. }))),
         "{results:?}"
     );
-    let trae_link = env.home.join(".trae/skills/s");
+    let trae_link = join_rel(&env.home, ".trae/skills/s");
     assert_eq!(fsops::read_link_target(&trae_link), Some(fsops::normalize(&body)));
     let st = c.store.load_state().unwrap().value;
     assert!(st.installed.iter().any(|s| s.name == "s"), "账应当已经落地,没有中途夭折");
@@ -1023,7 +1034,7 @@ fn keep_version_computes_the_baseline_hash_before_touching_disk() {
     let inst = c.installer(&env);
     let keep = skill_dir(&env.home, ".claude/skills/s", "v1");
     let loser = skill_dir(&env.home, ".trae/skills/s", "v2");
-    let canonical = env.home.join(".agents/skills/s");
+    let canonical = join_rel(&env.home, ".agents/skills/s");
 
     // 让 `dir_content_hash(keep)` 必然失败:目录里放一个读不了的文件。
     let secret = keep.join("secret.txt");
@@ -1061,7 +1072,7 @@ fn keep_version_keeps_going_when_one_losing_position_cannot_be_converged() {
     let bad_loser = skill_dir(&env.home, ".trae/skills/s", "v3");
 
     // 父目录只读 → 挪进废纸篓(rename)必然失败。
-    let bad_parent = env.home.join(".trae/skills");
+    let bad_parent = join_rel(&env.home, ".trae/skills");
     std::fs::set_permissions(&bad_parent, std::fs::Permissions::from_mode(0o555)).unwrap();
 
     let r = converge::keep_version(&inst, &c.registry, &env, &c.store, "s", &keep, NOW).unwrap();
@@ -1096,7 +1107,7 @@ fn keep_version_keeps_going_when_one_losing_position_cannot_be_converged() {
     assert!(
         rec.links
             .iter()
-            .any(|l| Path::new(&l.dir) == env.home.join(".agents/skills")),
+            .any(|l| Path::new(&l.dir) == join_rel(&env.home, ".agents/skills")),
         "成功那条链接必须进账(remove 才摘得掉): {:?}",
         rec.links
     );
@@ -1143,7 +1154,7 @@ fn keep_version_reports_a_losing_position_that_was_emptied_but_not_linked() {
     assert!(
         !rec.links
             .iter()
-            .any(|l| Path::new(&l.dir) == env.home.join(".trae/skills")),
+            .any(|l| Path::new(&l.dir) == join_rel(&env.home, ".trae/skills")),
         "没建成的链接绝不能进账——记了 remove 会拿它去动那个位置: {:?}",
         rec.links
     );

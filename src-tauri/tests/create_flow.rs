@@ -18,6 +18,17 @@ use skillsync_lib::core::state::{
     InstalledSkill, SharedSkill, SkillSource, State, Store,
 };
 
+/// 把 `"a/b/c"` 这种**字面带斜杠**的相对路径按段 join 到 `base` 上。
+///
+/// 🔴 **不能直接写成 `base.join` 传一个含斜杠的串**(2026-09-11 与 09-14 两轮
+/// Windows CI 实测):`Path::join` 对含 `/` 的字符串**原样保留那个斜杠**,
+/// Windows 上产出 `...\.claude/skills\x`,而 core 自己分段拼出来的是
+/// `...\.claude\skills\x` ——**同一个目录,字符串却不等**,凡是拿 fixture
+/// 路径去和账上字符串比的断言全红。macOS 上两种写法恰好相同,本机怎么跑都是绿的。
+fn join_rel<P: AsRef<Path>>(base: P, rel: &str) -> PathBuf {
+    rel.split('/').filter(|s| !s.is_empty()).fold(base.as_ref().to_path_buf(), |p, s| p.join(s))
+}
+
 struct TmpEnv {
     home: PathBuf,
     vars: HashMap<String, String>,
@@ -65,7 +76,7 @@ struct Ctx {
 
 impl Ctx {
     fn canonical(&self, slug: &str) -> PathBuf {
-        self.home.join(".agents/skills").join(slug)
+        join_rel(&self.home, ".agents/skills").join(slug)
     }
 }
 
@@ -124,7 +135,7 @@ fn creates_only_skill_md_and_leaves_state_untouched() {
     assert_eq!(entries, vec!["SKILL.md".to_string()]);
 
     // 不写 lock(它记的是"从哪装来的",新建的没有来源)
-    assert!(!ctx.home.join(".agents/.skill-lock.json").exists(), "不该写 lock");
+    assert!(!join_rel(&ctx.home, ".agents/.skill-lock.json").exists(), "不该写 lock");
     // 不进 state:进了 installed 就从分享候选里消失,而分享是它唯一的出路
     let state = ctx.store.load_state().unwrap().value;
     assert!(state.installed.is_empty(), "不该记进 installed");
@@ -360,7 +371,7 @@ fn refuses_slugs_that_would_be_silently_renamed() {
         assert_eq!(err.code, "FS_UNUSABLE_NAME", "slug {slug:?} 应当被拒");
     }
     // 一个目录都不该建出来
-    let skills_dir = ctx.home.join(".agents/skills");
+    let skills_dir = join_rel(&ctx.home, ".agents/skills");
     assert!(
         !skills_dir.exists() || std::fs::read_dir(&skills_dir).unwrap().next().is_none(),
         "被拒的 slug 不该在磁盘上留下痕迹"
@@ -409,7 +420,7 @@ fn local_tier_filter_picks_the_new_skill_but_not_agent_dir_ones() {
         .unwrap();
 
     // 另放一个在 agent 目录里(模拟别的工具装的实体目录)
-    let claude = ctx.home.join(".claude/skills/theirs");
+    let claude = join_rel(&ctx.home, ".claude/skills/theirs");
     std::fs::create_dir_all(&claude).unwrap();
     std::fs::write(claude.join("SKILL.md"), "---\nname: 别人的\ndescription: x\n---\n正文\n")
         .unwrap();

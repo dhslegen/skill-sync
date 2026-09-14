@@ -15,6 +15,17 @@ use skillsync_lib::core::state::{InstalledSkill, LinkRecord, SharedSkill, SkillS
 use wiremock::matchers::{body_partial_json, body_string_contains, method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// 把 `"a/b/c"` 这种**字面带斜杠**的相对路径按段 join 到 `base` 上。
+///
+/// 🔴 **不能直接写成 `base.join` 传一个含斜杠的串**(2026-09-11 与 09-14 两轮
+/// Windows CI 实测):`Path::join` 对含 `/` 的字符串**原样保留那个斜杠**,
+/// Windows 上产出 `...\.claude/skills\x`,而 core 自己分段拼出来的是
+/// `...\.claude\skills\x` ——**同一个目录,字符串却不等**,凡是拿 fixture
+/// 路径去和账上字符串比的断言全红。macOS 上两种写法恰好相同,本机怎么跑都是绿的。
+fn join_rel<P: AsRef<Path>>(base: P, rel: &str) -> PathBuf {
+    rel.split('/').filter(|s| !s.is_empty()).fold(base.as_ref().to_path_buf(), |p, s| p.join(s))
+}
+
 const NOW: &str = "2026-07-31T09:00:00.000Z";
 
 struct TmpEnv {
@@ -1549,7 +1560,7 @@ fn install_record(c: &Ctx, dir: &Path) -> InstalledSkill {
         origin: None,
         body: None,
         agents: vec![],
-        links: vec![LinkRecord { dir: c.home.join(".claude/skills").to_string_lossy().into_owned(), mode: "symlink".into() }],
+        links: vec![LinkRecord { dir: join_rel(&c.home, ".claude/skills").to_string_lossy().into_owned(), mode: "symlink".into() }],
         installed_at: NOW.into(),
         updated_at: NOW.into(),
     }

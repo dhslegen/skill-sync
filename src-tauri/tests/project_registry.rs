@@ -7,6 +7,17 @@ use std::path::{Path, PathBuf};
 
 use skillsync_lib::core::project::{self, ProjectPathError};
 
+/// 把 `"a/b/c"` 这种**字面带斜杠**的相对路径按段 join 到 `base` 上。
+///
+/// 🔴 **不能直接写成 `base.join` 传一个含斜杠的串**(2026-09-11 与 09-14 两轮
+/// Windows CI 实测):`Path::join` 对含 `/` 的字符串**原样保留那个斜杠**,
+/// Windows 上产出 `...\.claude/skills\x`,而 core 自己分段拼出来的是
+/// `...\.claude\skills\x` ——**同一个目录,字符串却不等**,凡是拿 fixture
+/// 路径去和账上字符串比的断言全红。macOS 上两种写法恰好相同,本机怎么跑都是绿的。
+fn join_rel<P: AsRef<Path>>(base: P, rel: &str) -> PathBuf {
+    rel.split('/').filter(|s| !s.is_empty()).fold(base.as_ref().to_path_buf(), |p, s| p.join(s))
+}
+
 fn home() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -16,7 +27,7 @@ fn home() -> (tempfile::TempDir, PathBuf) {
 
 /// canonical 全局技能目录(守卫要拦它自己、祖先与其之下)。
 fn canonical(home: &Path) -> PathBuf {
-    home.join(".agents/skills")
+    join_rel(home, ".agents/skills")
 }
 
 fn ok(home: &Path, p: &Path) -> Result<PathBuf, ProjectPathError> {
@@ -97,7 +108,7 @@ fn rejects_a_directory_underneath_canonical() {
 #[test]
 fn accepts_a_normal_directory_under_home() {
     let (_tmp, home) = home();
-    let proj = home.join("文档/项目甲");
+    let proj = join_rel(&home, "文档/项目甲");
     std::fs::create_dir_all(&proj).unwrap();
 
     assert!(ok(&home, &proj).is_ok(), "HOME 下的普通目录必须放行");
@@ -137,15 +148,15 @@ fn re_registering_moves_a_project_to_the_front() {
 fn forgetting_a_project_only_touches_the_list() {
     let (tmp, _home) = home();
     let proj = tmp.path().join("proj");
-    std::fs::create_dir_all(proj.join(".agents/skills/x")).unwrap();
-    std::fs::write(proj.join(".agents/skills/x/SKILL.md"), "x").unwrap();
+    std::fs::create_dir_all(join_rel(&proj, ".agents/skills/x")).unwrap();
+    std::fs::write(join_rel(&proj, ".agents/skills/x/SKILL.md"), "x").unwrap();
     let mut list = vec![proj.to_string_lossy().into_owned()];
 
     project::forget_project(&mut list, &proj);
 
     assert!(list.is_empty());
     assert!(
-        proj.join(".agents/skills/x/SKILL.md").is_file(),
+        join_rel(&proj, ".agents/skills/x/SKILL.md").is_file(),
         "移出清单绝不能删用户的技能"
     );
 }

@@ -10,6 +10,17 @@ use skillsync_lib::core::installer::SkillPayload;
 use skillsync_lib::core::project::{self, ProjectPrecheck, RemovedItem};
 use skillsync_lib::core::project_lock::{self, LocalEntry};
 
+/// 把 `"a/b/c"` 这种**字面带斜杠**的相对路径按段 join 到 `base` 上。
+///
+/// 🔴 **不能直接写成 `base.join` 传一个含斜杠的串**(2026-09-11 与 09-14 两轮
+/// Windows CI 实测):`Path::join` 对含 `/` 的字符串**原样保留那个斜杠**,
+/// Windows 上产出 `...\.claude/skills\x`,而 core 自己分段拼出来的是
+/// `...\.claude\skills\x` ——**同一个目录,字符串却不等**,凡是拿 fixture
+/// 路径去和账上字符串比的断言全红。macOS 上两种写法恰好相同,本机怎么跑都是绿的。
+fn join_rel<P: AsRef<Path>>(base: P, rel: &str) -> PathBuf {
+    rel.split('/').filter(|s| !s.is_empty()).fold(base.as_ref().to_path_buf(), |p, s| p.join(s))
+}
+
 /// 一个最小可用的技能载荷。`name` 进 frontmatter——项目级的安装键取它,不取目录名。
 fn payload(name: &str, body: &str) -> SkillPayload {
     SkillPayload::new().with_file(
@@ -57,10 +68,10 @@ fn installs_body_under_project_agents_dir_keyed_by_frontmatter_name() {
     .expect("安装应成功");
 
     assert_eq!(done.key, "vercel-react-best-practices");
-    let body = root.join(".agents/skills/vercel-react-best-practices");
+    let body = join_rel(&root, ".agents/skills/vercel-react-best-practices");
     assert!(body.join("SKILL.md").is_file(), "本体应落在 .agents/skills 下");
     assert!(
-        !root.join(".agents/skills/react-best-practices").exists(),
+        !join_rel(&root, ".agents/skills/react-best-practices").exists(),
         "不该用仓库目录名建目录"
     );
 }
@@ -80,7 +91,7 @@ fn links_non_universal_agents_with_a_relative_symlink() {
     )
     .unwrap();
 
-    let link = root.join(".claude/skills/weekly-report");
+    let link = join_rel(&root, ".claude/skills/weekly-report");
     let raw = std::fs::read_link(&link).expect("claude-code 目录下应是链接");
     assert_eq!(
         raw.to_string_lossy(),
@@ -111,7 +122,7 @@ fn universal_agents_are_not_linked() {
         "universal agent 不该出现在已建链名单里,实际 {:?}",
         done.linked_agents
     );
-    let body = root.join(".agents/skills/weekly-report");
+    let body = join_rel(&root, ".agents/skills/weekly-report");
     assert!(
         body.is_dir() && fsops_read_link(&body).is_none(),
         "本体必须仍是实体目录,不能被链接顶掉"
@@ -145,7 +156,7 @@ fn writes_lock_whose_hash_matches_what_landed_on_disk() {
     assert_eq!(key, "weekly-report");
 
     let actual =
-        project_lock::upstream_folder_hash(&root.join(".agents/skills/weekly-report")).unwrap();
+        project_lock::upstream_folder_hash(&join_rel(&root, ".agents/skills/weekly-report")).unwrap();
     assert_eq!(
         written.computed_hash, actual,
         "lock 里的 hash 必须等于磁盘现算值"
@@ -180,7 +191,7 @@ fn precheck_needs_decision_and_touches_nothing_on_disk() {
     )
     .unwrap();
 
-    let body = root.join(".agents/skills/weekly-report/SKILL.md");
+    let body = join_rel(&root, ".agents/skills/weekly-report/SKILL.md");
     let before_body = read(&body);
     let before_lock = read(&project_lock::lock_path(&root));
 
@@ -214,9 +225,9 @@ fn remove_takes_body_link_and_lock_entry_but_keeps_the_lock_file() {
 
     let outcome = project::remove(&root, "weekly-report").unwrap();
 
-    assert!(!root.join(".agents/skills/weekly-report").exists(), "本体应删除");
+    assert!(!join_rel(&root, ".agents/skills/weekly-report").exists(), "本体应删除");
     assert!(
-        !root.join(".claude/skills/weekly-report").exists(),
+        !join_rel(&root, ".claude/skills/weekly-report").exists(),
         "链接应摘除"
     );
     assert!(
@@ -244,7 +255,7 @@ fn remove_keeps_a_diverged_real_directory_and_reports_it() {
     .unwrap();
 
     // 手工在 claude-code 的位置放一个**实体目录**,内容与本体不同(模拟用户自己的东西)。
-    let squatter = root.join(".claude/skills/weekly-report");
+    let squatter = join_rel(&root, ".claude/skills/weekly-report");
     std::fs::create_dir_all(&squatter).unwrap();
     std::fs::write(squatter.join("SKILL.md"), "这是用户自己写的,不是我们复制的").unwrap();
 
@@ -316,7 +327,7 @@ fn universal_agents_produce_no_link_target() {
     // 对照组:非 universal 的必须有,否则上面那条可能是"永远返回空"的假绿。
     let dirs = project::link_dirs(root, &["claude-code".into()]).unwrap();
     assert_eq!(dirs.len(), 1);
-    assert_eq!(dirs[0].path, root.join(".claude/skills"));
+    assert_eq!(dirs[0].path, join_rel(root, ".claude/skills"));
 }
 
 /// 多个 agent 共用同一个 skillsDir 时按目录合并,不重复建链。
@@ -375,7 +386,7 @@ fn update_precheck_flags_local_edits() {
 
     // 用户手工改了本体。
     std::fs::write(
-        root.join(".agents/skills/weekly-report/SKILL.md"),
+        join_rel(&root, ".agents/skills/weekly-report/SKILL.md"),
         "---\nname: weekly-report\ndescription: 测试用\n---\n我自己改的\n",
     )
     .unwrap();
@@ -410,8 +421,8 @@ fn update_precheck_does_not_cry_wolf_on_an_untouched_skill() {
 #[test]
 fn a_skill_without_a_lock_entry_is_not_reported_as_edited() {
     let (_tmp, root) = project_dir();
-    std::fs::create_dir_all(root.join(".agents/skills/手放的")).unwrap();
-    std::fs::write(root.join(".agents/skills/手放的/SKILL.md"), "x").unwrap();
+    std::fs::create_dir_all(join_rel(&root, ".agents/skills/手放的")).unwrap();
+    std::fs::write(join_rel(&root, ".agents/skills/手放的/SKILL.md"), "x").unwrap();
 
     assert!(!project::has_local_edits(&root, "手放的").unwrap());
 }
