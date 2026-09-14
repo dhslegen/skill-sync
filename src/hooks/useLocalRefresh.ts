@@ -10,8 +10,8 @@
 //
 // 三级刷新(用户 2026-08-04 明确要求全做):
 //   1. 窗口重获焦点 —— 本文件,覆盖"切到编辑器改完切回来"这条主路径;
-//   2. 切换页面 —— 页面组件挂载时 load,由 `refreshes-on-page-switch` 测试钉住,
-//      不再是"靠组件卸载重挂"的巧合;
+//   2. 切换页面 —— 「我的技能」「项目」页组件挂载时 load;商店页的索引由 App 启动拉一次,
+//      切回商店时由本文件补一次只读刷新(0.6.x 对齐:此前点另外两页会刷、点商店不会);
 //   3. 文件系统监听 —— core 侧 watcher,另行接入。
 //   4. 5 分钟只读兜底(0.6.x)—— 覆盖"库里变了"这件前三级都收不到信号的事,
 //      见 `refreshPeriodicallyFor`。顶栏刷新按钮的按页语义见 `refreshManuallyFor`。
@@ -50,6 +50,8 @@ export function refreshLocalFor(page: PageId): void {
     case "store":
       // 已装技能可能在外部被删掉了,回来该显示「获取」而不是「已启用」
       void useInstall.getState().refreshInstalled();
+      // v7.5 起卡片「已在电脑上」读的是本机技能列表(磁盘是真相),只刷记账跟不上外部删改
+      void useMySkills.getState().load();
       break;
     case "projects":
       // v7.3:项目页独立成页之后也要接进级别 1/3——它展示的同样是磁盘上的
@@ -175,6 +177,17 @@ export function useLocalRefresh(): void {
       unlisten?.();
     };
   }, []);
+
+  // 级别 2 的商店那一半(0.6.x):另外两页挂载即 load,商店的索引只在 App 启动时拉一次,
+  // 于是"点另外两页会刷新、点商店不会"。**只在页面真的变成商店时刷**:启动时 App 已经拉过。
+  // ⚠️ 不能写成"跳过首次 effect":开发版 StrictMode 挂载时把 effect 跑两遍,ref 保留,
+  // 第二遍就会当成"切过来了"再拉一次。比较上一页才对双跑免疫。
+  const prevPage = useRef(page);
+  useEffect(() => {
+    if (prevPage.current === page) return;
+    prevPage.current = page;
+    if (page === "store") refreshPeriodicallyFor("store");
+  }, [page]);
 
   // 级别 4:5 分钟只读兜底(0.6.x)。见 `refreshPeriodicallyFor`。
   useEffect(() => {

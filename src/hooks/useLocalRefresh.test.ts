@@ -1,4 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PERIODIC_REFRESH_MS, refreshLocalFor, useLocalRefresh } from "./useLocalRefresh";
@@ -333,5 +334,57 @@ describe("5 分钟只读兜底刷新", () => {
     invoke.mockClear();
     await tick();
     expect(sent()).not.toContain("project_list");
+  });
+});
+
+// 0.6.x(2026-09-14 用户指出):点「我的技能」「项目里的技能」会刷新(页面挂载即 load),
+// 点「技能商店」却不会——它的索引只在启动时拉一次。三页对齐:切进商店页做一次只读刷新。
+describe("切到商店页也刷新(级别 2 对齐)", () => {
+  beforeEach(() => {
+    reset();
+    useStoreIndex.setState({ activeRegistry: "company", activeRepo: null });
+  });
+
+  it("从别页切回商店:非强制检查技能库 + 重读本机技能", async () => {
+    useUi.setState({ page: "mine" });
+    const { unmount } = renderHook(() => useLocalRefresh());
+    invoke.mockClear();
+    act(() => useUi.setState({ page: "store" }));
+    await vi.waitFor(() =>
+      expect(invoke.mock.calls.find(([cmd]) => cmd === "store_index")?.[1]).toMatchObject({ args: { force: false } }),
+    );
+    expect(sent()).toContain("installed_list");
+    unmount();
+  });
+
+  it("启动时停在商店页不重复拉(App 启动那一次已经拉过),StrictMode 双跑 effect 也不拉", async () => {
+    useUi.setState({ page: "store" });
+    const { unmount } = renderHook(() => useLocalRefresh(), { wrapper: StrictMode });
+    await act(async () => {});
+    expect(sent()).not.toContain("store_index");
+    unmount();
+  });
+
+  it("切到别的页不触发商店刷新(那几页自己挂载时会 load)", async () => {
+    useUi.setState({ page: "store" });
+    const { unmount } = renderHook(() => useLocalRefresh());
+    invoke.mockClear();
+    act(() => useUi.setState({ page: "settings" }));
+    await act(async () => {});
+    expect(sent()).not.toContain("store_index");
+    unmount();
+  });
+});
+
+describe("商店页的焦点/文件监听刷新也重读本机技能", () => {
+  beforeEach(reset);
+
+  it("卡片「已在电脑上」读的是本机技能列表,外部删掉之后要跟上", async () => {
+    const spy = vi.fn(async () => {});
+    const real = useMySkills.getState().load;
+    useMySkills.setState({ load: spy });
+    refreshLocalFor("store");
+    expect(spy).toHaveBeenCalledTimes(1);
+    useMySkills.setState({ load: real });
   });
 });

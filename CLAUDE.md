@@ -2462,6 +2462,12 @@ v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
   分开**(那个会装、手动档时整个不跑);窗口 `visibilityState==="hidden"` 或 `isVisible()`
   为假时暂停(两道都查,WebView 对 hide 未必同步报 hidden)。与 scheduler tick 撞同一分钟
   各查一次 head,无害,不协调。
+  🔴 **三页的"切进来就刷新"要对齐**(同日用户指出):「我的技能」「项目」页挂载即 `load()`,
+  商店的索引却只在 App 启动时拉一次,于是点另外两页会转圈、点商店不会。现在
+  `useLocalRefresh` 在页面**变成** `store` 时跑一次 `refreshPeriodicallyFor("store")`
+  (比较上一页,不写"跳过首次 effect"——开发版 StrictMode 挂载双跑会让后者多拉一次,
+  有 StrictMode 包裹的用例钉住);商店的焦点/监听刷新也补上重读本机技能列表
+  (v7.5 起卡片「已在电脑上」读它)。
   🔴 **「X 前刷新」读的是 `StoreIndex.fetched_at`,分支头没变、命中缓存时也要盖成此刻**
   (`store::refresh_index`,只改返回值不写回缓存文件;离线降级那一档不盖)。
   第一版兜底上线后真机当场抓到:每 5 分钟都在查,界面却一直说「1 小时前刷新」——
