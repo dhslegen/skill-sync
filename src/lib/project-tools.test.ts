@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { applyGroupToggle, groupProjectTools, type ProjectToolMember } from "@/lib/project-tools";
+import type { ProjectGroupView, ProjectSkillView } from "@/lib/ipc";
+import { applyGroupToggle, groupProjectTools, projectHasSkill, type ProjectToolMember } from "@/lib/project-tools";
 
 const m = (agent: string, skillsDir: string | undefined, on = false, detected = true): ProjectToolMember => ({
   agent,
@@ -76,5 +77,23 @@ describe("applyGroupToggle", () => {
       "trae-cn",
       "trae",
     ]);
+  });
+});
+
+describe("projectHasSkill", () => {
+  const sk = (over: Partial<ProjectSkillView>): ProjectSkillView => ({
+    key: "vercel-react-best-practices", displayName: "x", description: "", source: "o/r", sourceType: "github",
+    dirSlug: "react-best-practices", registryId: "plaza", repo: "o/r", updatable: true, agents: [], bodyPresent: true,
+    ...over,
+  });
+  const g = (skills: ProjectSkillView[]): ProjectGroupView => ({ path: "/p", folderName: "p", missing: false, readOnly: false, skills });
+
+  it("按仓库目录名匹配,不按 lock 的 key", () => {
+    expect(projectHasSkill(g([sk({})]), "react-best-practices")).toBe(true);
+    expect(projectHasSkill(g([sk({})]), "vercel-react-best-practices")).toBe(false);
+  });
+
+  it("🔴 lock 里有记录但本体被删掉了,不算装着", () => {
+    expect(projectHasSkill(g([sk({ bodyPresent: false })]), "react-best-practices")).toBe(false);
   });
 });

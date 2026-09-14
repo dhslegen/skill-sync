@@ -53,6 +53,9 @@ export function ProjectSections() {
   const loading = useProjects((s) => s.loading);
   const load = useProjects((s) => s.load);
   const notice = useProjects((s) => s.notice);
+  // 更新/移除/重新装回的失败此前只写进 store,这一页没有任何地方读它——点了没反应
+  // (0.6.x 加「重新装回」时补上,CLAUDE.md「错误被写进状态但没有渲染点」同一条)。
+  const error = useProjects((s) => s.error);
   // 终审 M-3:页头的搜索框此前是「我的技能」整页共用的单例,而这个组件完全不读
   // `useMineSearch`——用户切到这个子页签往里敲字,界面一个字都不会变,是一颗死控件。
   // ⚠️ **v7.3 独立成页之后这个坑会原样复活**:`Toolbar.tsx` 的搜索框条件必须同时
@@ -83,6 +86,9 @@ export function ProjectSections() {
       )}
 
       {notice && <p className="mt-2 text-[11.5px] text-text-2">{notice}</p>}
+      {error && (
+        <p className="mt-2 text-[11.5px] text-[#c0392b] dark:text-[#e0705f]">{error.message}</p>
+      )}
     </section>
   );
 }
@@ -181,6 +187,8 @@ function ProjectSkillRow({
   skill: ProjectSkillView;
 }) {
   const update = useProjects((s) => s.update);
+  const install = useProjects((s) => s.install);
+  const installing = useProjects((s) => s.installing);
   const remove = useProjects((s) => s.remove);
   const busyKey = useProjects((s) => s.busyKey);
   const pickableAgents = useProjects((s) => s.pickableAgents);
@@ -195,7 +203,26 @@ function ProjectSkillRow({
 
   const [expanded, setExpanded] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
-  const busy = busyKey === skill.key;
+  // 🔴 lock 里还有记录、本体却被用户在文件管理器里删掉了(0.6.x 真机)。这一档不摆
+  // 「更新」与工具勾(勾一下必报「本体不在」,刷新多少次都一样),给两个出口:
+  // 「重新装回」(按账上坐标重装)与「从记录里去掉」(改 lock,由用户点了才改)。
+  const gone = skill.bodyPresent === false;
+  const busy =
+    busyKey === skill.key ||
+    (installing?.projectPath === projectPath && installing.dirSlug === skill.dirSlug);
+
+  const runReinstall = () =>
+    install({
+      projectPath,
+      dirSlug: skill.dirSlug ?? skill.key,
+      // 工具关联原样留空:本体不在时反推不出"当初链到哪些工具";还挂着的断链会随
+      // 本体回来自然接上,其余装回之后在展开区里再勾。
+      agentIds: [],
+      registryId: skill.registryId ?? undefined,
+      repo: skill.repo ?? undefined,
+      confirmedReplace: false,
+      force: false,
+    });
 
   const runUpdate = async () => {
     // 🔴 没有 agentIds:`project_skill_update` 早在任务 3 就改成从磁盘反推
@@ -270,9 +297,18 @@ function ProjectSkillRow({
     void setAgents(projectPath, skill.key, applyGroupToggle(currentAgents, group.agents, next));
   };
 
-  const menuItems: SkillRowMenuItem[] = [
-    { key: "remove", label: t("mine.projectRemove"), onClick: () => setConfirmingRemove(true) },
-  ];
+  const menuItems: SkillRowMenuItem[] = gone
+    ? [
+        {
+          key: "forget",
+          label: t("mine.projectForgetSkill"),
+          title: t("mine.projectForgetSkillHint"),
+          // 不走两步确认:那句「文件会被直接删除,找不回来」在这里是假话——本体已经不在,
+          // core 只摘断链、删 lock 条目(内容不同的实体目录照旧留着并回报)。
+          onClick: () => void remove(projectPath, skill.key, true),
+        },
+      ]
+    : [{ key: "remove", label: t("mine.projectRemove"), onClick: () => setConfirmingRemove(true) }];
 
   return (
     <div data-testid={`prow-${skill.key}`} className="border-t border-border first:border-t-0">
@@ -291,9 +327,15 @@ function ProjectSkillRow({
             <div className="truncate text-[13px] font-[550] group-hover:text-accent">
               {skill.displayName}
             </div>
-            <div className="truncate text-[11.5px] text-text-3">
-              {skill.description || t("mine.source", { library: skill.source })}
-            </div>
+            {gone ? (
+              <div className="truncate text-[11.5px] text-[#c0392b] dark:text-[#e0705f]">
+                {t("mine.projectBodyGone")}
+              </div>
+            ) : (
+              <div className="truncate text-[11.5px] text-text-3">
+                {skill.description || t("mine.source", { library: skill.source })}
+              </div>
+            )}
           </div>
         </button>
 
@@ -326,7 +368,17 @@ function ProjectSkillRow({
           <div className="flex flex-none items-center gap-1.5">
             {/* 来源还原不了的(local/node_modules/well-known)**不摆更新按钮**
                 ——摆一个必然报错的按钮就是在耍用户(M6「绑不上就不摆」同款) */}
-            {skill.updatable && (
+            {gone && skill.updatable && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void runReinstall()}
+                className="h-6 shrink-0 rounded-ctl border border-border px-2 text-[11.5px] font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-60"
+              >
+                {t("mine.projectReinstall")}
+              </button>
+            )}
+            {!gone && skill.updatable && (
               <button
                 type="button"
                 disabled={busy}
@@ -347,7 +399,9 @@ function ProjectSkillRow({
               是两件不同的事,不能合并成同一句"这台机器上没有能改选的工具"
               ——前者是假话。`pickableAgents === null` 单独判,且不拦已关联的
               工具继续显示(仍然可以取消勾选,只是没法新增)。 */}
-          {pickableAgents === null ? (
+          {gone ? (
+            <p className="text-[11.5px] text-text-3">{t("mine.projectBodyGoneTools")}</p>
+          ) : pickableAgents === null ? (
             <>
               <p className="text-[11.5px] text-text-3">{t("mine.projectToolsUnknown")}</p>
               {items.length > 0 && (

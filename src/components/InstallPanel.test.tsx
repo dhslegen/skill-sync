@@ -148,7 +148,7 @@ describe("装到项目的确认条", () => {
             {
               key: "weekly-report", displayName: "周报生成", description: "",
               source: "skills/skills", sourceType: "git", dirSlug: "weekly-report",
-              registryId: "company", repo: "skills/skills", updatable: true,
+              registryId: "company", repo: "skills/skills", updatable: true, bodyPresent: true,
             },
           ],
         },
@@ -178,7 +178,7 @@ describe("装到项目的确认条", () => {
         skills: [{
           key: "weekly-report", displayName: "周报生成", description: "",
           source: "skills/skills", sourceType: "git", dirSlug: "weekly-report",
-          registryId: "company", repo: "skills/skills", updatable: true,
+          registryId: "company", repo: "skills/skills", updatable: true, bodyPresent: true,
         }],
       },
     ];
@@ -299,7 +299,7 @@ describe("最近的项目", () => {
           {
             key: "weekly-report", displayName: "周报生成", description: "",
             source: "skills/skills", sourceType: "git", dirSlug: "weekly-report",
-            registryId: "company", repo: "skills/skills", updatable: true,
+            registryId: "company", repo: "skills/skills", updatable: true, bodyPresent: true,
           },
         ],
       },
@@ -329,7 +329,7 @@ describe("最近的项目", () => {
         skills: [{
           key: "weekly-report", displayName: "周报生成", description: "",
           source: "skills/skills", sourceType: "git", dirSlug: "weekly-report",
-          registryId: "company", repo: "skills/skills", updatable: true,
+          registryId: "company", repo: "skills/skills", updatable: true, bodyPresent: true,
         }],
       },
     ];

@@ -1338,6 +1338,15 @@ v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
   - **换技能看详情时必须清掉 notice 与 confirm**:`dismissNotice` 此前定义了却
     一处没调用,提示永久留着、说的是另一个技能的事;待确认条不清更糟——
     点「装到这里」装的是上一个技能。
+- 🔴 **项目里的技能以 lock 记录成行,但本体可以被用户在文件管理器里直接删掉**(0.6.x,
+  2026-09-14 真机):`ProjectSkillView.bodyPresent` 如实报告;`false` 时那一行标「文件已不在
+  这个项目里」,不摆「更新」与工具勾(勾一下必报 `FS_MISSING_SKILL`「请刷新后重试」,刷新
+  多少次都一样——死循环),只给「重新装回」(`install`,账上坐标、`agentIds: []`、不带 force)
+  与「从记录里去掉」(`remove(confirmed)`,不走两步确认——「文件会被直接删除」在这里是假话,
+  core 只摘断链、删 lock 条目,`tests/project_flow.rs` 钉住本体缺失时照样能清)。用户拍板
+  **不静默改 lock**。"这个项目装着这个技能吗"统一走 `lib/project-tools.ts::projectHasSkill`
+  (仓库目录名 ∧ 本体在),三处共用:详情面板「项目里」、最近项目菜单「已装」、确认条「覆盖重装」。
+  顺带补上项目页 `useProjects.error` 的渲染点——此前更新/移除失败在这一页零反馈。
 - **详情面板的「项目里」是零新 IPC 的派生视图**(`WhereBlocks.tsx::ProjectsBlock`,
   v7.6 任务 2 起;此前是独立组件 `InstalledScopes.tsx`,已删除):数据来自
   `project_list`。位置是**一等信息**(同 Steam 的多库文件夹在游戏详情页写
@@ -2453,6 +2462,10 @@ v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
   分开**(那个会装、手动档时整个不跑);窗口 `visibilityState==="hidden"` 或 `isVisible()`
   为假时暂停(两道都查,WebView 对 hide 未必同步报 hidden)。与 scheduler tick 撞同一分钟
   各查一次 head,无害,不协调。
+  🔴 **「X 前刷新」读的是 `StoreIndex.fetched_at`,分支头没变、命中缓存时也要盖成此刻**
+  (`store::refresh_index`,只改返回值不写回缓存文件;离线降级那一档不盖)。
+  第一版兜底上线后真机当场抓到:每 5 分钟都在查,界面却一直说「1 小时前刷新」——
+  那个字段原来只在重新下载压缩包时才变,而"刷新"对用户的意思是"确认过是最新的"。
   ⚠️ **登记的既有缺口(未修)**:①「我的技能」的 `hasUpdate` 比对的是**商店页此刻选中**的
   那个库的索引(`useStoreIndex.index`),商店切到别的库后「我的技能」的更新判断跟着漂;
   ②`attachReportListener` 在 scheduler 检查完成后不刷新项目页;③文件监听不含项目目录

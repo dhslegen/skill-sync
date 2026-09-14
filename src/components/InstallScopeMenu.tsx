@@ -6,6 +6,7 @@ import { Icon } from "@/components/Icon";
 import { useFloatingMenu , FLOATING_MENU_Z } from "@/hooks/useFloatingMenu";
 import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
+import { projectHasSkill } from "@/lib/project-tools";
 import { recentProjects, useProjects } from "@/store/project";
 
 /**
@@ -159,7 +160,7 @@ export function InstallScopeMenu({
                   // 点它照样进确认条,在那里给「覆盖重装」。第一版做成 disabled,
                   // 把"已经装过"变成了死路。
                   // 判据是仓库目录名而不是安装键——两者在广场技能里经常不同。
-                  const already = (g.skills ?? []).some((s) => s.dirSlug === dirSlug);
+                  const already = projectHasSkill(g, dirSlug);
                   return (
                     <button
                       key={g.path}

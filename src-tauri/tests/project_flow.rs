@@ -213,6 +213,27 @@ fn set_agents_refuses_to_run_against_a_missing_body() {
     );
 }
 
+/// 本体被用户在文件管理器里删掉之后,「从记录里去掉」走的就是 `remove`
+/// (0.6.x,2026-09-14 真机):必须照样清掉 lock 条目与断掉的链接,不能因为本体
+/// 不在就报错——那样那一行永远去不掉。
+#[test]
+fn remove_still_clears_the_record_and_dangling_links_when_the_body_is_gone() {
+    let (_tmp, root) = project_with_skill("demo", "weekly-report", &["claude-code"]);
+    let link = root.join(".claude").join("skills").join("weekly-report");
+    std::fs::remove_dir_all(root.join(".agents").join("skills").join("weekly-report")).unwrap();
+    assert!(std::fs::symlink_metadata(&link).is_ok(), "前提:链接还在,只是断了");
+
+    let done = project::remove(&root, "weekly-report").unwrap();
+
+    assert!(!done.body_removed);
+    assert!(std::fs::symlink_metadata(&link).is_err(), "断掉的链接一并摘掉");
+    let lock = project_lock::lock_path(&root);
+    assert!(
+        project_lock::read_entries(&lock).iter().all(|(k, _)| k != "weekly-report"),
+        "lock 里的记录去掉了"
+    );
+}
+
 /// Windows 降级链是 `[Junction, Copy]`,junction 建链失败时留下的就是**实体目录**
 /// (对齐 `remove` 处理"降级复制副本"的既有姿态)。这份副本如果与本体内容相同,
 /// 必须能被摘掉——否则:①用户取消勾选该工具没有任何效果,技能继续对它生效;

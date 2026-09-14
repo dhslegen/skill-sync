@@ -458,7 +458,7 @@ describe("DetailPanel(本地详情模式)", () => {
             {
               key: "weekly-report", displayName: "周报生成", description: "",
               source: "skills/skills", sourceType: "git", dirSlug: "weekly-report",
-              registryId: "company", repo: "skills/skills", updatable: true, agents: [],
+              registryId: "company", repo: "skills/skills", updatable: true, agents: [], bodyPresent: true,
             },
           ],
         },

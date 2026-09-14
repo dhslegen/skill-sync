@@ -4,7 +4,7 @@
 // 项目级的真相在各项目根的 skills-lock.json 里(与 npx skills 共用),
 // 两者的记账、判定、可做的操作都不一样,合成一个 store 只会让两边互相牵制。
 import { create } from "zustand";
-import { applyGroupToggle } from "@/lib/project-tools";
+import { applyGroupToggle, projectHasSkill } from "@/lib/project-tools";
 
 import { t } from "@/i18n";
 import {
@@ -288,7 +288,7 @@ export const useProjects = create<ProjectState>((set, get) => ({
     // (下压缩包、建索引)才被告知"已经有了"。判据是仓库目录名,不是安装键
     // ——两者在广场技能里经常不同。
     const already = get().groups.some(
-      (g) => g.path === projectPath && (g.skills ?? []).some((s) => s.dirSlug === dirSlug),
+      (g) => g.path === projectPath && projectHasSkill(g, dirSlug),
     );
 
     set({

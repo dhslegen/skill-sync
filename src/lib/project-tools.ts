@@ -16,6 +16,19 @@
 // 全局那一侧 Trae 与 Trae CN 是两个目录,不受影响;全局只有 Zencoder/Zenflow 共用
 // 目录,用户拍板本次不修(同形状欠账,已登记)。
 
+import type { ProjectGroupView } from "@/lib/ipc";
+
+/**
+ * 这个项目眼下装着这个技能吗——按**仓库目录名**匹配(不是 lock 的 key),且**本体必须在磁盘上**。
+ *
+ * 🔴 三处共用,别各写一份(0.6.x,2026-09-14 真机):详情面板「项目里」、最近项目菜单的「已装」、
+ * 确认条的「覆盖重装」。用户在文件管理器里删掉本体后 lock 记录还在,只看记录的话三处都会
+ * 说"已经装在这里了",而那个项目里其实什么都没有(磁盘是真相,记录只回答"从哪来")。
+ */
+export function projectHasSkill(group: ProjectGroupView, dirSlug: string): boolean {
+  return (group.skills ?? []).some((s) => s.dirSlug === dirSlug && s.bodyPresent !== false);
+}
+
 /** 一个工具在"项目里"这个语境下的原始信息。 */
 export interface ProjectToolMember {
   agent: string;

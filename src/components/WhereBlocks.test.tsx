@@ -458,7 +458,7 @@ function projectWith(dirSlug: string | null, path = "/w/我的项目", folderNam
           {
             key: "k", displayName: "周报生成", description: "",
             source: "skills/skills", sourceType: "git", dirSlug,
-            registryId: "company", repo: "skills/skills", updatable: true, agents: [],
+            registryId: "company", repo: "skills/skills", updatable: true, agents: [], bodyPresent: true,
           },
         ]
       : [],
@@ -498,7 +498,7 @@ describe("WhereBlocks · 块 4「项目里」(Q46-A)", () => {
               key: "vercel-react-best-practices", displayName: "React 最佳实践", description: "",
               source: "vercel-labs/agent-skills", sourceType: "github",
               dirSlug: "react-best-practices", registryId: "plaza",
-              repo: "vercel-labs/agent-skills", updatable: true, agents: [],
+              repo: "vercel-labs/agent-skills", updatable: true, agents: [], bodyPresent: true,
             },
           ],
         },
@@ -514,6 +514,13 @@ describe("WhereBlocks · 块 4「项目里」(Q46-A)", () => {
     useProjects.setState({
       groups: [{ ...projectWith("weekly-report", "/w/没了", "没了"), missing: true }],
     });
+    renderExpanded(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
+    expect(screen.queryByText("项目里")).not.toBeInTheDocument();
+  });
+
+  it("🔴 lock 里还有记录、本体被删掉的项目不列(0.6.x 真机)——那里其实什么都没有", () => {
+    const p = projectWith("weekly-report");
+    useProjects.setState({ groups: [{ ...p, skills: p.skills.map((k) => ({ ...k, bodyPresent: false })) }] });
     renderExpanded(<WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />);
     expect(screen.queryByText("项目里")).not.toBeInTheDocument();
   });

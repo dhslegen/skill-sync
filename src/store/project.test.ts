@@ -234,7 +234,7 @@ describe("装到项目前的确认", () => {
               dirSlug: "react-best-practices",
               registryId: "plaza",
               repo: "o/r",
-              updatable: true,
+              updatable: true, bodyPresent: true,
               agents: [],
             },
           ],

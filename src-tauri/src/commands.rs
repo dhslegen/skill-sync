@@ -2627,6 +2627,13 @@ pub struct ProjectSkillView {
     /// src-tauri"这条更优先。补的是最小只读字段,不新增 command:
     /// `project_group` 里对每条记账调一次已有的纯函数 `project::current_agents`。
     pub agents: Vec<String>,
+    /// 本体(`.agents/skills/<key>`)此刻在不在磁盘上(0.6.x,2026-09-14 真机)。
+    ///
+    /// 行由 lock 记录撑着,而用户可以在文件管理器里直接删掉本体。不带这个字段时,
+    /// 那一行照样摆「更新」与工具勾,勾一下报「本体不在项目里了,请刷新后重试」,
+    /// 刷新多少次都一样——死循环。**磁盘是真相,记录只回答"从哪来"**:界面据此标出
+    /// 缺失,给「重新装回」与「从记录里去掉」两个出口,不静默改 lock。
+    pub body_present: bool,
 }
 
 /// 从 lock 的 `skillPath` 推仓库目录名:`skills/react-best-practices/SKILL.md`
@@ -2747,7 +2754,9 @@ fn project_group(
             // 读不出来(本体不在了/IO 失败)就给空名单,不拦整个列表——这只是
             // 事后改选 picker 的初始勾选,读不到就从"全不勾"起步,不算错误。
             let agents = project::current_agents(root, &key).unwrap_or_default();
+            let body_present = project::body_dir(root, &key).is_dir();
             ProjectSkillView {
+                body_present,
                 display_name: parsed
                     .as_ref()
                     .map(|p| p.name.clone())
@@ -3156,6 +3165,42 @@ mod tests {
         // 不只是断言值(本项目记着的空转模式②:只查"存在"拦不住拼错)。
         let json = serde_json::to_value(&group.skills[0]).unwrap();
         assert_eq!(json["agents"][0], "claude-code");
+    }
+
+    /// 本体被删掉之后,视图如实说"不在了"(驼峰键 `bodyPresent`,正反两面都断言)。
+    #[test]
+    fn project_group_view_reports_a_body_deleted_behind_our_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let payload = crate::core::installer::SkillPayload::new().with_file(
+            "SKILL.md",
+            "---\nname: weekly-report\ndescription: 测试用\n---\n\n正文\n".to_string(),
+        );
+        let entry = crate::core::project_lock::LocalEntry {
+            source: "skills/skills".into(),
+            source_url: None,
+            git_ref: None,
+            source_type: "git".into(),
+            skill_path: Some("skills/weekly-report/SKILL.md".into()),
+            computed_hash: "x".into(),
+        };
+        project::install(root, "weekly-report", &payload, &[], &entry).unwrap();
+        let sources = acquire::BindingSources {
+            builtin_base_url: None,
+            builtin_repo: None,
+            builtin_extra: &[],
+            custom: &[],
+            plaza_repos: &[],
+        };
+
+        let before = serde_json::to_value(&project_group(root, &sources).skills[0]).unwrap();
+        assert_eq!(before["bodyPresent"], true);
+
+        std::fs::remove_dir_all(project::body_dir(root, "weekly-report")).unwrap();
+        let group = project_group(root, &sources);
+        assert_eq!(group.skills.len(), 1, "lock 里还有记录,这一行照样在");
+        let after = serde_json::to_value(&group.skills[0]).unwrap();
+        assert_eq!(after["bodyPresent"], false);
     }
 
         /// `skillPath` → 仓库目录名的推导。

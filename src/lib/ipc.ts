@@ -980,6 +980,11 @@ export interface ProjectSkillView {
    * shown"同一条纪律。
    */
   agents: string[];
+  /**
+   * 本体(`.agents/skills/<key>`)此刻在不在磁盘上。`false` = lock 里还有记录、文件已被
+   * 删掉——界面标出缺失,只给「重新装回」与「从记录里去掉」。
+   */
+  bodyPresent: boolean;
 }
 
 /** 一个项目及它里面的技能。 */

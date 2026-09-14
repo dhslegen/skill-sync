@@ -41,6 +41,7 @@ function skill(over: Partial<ProjectSkillView> = {}): ProjectSkillView {
     repo: "vercel-labs/agent-skills",
     updatable: true,
     agents: [],
+    bodyPresent: true,
     ...over,
   };
 }
@@ -245,6 +246,82 @@ describe("项目分区", () => {
 
     // core 刻意不删内容不一样的实体目录,界面必须说出来,不能装作全清干净了
     await screen.findByText(/有 1 个位置没有清理/);
+  });
+});
+
+// 0.6.x(2026-09-14 真机):用户在文件管理器里删掉了项目里的技能本体,lock 记录还在。
+// 拍板「标出缺失 + 两个动作」:磁盘是真相,记录也不被静默改掉。
+describe("项目里的技能本体被删掉了", () => {
+  const gone = () => group({ skills: [skill({ bodyPresent: false })] });
+
+  it("标出文件已不在,不摆「更新」,主按钮是「重新装回」", async () => {
+    seed([gone()]);
+    render(<ProjectSections />);
+    const row = await screen.findByTestId(`prow-${skill().key}`);
+    expect(within(row).getByText("文件已不在这个项目里")).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: "更新" })).toBeNull();
+    expect(within(row).getByRole("button", { name: "重新装回" })).toBeInTheDocument();
+  });
+
+  it("「重新装回」按账上坐标重装进这个项目,不带 force(本体不在,precheck 自然是全新安装)", async () => {
+    seed([gone()]);
+    render(<ProjectSections />);
+    const row = await screen.findByTestId(`prow-${skill().key}`);
+    await userEvent.click(within(row).getByRole("button", { name: "重新装回" }));
+    await waitFor(() => expect(lastInvoke("project_skill_install")).toBeTruthy());
+    expect(lastInvoke("project_skill_install")!.args).toMatchObject({
+      projectPath: "/w/我的项目",
+      dirSlug: "react-best-practices",
+      registryId: "plaza",
+      repo: "vercel-labs/agent-skills",
+      force: false,
+    });
+    expect(invoke.mock.calls.find(([cmd]) => cmd === "project_skill_update")).toBeUndefined();
+  });
+
+  it("来源还原不了时不摆「重新装回」,只剩「从记录里去掉」", async () => {
+    seed([group({ skills: [skill({ bodyPresent: false, updatable: false })] })]);
+    render(<ProjectSections />);
+    const row = await screen.findByTestId(`prow-${skill().key}`);
+    expect(within(row).queryByRole("button", { name: "重新装回" })).toBeNull();
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
+    expect(screen.getByRole("menuitem", { name: "从记录里去掉" })).toBeInTheDocument();
+  });
+
+  it("「从记录里去掉」直接走移除(带确认结果),不弹「文件会被直接删除」——根本没有文件可删", async () => {
+    seed([gone()]);
+    render(<ProjectSections />);
+    const row = await screen.findByTestId(`prow-${skill().key}`);
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
+    expect(screen.queryByRole("menuitem", { name: "移除" })).toBeNull();
+    await userEvent.click(screen.getByRole("menuitem", { name: "从记录里去掉" }));
+    await waitFor(() => {
+      const call = invoke.mock.calls.find(([cmd]) => cmd === "project_skill_remove");
+      expect((call?.[1] as { confirmed: boolean } | undefined)?.confirmed).toBe(true);
+    });
+    expect(screen.queryByText(/找不回来/)).toBeNull();
+  });
+
+  it("展开时不摆工具勾(勾了必然报错),说明装回之后再选", async () => {
+    seed([gone()]);
+    render(<ProjectSections />);
+    const row = await screen.findByTestId(`prow-${skill().key}`);
+    await userEvent.click(within(row).getByTestId(`prow-${skill().key}-body`));
+    expect(within(row).queryAllByRole("checkbox")).toHaveLength(0);
+    expect(within(row).getByText("装回之后再选让哪些工具用它")).toBeInTheDocument();
+  });
+
+  it("🔴 失败要有渲染点:重新装回报错时,项目页上看得到", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "project_list") return [gone()];
+      if (cmd === "agents_detected") return { agents: AGENT_FIXTURES };
+      if (cmd === "project_skill_install") throw { code: "NET_X", message: "连不上技能库" };
+      return null;
+    });
+    render(<ProjectSections />);
+    const row = await screen.findByTestId(`prow-${skill().key}`);
+    await userEvent.click(within(row).getByRole("button", { name: "重新装回" }));
+    expect(await screen.findByText(/连不上技能库/)).toBeInTheDocument();
   });
 });
 

@@ -10,6 +10,7 @@ import {
   Wrench,
   type LucideIcon,
 } from "lucide-react";
+import { projectHasSkill } from "@/lib/project-tools";
 import { useEffect, useMemo, useState } from "react";
 
 import { Icon } from "@/components/Icon";
@@ -504,7 +505,7 @@ function ProjectsBlock({ skill }: { skill: InstalledSkillView }) {
   // store 里的说明,`InstalledScopes` 当年就是这么写的)。
   const inProjects = useMemo(
     () =>
-      groups.filter((g) => !g.missing && (g.skills ?? []).some((s) => s.dirSlug === skill.dirSlug)),
+      groups.filter((g) => !g.missing && projectHasSkill(g, skill.dirSlug)),
     [groups, skill.dirSlug],
   );
 
