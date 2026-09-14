@@ -22,6 +22,7 @@ import { listenLocalSkillsChanged } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useMySkills } from "@/store/my-skills";
 import { useProjects } from "@/store/project";
+import { useStoreIndex } from "@/store/store-index";
 import { useUi, type PageId } from "@/store/ui";
 
 /** 按页刷新本地技能相关的状态。导出供 level 3 的文件监听复用。 */
@@ -56,6 +57,44 @@ export function refreshLocalFor(page: PageId): void {
       break;
     case "settings":
       // 设置页不展示技能,无需刷新
+      break;
+  }
+}
+
+/**
+ * 顶栏刷新按钮:用户**明确要求**重新获取当前页展示的东西(0.6.x,2026-09-14 用户拍板
+ * 「每页各自的语义」)。与 `refreshLocalFor`(被动、只读本地)的差别是它可以联网、可以
+ * 绕过节流——用户按下了按钮,就不该被"一小时内查过了"挡回去。
+ *
+ * - `store`:强制重建当前技能库索引(M7 那个「缓存挡住新字段」的逃生口就是这一下),
+ *   顺带重读已装状态。广场搜索态不走这里(Toolbar 按当前词重新提交搜索)。
+ * - `mine`:先重新扫描本地,再用非强制方式检查库里有没有新版(head 没变就零下载),
+ *   并对「可分享到」区的外源**不看节流**逐个查一次。
+ *   ⚠️ 「有更新」比对的是商店页此刻选中的那个技能库索引(`hasUpdate` 读
+ *   `useStoreIndex.index`)——既有耦合,这里只是如实刷新它,不加深也不拆。
+ * - `projects`:重读项目文件夹。
+ * - `settings`:没有按钮,不会走到。
+ */
+export function refreshManuallyFor(page: PageId): void {
+  switch (page) {
+    case "store":
+      void useStoreIndex.getState().load(true);
+      void useInstall.getState().refreshInstalled();
+      break;
+    case "mine":
+      void (async () => {
+        // 与 `refreshLocalFor` 同一个理由链式等待:外源检查读的是 `list` 同步快照
+        await Promise.all([useMySkills.getState().load(), useStoreIndex.getState().load(false)]);
+        const shareable = (useMySkills.getState().list ?? [])
+          .filter((s) => s.section === "shareable")
+          .map((s) => s.dirSlug);
+        await useMySkills.getState().ensureShareableIndexes(shareable);
+      })();
+      break;
+    case "projects":
+      void useProjects.getState().load();
+      break;
+    case "settings":
       break;
   }
 }

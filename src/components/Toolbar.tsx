@@ -12,10 +12,25 @@ import {
   useAppearance,
   type Accent,
 } from "@/store/appearance";
+import { refreshManuallyFor } from "@/hooks/useLocalRefresh";
 import { useMineSearch } from "@/store/mine-search";
+import { useMySkills } from "@/store/my-skills";
+import { useProjects } from "@/store/project";
 import { usePlaza } from "@/store/plaza";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi, type PageId } from "@/store/ui";
+
+/**
+ * 刷新按钮的名字说清**这一页**刷的是什么(0.6.x 用户拍板:同一个图标在三页做同一件事
+ * 是不诚实的)。设置页没有可刷新的内容,不摆按钮,所以这里没有它。
+ * 商店页那一句同时覆盖广场搜索态(重新搜一次拿到的也是"技能列表"),顶栏控件集合守卫
+ * 要求两档 aria-label 相同。
+ */
+const REFRESH_LABEL: Record<Exclude<PageId, "settings">, MessageKey> = {
+  store: "toolbar.refreshStore",
+  mine: "toolbar.refreshMine",
+  projects: "toolbar.refreshProjects",
+};
 
 const TITLES: Record<PageId, MessageKey> = {
   store: "nav.store",
@@ -33,7 +48,7 @@ const TITLES: Record<PageId, MessageKey> = {
  */
 export function Toolbar() {
   const page = useUi((s) => s.page);
-  const { query, setQuery, load, status, activeRegistry, activeRepo } = useStoreIndex();
+  const { query, setQuery, status, activeRegistry, activeRepo } = useStoreIndex();
   const { mode, prefersDark, accent, setAccent, toggleTheme } = useAppearance();
   const dark = resolveTheme(mode, prefersDark) === "dark";
 
@@ -55,6 +70,17 @@ export function Toolbar() {
   // query/setQuery——与上面 store/广场那对 isPlazaSearch 分支同一个先例
   // (`store/mine-search.ts` 模块头)。纯本地过滤,零网络,不传 onSubmit
   // (回车没有额外副作用,与公司技能库那一档同款)。
+  const mineLoading = useMySkills((s) => s.loading);
+  const projectsLoading = useProjects((s) => s.loading);
+  // 转圈跟着**这一页自己**在读的东西走,不是一律看商店索引
+  const spinning =
+    page === "store"
+      ? isPlazaSearch
+        ? plazaStatus === "loading"
+        : status === "loading"
+      : page === "mine"
+        ? mineLoading
+        : page === "projects" && projectsLoading;
   const mineQuery = useMineSearch((s) => s.query);
   const setMineQuery = useMineSearch((s) => s.setQuery);
 
@@ -108,16 +134,18 @@ export function Toolbar() {
       </div>
 
       <IconButton label={t("toolbar.theme")} onClick={toggleTheme} icon={dark ? Moon : Sun} />
-      <IconButton
-        label={t("toolbar.refresh")}
-        // 广场搜索态没有"索引"可刷新(它是搜索态,不是浏览态):按当前查询词
-        // 重新提交一次搜索,与回车走同一个入口。
-        // ⚠️ 这里以前写的是 `setPlazaQuery(plazaQuery)`,靠"输入即触发"顺带发请求;
-        // 改成显式触发之后那句话会**静默失效**(设了个同值的 query,什么都不发生)。
-        onClick={() => (isPlazaSearch ? submitPlazaSearch() : load(true))}
-        icon={RefreshCw}
-        spinning={isPlazaSearch ? plazaStatus === "loading" : status === "loading"}
-      />
+      {page !== "settings" && (
+        <IconButton
+          label={t(REFRESH_LABEL[page])}
+          // 广场搜索态没有"索引"可刷新(它是搜索态,不是浏览态):按当前查询词
+          // 重新提交一次搜索,与回车走同一个入口。
+          // ⚠️ 这里以前写的是 `setPlazaQuery(plazaQuery)`,靠"输入即触发"顺带发请求;
+          // 改成显式触发之后那句话会**静默失效**(设了个同值的 query,什么都不发生)。
+          onClick={() => (page === "store" && isPlazaSearch ? submitPlazaSearch() : refreshManuallyFor(page))}
+          icon={RefreshCw}
+          spinning={spinning}
+        />
+      )}
     </div>
   );
 }

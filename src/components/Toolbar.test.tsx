@@ -1,9 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Toolbar } from "./Toolbar";
+import { useInstall } from "@/store/install";
 import { useMineSearch } from "@/store/mine-search";
+import { useMySkills } from "@/store/my-skills";
+import { useProjects } from "@/store/project";
 import { usePlaza } from "@/store/plaza";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
@@ -114,7 +117,7 @@ describe("Toolbar 搜索框在技能广场搜索态的接线(M9 任务 5)", () =
     usePlaza.setState({ submitSearch, query: "react" });
     render(<Toolbar />);
 
-    fireEvent.click(screen.getByRole("button", { name: "重新获取" }));
+    fireEvent.click(screen.getByRole("button", { name: "重新获取技能列表" }));
     expect(submitSearch).toHaveBeenCalledTimes(1);
   });
 
@@ -122,7 +125,7 @@ describe("Toolbar 搜索框在技能广场搜索态的接线(M9 任务 5)", () =
     useStoreIndex.setState({ activeRegistry: "plaza", activeRepo: null, status: "ready" });
     usePlaza.setState({ status: "loading" });
     render(<Toolbar />);
-    const refresh = screen.getByRole("button", { name: "重新获取" });
+    const refresh = screen.getByRole("button", { name: "重新获取技能列表" });
     expect(refresh.querySelector("svg")?.getAttribute("class")).toContain("animate-spin");
   });
 });
@@ -153,5 +156,103 @@ describe("Toolbar 的「我的技能」页搜索框(v7 任务 7)", () => {
     // 不抛错、不改变任何其他 store 的状态即为通过
     fireEvent.keyDown(input, { key: "Enter" });
     expect(useMineSearch.getState().query).toBe("周报");
+  });
+});
+
+// 0.6.x(2026-09-14 用户拍板「每页各自的语义」):同一个图标在三页做同一件事是不诚实的。
+// 每页刷新自己展示的东西,名字说清刷的是什么;设置页不展示可刷新的内容,不摆按钮。
+describe("Toolbar 刷新按钮按页各自的语义", () => {
+  beforeEach(reset);
+
+  const REAL = {
+    storeLoad: useStoreIndex.getState().load,
+    refreshInstalled: useInstall.getState().refreshInstalled,
+    mineLoad: useMySkills.getState().load,
+    ensure: useMySkills.getState().ensureShareableIndexes,
+    projectsLoad: useProjects.getState().load,
+  };
+  function spies() {
+    const s = {
+      storeLoad: vi.fn(async () => {}),
+      refreshInstalled: vi.fn(async () => {}),
+      mineLoad: vi.fn(async () => {}),
+      ensure: vi.fn(async () => {}),
+      projectsLoad: vi.fn(async () => {}),
+    };
+    useStoreIndex.setState({ load: s.storeLoad });
+    useInstall.setState({ refreshInstalled: s.refreshInstalled });
+    useMySkills.setState({ load: s.mineLoad, ensureShareableIndexes: s.ensure, loading: false });
+    useProjects.setState({ load: s.projectsLoad, loading: false });
+    return s;
+  }
+  afterEach(() => {
+    useStoreIndex.setState({ load: REAL.storeLoad });
+    useInstall.setState({ refreshInstalled: REAL.refreshInstalled });
+    useMySkills.setState({ load: REAL.mineLoad, ensureShareableIndexes: REAL.ensure });
+    useProjects.setState({ load: REAL.projectsLoad });
+  });
+
+  it("商店页:强制重建当前技能库索引,并重读已装状态", () => {
+    const s = spies();
+    render(<Toolbar />);
+    fireEvent.click(screen.getByRole("button", { name: "重新获取技能列表" }));
+    expect(s.storeLoad).toHaveBeenCalledWith(true);
+    expect(s.refreshInstalled).toHaveBeenCalledTimes(1);
+    expect(s.mineLoad).not.toHaveBeenCalled();
+    expect(s.projectsLoad).not.toHaveBeenCalled();
+  });
+
+  it("我的技能页:重新扫描本地,再检查库里有没有新版(不强制重建,不碰项目)", async () => {
+    const s = spies();
+    useMySkills.setState({
+      list: [
+        { dirSlug: "a", section: "shareable" },
+        { dirSlug: "b", section: "installedFrom" },
+      ] as never,
+    });
+    useUi.setState({ page: "mine" });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByRole("button", { name: "重新扫描并检查更新" }));
+    await waitFor(() => expect(s.ensure).toHaveBeenCalledWith(["a"]));
+    expect(s.mineLoad).toHaveBeenCalledTimes(1);
+    expect(s.storeLoad).toHaveBeenCalledWith(false);
+    expect(s.projectsLoad).not.toHaveBeenCalled();
+  });
+
+  it("我的技能页:转圈跟着本地扫描走,不跟商店索引", () => {
+    spies();
+    useStoreIndex.setState({ status: "ready" });
+    useMySkills.setState({ loading: true });
+    useUi.setState({ page: "mine" });
+    render(<Toolbar />);
+    const btn = screen.getByRole("button", { name: "重新扫描并检查更新" });
+    expect(btn.querySelector("svg")?.getAttribute("class")).toContain("animate-spin");
+  });
+
+  it("项目页:只重读项目文件夹,转圈跟着它", () => {
+    const s = spies();
+    useProjects.setState({ loading: true });
+    useUi.setState({ page: "projects" });
+    render(<Toolbar />);
+    const btn = screen.getByRole("button", { name: "重新读取项目文件夹" });
+    expect(btn.querySelector("svg")?.getAttribute("class")).toContain("animate-spin");
+    fireEvent.click(btn);
+    expect(s.projectsLoad).toHaveBeenCalledTimes(1);
+    expect(s.storeLoad).not.toHaveBeenCalled();
+    expect(s.mineLoad).not.toHaveBeenCalled();
+  });
+
+  it("设置页:不摆刷新按钮(那一页没有可刷新的内容)", () => {
+    useUi.setState({ page: "settings" });
+    const { container } = render(<Toolbar />);
+    // 按图标查,不按名字:名字查不到既可能是"没摆",也可能是"摆了但没名字"
+    // (注入验证实测:设置页照摆时 label 取不到键,按 /重新/ 查照样绿)。
+    expect(container.querySelector(".lucide-refresh-cw")).toBeNull();
+    // 对照:主题按钮仍在,证明不是整个顶栏没渲染
+    expect(screen.getByRole("button", { name: "切换主题" })).toBeInTheDocument();
+    // 对照:同一个查询在商店页找得到它,证明选择器本身不是空转
+    useUi.setState({ page: "store" });
+    const store = render(<Toolbar />);
+    expect(store.container.querySelector(".lucide-refresh-cw")).not.toBeNull();
   });
 });
