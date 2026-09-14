@@ -390,6 +390,48 @@ describe("v7 任务 8:项目行事后改选工具", () => {
     expect(screen.getByText("/w/erp/.zed/skills")).toBeInTheDocument();
   });
 
+  it("真机走查(2026-09-14):Trae 与 Trae CN 共用 .trae/skills → 合并成一个勾,取消时两个一起从提交名单去掉", async () => {
+    // 此前各摆一个勾:取消 Trae 提交的是 ["trae-cn"],那个目录仍然要链,刷新后两个勾又回来,永远取消不掉。
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "project_list") {
+        return [
+          group({
+            folderName: "erp",
+            path: "/w/erp",
+            skills: [skill({ key: "weekly-report", displayName: "weekly-report", dirSlug: "weekly-report", agents: ["trae-cn", "trae"] })],
+          }),
+        ];
+      }
+      if (cmd === "agents_detected") {
+        return {
+          agents: [
+            { name: "claude-code", displayName: "Claude Code", installed: true, skillsDir: ".claude/skills", isUniversal: false, needsLink: true, disabled: false },
+            { name: "trae", displayName: "Trae", installed: false, skillsDir: ".trae/skills", isUniversal: false, needsLink: true, disabled: false },
+            { name: "trae-cn", displayName: "Trae CN", installed: true, skillsDir: ".trae/skills", isUniversal: false, needsLink: true, disabled: false },
+          ],
+        };
+      }
+      return null;
+    });
+    render(<ProjectSections />);
+    await screen.findByText("weekly-report");
+    await userEvent.click(screen.getByTestId("prow-weekly-report-body"));
+
+    const traeBoxes = (await screen.findAllByRole("checkbox")).filter((b) => /Trae/.test(b.closest("label")?.textContent ?? ""));
+    expect(traeBoxes).toHaveLength(1);
+    expect(traeBoxes[0]).toBeChecked();
+    // 一个勾、一条路径,两个名字都在
+    const label = traeBoxes[0].closest("label")!;
+    expect(label.textContent).toContain("Trae CN");
+    expect(label.textContent).toMatch(/Trae(?! CN)/);
+    expect(within(label).getByText("/w/erp/.trae/skills")).toBeInTheDocument();
+
+    await userEvent.click(traeBoxes[0]);
+    const sent = lastInvoke("project_skill_set_agents")?.args.agentIds as string[];
+    expect(sent).not.toContain("trae");
+    expect(sent).not.toContain("trae-cn");
+  });
+
   it("🔴 I2:取消勾选也要真的从提交名单里去掉,不能恒加", async () => {
     seedProjects([
       group({

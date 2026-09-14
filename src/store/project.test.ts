@@ -269,7 +269,7 @@ describe("确认条上的工具勾选(design §15 前半)", () => {
     await useProjects.getState().requestInstall({ dirSlug: "x" });
     expect(useProjects.getState().confirm?.agentIds).toEqual(["claude-code"]);
 
-    useProjects.getState().toggleConfirmAgent("claude-code");
+    useProjects.getState().toggleConfirmAgents(["claude-code"]);
 
     expect(useProjects.getState().confirm?.agentIds).toEqual([]);
     expect(useProjects.getState().confirm?.agentLabels).toEqual([]);
@@ -292,15 +292,42 @@ describe("确认条上的工具勾选(design §15 前半)", () => {
     expect(useProjects.getState().confirm?.agentIds).toEqual([]);
 
     useProjects.setState({ agentNames: new Map([["claude-code", "Claude Code"]]) });
-    useProjects.getState().toggleConfirmAgent("claude-code");
+    useProjects.getState().toggleConfirmAgents(["claude-code"]);
 
     expect(useProjects.getState().confirm?.agentIds).toEqual(["claude-code"]);
     expect(useProjects.getState().confirm?.agentLabels).toEqual(["Claude Code"]);
   });
 
+  it("共用同一个项目目录的工具整组进出:当前只选了 Trae CN,取消这一组也要把 Trae 一起清掉", async () => {
+    // 真机走查(2026-09-14):Trae 与 Trae CN 在项目里都是 .trae/skills,一条链接对两者同时生效。
+    // 确认条若只按单个 agent 翻转,取消一个、另一个留着,装下去那个目录照样建链——勾说关了,盘上开着。
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "project_pick") return "/w/a";
+      if (cmd === "agents_detected") {
+        return {
+          agents: [
+            { name: "trae", displayName: "Trae", installed: false, disabled: false, skillsDir: ".trae/skills", isUniversal: false, needsLink: true },
+            { name: "trae-cn", displayName: "Trae CN", installed: true, disabled: false, skillsDir: ".trae/skills", isUniversal: false, needsLink: true },
+          ],
+        };
+      }
+      return null;
+    });
+    await useProjects.getState().requestInstall({ dirSlug: "x" });
+    expect(useProjects.getState().confirm?.agentIds).toEqual(["trae-cn"]);
+
+    useProjects.getState().toggleConfirmAgents(["trae-cn", "trae"]);
+    expect(useProjects.getState().confirm?.agentIds).toEqual([]);
+
+    useProjects.setState({ agentNames: new Map([["trae", "Trae"], ["trae-cn", "Trae CN"]]) });
+    useProjects.getState().toggleConfirmAgents(["trae-cn", "trae"]);
+    expect(useProjects.getState().confirm?.agentIds).toEqual(["trae-cn", "trae"]);
+    expect(useProjects.getState().confirm?.agentLabels).toEqual(["Trae CN", "Trae"]);
+  });
+
   it("没有待确认条目时什么都不做——不该凭空造出一个 confirm", () => {
     useProjects.setState({ confirm: null });
-    useProjects.getState().toggleConfirmAgent("claude-code");
+    useProjects.getState().toggleConfirmAgents(["claude-code"]);
     expect(useProjects.getState().confirm).toBeNull();
   });
 
@@ -319,7 +346,7 @@ describe("确认条上的工具勾选(design §15 前半)", () => {
       return null;
     });
     await useProjects.getState().requestInstall({ dirSlug: "x" });
-    useProjects.getState().toggleConfirmAgent("claude-code");
+    useProjects.getState().toggleConfirmAgents(["claude-code"]);
 
     await useProjects.getState().confirmInstall();
 

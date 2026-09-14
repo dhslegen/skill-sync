@@ -483,6 +483,21 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
 - **canonical 永不作为建链目标**。真实可达场景:`CLAUDE_CONFIG_DIR` 指到 `~/.agents` 时
   claude-code 的目录恰好等于 canonical,若当成目标,解链就等于删技能本体。
 - Windows 用 `junction` crate(2.0,MIT,免提权,delete 只摘 reparse point)。
+- 🔴 **项目级有几组工具共用同一个 `skillsDir`,界面必须合并成一个勾**(2026-09-14 真机走查):
+  Trae 与 Trae CN(`.trae/skills`)、Qoder 与 Qoder CN、Zencoder 与 Zenflow。core 按目录
+  建/摘链,一条链接对同组全部生效;此前「项目里」给每个工具各摆一个勾,取消 Trae 时提交
+  「只要 Trae CN」,目录仍要链,刷新后两个勾又回来——**永远单独取消不掉,零报错**。
+  修法在前端 `lib/project-tools.ts`(按 `skillsDir` 合并 + 整组翻转),项目行事后改选与
+  装到项目的确认条共用;确认条的 store 动作因此是 `toggleConfirmAgents(agents[])`,收一组。
+  ⚠️ **全局那一侧只修了一半的前提**:全局 Trae 在 `~/.trae/skills`、Trae CN 在
+  `~/.trae-cn/skills`,是两个目录不受影响;但**全局 Zencoder/Zenflow 共用
+  `~/.zencoder/skills`,同形状缺陷仍在**(用户拍板本次只修项目里,见「待处理」)。
+  - **Trae 官网已改名 TraeCode,技能目录没变**(2026-09-14 查实):国际版文档
+    <https://docs.trae.ai/ide/skills> 项目级 `.trae/skills/`、全局 `~/.trae/skills`;
+    国内版 <https://docs.trae.cn/ide/skills> 项目级同样 `.trae/skills/`、全局
+    `~/.trae-cn/skills`。上游 vercel-labs/skills 1.5.20 / 1.5.23 / 1.5.26 三版的
+    trae、trae-cn 条目逐字相同,无 `traecode` 新条目。**别因为改名去动注册表**。
+    国际版文档另写了一条:`.trae/skills/` 与 `.agents/skills/` 撞名时优先前者。
 - 🔴 **`npx skills list -g` 认得出 canonical 里指向工具目录本体的符号链接**——
   这是 v6 二期「本体只有一份、住在它现在所在的地方、canonical 只是指向本体的链接」
   这整个模型能不能与 `npx skills` 互通的地基事实,已实测确认,**不是没验证的假设**。
@@ -2522,6 +2537,12 @@ M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重�
       可被随意改动、当键不稳。
     - 代价已接受:同一个技能装到两级时目录名可能不同。两条链路各自内部自洽,
       不共用记账,所以不会互相干扰。
+
+**0.6.x 走查登记(2026-09-14,记录,不是待办)**
+- **全局勾组里 Zencoder/Zenflow 共用 `~/.zencoder/skills`,同「项目里 Trae 点不动」形状**:
+  详情面板「各个工具里」与获取面板仍按 agent 各摆一个勾。用户拍板本次只修项目里——
+  本机没装、没人报过。要修时复用 `lib/project-tools.ts` 的合并规则,但全局的勾由 core
+  `tools` 视图给出(含 `body`/`copy`/`missing` 档),合并要在 core 那一层做,不是前端改名。
 
 **M10 遗留(记录,不是待办)**
 - **搜索结果被过滤后没有补位**:排行榜是"先过滤后截断"(600 条丢 31 条,剩下的

@@ -12,6 +12,7 @@ import { PLAZA_REGISTRY_ID, type InstallStage, type ToolState } from "@/lib/ipc"
 import { cardState, localProbeOf, remoteHashOf, type LibraryRef } from "@/lib/update";
 import { useLocalDetail } from "@/store/local-detail";
 import { useMySkills } from "@/store/my-skills";
+import { groupProjectTools } from "@/lib/project-tools";
 import { useProjects } from "@/store/project";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
@@ -370,7 +371,7 @@ function ConfirmBar() {
   const cancelConfirm = useProjects((s) => s.cancelConfirm);
   const requestInstall = useProjects((s) => s.requestInstall);
   const pickableAgents = useProjects((s) => s.pickableAgents);
-  const toggleConfirmAgent = useProjects((s) => s.toggleConfirmAgent);
+  const toggleConfirmAgents = useProjects((s) => s.toggleConfirmAgents);
 
   // design §15 前半:确认条上可选工具——IPC 早就收 `agentIds`,只是此前没摆
   // 控件,用户只能沿用 `requestInstall` 算好的默认集合。候选口径与「行改选」
@@ -382,11 +383,22 @@ function ConfirmBar() {
   // 🔴 `pickableAgents === null`(探测失败)时不摆 picker——摆一个空的会让人
   // 以为"这台机器没有可选的工具"(那是假话,只是探测失败)。文字那一侧的降级
   // 见下面 `infoLine`。
-  const items: ToolPickerItem[] = (pickableAgents ?? []).map((a) => ({
-    agent: a.name,
-    label: a.displayName,
+  //
+  // 🔴 共用同一个项目目录的工具(Trae 与 Trae CN 都是 `.trae/skills`)合并成一个勾、整组
+  // 进出,与项目行事后改选同一套规则(`lib/project-tools.ts`,2026-09-14 真机走查)。
+  const groups = groupProjectTools(
+    (pickableAgents ?? []).map((a) => ({
+      agent: a.name,
+      label: a.displayName,
+      skillsDir: a.skillsDir,
+      on: confirm.agentIds.includes(a.name),
+    })),
+  );
+  const items: ToolPickerItem[] = groups.map((g) => ({
+    agent: g.id,
+    label: g.labels.join(t("common.listSep")),
     path: "",
-    state: (confirm.agentIds.includes(a.name) ? "linked" : "off") as ToolState,
+    state: (g.on ? "linked" : "off") as ToolState,
   }));
 
   // B2:`confirmAgents` 只在 picker 不在场时渲染,其余三档(已装过/降级/无可选)
@@ -476,7 +488,10 @@ function ConfirmBar() {
           <ToolPicker
             key={confirm.projectPath}
             items={items}
-            onToggle={(agent) => toggleConfirmAgent(agent)}
+            onToggle={(id) => {
+              const group = groups.find((g) => g.id === id);
+              if (group) toggleConfirmAgents(group.agents);
+            }}
             layout="inline"
           />
         </div>

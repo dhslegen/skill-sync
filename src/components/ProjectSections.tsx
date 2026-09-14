@@ -13,6 +13,7 @@ import {
   type ToolState,
 } from "@/lib/ipc";
 import { matchesProjectQuery, useMineSearch } from "@/store/mine-search";
+import { applyGroupToggle, groupProjectTools } from "@/lib/project-tools";
 import { useProjects } from "@/store/project";
 
 /**
@@ -233,28 +234,33 @@ function ProjectSkillRow({
   // 项目语境里就是撒谎);现在 `skillsDir` 是 core 建链用的同一个注册表字段,
   // 拼出来的就是真实落点。**仅供展示**:Windows 上是 `\` 与 `/` 混排,与 core 自己
   // `join` 出来的一样,别拿它去比对任何路径。相对目录查不到时留空,不编造。
-  const items: ToolPickerItem[] = [
+  //
+  // 🔴 **共用同一个项目目录的工具合并成一个勾**(2026-09-14 真机走查):Trae 与 Trae CN
+  // 都是 `.trae/skills`,core 按目录建/摘链,一条链接对两者同时生效。各摆一个勾的话,
+  // 取消 Trae 提交的是「只要 Trae CN」,目录仍然要链,刷新后两个勾又回来——永远取消
+  // 不掉。合并规则与整组翻转见 `lib/project-tools.ts`。
+  const groups = groupProjectTools([
     ...candidates.map((a) => ({
       agent: a.name,
       label: a.displayName,
-      path: projectToolDir(projectPath, a.skillsDir),
-      state: (currentAgents.includes(a.name) ? "linked" : "off") as ToolState,
+      skillsDir: a.skillsDir,
+      on: currentAgents.includes(a.name),
     })),
     ...currentAgents
       .filter((a) => !candidateNames.has(a))
-      .map((a) => ({
-        agent: a,
-        label: agentNames.get(a) ?? a,
-        path: projectToolDir(projectPath, agentSkillsDirs.get(a)),
-        state: "linked" as ToolState,
-      })),
-  ];
+      .map((a) => ({ agent: a, label: agentNames.get(a) ?? a, skillsDir: agentSkillsDirs.get(a), on: true })),
+  ]);
+  const items: ToolPickerItem[] = groups.map((g) => ({
+    agent: g.id,
+    label: g.labels.join(t("common.listSep")),
+    path: projectToolDir(projectPath, g.skillsDir),
+    state: (g.on ? "linked" : "off") as ToolState,
+  }));
 
-  const handleToggle = (agent: string, next: boolean) => {
-    const wanted = new Set(currentAgents);
-    if (next) wanted.add(agent);
-    else wanted.delete(agent);
-    void setAgents(projectPath, skill.key, [...wanted]);
+  const handleToggle = (id: string, next: boolean) => {
+    const group = groups.find((g) => g.id === id);
+    if (!group) return;
+    void setAgents(projectPath, skill.key, applyGroupToggle(currentAgents, group.agents, next));
   };
 
   const menuItems: SkillRowMenuItem[] = [
