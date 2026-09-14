@@ -222,7 +222,7 @@
   "mine.contribute": "贡献更改",
   "mine.contributing": "正在贡献…",
   "mine.conflictPending": "库里有新版…",
-  "mine.rowMenu": "更多",
+  "mine.rowMenu": "{name} 的更多操作",
   "mine.openDetail": "打开「{name}」的详情",
   "mine.overviewTotal": "共 {count} 个技能",
   "mine.updateAll": "全部更新 · {count}",

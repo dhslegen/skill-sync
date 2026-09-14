@@ -332,7 +332,7 @@ describe("v7 任务 7:DoD 六条", () => {
         .getAllByRole("button")
         .filter((b) => !b.getAttribute("aria-label")),
     ).toHaveLength(1);
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     expect(screen.getByRole("menuitem", { name: "打开文件夹" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "移除" })).toBeInTheDocument();
   });
@@ -477,7 +477,7 @@ describe("三区排列与判定表接线", () => {
     });
     render(<MySkillsPage />);
     const row = await screen.findByTestId("row-a");
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     await userEvent.click(screen.getByRole("menuitem", { name: "贡献更改" }));
     await vi.waitFor(() =>
       expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_share_changes")).toBe(true),
@@ -492,7 +492,7 @@ describe("三区排列与判定表接线", () => {
     ]);
     render(<MySkillsPage />);
     const row = await screen.findByTestId("row-a");
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     expect(screen.queryByRole("menuitem", { name: "贡献更改" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "分享改动" })).toBeNull();
   });
@@ -527,7 +527,7 @@ describe("三区排列与判定表接线", () => {
     seed([mk("a", "installedFrom", { remote: "NEW", localModified: true })]);
     render(<MySkillsPage />);
     const row = await screen.findByTestId("row-a");
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
 
     const items = screen.getAllByRole("menuitem");
     expect(items[items.length - 1]).toHaveTextContent("移除");
@@ -641,7 +641,7 @@ describe("三区排列与判定表接线", () => {
     expect(screen.queryByText("a")).toBeNull();
 
     const row = screen.getByTestId("row-a");
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     expect(screen.getByRole("menuitem", { name: "分享" })).toBeInTheDocument();
   });
 });
@@ -743,7 +743,7 @@ describe("移除只在本体在这台电脑上时才摆", () => {
     await renderAtTab(/已分享到技能库/);
     const row = await screen.findByTestId("row-a");
     expect(within(row).getByRole("button", { name: "取回" })).toBeInTheDocument();
-    expect(within(row).queryByRole("button", { name: "更多" })).toBeNull();
+    expect(within(row).queryByRole("button", { name: /更多/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "移除" })).toBeNull();
   });
 
@@ -751,7 +751,7 @@ describe("移除只在本体在这台电脑上时才摆", () => {
     seed([mk("a", "sharedTo")]);
     await renderAtTab(/已分享到技能库/);
     const row = await screen.findByTestId("row-a");
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     expect(screen.getByRole("menuitem", { name: "移除" })).toBeInTheDocument();
   });
 });
@@ -847,7 +847,7 @@ describe("勾选工具的失败必须看得见(C2 补充覆盖)", () => {
     await screen.findByRole("button", { name: "打开 Trae 那个位置的文件夹" });
     // 行内那个走「更多」菜单,menuitem 是朴素的「打开文件夹」,两者不同名
     const row = screen.getByTestId("row-a");
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     expect(screen.getByRole("menuitem", { name: "打开文件夹" })).toBeInTheDocument();
   });
 
@@ -1059,7 +1059,7 @@ describe("「打开文件夹」传 body 绝对路径,不传 dirSlug(补充覆盖
     });
     render(<MySkillsPage />);
     const row = await screen.findByTestId("row-a");
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     await userEvent.click(screen.getByRole("menuitem", { name: "打开文件夹" }));
 
     const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_reveal");
@@ -1115,7 +1115,7 @@ describe("C3(v7 任务 7 修复轮 1):「改用库里的版本」——没有安
     await renderAtTab(/已分享到技能库/);
     const row = await screen.findByTestId("row-weekly-report");
 
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     await userEvent.click(screen.getByRole("menuitem", { name: "改用库里的版本" }));
 
     // 复用既有 pull(beginUpdate):不新造一层确认,core 的预检自己会拦下来问用户
@@ -1164,7 +1164,7 @@ describe("C3(v7 任务 7 修复轮 1):「改用库里的版本」——没有安
     });
     await renderAtTab(/已分享到技能库/);
     const row = await screen.findByTestId("row-weekly-report");
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     expect(screen.queryByRole("menuitem", { name: "改用库里的版本" })).toBeNull();
   });
 });
@@ -1209,7 +1209,7 @@ describe("chooseVersion 档(补充覆盖:此前整页零测试覆盖)", () => {
     seed([mk("a", "installedFrom", { versions: [V("/p1"), V("/p2")] })]);
     render(<MySkillsPage />);
     const row = await screen.findByTestId("row-a");
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     expect(screen.queryByRole("menuitem", { name: "移除" })).toBeNull();
   });
 });

@@ -166,7 +166,7 @@ describe("项目分区", () => {
     const row = await screen.findByTestId(`prow-${skill().key}`);
     await screen.findByText("React 最佳实践");
 
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     await userEvent.click(screen.getByRole("menuitem", { name: "移除" }));
     // 第一步只是展开确认,不能有任何 IPC
     expect(invoke.mock.calls.find(([cmd]) => cmd === "project_skill_remove")).toBeUndefined();
@@ -187,7 +187,7 @@ describe("项目分区", () => {
     const row = await screen.findByTestId(`prow-${skill().key}`);
     await screen.findByText("React 最佳实践");
 
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     await userEvent.click(screen.getByRole("menuitem", { name: "移除" }));
 
     // 🔴 M1 修复:正面断言确认块真的渲染出来了,不能只断言"没有说谎的词"
@@ -205,7 +205,7 @@ describe("项目分区", () => {
 
     await screen.findByText("这个文件夹不在了");
     // 「从列表移除」现在收在标题行的「更多」里
-    await userEvent.click(screen.getByRole("button", { name: "更多" }));
+    await userEvent.click(screen.getByRole("button", { name: /更多/ }));
     expect(screen.getByRole("menuitem", { name: "从列表移除" })).toBeInTheDocument();
     // 目录都不在了,「在文件夹中显示」摆出来就是引诱用户点一个必然失败的按钮
     expect(screen.queryByRole("menuitem", { name: "在文件夹中显示" })).toBeNull();
@@ -239,7 +239,7 @@ describe("项目分区", () => {
     const row = await screen.findByTestId(`prow-${skill().key}`);
     await screen.findByText("React 最佳实践");
 
-    await userEvent.click(within(row).getByRole("button", { name: "更多" }));
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     await userEvent.click(screen.getByRole("menuitem", { name: "移除" }));
     await userEvent.click(within(row).getByRole("button", { name: "移除" }));
 
@@ -350,7 +350,7 @@ describe("v7 任务 8:项目卡片压扁", () => {
     render(<ProjectSections />);
     await screen.findByText("erp");
 
-    await userEvent.click(screen.getByRole("button", { name: "更多" }));
+    await userEvent.click(screen.getByRole("button", { name: /更多/ }));
     expect(screen.getByRole("menuitem", { name: /在文件夹中显示/ })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: /从列表移除/ })).toBeInTheDocument();
   });

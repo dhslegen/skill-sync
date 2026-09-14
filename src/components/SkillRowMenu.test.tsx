@@ -23,7 +23,7 @@ describe("SkillRowMenu · portal 结构", () => {
   const openMenu = async (extraItems: { key: string; label: string; onClick: () => void }[] = []) => {
     const onClick = vi.fn();
     const items = [{ key: "remove", label: "移除", onClick }, ...extraItems];
-    render(<SkillRowMenu items={items} preferredPlacement={"down"} />);
+    render(<SkillRowMenu items={items} preferredPlacement={"down"} subject="周报生成" />);
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /更多/ }));
     return { onClick, user };
@@ -81,8 +81,25 @@ describe("SkillRowMenu · portal 结构", () => {
     expect(trigger).toHaveFocus();
   });
 
+  it("可访问名点名这是谁的菜单,同一页两颗「更多」分得开(0.6.x K4)", () => {
+    // 此前全站每颗都叫「更多」:屏幕阅读器用户在「我的技能」里听到十几个同名按钮,
+    // 分不出哪颗属于哪一行。值来自 i18n,断言按语义(带主语 + 仍含「更多」),
+    // 不抄字面量——哪天措辞再改,这条测的东西不变。
+    render(
+      <>
+        <SkillRowMenu items={[{ key: "a", label: "A", onClick: vi.fn() }]} preferredPlacement={"down"} subject="周报生成" />
+        <SkillRowMenu items={[{ key: "b", label: "B", onClick: vi.fn() }]} preferredPlacement={"down"} subject="接口测试专家" />
+      </>,
+    );
+    const names = screen.getAllByRole("button", { name: /更多/ }).map((b) => b.getAttribute("aria-label"));
+    expect(names).toHaveLength(2);
+    expect(names[0]).toContain("周报生成");
+    expect(names[1]).toContain("接口测试专家");
+    expect(names[0]).not.toBe(names[1]);
+  });
+
   it("没有条目时不渲染触发按钮", () => {
-    render(<SkillRowMenu items={[]} preferredPlacement={"down"} />);
+    render(<SkillRowMenu items={[]} preferredPlacement={"down"} subject="周报生成" />);
     expect(screen.queryByRole("button", { name: /更多/ })).not.toBeInTheDocument();
   });
 
@@ -110,7 +127,7 @@ describe("SkillRowMenu · 方向接线(mock rect)", () => {
       .mockReturnValue({ top: 780, bottom: 796, left: 0, right: 0, width: 24, height: 16, x: 0, y: 0, toJSON() {} });
     const offsetHeightSpy = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(100);
 
-    render(<SkillRowMenu items={[{ key: "remove", label: "移除", onClick: vi.fn() }]} preferredPlacement={"down"} />);
+    render(<SkillRowMenu items={[{ key: "remove", label: "移除", onClick: vi.fn() }]} preferredPlacement={"down"} subject="周报生成" />);
     await userEvent.setup().click(screen.getByRole("button", { name: /更多/ }));
 
     const menu = screen.getByRole("menu");

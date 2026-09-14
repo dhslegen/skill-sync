@@ -302,7 +302,7 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
           叫法,且"访达"在 Windows 上是错的。两颗都删,动作统一收进页脚的
           `SkillActionsBlock`(它自己会摆「打开文件夹」并接住失败)。 */}
       {skill ? (
-        <SkillActionsBlock skill={skill} remoteChanged={remoteChanged} host="mine" />
+        <SkillActionsBlock skill={skill} remoteChanged={remoteChanged} host="mine" subject={detail.name} />
       ) : (
         <RevealOnlyFooter path={detail.path} />
       )}
@@ -613,7 +613,12 @@ function PanelBody({
         plaza={plaza ? { ownerRepo: plaza.ownerRepo } : undefined}
         actions={
           whereSkill ? (
-            <SkillActionsBlock skill={whereSkill} remoteChanged={whereRemoteChanged} host="store" />
+            <SkillActionsBlock
+              skill={whereSkill}
+              remoteChanged={whereRemoteChanged}
+              host="store"
+              subject={detail.name}
+            />
           ) : undefined
         }
       />

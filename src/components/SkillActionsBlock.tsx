@@ -266,8 +266,13 @@ export function SkillActionsBlock({
   skill,
   remoteChanged,
   host,
+  subject,
 }: {
   skill: InstalledSkillView;
+  /** 技能的展示名,只给「…」的可访问名用(`SkillRowMenu.subject`)。`InstalledSkillView`
+   *  里没有展示名,`dirSlug` 又是内部标识不能进可访问名,所以由 `DetailPanel` 把
+   *  `detail.name` 传进来。 */
+  subject: string;
   /** 「库里那一版变了没有」。**由调用方按 section 分流算好**(`hasUpdate` /
    *  `remoteChangedForShareable`),与折叠头的结论行、「技能库里」那一块吃的是
    *  同一个布尔量——三处各算一遍就是本项目记的空转模式 ①,而且「可分享到」区
@@ -403,7 +408,7 @@ export function SkillActionsBlock({
   const removeControl = caps.removeInMenu ? (
     menuItems.length > 0 && (
       <div className="ml-auto">
-        <SkillRowMenu items={menuItems} preferredPlacement={"up"} />
+        <SkillRowMenu items={menuItems} preferredPlacement={"up"} subject={subject} />
       </div>
     )
   ) : removeItem ? (

@@ -25,8 +25,9 @@ import { cn } from "@/lib/cn";
  *
  * # 🔴 触发按钮永远走 `aria-label`,不靠可见文字
  *
- * 它是一个纯图标按钮(`MoreHorizontal`),可访问名只能来自 `aria-label`。
- * 这不是随手一致——「我的技能」整页有一条测试断言"每行只有一颗**不带
+ * 它是一个纯图标按钮(`MoreHorizontal`),可访问名只能来自 `aria-label`,
+ * 值是「{subject} 的更多操作」——每颗都点名自己属于哪一行,不再是满页同名的
+ * 「更多」(0.6.x 清的 K4)。这不是随手一致——「我的技能」整页有一条测试断言"每行只有一颗**不带
  * `aria-label` 属性**的按钮"(主按钮那颗,靠自己的可见文字当可访问名),
  * 图标按钮反过来必须带 `aria-label` 才能被这条测试正确地排除在外。
  *
@@ -89,10 +90,18 @@ export type MenuPlacement = "down" | "up";
 export function SkillRowMenu({
   items,
   preferredPlacement,
+  subject,
 }: {
   items: SkillRowMenuItem[];
   /** 见 `MenuPlacement` 的文档——现在只是首选方向,不是最终结果。 */
   preferredPlacement: MenuPlacement;
+  /**
+   * 这个菜单是"谁的":技能展示名 / 项目文件夹名,进可访问名「{name} 的更多操作」。
+   * **必填且必须是展示名**——一页里有十几颗「更多」,全叫「更多」时屏幕阅读器
+   * 用户分不出哪颗是哪行的(v7 任务 8 登记的 K4);而 `dirSlug` 这类内部标识
+   * 同样会被读出来,本项目「内部标识不能露给用户」那条覆盖可访问名。
+   */
+  subject: string;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -119,7 +128,7 @@ export function SkillRowMenu({
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={t("mine.rowMenu")}
+        aria-label={t("mine.rowMenu", { name: subject })}
         onClick={() => setOpen((v) => !v)}
         onKeyDown={(e) => {
           if (e.key === "Escape" && open) {
