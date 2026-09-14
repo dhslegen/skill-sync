@@ -67,12 +67,21 @@ export function orderForPicker(items: ToolPickerItem[]): ToolPickerItem[] {
  * 渲染顺序都按钉住的那份 `agent` 顺序走。不这样做的话,点一下勾会让那一项从
  * "已勾"移到"未勾"分组、整个视觉顺序跟着跳——用户的手指底下那一项直接消失了。
  *
- * 🔴 **这个"钉住"没有自证机制,前提假设是调用方会在换技能时换掉这个组件实例**
- * (补于 v7 任务 7 修复轮 1,I2:任务 5 报告原文承诺过这句但没写)。`pinned`
- * 这个 `useRef` 挂在组件**实例**上,只有 React 判定"这是新的一份"(不同的
+ * # 钉住的是"这一批 agent 集合"的顺序(0.6.x 清 K5 之后)
+ *
+ * `pinned` 里连同 agent 集合的指纹(排序后 join)一起记:**集合一变就重钉**
+ * ——不看 state、不看数组顺序、不看引用。这解决的是 v7 任务 8 登记的 K5
+ * (R18):此前只要第一份非空 items 钉过一次,之后哪怕整批 agent 都换掉了
+ * (同一个组件实例被喂了另一个技能的数据)也照旧按老顺序排,而新集合里没有的
+ * 名字只是被"兜底"排到末尾、看起来像是排序坏了。
+ *
+ * 🔴 **它只防"集合变了",防不了"同一集合、换了一个技能"**:两个技能恰好链到
+ * 同一批工具时,指纹相同、不会重钉,顺序会从 A 漏到 B。所以下面这条前提
+ * **仍然成立**(补于 v7 任务 7 修复轮 1,I2):调用方要在换技能时换掉组件实例。
+ * `pinned` 这个 `useRef` 挂在组件**实例**上,只有 React 判定"这是新的一份"(不同的
  * `key`,或元素类型本身变了)才会重新拿到一个干净的 `useRef`。⚠️ **现在四处
  * 调用方各自天然满足这个前提**(终审 M-5 订正:此前这里只记了两处,漏了后来
- * 加的另外两处),但这始终是**调用方**的责任,不是这个组件自己保证的:
+ * 加的另外两处),集合指纹只是给这条前提兜一半的底,另一半仍是**调用方**的责任:
  * - `ToolChecks`(「我的技能」勾组)：外层详情面板按 `target`/`dirSlug` 整体
  *   换挂载(见 `store/local-detail.ts` 的 `open`),换技能等于换了一整棵子树;
  * - `AgentChooser`(获取面板):`useInstall` 的 `phase` 从 `choosing` 退回
@@ -87,9 +96,9 @@ export function orderForPicker(items: ToolPickerItem[]): ToolPickerItem[] {
  *   `ToolPicker` 元素显式带了 `key={confirm.projectPath}`,靠这把 key 补上
  *   "换项目 = 换实例"这条前提。
  * 如果将来有调用方在**同一个挂载的组件实例上**换技能(比如给一个列表里的每一
- * 行都用同一个 `ToolPicker` 却不给它按 `dirSlug` 单独的 `key`),钉住的顺序会
- * 从上一个技能"漏"到下一个技能,且没有任何报错——这不是这个组件能防的,新增
- * 调用方时要自己保证"换技能 = 换实例"。
+ * 行都用同一个 `ToolPicker` 却不给它按 `dirSlug` 单独的 `key`),集合不同时会
+ * 重钉、集合恰好相同时钉住的顺序会从上一个技能"漏"到下一个技能,且没有任何
+ * 报错——后一半不是这个组件能防的,新增调用方时要自己保证"换技能 = 换实例"。
  *
  * # `body` 档恒勾且不可取消
  *
@@ -154,11 +163,17 @@ export function ToolPicker({
   disabled?: boolean;
   layout?: "inline" | "list";
 }) {
-  const pinned = useRef<string[] | null>(null);
-  if (pinned.current === null && items.length > 0) {
-    pinned.current = orderForPicker(items).map((item) => item.agent);
+  // 钉住的是"这一批 agent 集合"的顺序:集合(不看 state、不看顺序)一变就重钉。
+  // 集合没变时,不管 state 怎么翻、items 数组怎么换引用,都沿用钉住的那份。
+  const setKey = items
+    .map((item) => item.agent)
+    .sort()
+    .join("\u0000");
+  const pinned = useRef<{ setKey: string; order: string[] } | null>(null);
+  if (items.length > 0 && (pinned.current === null || pinned.current.setKey !== setKey)) {
+    pinned.current = { setKey, order: orderForPicker(items).map((item) => item.agent) };
   }
-  const order = pinned.current ?? [];
+  const order = pinned.current?.order ?? [];
 
   if (items.length === 0) return null;
 

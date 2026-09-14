@@ -94,6 +94,23 @@ describe("ToolPicker", () => {
     ]);
   });
 
+  it("K5(0.6.x):同一个实例被喂了另一批 agent → 按新集合重排,不再沿用旧顺序", () => {
+    // 此前 pinned 只在第一份非空 items 时算一次;之后整批 agent 换掉(同一实例
+    // 换了数据),新集合里的名字全落进"钉住顺序里没有的兜底段",按 items 原序排,
+    // "已勾在前"这条规则对第二批数据整个失效。指纹按 agent 集合算,集合变了重钉。
+    const { rerender } = render(<ToolPicker items={[i("junie", "off"), i("claude-code", "linked")]} onToggle={() => {}} />);
+    expect(screen.getAllByRole("checkbox").map((c) => c.getAttribute("name"))).toEqual(["claude-code", "junie"]);
+    rerender(<ToolPicker items={[i("trae-cn", "off"), i("zed", "linked")]} onToggle={() => {}} />);
+    expect(screen.getAllByRole("checkbox").map((c) => c.getAttribute("name"))).toEqual(["zed", "trae-cn"]);
+  });
+
+  it("K5 反例:集合没变、只是 state 翻了 → 不重钉(与「操作期间不重排」同一条规则的另一面)", () => {
+    const { rerender } = render(<ToolPicker items={[i("junie", "off"), i("claude-code", "linked")]} onToggle={() => {}} />);
+    // 同一集合,勾选状态对调:若按集合以外的东西重钉,这里会翻成 junie 在前
+    rerender(<ToolPicker items={[i("junie", "linked"), i("claude-code", "off")]} onToggle={() => {}} />);
+    expect(screen.getAllByRole("checkbox").map((c) => c.getAttribute("name"))).toEqual(["claude-code", "junie"]);
+  });
+
   it("path 留空时不渲染路径那一段,给出路径时渲染", () => {
     render(
       <ToolPicker
