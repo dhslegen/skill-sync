@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# SkillSync 一条命令发版:改版本号 → commit+tag+push(触发 GitHub CI 出 Windows 包)
-#                        → 本地构建 macOS(签名+公证)→ 打 dmg → 等 CI → 下载 exe 补签
-#                        → 全部产物传内网 Gitea 发布仓 → 更新 latest.json(三平台)。
+# SkillSync 一条命令发版:改版本号 → commit+tag+push(触发 GitHub Release 出 Windows 包,
+#                        同时触发 CI 双平台测试)→ 本地构建 macOS(签名+公证)→ 打 dmg
+#                        → 等 Release 下载 exe 补签 → **等 CI 绿** → 全部产物传内网 Gitea
+#                        发布仓 → 更新 latest.json(三平台)。
 #
 # 用法:
 #   set -a; . fixtures/.env.gitea.local; . fixtures/.env.apple.local; . fixtures/.env.release.local; set +a
@@ -19,8 +20,18 @@
 #     commit,版本号必须先进 tag,这一步没法留给人;与本地 macOS 构建并行,总时长不变。
 #   - CI 产物**没有 .sig**(minisign 私钥绝不进公开仓,见 release.yml guard 注释),
 #     exe 下载回本机后用 `pnpm tauri signer sign` 补签——私钥全程不离开这台机器。
-#   - 等 CI 放在内网 release 创建**之前**:CI 失败时内网零写入,修好重跑即可
-#     (版本号 commit 与 tag 已推也无妨,重跑会沿用)。
+#   - 等 Release 放在内网 release 创建**之前**:CI 失败时内网零写入,修好重跑即可
+#     (版本号 commit 与 tag 已推也无妨,重跑会沿用;修复后 HEAD 变了,脚本会把 tag
+#     挪到新提交并重新触发 Release——不挪的话 Windows 包会从带缺陷的旧提交构建)。
+#
+# CI 闸(0.6.x,2026-09-14):
+#   0.6.0 发版当天 `CI` workflow 的 windows job 是红的,而包已经发出去了——此前脚本只等
+#   `Release` workflow(要它的 exe artifact),不等 `CI`,双平台测试的结论在发版**之后**
+#   才到达。那次红的是测试侧缺陷、产品没事;同样时序下一个真的产品缺陷会以同样方式
+#   溜过去。现在等 Release 之后紧接着等 CI(两者由同一次 push 并行触发,通常只多等几分钟
+#   的差值),同样排在内网 release 创建之前。应急开关 SKIP_CI=1 只给"CI 基础设施本身坏了"
+#   这一种情况,测试红不是它的用途;SKIP_WINDOWS 模式下版本号 commit 根本没推,没有 CI
+#   可等,闸自然不生效(收尾会提示)。
 #
 # 前置(一次性):
 #   - fixtures/.env.release.local 里放 SKILLSYNC_RELEASE_TOKEN=<内网 Gitea 个人访问令牌>
@@ -168,7 +179,18 @@ if [[ -z "$SKIP_WINDOWS" ]]; then
   # 工作区不进 tag —— 而应用读的正是这个日期,发出去的包里就没有它。
   git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml RELEASE_NOTES.md
   git diff --cached --quiet || git commit -m "发版 v$VERSION: 版本号三处对齐"
-  git tag "v$VERSION" 2>/dev/null || echo "   tag v$VERSION 已存在,沿用(重跑场景)"
+  if git tag "v$VERSION" 2>/dev/null; then
+    :
+  elif [[ "$(git rev-parse "v$VERSION^{commit}")" == "$(git rev-parse HEAD)" ]]; then
+    echo "   tag v$VERSION 已存在且指向当前提交,沿用(重跑场景)"
+  else
+    # 修完 CI 红重跑到这里:tag 还指着带缺陷的旧提交,Release workflow 会从它构建
+    # Windows 包——不挪的话发出去的 exe 就是修复之前的代码。内网 release 此时还不存在
+    # (上面那道"已发过就拒绝"守卫刚过),挪 tag 不影响任何已发出去的东西。
+    echo "   tag v$VERSION 指向旧提交 $(git rev-parse --short "v$VERSION^{commit}"),挪到当前提交并重新触发 Release"
+    git tag -f "v$VERSION"
+    git push -f origin "refs/tags/v$VERSION"
+  fi
   git push origin HEAD "refs/tags/v$VERSION"
 fi
 
@@ -223,6 +245,40 @@ if [[ -z "$SKIP_WINDOWS" ]]; then
   WIN_SIG="$WIN_EXE.sig"
   [[ -f "$WIN_SIG" ]] || { echo "❌ 补签没产出 $WIN_SIG" >&2; exit 1; }
   WIN_URL="$GITEA/skills/skillsync-releases/releases/download/v$VERSION/SkillSync_${VERSION}_x64-setup.exe"
+fi
+
+# ---------- 等 CI workflow 双平台测试绿:排在往内网写第一个字节之前(原委见头部「CI 闸」)----------
+SKIP_CI="${SKIP_CI:-}"
+if [[ -z "$SKIP_WINDOWS" && -z "$SKIP_CI" ]]; then
+  HEAD_SHA="$(git rev-parse HEAD)"
+  echo "==> 等 GitHub CI 双平台测试(ci.yml,commit ${HEAD_SHA:0:7};与 Release 并行,通常再等几分钟)"
+  # 按 headSha 找**这一次提交**触发的 run:拿"最近一次"会把别人的提交当成这一版的结论
+  CI_RUN_ID=""
+  for _ in $(seq 1 30); do
+    CI_RUN_ID="$(gh run list --workflow=ci.yml --json databaseId,headSha \
+      -q "[.[] | select(.headSha == \"$HEAD_SHA\")][0].databaseId" 2>/dev/null || true)"
+    [[ -n "$CI_RUN_ID" && "$CI_RUN_ID" != "null" ]] && break
+    sleep 10
+  done
+  [[ -n "$CI_RUN_ID" && "$CI_RUN_ID" != "null" ]] || {
+    echo "❌ 等了 5 分钟没见到 commit ${HEAD_SHA:0:7} 触发的 CI workflow——版本号 commit 推到 main 了吗?" >&2
+    exit 1
+  }
+  for _ in $(seq 1 60); do
+    [[ "$(gh run view "$CI_RUN_ID" --json status -q .status 2>/dev/null)" == "completed" ]] && break
+    sleep 30
+  done
+  CI_CONCLUSION="$(gh run view "$CI_RUN_ID" --json conclusion -q .conclusion)"
+  [[ "$CI_CONCLUSION" == "success" ]] || {
+    echo "❌ CI 双平台测试失败或超时(run $CI_RUN_ID,conclusion=$CI_CONCLUSION)。内网一个字节没写。" >&2
+    echo "   gh run view $CI_RUN_ID --log-failed 看原因(完整读,别只 grep panicked;跨平台红先假设不止一个病)。" >&2
+    echo "   修好后提交修复、重跑本脚本即可:它会把 tag 挪到新提交、重新等 Release 与 CI。" >&2
+    echo "   SKIP_CI=1 只给 CI 基础设施本身坏了的情况,测试红不是它的用途。" >&2
+    exit 1
+  }
+  echo "   CI 绿(run $CI_RUN_ID,双平台 lint / test / clippy / build)"
+elif [[ -n "$SKIP_CI" ]]; then
+  echo "   ⚠️ SKIP_CI=1:跳过 CI 双平台测试闸——这一版没经过 Windows 测试就要发出去了"
 fi
 
 # ---------- 传版本 release:dmg 给人装,tar.gz+sig 给自动更新下载 ----------
@@ -407,7 +463,9 @@ echo "   新用户安装包:$GITEA/skills/skillsync-releases/releases  (发 dmg 
 echo "   老用户:app 内「设置 → 检查应用更新」立即可见;自动检查按各自设置的频率触发"
 if [[ -z "$SKIP_WINDOWS" ]]; then
   echo "   版本号 commit 与 tag v$VERSION 已由脚本推送,无需再手动 commit"
+  [[ -n "$SKIP_CI" ]] && echo "   ⚠️ SKIP_CI 模式:这版没经过 CI 双平台测试就发出去了,事后自己 gh run list 逐 job 核"
 else
   echo "   ⚠️ SKIP_WINDOWS 模式:公告牌没有 windows 条目,Windows 用户收不到这版更新"
+  echo "   ⚠️ 版本号 commit 没推,所以也没有 CI 可等——这版没经过双平台测试就发出去了"
   echo "   别忘了:git add -A && git commit -m '发版 v$VERSION' && git push"
 fi

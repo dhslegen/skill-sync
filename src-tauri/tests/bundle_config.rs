@@ -144,6 +144,41 @@ fn publish_script_feeds_all_three_platforms() {
     );
 }
 
+/// 发版脚本必须在往内网写第一个字节之前等 `CI` workflow 绿(0.6.x,2026-09-14)。
+///
+/// 0.6.0 发版当天 `CI` 的 windows job 是红的,而包已经发出去了:脚本只等 `Release`
+/// workflow(要它的 exe artifact),不等 `CI`,双平台测试的结论在发版**之后**才到达。
+/// 这条守卫钉住三件事:①脚本确实等 `ci.yml`;②等的位置排在创建内网 release 与
+/// 重建公告牌之前(红了才能做到内网零写入);③等的是**当前提交**那一次 run
+/// (按 `headSha` 匹配),不是"最近一次"——那会把别人的提交当成这一版的结论。
+///
+/// ⚠️ 文本级守卫,先剥掉注释再搜:脚本头部的说明本来就写着 `ci.yml`,不剥的话
+/// 删掉真实等待、只留注释照样绿(`plaza_ensure_repo.rs` 那条守卫踩过同一个坑)。
+#[test]
+fn publish_script_waits_for_ci_before_touching_the_release_repo() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+    let script = std::fs::read_to_string(root.join("scripts/publish-release.sh")).unwrap();
+    let code: String = script
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let wait = code
+        .find("--workflow=ci.yml")
+        .expect("publish-release.sh 不再等 CI workflow——双平台测试的结论又会回到发版之后才到达");
+    let release = code.find("==> 创建 release").expect("找不到创建内网 release 那一步");
+    let board = code.find("==> 更新 latest 公告牌").expect("找不到重建公告牌那一步");
+    assert!(
+        wait < release && wait < board,
+        "等 CI 必须排在内网 release 创建({release})与公告牌({board})之前,现在在 {wait}——红了做不到内网零写入"
+    );
+    assert!(
+        code.contains("select(.headSha == "),
+        "等 CI 必须按 headSha 匹配当前提交那一次 run,拿最近一次会把别人的提交当成这一版的结论"
+    );
+}
+
 /// 发版必须带发版说明(2026-08-07 用户拍板,指定记进项目记忆)。
 ///
 /// 此前所有 release 的正文都是脚本里写死的同一句"内部发布",同事拿到新包不知道

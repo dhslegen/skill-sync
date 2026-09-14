@@ -37,7 +37,7 @@ pnpm dev            # 走 scripts/dev.sh:**自动加载 fixtures/.env.gitea.loca
 pnpm build          # tauri build(无签名变量时产出未签名包,仅内部测试)
 ./scripts/publish-release.sh 0.2.3   # **发版就跑它**:改版本号→commit+tag+push(触发
                                      # GitHub CI 出 Windows 包)→本地构建 macOS 签名公证
-                                     # →打 dmg→等 CI 下载 exe 补签→传内网发布仓
+                                     # →打 dmg→等 Release 下载 exe 补签→**等 CI 绿**(0.6.x 起)→传内网发布仓
                                      # →更新三平台 latest 公告牌→验收(见「发版」一节)
 ./scripts/build-release.sh   # 只出包不发布(publish-release.sh 内部调它);强校验编译期内网配置
 pnpm test           # 前端 vitest
@@ -640,6 +640,18 @@ Windows SDK),**唯一的裁决者是 Windows CI**。
    **`publish-release.sh` 等的是 `Release` workflow(要它的 exe artifact),不等
    `CI` workflow**。这是脚本的既有设计,不是这次的疏漏,但它意味着双平台测试的
    结论**在发版之后**才知道。根因与修复见下面「Windows 上 join 带斜杠」一条。
+   ✅ **0.6.x(2026-09-14)已补 CI 闸**:脚本在等完 Release 之后紧接着等 `ci.yml`
+   那一次 run(按 `headSha` 匹配当前提交,不是"最近一次"),同样排在内网 release
+   创建之前,红了内网零写入。守卫
+   `bundle_config.rs::publish_script_waits_for_ci_before_touching_the_release_repo`
+   (剥注释再搜,三次注入各红在自己那条断言)。**这条闸自己造出一条失败路径**:
+   修完 CI 红重跑时 tag 还指着带缺陷的旧提交,Release 会从它构建 Windows 包——
+   脚本现在会把 tag `-f` 挪到 HEAD 并 `push -f` 重新触发 Release(内网 release
+   此时还不存在,挪 tag 不影响任何已发出去的东西)。`SKIP_CI=1` 只给 CI 基础设施
+   本身坏了的情况;`SKIP_WINDOWS` 模式下版本号 commit 根本没推,闸自然不生效。
+   ⚠️ **这条闸本身没有真发过一版**:脚本改动只过了 bash -n、守卫测试与注入,
+   下一次发版是它的第一次真跑——看到 `==> 等 GitHub CI 双平台测试` 那行之后
+   别把"多等几分钟"当成卡死。
 
 
 **v7 = 「我的技能」重设计**(2026-08-28 拷问式访谈拍板,2026-08-29 完成,设计在本地
@@ -2656,7 +2668,8 @@ export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 
 (一次性准备见部署指南 §7.4。)它包办:改三处版本号 → **commit + tag + push**(tag 触发 GitHub CI
 出 Windows 包,与本地构建并行;版本号必须先进 tag,这步没法留给人)→ 本地构建
-macOS(签名+公证)→ 打 dmg → 等 CI → 下载 exe 本地补签(私钥不进公开 CI)→
+macOS(签名+公证)→ 打 dmg → 等 Release → 下载 exe 本地补签(私钥不进公开 CI)→
+**等 CI 双平台测试绿**(0.6.x 起;红了内网零写入,修好重跑会自动把 tag 挪到新提交)→
 建版本 release 传五个产物 → 重建**三平台** latest 公告牌 → curl 验收 →
 **同步 README.md + RELEASE_NOTES.md 到发布仓**(2026-08-11 加:发布仓首页是同事
 下载安装包时唯一会看到的说明,此前一直是建仓那句空壳;两个文件走一笔提交,
