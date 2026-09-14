@@ -104,6 +104,17 @@ describe("ToolPicker", () => {
     expect(screen.getAllByRole("checkbox").map((c) => c.getAttribute("name"))).toEqual(["zed", "trae-cn"]);
   });
 
+  it("🔴 集合只是增减了几项(仍有交集)→ 不重排:剩下的保持原位,新来的排末尾(2026-09-14 复验回归)", () => {
+    // 项目行取消一个"已关联但未探测到"的工具,它会从列表里消失——那是操作的直接结果,
+    // 不是换了一个技能。按"集合变了就重钉"会把刚点的那一项从最上面甩到最下面。
+    const { rerender } = render(
+      <ToolPicker items={[i("zed", "linked"), i("junie", "off"), i("claude-code", "off")]} onToggle={() => {}} />,
+    );
+    expect(screen.getAllByRole("checkbox").map((c) => c.getAttribute("name"))).toEqual(["zed", "junie", "claude-code"]);
+    rerender(<ToolPicker items={[i("junie", "linked"), i("claude-code", "off"), i("trae-cn", "linked")]} onToggle={() => {}} />);
+    expect(screen.getAllByRole("checkbox").map((c) => c.getAttribute("name"))).toEqual(["junie", "claude-code", "trae-cn"]);
+  });
+
   it("K5 反例:集合没变、只是 state 翻了 → 不重钉(与「操作期间不重排」同一条规则的另一面)", () => {
     const { rerender } = render(<ToolPicker items={[i("junie", "off"), i("claude-code", "linked")]} onToggle={() => {}} />);
     // 同一集合,勾选状态对调:若按集合以外的东西重钉,这里会翻成 junie 在前

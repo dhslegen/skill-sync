@@ -406,7 +406,7 @@ describe("v7 任务 8:项目行事后改选工具", () => {
         return {
           agents: [
             { name: "claude-code", displayName: "Claude Code", installed: true, skillsDir: ".claude/skills", isUniversal: false, needsLink: true, disabled: false },
-            { name: "trae", displayName: "Trae", installed: false, skillsDir: ".trae/skills", isUniversal: false, needsLink: true, disabled: false },
+            { name: "trae", displayName: "Trae", installed: true, skillsDir: ".trae/skills", isUniversal: false, needsLink: true, disabled: false },
             { name: "trae-cn", displayName: "Trae CN", installed: true, skillsDir: ".trae/skills", isUniversal: false, needsLink: true, disabled: false },
           ],
         };
@@ -430,6 +430,47 @@ describe("v7 任务 8:项目行事后改选工具", () => {
     const sent = lastInvoke("project_skill_set_agents")?.args.agentIds as string[];
     expect(sent).not.toContain("trae");
     expect(sent).not.toContain("trae-cn");
+  });
+
+  it("🔴 复验回归(2026-09-14):取消合并勾之后,列表顺序不变、名字不变(Trae 本机未装)", async () => {
+    let linked = ["trae-cn", "trae"];
+    invoke.mockImplementation(async (cmd: string, payload?: { args?: { agentIds?: string[] } }) => {
+      if (cmd === "project_skill_set_agents") {
+        linked = payload?.args?.agentIds ?? [];
+        return { linked: [], unlinked: [], kept: [] };
+      }
+      if (cmd === "project_list") {
+        return [
+          group({
+            folderName: "erp",
+            path: "/w/erp",
+            skills: [skill({ key: "weekly-report", displayName: "weekly-report", dirSlug: "weekly-report", agents: linked })],
+          }),
+        ];
+      }
+      if (cmd === "agents_detected") {
+        return {
+          agents: [
+            { name: "claude-code", displayName: "Claude Code", installed: true, skillsDir: ".claude/skills", isUniversal: false, needsLink: true, disabled: false },
+            { name: "junie", displayName: "Junie", installed: true, skillsDir: ".junie/skills", isUniversal: false, needsLink: true, disabled: false },
+            { name: "trae", displayName: "Trae", installed: false, skillsDir: ".trae/skills", isUniversal: false, needsLink: true, disabled: false },
+            { name: "trae-cn", displayName: "Trae CN", installed: true, skillsDir: ".trae/skills", isUniversal: false, needsLink: true, disabled: false },
+          ],
+        };
+      }
+      return null;
+    });
+    render(<ProjectSections />);
+    await screen.findByText("weekly-report");
+    await userEvent.click(screen.getByTestId("prow-weekly-report-body"));
+    await screen.findByRole("checkbox", { name: /Trae CN/ });
+    const labels = () => screen.getAllByRole("checkbox").map((b) => b.closest("label")!.firstChild!.nextSibling!.textContent);
+    const before = labels();
+    expect(before).toEqual(["Trae CN", "Claude Code", "Junie"]);
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /Trae CN/ }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Trae CN/ })).not.toBeChecked());
+    expect(labels()).toEqual(before);
   });
 
   it("🔴 I2:取消勾选也要真的从提交名单里去掉,不能恒加", async () => {

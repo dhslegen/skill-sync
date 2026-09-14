@@ -69,14 +69,18 @@ export function orderForPicker(items: ToolPickerItem[]): ToolPickerItem[] {
  *
  * # 钉住的是"这一批 agent 集合"的顺序(0.6.x 清 K5 之后)
  *
- * `pinned` 里连同 agent 集合的指纹(排序后 join)一起记:**集合一变就重钉**
- * ——不看 state、不看数组顺序、不看引用。这解决的是 v7 任务 8 登记的 K5
- * (R18):此前只要第一份非空 items 钉过一次,之后哪怕整批 agent 都换掉了
- * (同一个组件实例被喂了另一个技能的数据)也照旧按老顺序排,而新集合里没有的
- * 名字只是被"兜底"排到末尾、看起来像是排序坏了。
+ * **整批换掉(新 items 与钉住的顺序毫无交集)才重钉**。这解决的是 v7 任务 8 登记的
+ * K5(R18):此前只要第一份非空 items 钉过一次,之后哪怕整批 agent 都换掉了
+ * (同一个组件实例被喂了另一个技能的数据)也照旧按老顺序排,新集合里的名字全被
+ * "兜底"排到末尾、看起来像是排序坏了。
  *
- * 🔴 **它只防"集合变了",防不了"同一集合、换了一个技能"**:两个技能恰好链到
- * 同一批工具时,指纹相同、不会重钉,顺序会从 A 漏到 B。所以下面这条前提
+ * 🔴 **判据是"毫无交集",不是"集合变了"**(2026-09-14 真机复验回归):K5 第一版按
+ * 集合指纹判,集合一变就重钉。而项目行里取消一个"已关联但未探测到"的工具,它会
+ * 直接从列表里消失——那是这次操作的结果,不是换了技能——于是刚点的那一项从最上面
+ * 跳到最下面,违反"操作期间绝不重排"。现在增减几项时剩下的保持原位、新来的排末尾。
+ *
+ * 🔴 **它防不了"换了一个技能、但工具集合有交集"**(本机探测到的候选对每个技能都一样,
+ * 这是常态):顺序会从 A 漏到 B。所以下面这条前提
  * **仍然成立**(补于 v7 任务 7 修复轮 1,I2):调用方要在换技能时换掉组件实例。
  * `pinned` 这个 `useRef` 挂在组件**实例**上,只有 React 判定"这是新的一份"(不同的
  * `key`,或元素类型本身变了)才会重新拿到一个干净的 `useRef`。⚠️ **现在四处
@@ -164,17 +168,13 @@ export function ToolPicker({
   disabled?: boolean;
   layout?: "inline" | "list";
 }) {
-  // 钉住的是"这一批 agent 集合"的顺序:集合(不看 state、不看顺序)一变就重钉。
-  // 集合没变时,不管 state 怎么翻、items 数组怎么换引用,都沿用钉住的那份。
-  const setKey = items
-    .map((item) => item.agent)
-    .sort()
-    .join("\u0000");
-  const pinned = useRef<{ setKey: string; order: string[] } | null>(null);
-  if (items.length > 0 && (pinned.current === null || pinned.current.setKey !== setKey)) {
-    pinned.current = { setKey, order: orderForPicker(items).map((item) => item.agent) };
+  // 钉住的顺序只在"整批换掉"(与钉住的毫无交集)时重算。只是增减了几项——比如取消一个
+  // 未探测到的工具让它从列表里消失——剩下的保持原位、新来的排末尾,不重排。
+  const pinned = useRef<string[] | null>(null);
+  if (items.length > 0 && (pinned.current === null || !items.some((item) => pinned.current!.includes(item.agent)))) {
+    pinned.current = orderForPicker(items).map((item) => item.agent);
   }
-  const order = pinned.current?.order ?? [];
+  const order = pinned.current ?? [];
 
   if (items.length === 0) return null;
 

@@ -245,10 +245,17 @@ function ProjectSkillRow({
       label: a.displayName,
       skillsDir: a.skillsDir,
       on: currentAgents.includes(a.name),
+      detected: true,
     })),
     ...currentAgents
       .filter((a) => !candidateNames.has(a))
-      .map((a) => ({ agent: a, label: agentNames.get(a) ?? a, skillsDir: agentSkillsDirs.get(a), on: true })),
+      .map((a) => ({
+        agent: a,
+        label: agentNames.get(a) ?? a,
+        skillsDir: agentSkillsDirs.get(a),
+        on: true,
+        detected: false,
+      })),
   ]);
   const items: ToolPickerItem[] = groups.map((g) => ({
     agent: g.id,

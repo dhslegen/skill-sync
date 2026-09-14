@@ -392,6 +392,7 @@ function ConfirmBar() {
       label: a.displayName,
       skillsDir: a.skillsDir,
       on: confirm.agentIds.includes(a.name),
+      detected: true,
     })),
   );
   const items: ToolPickerItem[] = groups.map((g) => ({

@@ -24,15 +24,26 @@ export interface ProjectToolMember {
   skillsDir: string | undefined;
   /** 这个工具眼下是否已关联(或在确认条上被选中)。 */
   on: boolean;
+  /**
+   * 这台机器探测到了它(`DetectedAgent.installed`)。没探测到、只因"已经关联"才被带进来的
+   * 成员(本机没装国际版 Trae,但 `.trae/skills` 的链接对它同样生效)**留在组里**——取消时
+   * 要一起摘——但**不进标签**:否则勾上时叫「Trae CN、Trae」、取消后叫「Trae CN」,
+   * 同一个开关两种名字(2026-09-14 复验),而确认条只列探测到的工具,两处也对不上。
+   */
+  detected: boolean;
 }
 
 /** 合并之后的一个开关:同一个项目目录的工具共用它。 */
 export interface ProjectToolGroup {
   /** 组内全部 agent 名(保持首次出现的顺序)。提交时整组一起进出。 */
   agents: string[];
-  /** 稳定标识,用作 `ToolPickerItem.agent`。 */
+  /**
+   * 稳定标识,用作 `ToolPickerItem.agent`。**按目录定**(`dir:<skillsDir>`),目录未知时取 agent 名。
+   * 🔴 不能由成员拼成:成员会随"已关联"进出(见 `detected`),id 一变 ToolPicker 就当成
+   * 另一批数据,刚点的那一项跳走(2026-09-14 复验回归)。
+   */
   id: string;
-  /** 组内展示名,调用方负责用列表分隔符拼起来。 */
+  /** 组内展示名(只含探测到的成员;一个都没有时退回全部),调用方负责用列表分隔符拼起来。 */
   labels: string[];
   skillsDir: string | undefined;
   /** 组内任一成员已关联即算开着——它们读的是同一条链接,不存在"一半开着"。 */
@@ -44,29 +55,40 @@ export interface ProjectToolGroup {
  * 组的顺序按每组第一个成员出现的位置,组内成员保持原相对顺序。
  */
 export function groupProjectTools(members: ProjectToolMember[]): ProjectToolGroup[] {
-  const groups: ProjectToolGroup[] = [];
-  const byDir = new Map<string, ProjectToolGroup>();
+  type Draft = { group: ProjectToolGroup; detectedLabels: string[]; allLabels: string[] };
+  const drafts: Draft[] = [];
+  const byDir = new Map<string, Draft>();
   for (const m of members) {
     const existing = m.skillsDir ? byDir.get(m.skillsDir) : undefined;
     if (existing) {
-      existing.on = existing.on || m.on;
-      if (existing.agents.includes(m.agent)) continue;
-      existing.agents.push(m.agent);
-      existing.labels.push(m.label);
-      existing.id = existing.agents.join("+");
+      existing.group.on = existing.group.on || m.on;
+      if (existing.group.agents.includes(m.agent)) {
+        if (m.detected && !existing.detectedLabels.includes(m.label)) existing.detectedLabels.push(m.label);
+        continue;
+      }
+      existing.group.agents.push(m.agent);
+      existing.allLabels.push(m.label);
+      if (m.detected) existing.detectedLabels.push(m.label);
       continue;
     }
-    const group: ProjectToolGroup = {
-      agents: [m.agent],
-      id: m.agent,
-      labels: [m.label],
-      skillsDir: m.skillsDir,
-      on: m.on,
+    const draft: Draft = {
+      group: {
+        agents: [m.agent],
+        id: m.skillsDir ? `dir:${m.skillsDir}` : m.agent,
+        labels: [],
+        skillsDir: m.skillsDir,
+        on: m.on,
+      },
+      detectedLabels: m.detected ? [m.label] : [],
+      allLabels: [m.label],
     };
-    groups.push(group);
-    if (m.skillsDir) byDir.set(m.skillsDir, group);
+    drafts.push(draft);
+    if (m.skillsDir) byDir.set(m.skillsDir, draft);
   }
-  return groups;
+  return drafts.map((d) => ({
+    ...d.group,
+    labels: d.detectedLabels.length > 0 ? d.detectedLabels : d.allLabels,
+  }));
 }
 
 /**

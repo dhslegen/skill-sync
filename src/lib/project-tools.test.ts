@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { applyGroupToggle, groupProjectTools, type ProjectToolMember } from "@/lib/project-tools";
 
-const m = (agent: string, skillsDir: string | undefined, on = false): ProjectToolMember => ({
+const m = (agent: string, skillsDir: string | undefined, on = false, detected = true): ProjectToolMember => ({
   agent,
   label: agent.toUpperCase(),
   skillsDir,
   on,
+  detected,
 });
 
 describe("groupProjectTools", () => {
@@ -35,9 +36,28 @@ describe("groupProjectTools", () => {
     expect(g.on).toBe(true);
   });
 
-  it("组 id 在成员集合相同时稳定,可作 ToolPickerItem 的键", () => {
-    const [g] = groupProjectTools([m("trae-cn", ".trae/skills"), m("trae", ".trae/skills")]);
-    expect(g.id).toBe("trae-cn+trae");
+  it("🔴 组 id 按目录定,成员进出不改变它(2026-09-14 复验:id 随成员变 → ToolPicker 重排)", () => {
+    // 勾上时 Trae(本机未装,只因已关联才进来)在组里,取消后它就不在了。
+    // id 若由成员拼成,两次渲染是两个不同的键,picker 判定"集合变了"并重排,刚点的那一项跳走。
+    const [linked] = groupProjectTools([m("trae-cn", ".trae/skills", true), m("trae", ".trae/skills", true, false)]);
+    const [unlinked] = groupProjectTools([m("trae-cn", ".trae/skills")]);
+    expect(linked.id).toBe(unlinked.id);
+  });
+
+  it("skillsDir 未知的组 id 仍取 agent 名(不会与目录组撞键)", () => {
+    const [g] = groupProjectTools([m("a", undefined)]);
+    expect(g.id).toBe("a");
+  });
+
+  it("🔴 名字只取这台机器探测到的成员:未安装、只因已关联才进来的不进标签(复验:勾上与取消两种名字)", () => {
+    const [g] = groupProjectTools([m("trae-cn", ".trae/skills", true), m("trae", ".trae/skills", true, false)]);
+    expect(g.labels).toEqual(["TRAE-CN"]);
+    expect(g.agents).toEqual(["trae-cn", "trae"]); // 仍在组里:取消时要一起摘
+  });
+
+  it("组里一个探测到的成员都没有时,退回全部成员的名字(不能摆一个没名字的勾)", () => {
+    const [g] = groupProjectTools([m("zed", ".zed/skills", true, false)]);
+    expect(g.labels).toEqual(["ZED"]);
   });
 });
 
