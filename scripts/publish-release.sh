@@ -463,7 +463,11 @@ echo "   新用户安装包:$GITEA/skills/skillsync-releases/releases  (发 dmg 
 echo "   老用户:app 内「设置 → 检查应用更新」立即可见;自动检查按各自设置的频率触发"
 if [[ -z "$SKIP_WINDOWS" ]]; then
   echo "   版本号 commit 与 tag v$VERSION 已由脚本推送,无需再手动 commit"
-  [[ -n "$SKIP_CI" ]] && echo "   ⚠️ SKIP_CI 模式:这版没经过 CI 双平台测试就发出去了,事后自己 gh run list 逐 job 核"
+  # 必须写成 if:`[[ -n ... ]] && echo` 在条件不成立时返回 1,作为脚本最后一条命令会让
+  # 整个发版以退出码 1 结束——0.6.1 真发时就是这样,产物与公告牌全部正常却报失败。
+  if [[ -n "$SKIP_CI" ]]; then
+    echo "   ⚠️ SKIP_CI 模式:这版没经过 CI 双平台测试就发出去了,事后自己 gh run list 逐 job 核"
+  fi
 else
   echo "   ⚠️ SKIP_WINDOWS 模式:公告牌没有 windows 条目,Windows 用户收不到这版更新"
   echo "   ⚠️ 版本号 commit 没推,所以也没有 CI 可等——这版没经过双平台测试就发出去了"
