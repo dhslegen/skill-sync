@@ -33,6 +33,18 @@ use skillsync_lib::core::state::{
 };
 use skillsync_lib::core::store::{self, IndexedSkill, SkillAttribution, SkillFile, StoreIndex};
 
+/// 这台机器上"建链成功"时 `LinkRecord.mode` / `Converged::Linked.mode` 的取值。
+///
+/// 🔴 **不能硬编码 `"symlink"`**(2026-09-14 第三轮 Windows CI 实测):实际降级链
+/// **Windows 是 `[Junction, Copy]`(不试 symlink)、POSIX 是 `[Symlink, Copy]`**
+/// (见 CLAUDE.md「建链与解链」)。写死 symlink 的断言在 macOS 上恒绿、
+/// 在 Windows 上必红,而这与路径分隔符那件事是**两个互相独立的平台差异**
+/// ——同一条测试可以同时踩中两个。
+#[cfg(windows)]
+const LINK_MODE: &str = "junction";
+#[cfg(not(windows))]
+const LINK_MODE: &str = "symlink";
+
 const NOW: &str = "2026-08-23T00:00:00.000Z";
 
 struct TmpEnv {
@@ -841,11 +853,11 @@ fn tool_state_comes_from_disk_not_from_the_account() {
     rec.links = vec![
         skillsync_lib::core::state::LinkRecord {
             dir: claude_dir.to_string_lossy().into_owned(),
-            mode: "symlink".into(),
+            mode: LINK_MODE.into(),
         },
         skillsync_lib::core::state::LinkRecord {
             dir: trae_dir.to_string_lossy().into_owned(),
-            mode: "symlink".into(),
+            mode: LINK_MODE.into(),
         },
     ];
     state.installed.push(rec);

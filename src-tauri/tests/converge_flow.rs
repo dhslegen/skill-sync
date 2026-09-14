@@ -13,6 +13,18 @@ use skillsync_lib::core::fsops::{self, LinkKind};
 use skillsync_lib::core::installer::Installer;
 use skillsync_lib::core::state::{self, State};
 
+/// 这台机器上"建链成功"时 `LinkRecord.mode` / `Converged::Linked.mode` 的取值。
+///
+/// 🔴 **不能硬编码 `"symlink"`**(2026-09-14 第三轮 Windows CI 实测):实际降级链
+/// **Windows 是 `[Junction, Copy]`(不试 symlink)、POSIX 是 `[Symlink, Copy]`**
+/// (见 CLAUDE.md「建链与解链」)。写死 symlink 的断言在 macOS 上恒绿、
+/// 在 Windows 上必红,而这与路径分隔符那件事是**两个互相独立的平台差异**
+/// ——同一条测试可以同时踩中两个。
+#[cfg(windows)]
+const LINK_MODE: &str = "junction";
+#[cfg(not(windows))]
+const LINK_MODE: &str = "symlink";
+
 /// 把 `"a/b/c"` 这种**字面带斜杠**的相对路径按段 join 到 `base` 上。
 ///
 /// 🔴 **不能直接写成 `base.join` 传一个含斜杠的串**(2026-09-11 与 09-14 两轮
@@ -86,7 +98,7 @@ fn ctx() -> (Ctx, TmpEnv) {
 
 /// 造一个含 SKILL.md 的实体技能目录,`v` 写进正文用来区分版本/内容。
 fn skill_dir(home: &Path, rel: &str, v: &str) -> PathBuf {
-    let dir = home.join(rel);
+    let dir = join_rel(home, rel);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("SKILL.md"), skill_md(v)).unwrap();
     dir
@@ -289,7 +301,7 @@ fn keep_version_keeps_the_chosen_dir_in_place_and_links_the_rest() {
     // 无名的 `Converged` 时,调用方分不清"哪个位置成了、哪个没成"。
     assert_eq!(
         r.links,
-        vec![(b.to_string_lossy().into_owned(), Ok(Converged::Linked { mode: "symlink".into() }))],
+        vec![(b.to_string_lossy().into_owned(), Ok(Converged::Linked { mode: LINK_MODE.into() }))],
         "落选位置要按 (路径, 结果) 逐条回报"
     );
     assert_eq!(
@@ -536,7 +548,7 @@ fn keep_version_preserves_an_agent_whose_link_is_healthy_and_not_a_candidate() {
     state.installed[0].agents = vec!["claude-code".into(), "trae".into()];
     state.installed[0].links = vec![state::LinkRecord {
         dir: join_rel(&env.home, ".trae/skills").to_string_lossy().into_owned(),
-        mode: "symlink".into(),
+        mode: LINK_MODE.into(),
     }];
     c.store.save_state(&state).unwrap();
 
@@ -606,12 +618,12 @@ fn set_agents_keeps_every_successful_link_in_the_account_for_remove_to_find_late
     let st = c.store.load_state().unwrap().value;
     let rec = st.installed.iter().find(|s| s.name == "s").unwrap();
     assert!(
-        rec.links.iter().any(|l| Path::new(&l.dir) == trae_dir && l.mode == "symlink"),
+        rec.links.iter().any(|l| Path::new(&l.dir) == trae_dir && l.mode == LINK_MODE),
         "trae 的链接必须进账,remove 才摘得掉它: {:?}",
         rec.links
     );
     assert!(
-        rec.links.iter().any(|l| Path::new(&l.dir) == canonical_dir && l.mode == "symlink"),
+        rec.links.iter().any(|l| Path::new(&l.dir) == canonical_dir && l.mode == LINK_MODE),
         "canonical 那条链接也必须进账: {:?}",
         rec.links
     );
@@ -947,7 +959,7 @@ fn set_agents_does_not_abort_when_the_account_has_a_stale_unknown_agent_name() {
     state.installed[0].agents = vec!["claude-code".into(), "trae".into(), "早已下线的工具".into()];
     state.installed[0].links = vec![state::LinkRecord {
         dir: join_rel(&env.home, ".trae/skills").to_string_lossy().into_owned(),
-        mode: "symlink".into(),
+        mode: LINK_MODE.into(),
     }];
     c.store.save_state(&state).unwrap();
 
@@ -1258,7 +1270,7 @@ fn set_agents_outcome_serializes_its_fields_in_camel_case() {
         results: vec![(
             "trae".into(),
             Ok(Converged::Linked {
-                mode: "symlink".into(),
+                mode: LINK_MODE.into(),
             }),
         )],
         unlinked: vec!["trae-cn".into()],

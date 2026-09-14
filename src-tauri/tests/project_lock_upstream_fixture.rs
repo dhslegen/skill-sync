@@ -16,9 +16,15 @@
 //!   `metadata.json` 与 `SKILL.md` 的先后就反了,hash 永远不等,npx 每次 update
 //!   都会把我们装的技能当成"改过了"重装。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use skillsync_lib::core::project_lock::{self, LocalEntry, LocalLockOutcome};
+
+/// 把 `"a/b/c"` 这种**字面带斜杠**的相对路径按段 join 到 `base` 上。
+/// `Path::join` 会原样保留那个斜杠,Windows 上与 core 分段拼出来的路径字符串不等。
+fn join_rel<P: AsRef<Path>>(base: P, rel: &str) -> PathBuf {
+    rel.split('/').filter(|s| !s.is_empty()).fold(base.as_ref().to_path_buf(), |p, s| p.join(s))
+}
 
 const FIXTURE: &str = include_str!("fixtures/upstream-project-lock.json");
 
@@ -29,7 +35,7 @@ fn fixture() -> serde_json::Value {
 /// 把 fixture 里的 `files`(相对路径 → 内容)铺到临时目录。
 fn materialize(dir: &Path, files: &serde_json::Value) {
     for (rel, content) in files.as_object().expect("files 必须是对象") {
-        let full = dir.join(rel);
+        let full = join_rel(dir, rel);
         std::fs::create_dir_all(full.parent().unwrap()).unwrap();
         std::fs::write(&full, content.as_str().unwrap().as_bytes()).unwrap();
     }

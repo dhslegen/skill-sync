@@ -15,6 +15,18 @@ use skillsync_lib::core::state::{InstalledSkill, LinkRecord, SharedSkill, SkillS
 use wiremock::matchers::{body_partial_json, body_string_contains, method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// 这台机器上"建链成功"时 `LinkRecord.mode` / `Converged::Linked.mode` 的取值。
+///
+/// 🔴 **不能硬编码 `"symlink"`**(2026-09-14 第三轮 Windows CI 实测):实际降级链
+/// **Windows 是 `[Junction, Copy]`(不试 symlink)、POSIX 是 `[Symlink, Copy]`**
+/// (见 CLAUDE.md「建链与解链」)。写死 symlink 的断言在 macOS 上恒绿、
+/// 在 Windows 上必红,而这与路径分隔符那件事是**两个互相独立的平台差异**
+/// ——同一条测试可以同时踩中两个。
+#[cfg(windows)]
+const LINK_MODE: &str = "junction";
+#[cfg(not(windows))]
+const LINK_MODE: &str = "symlink";
+
 /// 把 `"a/b/c"` 这种**字面带斜杠**的相对路径按段 join 到 `base` 上。
 ///
 /// 🔴 **不能直接写成 `base.join` 传一个含斜杠的串**(2026-09-11 与 09-14 两轮
@@ -1560,7 +1572,7 @@ fn install_record(c: &Ctx, dir: &Path) -> InstalledSkill {
         origin: None,
         body: None,
         agents: vec![],
-        links: vec![LinkRecord { dir: join_rel(&c.home, ".claude/skills").to_string_lossy().into_owned(), mode: "symlink".into() }],
+        links: vec![LinkRecord { dir: join_rel(&c.home, ".claude/skills").to_string_lossy().into_owned(), mode: LINK_MODE.into() }],
         installed_at: NOW.into(),
         updated_at: NOW.into(),
     }

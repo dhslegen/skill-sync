@@ -36,6 +36,12 @@ use skillsync_lib::core::skill_lock::{self, LockEntry};
 use skillsync_lib::core::state::{Config, InstalledSkill, SkillSource, State, Store, ORIGIN_ADOPTED};
 use skillsync_lib::core::store::{self, IndexedSkill, SkillAttribution, SkillFile, StoreIndex};
 
+/// 把 `"a/b/c"` 这种**字面带斜杠**的相对路径按段 join 到 `base` 上。
+/// `Path::join` 会原样保留那个斜杠,Windows 上与 core 分段拼出来的路径字符串不等。
+fn join_rel<P: AsRef<Path>>(base: P, rel: &str) -> PathBuf {
+    rel.split('/').filter(|s| !s.is_empty()).fold(base.as_ref().to_path_buf(), |p, s| p.join(s))
+}
+
 const NOW: &str = "2026-08-27T00:00:00.000Z";
 
 struct TmpEnv {
@@ -110,7 +116,7 @@ fn hash_for_marker(marker: &str) -> String {
 
 /// 在 `home` 下的 `rel` 路径写一份内容与 `marker` 对应的技能目录,返回该目录路径。
 fn skill_dir_with_hash(home: &Path, rel: &str, marker: &str) -> PathBuf {
-    let dir = home.join(rel);
+    let dir = join_rel(home, rel);
     write_marked_skill(&dir, marker);
     dir
 }
