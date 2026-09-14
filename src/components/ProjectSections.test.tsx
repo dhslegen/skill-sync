@@ -16,17 +16,17 @@ vi.mock("@tauri-apps/api/core", () => ({
  *  (不用 trae/trae-cn 这类共享目录的,断言才有确定性——与 `project_flow.rs`
  *  的既有取舍同一个理由)。 */
 const AGENT_FIXTURES = [
-  { name: "claude-code", displayName: "Claude Code", installed: true, isUniversal: false, needsLink: true, disabled: false },
-  { name: "junie", displayName: "Junie", installed: true, isUniversal: false, needsLink: true, disabled: false },
+  { name: "claude-code", displayName: "Claude Code", installed: true, skillsDir: ".claude/skills", isUniversal: false, needsLink: true, disabled: false },
+  { name: "junie", displayName: "Junie", installed: true, skillsDir: ".junie/skills", isUniversal: false, needsLink: true, disabled: false },
   // universal agent 摆进探测结果里,验证它不会混进 picker——项目级
   // current_agents/link_dirs 都跳过它,摆出来就是一个点了没效果的死勾。
-  { name: "cursor", displayName: "Cursor", installed: true, isUniversal: true, needsLink: false, disabled: false },
+  { name: "cursor", displayName: "Cursor", installed: true, skillsDir: ".cursor/skills", isUniversal: true, needsLink: false, disabled: false },
   // 🔴 M2 修复:真实 `agents_detected` 是 `detect_all`,注册表里的 75 个 agent
   // **全部**出现,没装的那些带 `installed: false`——不是"这台机器没探测到就
   // 从列表里消失"。zed 摆在这里就是这个真实形态:候选(installed 的那些)里
   // 没有它,但 `agentNames` 这份全量 name→displayName 映射里有,所以"已关联
   // 但没被探测装上"的那一档仍然能解析出真实展示名,不会退回内部 id。
-  { name: "zed", displayName: "Zed", installed: false, isUniversal: false, needsLink: true, disabled: false },
+  { name: "zed", displayName: "Zed", installed: false, skillsDir: ".zed/skills", isUniversal: false, needsLink: true, disabled: false },
 ];
 
 function skill(over: Partial<ProjectSkillView> = {}): ProjectSkillView {
@@ -368,6 +368,28 @@ describe("v7 任务 8:项目行事后改选工具", () => {
     expect(lastInvoke("project_skill_set_agents")?.args.agentIds).toContain("junie");
   });
 
+  it("K3(0.6.x):每个工具带项目内的落点路径,候选与「已关联但不在候选」两档都有", async () => {
+    // 此前 path 恒为 ""(DetectedAgent 只有全局目录,摆在项目语境里是撒谎)。
+    // 现在拼的是 <项目>/<注册表 skillsDir>——与 core 建链用的同一个字段。
+    seedProjects([
+      group({
+        folderName: "erp",
+        path: "/w/erp",
+        skills: [skill({ key: "weekly-report", displayName: "weekly-report", dirSlug: "weekly-report", agents: ["zed"] })],
+      }),
+    ]);
+    render(<ProjectSections />);
+    await screen.findByText("weekly-report");
+    await userEvent.click(screen.getByTestId("prow-weekly-report-body"));
+    await screen.findByRole("checkbox", { name: /Junie/ });
+    // 候选(installed 且非 universal)
+    expect(screen.getByText("/w/erp/.claude/skills")).toBeInTheDocument();
+    expect(screen.getByText("/w/erp/.junie/skills")).toBeInTheDocument();
+    // 已关联但这台机器没探测装上(zed installed:false):只有 agent 名,路径从
+    // agentSkillsDirs 查——那一档同样不能留空
+    expect(screen.getByText("/w/erp/.zed/skills")).toBeInTheDocument();
+  });
+
   it("🔴 I2:取消勾选也要真的从提交名单里去掉,不能恒加", async () => {
     seedProjects([
       group({
@@ -386,7 +408,7 @@ describe("v7 任务 8:项目行事后改选工具", () => {
     await screen.findByText("weekly-report");
 
     await userEvent.click(screen.getByTestId("prow-weekly-report-body"));
-    await userEvent.click(screen.getByRole("checkbox", { name: "Junie" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: /Junie/ }));
 
     // 🔴 用 toEqual,不用 arrayContaining——后者拦不住"多发了一个"(比如
     // 取消勾选那一支坏成恒加,提交出去的仍然含 junie,arrayContaining 照样通过)。
@@ -436,7 +458,7 @@ describe("v7 任务 8:项目行事后改选工具", () => {
 
     await userEvent.click(screen.getByTestId("prow-weekly-report-body"));
 
-    const junieBox = screen.getByRole("checkbox", { name: "Junie" });
+    const junieBox = screen.getByRole("checkbox", { name: /Junie/ });
     expect(junieBox).toBeChecked();
 
     await userEvent.click(junieBox);
@@ -468,7 +490,7 @@ describe("v7 任务 8:项目行事后改选工具", () => {
     // zed 没被这台机器探测装上(installed:false),不在候选(可勾选安装项)
     // 里,但已经关联,必须仍然可见且是勾上的——展示名走真实的 "Zed",
     // 不是内部 id "zed"(内部标识不能上屏,本仓已踩过两次)。
-    const zedBox = screen.getByRole("checkbox", { name: "Zed" });
+    const zedBox = screen.getByRole("checkbox", { name: /Zed/ });
     expect(zedBox).toBeChecked();
     expect(screen.queryByText("zed")).toBeNull();
 

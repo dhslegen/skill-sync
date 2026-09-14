@@ -353,9 +353,12 @@ function ProjectStatus() {
  * 场景专属的后半句,装前的确认条不适用,所以另起一个键而不是复用它)。
  *
  * **B3**:picker 从 `layout="list"` 换成 `layout="inline"`——这里的 `item.path`
- * 恒为 `""`(候选口径与「行改选」`ProjectSections.tsx` 同一份,那一层同样没有
- * 项目内相对路径可穿),`list` 相对 `inline` 唯一的优势就是带路径,在这个语境
- * 下买不到任何东西。9 个工具约两行,`max-h-[140px]` 的滚动盒与"第一项被切
+ * 恒为 `""`(候选口径与「行改选」`ProjectSections.tsx` 同一份;⚠️ 0.6.x K3 起
+ * 项目内相对路径**已经可穿**、`ProjectSections` 那一处已填上,这里仍留空是
+ * **刻意的**:`inline` chip 流不是为路径设计的,`item.path` 在两种布局下都会
+ * 渲染,填上就是把一串等宽路径混进 chip 里;而维持 `inline` 本身是用户看过
+ * 截图批的,理由不再是"没有路径"而是"确认条这个语境 chip 流更合适"),`list`
+ * 相对 `inline` 唯一的优势就是带路径,在这个语境下买不到任何东西。9 个工具约两行,`max-h-[140px]` 的滚动盒与"第一项被切
  * 一半"这种滚动中态视觉一起消失。⚠️ **这是对设计画布 §15 的偏离**(画布给
  * 确认条画的是 `list`),以本任务截图获批为准。`AgentChooser`(08 号截图)
  * 不受影响,继续用 `list`——它的 `item.path` 是真实的 `agent.globalSkillsDir`,
@@ -373,7 +376,8 @@ function ConfirmBar() {
   // 控件,用户只能沿用 `requestInstall` 算好的默认集合。候选口径与「行改选」
   // (`ProjectSections.tsx`)同一份:`pickableAgents`(已排除 universal——那类
   // 工具的 skillsDir 与本体同一处,勾了也没用),落点路径这一层同样没有项目内
-  // 相对路径可穿(与 `ProjectSections` 既有处置同一姿态,留空)。
+  // 相对路径可穿(0.6.x K3 起可穿了,`ProjectSections` 已填;这里刻意留空,
+  // 原委见上面 `ConfirmBar` 的文档)。
   //
   // 🔴 `pickableAgents === null`(探测失败)时不摆 picker——摆一个空的会让人
   // 以为"这台机器没有可选的工具"(那是假话,只是探测失败)。文字那一侧的降级

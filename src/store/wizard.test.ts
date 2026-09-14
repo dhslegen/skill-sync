@@ -9,8 +9,8 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) })
 
 const AGENTS = {
   agents: [
-    { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
-    { name: "trae", displayName: "Trae", installed: false, globalSkillsDir: "~/.trae/skills", isUniversal: false, needsLink: true, disabled: false },
+    { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", skillsDir: ".claude-code/skills", isUniversal: false, needsLink: true, disabled: false },
+    { name: "trae", displayName: "Trae", installed: false, globalSkillsDir: "~/.trae/skills", skillsDir: ".trae/skills", isUniversal: false, needsLink: true, disabled: false },
   ],
   canonicalDir: "~/.agents/skills",
 };

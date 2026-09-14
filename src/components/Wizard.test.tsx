@@ -18,6 +18,7 @@ const AGENT = {
   displayName: "Claude Code",
   installed: true,
   globalSkillsDir: "~/.claude/skills",
+  skillsDir: ".claude/skills",
   isUniversal: false,
   needsLink: true,
   disabled: false,

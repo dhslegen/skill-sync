@@ -549,6 +549,8 @@ export function buildFixtures() {
           displayName: a.displayName,
           installed: true,
           globalSkillsDir: a.dir,
+          // 相对项目根的目录(0.6.x K3):项目行 picker 用它拼落点,26 屏第一次带路径
+          skillsDir: a.dir.replace("/Users/demo/", ""),
           isUniversal: a.universal,
           needsLink: a.needsLink,
           disabled: false,

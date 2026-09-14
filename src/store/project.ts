@@ -100,6 +100,13 @@ interface ProjectState {
   /** agent 内部名 → 展示名。界面绝不露内部标识,渲染前一律经这份 map。 */
   agentNames: Map<string, string>;
   /**
+   * agent 内部名 → 相对项目根的技能目录(`DetectedAgent.skillsDir`)。给"已关联但
+   * 不在候选里"那一档拼落点路径用——那一档手里只有 agent 名。与 `agentNames`
+   * 同一次探测得来、同一处写入;探测失败时两份都保留上一次的值(它们来自注册表,
+   * 不随探测结果变),只有 `pickableAgents` 归 null。
+   */
+  agentSkillsDirs: Map<string, string>;
+  /**
    * 这台机器上装了、且不是 universal 的 agent 名单——事后改选 picker 的候选列表。
    * universal agent(如 cursor/codex)不摆:项目级 `current_agents`/`link_dirs`
    * 都跳过它们(它们的 `skillsDir` 落在 `.agents/skills`,与本体同一处,
@@ -221,6 +228,7 @@ export const useProjects = create<ProjectState>((set, get) => ({
   busyKey: null,
   confirm: null,
   agentNames: new Map(),
+  agentSkillsDirs: new Map(),
   pickableAgents: null,
   setAgentsBusy: null,
   setAgentsError: null,
@@ -242,6 +250,7 @@ export const useProjects = create<ProjectState>((set, get) => ({
       const detected = await agentsDetected();
       set({
         agentNames: new Map(detected.agents.map((a) => [a.name, a.displayName])),
+        agentSkillsDirs: new Map(detected.agents.map((a) => [a.name, a.skillsDir])),
         pickableAgents: detected.agents.filter((a) => a.installed && !a.isUniversal),
       });
     } catch {

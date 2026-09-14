@@ -19,7 +19,7 @@ const invokeMock = vi.fn(async (cmd: string, args?: unknown): Promise<unknown> =
   if (cmd === "agents_detected") {
     return {
       agents: [
-        { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
+        { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", skillsDir: ".claude-code/skills", isUniversal: false, needsLink: true, disabled: false },
       ],
       canonicalDir: "~/.agents/skills",
     };
@@ -1366,7 +1366,7 @@ describe("DetailPanel(技能广场详情态)", () => {
       if (cmd === "agents_detected") {
         return {
           agents: [
-            { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
+            { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", skillsDir: ".claude-code/skills", isUniversal: false, needsLink: true, disabled: false },
           ],
           canonicalDir: "~/.agents/skills",
         };
@@ -1400,7 +1400,7 @@ describe("DetailPanel(技能广场详情态)", () => {
       if (cmd === "agents_detected") {
         return {
           agents: [
-            { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
+            { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", skillsDir: ".claude-code/skills", isUniversal: false, needsLink: true, disabled: false },
           ],
           canonicalDir: "~/.agents/skills",
         };

@@ -13,9 +13,9 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: (...a: unknown[]) => listen(..
 
 const AGENTS = {
   agents: [
-    { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", isUniversal: false, needsLink: true, disabled: false },
-    { name: "trae", displayName: "Trae", installed: false, globalSkillsDir: "~/.trae/skills", isUniversal: false, needsLink: true, disabled: false },
-    { name: "cursor", displayName: "Cursor", installed: true, globalSkillsDir: "~/.agents/skills", isUniversal: true, needsLink: false, disabled: false },
+    { name: "claude-code", displayName: "Claude Code", installed: true, globalSkillsDir: "~/.claude/skills", skillsDir: ".claude-code/skills", isUniversal: false, needsLink: true, disabled: false },
+    { name: "trae", displayName: "Trae", installed: false, globalSkillsDir: "~/.trae/skills", skillsDir: ".trae/skills", isUniversal: false, needsLink: true, disabled: false },
+    { name: "cursor", displayName: "Cursor", installed: true, globalSkillsDir: "~/.agents/skills", skillsDir: ".cursor/skills", isUniversal: true, needsLink: false, disabled: false },
   ],
   canonicalDir: "~/.agents/skills",
 };
@@ -1005,7 +1005,7 @@ describe("beginFromPlaza(技能广场安装编排,M9 任务 5)", () => {
     // 这个 store 是同一个单例,不会自动清空。
     useInstall.setState({
       agents: [
-        { name: "trae", displayName: "Trae", installed: true, globalSkillsDir: "~/.trae/skills", isUniversal: false, needsLink: true, disabled: false },
+        { name: "trae", displayName: "Trae", installed: true, globalSkillsDir: "~/.trae/skills", skillsDir: ".trae/skills", isUniversal: false, needsLink: true, disabled: false },
       ],
       selected: new Set(["trae"]),
     });

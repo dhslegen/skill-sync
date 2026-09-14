@@ -165,6 +165,13 @@ pub struct DetectedAgent {
     pub installed: bool,
     /// 该 agent 的全局技能目录;`None` 表示它不支持全局安装(eve / promptscript)。
     pub global_skills_dir: Option<String>,
+    /// 该 agent **相对项目根**的技能目录(注册表 `skillsDir`,如 `.claude/skills`)。
+    ///
+    /// 0.6.x 清 K3 时加的:项目行事后改选的 picker 此前只能把落点路径留空——
+    /// `global_skills_dir` 是全局路径,摆在项目语境里就是撒谎。这个字段与
+    /// `project::link_dirs` 建链时 `project_root.join(&agent.skills_dir)` 用的是
+    /// **同一个**注册表字段,所以前端拼出来显示的路径就是真实落点,不是巧合。
+    pub skills_dir: String,
     pub is_universal: bool,
     pub needs_link: bool,
     /// 用户在设置页关掉了这个 agent(config.disabledAgents)。
@@ -247,6 +254,7 @@ impl AgentRegistry {
                 global_skills_dir: self
                     .global_dir(agent, env)
                     .map(|p| p.to_string_lossy().into_owned()),
+                skills_dir: agent.skills_dir.clone(),
                 is_universal: agent.is_universal(),
                 needs_link: agent.global_install_needs_link(),
                 disabled: false,
@@ -641,6 +649,19 @@ mod tests {
                 "{name} 不应在全局探测中命中"
             );
         }
+    }
+
+    /// 0.6.x K3:探测结果带上相对项目根的 `skills_dir`,且与 `project::link_dirs`
+    /// 建链时用的注册表字段是同一个——显示给用户的落点必须等于真实落点。
+    #[test]
+    fn detect_all_carries_the_project_relative_skills_dir() {
+        let r = reg();
+        let detected = r.detect_all(&FakeEnv::with_home("/h"));
+        let claude = detected.iter().find(|a| a.name == "claude-code").unwrap();
+        assert_eq!(claude.skills_dir, ".claude/skills");
+        assert_eq!(claude.skills_dir, r.get("claude-code").unwrap().skills_dir);
+        // 注册表里每个 agent 都有 skillsDir,探测结果一个都不能丢成空串
+        assert!(detected.iter().all(|a| !a.skills_dir.is_empty()));
     }
 
     #[test]

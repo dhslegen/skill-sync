@@ -103,6 +103,7 @@ describe("ToolChecks 与 AgentChooser 共用同一副 checkbox/label 骨架", ()
           displayName: "Claude Code",
           installed: true,
           disabled: false,
+          skillsDir: ".claude/skills",
           isUniversal: false,
           needsLink: true,
           globalSkillsDir: "/h/.claude/skills",

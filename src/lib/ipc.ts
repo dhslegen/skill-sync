@@ -308,6 +308,13 @@ export interface DetectedAgent {
   displayName: string;
   installed: boolean;
   globalSkillsDir?: string;
+  /**
+   * 相对项目根的技能目录(注册表 `skillsDir`,如 `.claude/skills`)。项目行事后改选
+   * 的 picker 用它拼落点路径(0.6.x K3);与 core 建链用的是同一个注册表字段。
+   * **仅供展示**,别拿它去比对任何路径——Windows 上 `<项目>\x` + `/.claude/skills`
+   * 是混排的,core 自己 `join` 出来的也是同一种混排。
+   */
+  skillsDir: string;
   isUniversal: boolean;
   needsLink: boolean;
   /** 设置页里被关掉:不进默认勾选,手动勾选不拦。 */

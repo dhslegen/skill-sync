@@ -148,6 +148,12 @@ function ProjectGroup({ group, query }: { group: ProjectGroupView; query: string
   );
 }
 
+/** 项目根 + 工具的相对技能目录 → 展示用的落点路径;相对目录未知时返回空串(不摆)。 */
+export function projectToolDir(projectPath: string, skillsDir: string | undefined): string {
+  if (!skillsDir) return "";
+  return `${projectPath.replace(/[\\/]+$/, "")}/${skillsDir}`;
+}
+
 function StatusRow({ text, hint, warn }: { text: string; hint?: string; warn?: boolean }) {
   return (
     <div className="px-3.5 py-3">
@@ -178,6 +184,7 @@ function ProjectSkillRow({
   const busyKey = useProjects((s) => s.busyKey);
   const pickableAgents = useProjects((s) => s.pickableAgents);
   const agentNames = useProjects((s) => s.agentNames);
+  const agentSkillsDirs = useProjects((s) => s.agentSkillsDirs);
   const setAgents = useProjects((s) => s.setAgents);
   const setAgentsBusy = useProjects((s) => s.setAgentsBusy);
   const setAgentsError = useProjects((s) => s.setAgentsError);
@@ -221,20 +228,26 @@ function ProjectSkillRow({
   const currentAgents = skill.agents ?? [];
   const candidates = pickableAgents ?? [];
   const candidateNames = new Set(candidates.map((a) => a.name));
+  // 项目级落点是项目根下各工具的目录(如 `<项目>/.claude/skills/`),不是全局目录。
+  // 0.6.x K3 之前这里只能留空(`DetectedAgent` 只有全局的 `globalSkillsDir`,摆在
+  // 项目语境里就是撒谎);现在 `skillsDir` 是 core 建链用的同一个注册表字段,
+  // 拼出来的就是真实落点。**仅供展示**:Windows 上是 `\` 与 `/` 混排,与 core 自己
+  // `join` 出来的一样,别拿它去比对任何路径。相对目录查不到时留空,不编造。
   const items: ToolPickerItem[] = [
     ...candidates.map((a) => ({
       agent: a.name,
       label: a.displayName,
-      // 项目级落点是项目根下各工具的目录(如 `<项目>/.claude/skills/`),不是
-      // 全局目录——这一层目前没有把每个工具的项目内相对路径穿到前端(既有的
-      // `DetectedAgent.globalSkillsDir` 是全局路径,摆在这里就是撒谎),
-      // 留空是诚实的"没有这个信息"(与 `ToolChecks` 的既有处置同一姿态)。
-      path: "",
+      path: projectToolDir(projectPath, a.skillsDir),
       state: (currentAgents.includes(a.name) ? "linked" : "off") as ToolState,
     })),
     ...currentAgents
       .filter((a) => !candidateNames.has(a))
-      .map((a) => ({ agent: a, label: agentNames.get(a) ?? a, path: "", state: "linked" as ToolState })),
+      .map((a) => ({
+        agent: a,
+        label: agentNames.get(a) ?? a,
+        path: projectToolDir(projectPath, agentSkillsDirs.get(a)),
+        state: "linked" as ToolState,
+      })),
   ];
 
   const handleToggle = (agent: string, next: boolean) => {

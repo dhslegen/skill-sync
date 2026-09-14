@@ -143,8 +143,9 @@ export function orderForPicker(items: ToolPickerItem[]): ToolPickerItem[] {
  *
  * ⚠️ **上面这句"四个调用方一起变"是 v7.1 任务 4 那一刻的实况,不是现在的**:
  * v7.6 任务 3(B3)把 `InstallPanel.tsx` 的 `ConfirmBar`(项目确认条)从
- * `list` 换成了 `inline`——它的 `item.path` 恒为 `""`(候选口径与
- * `ProjectSections.tsx` 同一份,这一层没有项目内相对路径可穿),`list`
+ * `list` 换成了 `inline`——它的 `item.path` 恒为 `""`(0.6.x K3 起项目内相对
+ * 路径已经可穿、`ProjectSections.tsx` 那一处已填,确认条仍留空是刻意的,见
+ * `InstallPanel.tsx` 的 `ConfirmBar` 文档),`list`
  * 唯一的优势(带路径)在这个语境下买不到任何东西。现在用 `LIST_ROW_EXTRA`
  * 的是 `ToolChecks`(「我的技能」)、`AgentChooser`(获取面板,`item.path` 是
  * 真实的 `agent.globalSkillsDir`,R17 的理由在那里仍然成立)、

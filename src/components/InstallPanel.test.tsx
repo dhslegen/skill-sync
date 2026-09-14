@@ -20,7 +20,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 
 const AGENTS = {
   agents: [
-    { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, isUniversal: false, needsLink: true },
+    { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, skillsDir: ".claude-code/skills", isUniversal: false, needsLink: true },
   ],
 };
 
@@ -442,7 +442,7 @@ describe("装完之后的出口", () => {
       phase: "done",
       dirSlug: "weekly-report",
       agents: [
-        { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, isUniversal: false, needsLink: true },
+        { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, skillsDir: ".claude-code/skills", isUniversal: false, needsLink: true },
       ],
       report: {
         dirSlug: "weekly-report",
@@ -591,8 +591,8 @@ describe("没能启用的那些位置:就地「在工具里启用」", () => {
       dirSlug: "weekly-report",
       selected: new Set(["claude-code", "trae"]),
       agents: [
-        { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, isUniversal: false, needsLink: true },
-        { name: "trae", displayName: "Trae", installed: true, disabled: false, isUniversal: false, needsLink: true },
+        { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, skillsDir: ".claude-code/skills", isUniversal: false, needsLink: true },
+        { name: "trae", displayName: "Trae", installed: true, disabled: false, skillsDir: ".trae/skills", isUniversal: false, needsLink: true },
       ],
       report: {
         dirName: "weekly-report",
@@ -684,7 +684,7 @@ describe("本次安装结果是临时态", () => {
       phase: "done",
       dirSlug,
       agents: [
-        { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, isUniversal: false, needsLink: true },
+        { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, skillsDir: ".claude-code/skills", isUniversal: false, needsLink: true },
       ],
       report: {
         dirSlug,
@@ -1033,7 +1033,7 @@ describe("v7.6 任务 3(Q44-A):actions 并进主行,只在 idle/done 渲染", ()
         phase: "done",
         dirSlug: "weekly-report",
         agents: [
-          { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, isUniversal: false, needsLink: true },
+          { name: "claude-code", displayName: "Claude Code", installed: true, disabled: false, skillsDir: ".claude-code/skills", isUniversal: false, needsLink: true },
         ],
         report: {
           dirSlug: "weekly-report",
