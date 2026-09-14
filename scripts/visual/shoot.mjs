@@ -237,13 +237,17 @@ const SCREENS = [
       await page.waitForTimeout(500);
     },
   },
+  // 🔴 这一屏在 0.6.x 之前**一直截的是空态**:`fixtures.mjs` 的 `project_list`
+  // 是 `[]`,而这里的 `run` 只是点一下侧边栏、睡 400ms——空页也能截,所以每一轮
+  // "截图全部产出"都成立,却没有任何人看见过这一页有数据的样子。现在走
+  // `ctx.gotoProjects`:等到真的有 `prow-*` 行渲染出来才算到了,fixture 若再退回
+  // 空数组,这一屏会**红**而不是安静地截一张空页。
   {
     id: "18-projects-page",
-    title: "侧边栏新的一页「项目里的技能」(需求 1:从页签挪出来)",
+    title: "「项目里的技能」整页(五种档:正常 / 目录不在 / 只读 / 空项目 / 单技能;行内混可更新与不可更新)",
     viewport: { width: 1200, height: 1000 },
-    async run(page) {
-      await page.getByRole("button", { name: "项目里的技能" }).click();
-      await page.waitForTimeout(400);
+    async run(page, ctx) {
+      await ctx.gotoProjects(page);
     },
   },
   // ---------------------------------------------------------------- v7.6 任务 3
@@ -328,6 +332,115 @@ const SCREENS = [
       await page.getByRole("menu").waitFor({ state: "visible" });
     },
   },
+  // ---------------------------------------------------------------- 0.6.x:项目页
+  // 走查清单「v7.7 追加」里的两条**此前只能真机验**:「项目里的技能」页底部行点
+  // 「…」菜单要完整、再滚一下页面菜单要关。根因是 `project_list` fixture 为空。
+  // 现在 fixture 有了数据,这两条落成下面 24/25 两屏——24 是截图 + 一条几何断言
+  // (菜单矩形落在视口内;截图本身证明不了"没被裁",裁掉的部分在图上就是不存在),
+  // 25 是这个 harness 的**第一条行为断言**(滚动后菜单必须消失)。
+  //
+  // 🔴 顺序必须是**先滚到底、再开菜单**:`useFloatingMenu` 在 `document` 的捕获
+  // 阶段监听 `scroll`,反过来做的话菜单会被自己触发的那次滚动立刻关掉——那时
+  // 截到的"没有菜单"是流程错了,不是产品缺陷。`scrollMain` 里的短等待就是让
+  // 滚动事件先派发完。
+  {
+    id: "24-projects-bottom-row-menu",
+    title: "「项目里的技能」· 整页最底下那一行点开「…」(v7.7:portal 之后菜单完整且落在视口内)",
+    viewport: { width: 1200, height: 760 },
+    async run(page, ctx) {
+      await ctx.gotoProjects(page);
+      await ctx.scrollMain(page, "bottom");
+      const rows = page.locator('[data-testid^="prow-"]:not([data-testid$="-body"])');
+      const count = await rows.count();
+      await rows.nth(count - 1).getByRole("button", { name: "更多" }).click();
+      const menu = page.getByRole("menu");
+      await menu.waitFor({ state: "visible" });
+      const box = await menu.boundingBox();
+      const vp = page.viewportSize();
+      if (!box || box.y < 0 || box.x < 0 || box.y + box.height > vp.height || box.x + box.width > vp.width) {
+        throw new Error(`菜单画到了视口之外:menu=${JSON.stringify(box)} viewport=${JSON.stringify(vp)}`);
+      }
+    },
+  },
+  {
+    id: "25-projects-menu-closes-on-scroll",
+    title: "「项目里的技能」· 菜单开着再滚一下页面 → 菜单关闭(v7.7:不悬在半空)",
+    viewport: { width: 1200, height: 760 },
+    async run(page, ctx) {
+      await ctx.gotoProjects(page);
+      await ctx.scrollMain(page, "bottom");
+      const rows = page.locator('[data-testid^="prow-"]:not([data-testid$="-body"])');
+      const count = await rows.count();
+      await rows.nth(count - 1).getByRole("button", { name: "更多" }).click();
+      const menu = page.getByRole("menu");
+      await menu.waitFor({ state: "visible" });
+      await ctx.scrollMain(page, -80);
+      // 行为断言:滚动之后菜单必须已经不在。超时即这一屏红(见主循环的处置)。
+      await menu.waitFor({ state: "hidden", timeout: 2000 });
+    },
+  },
+  // ⚠️ 这一屏截的是**稀档**:harness 探测到的非 universal 工具只有 Claude Code /
+  // Trae 两个,`list` 布局的 picker 因此只有两行。用户真机是 9 个工具——这一屏
+  // 看不出 `ProjectSections` 那个 `list` 布局在密档下的样子(CLAUDE.md 登记的
+  // "第五处 list 布局、只登记不动"),要看密档得给 `AGENTS` 加工具,而那会连带
+  // 改 08/09 的观感,单独一笔再做。
+  {
+    id: "26-projects-row-picker",
+    title: "「项目里的技能」· 点技能名展开事后改选(list 布局;⚠️ 稀档:只有 2 个候选工具)",
+    async run(page, ctx) {
+      await ctx.gotoProjects(page);
+      await page.getByTestId("prow-weekly-report-body").click();
+      await page.getByRole("checkbox").first().waitFor({ state: "visible" });
+      await page.waitForTimeout(200);
+    },
+  },
+  {
+    id: "27-projects-group-menu",
+    title: "「项目里的技能」· 项目标题行的「…」(在文件夹中显示 / 从列表移除)",
+    async run(page, ctx) {
+      await ctx.gotoProjects(page);
+      // 分组卡片没有 testid:从它里面的一行往上一层找到卡片,卡片里第一颗「更多」
+      // 就是标题行那颗(行上的都排在它后面)。
+      await page
+        .getByTestId("prow-weekly-report")
+        .locator("xpath=..")
+        .getByRole("button", { name: "更多" })
+        .first()
+        .click();
+      await page.getByRole("menu").waitFor({ state: "visible" });
+    },
+  },
+  // 详情面板「在哪」的第四块「项目里」(v7.6 Q46-A)——与项目页同一个空洞:
+  // 它按 `dirSlug` 从 `project_list` 派生,fixture 为空时整块不摆,此前从未出现在
+  // 任何截图里。刻意用「周报生成」而不是 02–07 屏在用的技能,让那几屏保持可比。
+  {
+    id: "28-detail-projects-block",
+    title: "详情面板 ·「在哪」第四块「项目里」(fixture 有项目数据后第一次出现)",
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      await page.getByTestId("row-weekly-report-body").click();
+      // 「在哪」几块默认折在 `where-toggle` 后面(04/06 屏同款),不点开这一块不渲染
+      await page.getByTestId("where-toggle").click();
+      await page.getByTestId("where-block-projects").waitFor({ state: "visible" });
+      await page.waitForTimeout(300);
+    },
+  },
+  // 走查清单 F4:已装过的项目仍可点,确认条主动作换成「覆盖重装」(2026-08-22 用户
+  // 拍板"标出已装是知情不是禁止")。「周报生成」已在 erp-backend 里,从「最近的项目」
+  // 点它——与 09 屏(没装过 → 「装到这里」)是同一条确认条的两档。
+  {
+    id: "29-install-project-confirm-reinstall",
+    title: "商店 · 装到已装过的项目 → 确认条主动作是「覆盖重装」(走查清单 F4)",
+    async run(page, ctx) {
+      await ctx.openStoreDetail(page, "周报生成");
+      // 主按钮是终态(「已在电脑上」)时作用域入口显性化成「装到项目… ⌄」文字按钮,
+      // 可访问名随之是那段文字;没装过时才是图标按钮「选择安装位置」。
+      await page.getByRole("button", { name: /装到项目…|选择安装位置/ }).first().click();
+      await page.getByRole("menuitem", { name: /erp-backend/ }).click();
+      await page.getByRole("button", { name: "覆盖重装" }).waitFor({ state: "visible" });
+      await page.waitForTimeout(300);
+    },
+  },
 ];
 
 // ---------------------------------------------------------------- 交互小工具
@@ -336,6 +449,24 @@ const ctx = {
     await page.getByRole("button", { name: "我的技能" }).first().click();
     // 等到真的有行渲染出来为止,不靠 sleep 猜
     await page.getByTestId("row-api-test-expert").waitFor({ state: "visible" });
+  },
+  /** 「项目里的技能」页。等到真的有一行 `prow-*` 渲染出来才算到了——这就是
+   *  对"空页也能截"那个空洞的结构性修复:fixture 退回空数组时这里会超时变红。 */
+  async gotoProjects(page) {
+    await page.getByRole("button", { name: "项目里的技能" }).first().click();
+    await page.locator('[data-testid^="prow-"]').first().waitFor({ state: "visible" });
+  },
+  /** 滚主内容区(`main > div.overflow-y-auto`,见 App.tsx;body 是 overflow:hidden
+   *  滚不动)。`to` 是 `"bottom"` 或一个相对像素数。滚完短等一下,让 `scroll`
+   *  事件派发完——`useFloatingMenu` 就靠它关菜单,不等的话"先滚再开菜单"会被
+   *  自己的滚动事件追上。 */
+  async scrollMain(page, to) {
+    await page.evaluate((to) => {
+      const el = document.querySelector("main > div.overflow-y-auto");
+      if (!el) throw new Error("找不到主滚动容器 main > div.overflow-y-auto(App.tsx 布局变了?)");
+      el.scrollTop = to === "bottom" ? el.scrollHeight : el.scrollTop + to;
+    }, to);
+    await page.waitForTimeout(150);
   },
   /** 商店页(默认页)里点开一张卡片的详情。卡片的 `aria-label` 就是技能名,
    *  但卡片内部还有一颗同名相关的按钮,所以取 `.first()`(外层卡片先出现)。 */
@@ -389,6 +520,8 @@ const base = `http://127.0.0.1:${PORT}/`;
 const vite = startVite();
 let browser;
 const problems = [];
+/** `run` 抛错的屏数。>0 时进程非零退出——截图产出了,但有屏没走到该截的状态。 */
+let failures = 0;
 
 try {
   await waitForServer(base);
@@ -422,13 +555,24 @@ try {
     });
     await installTauriMock(page, fixtures);
     await page.goto(base, { waitUntil: "domcontentloaded" });
-    await screen.run(page, ctx);
+    // 24/25 起有了带断言的屏(几何断言、行为断言)。一屏抛错**不中止整轮**:
+    // 记进 problems、照样把那一刻的样子截下来(排查时那张图比一句错误有用)、
+    // 其余屏继续跑,收尾时非零退出——别让断言退化成 `waitForTimeout`,也别让
+    // 一条红把 `index.json` 和后面二十几张图一起吞掉。
+    let runFailed = false;
+    try {
+      await screen.run(page, ctx);
+    } catch (e) {
+      problems.push(`[${screen.id}] run failed: ${e?.message ?? e}`);
+      failures += 1;
+      runFailed = true;
+    }
     // 键盘焦点环是交互残留,不是设计的一部分——留着会让并排比对多一层噪音
     await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
     const file = path.join(OUT, `${screen.id}.png`);
     await page.screenshot({ path: file });
     shots.push({ id: screen.id, title: screen.title, file });
-    console.log(`✓ ${screen.id}  ${screen.title}\n  ${file}`);
+    console.log(`${runFailed ? "✗" : "✓"} ${screen.id}  ${screen.title}\n  ${file}`);
     await page.close();
     await context.close();
   }
@@ -446,4 +590,8 @@ try {
 } finally {
   await browser?.close();
   vite.kill("SIGTERM");
+}
+if (failures > 0) {
+  console.log(`\n✗ ${failures} 屏的 run 抛错(见上面的 run failed),截图仍已产出`);
+  process.exitCode = 1;
 }

@@ -49,15 +49,19 @@ Tauri 一起起来,要内网配置且慢得多),跑完 `SIGTERM` 掉。
 
 ```js
 {
-  id: "04-projects",                    // 也是文件名
-  title: "「我的技能」· 项目里页签",     // 只进 index.json 与控制台
+  id: "30-projects-something",          // 也是文件名
+  title: "「项目里的技能」· 某一屏",      // 只进 index.json 与控制台
   viewport: { width: 1200, height: 1200 }, // 可选,默认 1200×1000(= 画板尺寸)
   async run(page, ctx) {
-    await ctx.gotoMine(page);
-    await page.getByRole("button", { name: "项目里" }).click();
+    await ctx.gotoProjects(page);       // 等到真有一行渲染出来才算到了
+    await page.getByTestId("prow-weekly-report-body").click();
   },
 }
 ```
+
+（「项目里」自 v7.3 起是独立一页 `nav.projects`「项目里的技能」，不再是「我的技能」
+下的页签；`ctx.gotoMine` / `ctx.gotoProjects` / `ctx.openStoreDetail` 三个入口都等一个
+**只有有数据才会出现**的元素，别再用"点一下侧栏 + 睡 400ms"那种写法。）
 
 约定:
 
@@ -142,11 +146,17 @@ Tauri 一起起来,要内网配置且慢得多),跑完 `SIGTERM` 掉。
 
 ## 🔴 这个 harness 证明不了什么
 
-**先读这一条（v7.7 复审加）：`fixtures.mjs` 里 `project_list: []` 是空的，
-所以「项目里的技能」整页在 harness 里永远是空态。** v7 任务 8（项目页签）与
-v7.6 的项目行菜单**从未被截图验证过**，而每一轮报告里"截图全部正常产出"
-都是真的——空页也能截。**"跑了截图"不等于"截到了东西"**，加一屏时先确认
-它的 fixture 真的有数据。
+**先读这一条（v7.7 复审加，0.6.x 已填）**：`project_list` 曾经是 `[]`，「项目里的
+技能」整页在 harness 里因此永远是空态——v7 任务 8（项目页签）与 v7.6 的项目行菜单
+从未被截图验证过，而每一轮报告里"截图全部正常产出"都是真的，**空页也能截**。
+0.6.x 起 `fixtures.mjs` 有了 `PROJECTS` 表（五种档：正常 / 目录不在 / 只读 / 空项目 /
+单技能），24–29 六屏与「在哪」第四块「项目里」（28）都在它之上；`ctx.gotoProjects`
+等的是真的有行渲染出来，fixture 若再退回空数组那几屏会**红**。留下这段是为了教训本身：
+**"跑了截图"不等于"截到了东西"**，加一屏时先确认它的 fixture 真的有数据，并让 `run`
+等一个**只有有数据才会出现**的元素。
+
+⚠️ 顺带一条：24/25 起有了**带断言**的屏（几何断言、行为断言），一屏抛错不再中止整轮
+——记进 `problems`、照样截图、其余屏继续、收尾非零退出。看到 `run failed` 先看那张图。
 
 
 

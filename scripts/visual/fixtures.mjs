@@ -250,6 +250,122 @@ const RELATION_OF = {
   shareable: "draft",
 };
 
+// ---------------------------------------------------------------- 项目里的技能
+/**
+ * 「项目里的技能」页的数据(0.6.x 填 harness 空洞:此前 `project_list: []`,
+ * 那一整页从 v7 任务 8 起**永远渲染空态**,v7.6 的项目行菜单、v7.7 的 portal
+ * 浮层在这一页都从未被截图验证过——而每一轮"截图全部产出"都成立,空页也能截)。
+ *
+ * 一张表派生出 `project_list`,派生规则照 core(`commands.rs::ProjectSkillView`
+ * 与 `project::update_target`),**不手填**会与 core 口径分叉的字段:
+ * - `folderName` 取 `path` 末段;
+ * - `updatable` = 推得出 `dirSlug` **且** 还原得出 `registryId`,差一样都不摆
+ *   「更新」;
+ * - `sourceType` 照 `project_skill_install` 写 lock 的口径:Gitea 来源写 `git`
+ *   (**不是** `gitea`——`RESTORABLE_SOURCE_TYPES` 里没有 `gitea`,写成它就是
+ *   把公司库技能全判成不可更新的假图),GitHub 来源写 `github`;
+ * - `agents` 是这个技能在**这个项目里**眼下实际链到的工具(内部名),事后改选
+ *   picker 初始勾选的唯一来源。universal 工具(cursor/codex…)在项目级本来就
+ *   不建链(`link_dirs` 跳过),所以这里只出现 claude-code / trae。
+ *
+ * 🔴 **与 09 屏的隐性耦合**:`project_pick` 返回 erp-backend 的路径,而
+ * `useProjects.requestInstall` 按 `dirSlug` 在同一路径的项目里判 `alreadyInstalled`。
+ * `security-review` **不能**放进 erp-backend——放了 09 屏的「装到这里」会变成
+ * 「覆盖重装」,`waitFor` 直接红。走查清单 F4「覆盖重装」另有一屏
+ * (`29-install-project-confirm-reinstall`),用的是已在 erp-backend 里的「周报生成」。
+ *
+ * 🔴 **公司库那几行刻意避开 02–07 屏在用的技能**(code-annotator / api-test-expert):
+ * 详情面板「项目里」块(`WhereBlocks::ProjectsBlock`)按 `dirSlug` 从
+ * `project_list` 派生,fixture 有数据之后那一块**第一次**会出现——摆进那两个
+ * 技能会让「在哪」既有几屏一起变样、失去与旧图的可比性。那一块由
+ * `28-detail-projects-block` 用「周报生成」单独截。
+ *
+ * ⚠️ 这里没有"已关联但这台机器没探测到的工具"这一档(`agentNames.get(a) ?? a`
+ * 那条路):真 core 的 `agents_detected` 返回整份注册表(75 个,含未安装的),
+ * 展示名总能解析;而 harness 的 `AGENTS` 只有 6 个,塞一个表外的 agent 名,
+ * 界面会露出原始 id——那是 fixture 伪影,不是产品发现,别把它截进送审图。
+ */
+const ERP = "/Users/demo/Developer/company/erp-backend";
+const PROJECTS = [
+  {
+    path: ERP,
+    skills: [
+      // 公司库的技能(Gitea 源)。dirSlug 与 key 相同——公司库 20 个技能全是 kebab-case
+      { key: "weekly-report", displayName: "周报生成", description: "根据随笔与代码改动记录,生成面向领导的每周工作汇报。",
+        source: "skills/skills", sourceType: "git", dirSlug: "weekly-report", registryId: "company", repo: "skills/skills",
+        agents: ["claude-code", "trae"] },
+      { key: "project-onboarding", displayName: "项目快速上手", description: "深度分析代码库,生成九部分结构化上手文档。",
+        source: "skills/skills", sourceType: "git", dirSlug: "project-onboarding", registryId: "company", repo: "skills/skills",
+        agents: ["claude-code"] },
+      // 广场技能:key(frontmatter name)≠ dirSlug(仓库目录名)——项目级安装键跟上游取 name,
+      // 「更新」与「项目里」块的匹配都必须走 dirSlug,这一行就是那 8/47 的代表
+      { key: "vercel-react-best-practices", displayName: "vercel-react-best-practices",
+        description: "React and Next.js performance optimization guidelines from Vercel.",
+        source: "vercel-labs/agent-skills", sourceType: "github", dirSlug: "react-best-practices",
+        registryId: "plaza", repo: "vercel-labs/agent-skills", agents: ["claude-code"] },
+      { key: "pdf", displayName: "pdf", description: "Read, create, and edit PDF files: extract text, fill forms, merge documents.",
+        source: "anthropics/skills", sourceType: "github", dirSlug: "pdf", registryId: "plaza", repo: "anthropics/skills",
+        agents: ["claude-code", "trae"] },
+      // 描述为空 → 行的第二行退回「来自 {library}」那句
+      { key: "internal-conventions", displayName: "内部约定", description: "",
+        source: "skills/skills", sourceType: "git", dirSlug: "internal-conventions", registryId: "company", repo: "skills/skills",
+        agents: ["trae"] },
+      // 本地来源(`npx skills add ./path` 装的):还原不出远端 → dirSlug null,不摆「更新」
+      { key: "team-glossary", displayName: "团队术语表", description: "本团队的领域词表与命名约定,回答时优先用这里的叫法。",
+        source: "./.skills-src/team-glossary", sourceType: "local", dirSlug: null, registryId: null, repo: null,
+        agents: ["claude-code"] },
+      // well-known 来源(域名):同样不可更新
+      { key: "company-style", displayName: "公司文风", description: "对外文案的语气、称谓与禁用词。",
+        source: "skills.example.com", sourceType: "well-known", dirSlug: null, registryId: null, repo: null,
+        agents: ["claude-code"] },
+    ],
+  },
+  // 目录不在了:core 保证 `skills` 必为空,界面只给「从列表移除」
+  { path: "/Users/demo/Developer/archive/old-crm", missing: true, skills: [] },
+  // lock 版本不认识 → 只读展示
+  { path: "/Users/demo/Developer/company/data-pipeline", readOnly: true, skills: [] },
+  // 碰过、但还没装任何技能的项目
+  { path: "/Users/demo/Developer/company/docs-site", skills: [] },
+  // 🔴 排最后是刻意的:24/25 两屏要点的是**整页最底下那一行**(用户 v7.7 报告的
+  // 原操作),它下面只能剩页面的 padding——中间夹着别的分组的话,那一行离视口
+  // 底边还有一两百像素,菜单往下开绰绰有余,"贴着底边会不会画出视口"就没测到。
+  // erp-backend 不能挪到这里:`recentProjects` 取的是前几个,29 屏要在「最近的
+  // 项目」里点到它。
+  {
+    path: "/Users/demo/Developer/personal/blog",
+    skills: [
+      { key: "md-translator", displayName: "Markdown 汉化", description: "语义感知地把英文 Markdown 译成中文,保留代码块与链接。",
+        source: "acme/skills-lab", sourceType: "github", dirSlug: "md-translator", registryId: "plaza", repo: "acme/skills-lab",
+        agents: ["claude-code"] },
+    ],
+  },
+];
+
+function projectSkill(s) {
+  return {
+    key: s.key,
+    displayName: s.displayName,
+    description: s.description,
+    source: s.source,
+    sourceType: s.sourceType,
+    dirSlug: s.dirSlug,
+    registryId: s.registryId,
+    repo: s.repo,
+    updatable: s.dirSlug !== null && s.registryId !== null,
+    agents: s.agents,
+  };
+}
+
+function projectGroup(p) {
+  return {
+    path: p.path,
+    folderName: p.path.split("/").pop(),
+    missing: !!p.missing,
+    readOnly: !!p.readOnly,
+    skills: p.skills.map(projectSkill),
+  };
+}
+
 /** 一份足够长的 SKILL.md,详情面板才会真的出现滚动条(截图 3 的前提)。 */
 function skillMd(name, description) {
   const paragraphs = [
@@ -463,14 +579,10 @@ export function buildFixtures() {
       // 更新日志卡片:pending 为空 = 不显示(否则它会盖在商店页顶部)
       release_notes_state: { current: "0.6.0", pending: [], all: [] },
       release_notes_ack: null,
-      // 🔴 **空数组不是"这一档没数据"，是一个覆盖空洞**（v7.7 复审登记）：
-      //   「项目里的技能」整页在 harness 里因此**永远渲染空态**，也就是说
-      //   v7 任务 8（项目页签）、v7.6 的项目行菜单，**从来没有被截图验证过**
-      //   ——而每一轮报告里"截图全部产出正常"这句话都成立，因为空页也能截。
-      //   这是本项目记的「声称的范围大于实际」在 harness 上的复现。
-      //   要填它得造一组 ProjectGroupView（含 skills 与 agents），不在 v7.7 范围，
-      //   已写进走查清单当"只能真机验"的一条。
-      project_list: [],
+      // 曾经是 `[]`(v7.7 复审登记的覆盖空洞:整页永远空态、从未被截图验证过),
+      // 0.6.x 起从上面的 `PROJECTS` 表派生。数据里放了哪些档、为什么避开某些技能,
+      // 见那张表头上的说明。
+      project_list: PROJECTS.map(projectGroup),
       // 「装到项目…」→ 系统选择框。harness 里直接给一个路径,
       // `useProjects.requestInstall` 据此摆出确认条(终审 I-2 的第二屏)。
       project_pick: "/Users/demo/Developer/company/erp-backend",
