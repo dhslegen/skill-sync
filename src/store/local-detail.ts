@@ -7,6 +7,7 @@ import { t } from "@/i18n";
 import {
   isAppError,
   skillLocalDetail,
+  storeSkillDetail,
   type AppError,
   type LocalSkillDetail,
   type LocalSkillTarget,
@@ -19,6 +20,16 @@ interface LocalDetailState {
   error: AppError | null;
 
   open: (target: LocalSkillTarget) => Promise<void>;
+  /**
+   * 「我的技能」里**本地没有本体**的行(换电脑/数据丢之后,`localPresent === false`、`body` 为空)
+   * 打开详情:内容从技能库**索引缓存**取(`store_skill_detail`,不联网),面板其余部分
+   * ——「在哪」各块、页脚的「取回」——照旧走「我的技能」这条路。
+   *
+   * 🔴 2026-09-14 真机:此前这类行也走 `open({ dirSlug })`,core 去读 canonical/<slug>,
+   * 那个文件夹根本不存在,面板只剩一句「这个文件夹不是技能」,连「取回」都没有。
+   * 坐标必须带行上**账面的库坐标**(core 对这一档恒填公司库),缺省会落到商店页当前选中的库。
+   */
+  openFromLibrary: (args: { dirSlug: string; registryId: string; repo: string }) => Promise<void>;
   close: () => void;
 }
 
@@ -45,6 +56,26 @@ export const useLocalDetail = create<LocalDetailState>((set, get) => ({
     try {
       const detail = await skillLocalDetail(target);
       // 等待期间面板被关掉/换了目标,迟到的结果不能顶掉现状
+      if (get().target === target) set({ detail });
+    } catch (raw) {
+      if (get().target === target) set({ error: toAppError(raw) });
+    }
+  },
+
+  openFromLibrary: async ({ dirSlug, registryId, repo }) => {
+    const target: LocalSkillTarget = { dirSlug };
+    set({ target, detail: null, error: null });
+    try {
+      const d = await storeSkillDetail(dirSlug, registryId, repo);
+      const detail: LocalSkillDetail = {
+        name: d.name,
+        dirSlug: d.dirSlug,
+        description: d.description,
+        path: d.path,
+        skillMd: d.skillMd,
+        files: d.files,
+        hasScripts: d.hasScripts,
+      };
       if (get().target === target) set({ detail });
     } catch (raw) {
       if (get().target === target) set({ error: toAppError(raw) });

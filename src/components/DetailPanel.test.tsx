@@ -928,6 +928,25 @@ describe("商店详情的动作区(设计 §12 + Q44-A,`PanelBody` 一侧)", () 
   });
 });
 
+describe("本地没有本体的行:详情内容来自技能库(换电脑场景,2026-09-14 真机)", () => {
+  beforeEach(() => {
+    useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
+    useInstall.setState({ phase: "idle", dirSlug: null, installed: new Map() });
+  });
+
+  it("面板有正文、页脚主按钮是「取回」——此前只剩一句「这个文件夹不是技能」", () => {
+    // 内容由 openFromLibrary 从库索引取来,形状与本地详情一致;path 是库内相对路径
+    openLocal({ path: "skills/weekly-report", skillMd: "---\nname: 周报生成\ndescription: 汇总本周工作\n---\n\n库里的正文\n" });
+    useMySkills.setState({
+      list: [{ ...installedView({ dirSlug: "weekly-report" }), section: "sharedTo", relation: "shared", localPresent: false, body: "", contentHash: "", localHash: "", tools: [] }],
+    });
+    render(<DetailPanel />);
+    expect(screen.getByText("库里的正文")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "取回" })).toBeInTheDocument();
+    expect(screen.queryByText(/不是技能/)).toBeNull();
+  });
+});
+
 describe("revealLabel", () => {
   it("按平台挑选文案", () => {
     expect(revealLabel("Mozilla (Macintosh; Mac OS X)")).toBe("在访达中打开");

@@ -320,9 +320,19 @@ export function MySkillsPage() {
         onRemove={() => askRemove(skill.dirSlug)}
         onReveal={revealOrExplain}
         onOpenDetail={() => {
-          void useLocalDetail
-            .getState()
-            .open(skill.body ? { path: skill.body } : { dirSlug: skill.dirSlug });
+          // 本地没有本体(换电脑后「已分享到」里只在库里的行):内容从库索引取,
+          // 不去读一个不存在的本地文件夹(2026-09-14 真机,见 `openFromLibrary`)。
+          if (!skill.localPresent && skill.registryId && skill.sourceOwner && skill.sourceRepo) {
+            void useLocalDetail.getState().openFromLibrary({
+              dirSlug: skill.dirSlug,
+              registryId: skill.registryId,
+              repo: `${skill.sourceOwner}/${skill.sourceRepo}`,
+            });
+          } else {
+            void useLocalDetail
+              .getState()
+              .open(skill.body ? { path: skill.body } : { dirSlug: skill.dirSlug });
+          }
           // 🔴 I3(用户拍板)+ 修复轮 2 订正:点击是"立即查"这一半的触发点
           // ——只对这一行自己的外部来源发请求,不碰其余行。
           // shareableSourceKey 为 null(非 shareable 区/纯本地草稿)时

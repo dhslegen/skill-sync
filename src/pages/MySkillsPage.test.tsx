@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -746,6 +746,22 @@ describe("移除只在本体在这台电脑上时才摆", () => {
     expect(within(row).getByRole("button", { name: "取回" })).toBeInTheDocument();
     expect(within(row).queryByRole("button", { name: /更多/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "移除" })).toBeNull();
+  });
+
+  it("🔴 localPresent 为 false 的行点开详情:从技能库取内容,不读本地(换电脑场景,2026-09-14 真机)", async () => {
+    seed([mk("a", "sharedTo", { localPresent: false, body: "", sourceOwner: "skills", sourceRepo: "skills" })]);
+    await renderAtTab(/已分享到技能库/);
+    await userEvent.click(await screen.findByTestId("row-a-body"));
+    await waitFor(() => expect(lastInvoke("store_skill_detail")?.args).toMatchObject({ dirSlug: "a", registryId: "company", repo: "skills/skills" }));
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_local_detail")).toBe(false);
+  });
+
+  it("正反对照:本地有本体的行点开详情照旧读本地", async () => {
+    seed([mk("a", "sharedTo")]);
+    await renderAtTab(/已分享到技能库/);
+    await userEvent.click(await screen.findByTestId("row-a-body"));
+    await waitFor(() => expect(lastInvoke("skill_local_detail")?.args).toMatchObject({ path: "/h/.agents/skills/a" }));
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "store_skill_detail")).toBe(false);
   });
 
   it("localPresent 为 true:「移除」在「更多」里,`localPresent` 为 false 时消失(正反对照)", async () => {
