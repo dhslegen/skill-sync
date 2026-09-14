@@ -1253,8 +1253,22 @@ async fn batch_skips_mine() {
 /// 三个文件一个都不能少:`dir_content_hash` 走的是"全部文件的相对路径 + 字节",
 /// 少一个 logo.png 就与索引里的 `content_hash` 不相等,`AlreadyHere` 那一档
 /// 根本走不到——而那正是这一节要测的东西。
+/// 把 `"a/b/c"` 这种**字面带斜杠**的相对路径按段 join 到 `base` 上。
+///
+/// 🔴 **不能直接 `base.join("a/b")`**(2026-09-11 Windows CI 实测):`Path::join`
+/// 对含 `/` 的字符串**原样保留那个斜杠**,于是 Windows 上产出
+/// `...\.claude/skills\x`,而 core 自己分段拼出来的是 `...\.claude\skills\x`
+/// ——**同一个目录,字符串却不等**,任何拿这个 fixture 路径去和账上的字符串比的
+/// 断言都会红。macOS 上两种写法恰好相同,本机怎么跑都是绿的。
+///
+/// 这正是 CLAUDE.md「路径一律按 `Path` 比,不按字符串比」记的那条 M4 教训的复发;
+/// 在 fixture 这一层根治(让测试数据本身就是规范路径),比逐个改断言更不容易漏。
+fn join_rel(base: &Path, rel: &str) -> PathBuf {
+    rel.split('/').filter(|s| !s.is_empty()).fold(base.to_path_buf(), |p, seg| p.join(seg))
+}
+
 fn plant_identical_skill(home: &Path, rel_dir: &str, slug: &str, body: &str) -> PathBuf {
-    let dir = home.join(rel_dir).join(slug);
+    let dir = join_rel(home, rel_dir).join(slug);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("SKILL.md"),
@@ -1268,7 +1282,7 @@ fn plant_identical_skill(home: &Path, rel_dir: &str, slug: &str, body: &str) -> 
 
 /// 造一份内容与库里**不同**的实体目录(只有 SKILL.md,足够被认成技能)。
 fn plant_draft(home: &Path, rel_dir: &str, slug: &str, body: &str) -> PathBuf {
-    let dir = home.join(rel_dir).join(slug);
+    let dir = join_rel(home, rel_dir).join(slug);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("SKILL.md"),

@@ -430,6 +430,20 @@ fn signed_out_downgrades_b_and_drops_c() {
 
 /// 在 `home` 之下按相对路径造一个技能目录,frontmatter 的 `name` 取**叶子名**,
 /// `description` 非空(所以默认是"可以分享"的形状),正文用 `content` 区分版本。
+/// 把 `"a/b/c"` 这种**字面带斜杠**的相对路径按段 join 到 `base` 上。
+///
+/// 🔴 **不能直接 `base.join("a/b")`**(2026-09-11 Windows CI 实测):`Path::join`
+/// 对含 `/` 的字符串**原样保留那个斜杠**,于是 Windows 上产出
+/// `...\.claude/skills\x`,而 core 自己分段拼出来的是 `...\.claude\skills\x`
+/// ——**同一个目录,字符串却不等**,任何拿这个 fixture 路径去和账上的字符串比的
+/// 断言都会红。macOS 上两种写法恰好相同,本机怎么跑都是绿的。
+///
+/// 这正是 CLAUDE.md「路径一律按 `Path` 比,不按字符串比」记的那条 M4 教训的复发;
+/// 在 fixture 这一层根治(让测试数据本身就是规范路径),比逐个改断言更不容易漏。
+fn join_rel(base: &Path, rel: &str) -> PathBuf {
+    rel.split('/').filter(|s| !s.is_empty()).fold(base.to_path_buf(), |p, seg| p.join(seg))
+}
+
 fn skill_dir(home: &Path, rel: &str, content: &str) -> PathBuf {
     let leaf = rel.rsplit('/').next().unwrap().to_string();
     skill_dir_named(home, rel, &leaf).tap_write(content)
@@ -437,7 +451,7 @@ fn skill_dir(home: &Path, rel: &str, content: &str) -> PathBuf {
 
 /// 同上,但 frontmatter 的 `name` 由调用方指定(用来造 `name != 文件夹名` 那一档)。
 fn skill_dir_named(home: &Path, rel: &str, name: &str) -> PathBuf {
-    let dir = home.join(rel);
+    let dir = join_rel(home, rel);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("SKILL.md"),
