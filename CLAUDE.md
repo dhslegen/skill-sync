@@ -573,6 +573,44 @@ macOS 包已签名·已公证·票据已装订;README 与 RELEASE_NOTES 已同�
   滚动/resize **选关闭不选跟随**;层叠档位抽成 `FLOATING_MENU_Z`(项目现役
   层叠台阶的**唯一一份完整清单**就在那个常量的文档注释里)。
 
+🔴 **Windows CI 连红三轮的完整经过(2026-09-11 至 09-14),四条判据都值得记**:
+
+**根因是两个互相独立的平台差异,而我连续三轮当成一个病在修**:
+- ①**路径分隔符**:`Path::join("a/b")` 对含 `/` 的字符串**原样保留那个斜杠**,
+  Windows 上产出 `...\.claude/skills\x`,而 core 分段拼出来的是
+  `...\.claude\skills\x`——**同一个目录,字符串却不等**;
+- ②**建链方式**:实际降级链 **Windows 是 `[Junction, Copy]`(不试 symlink)、
+  POSIX 是 `[Symlink, Copy]`**,测试里 9 处硬编码 `mode: "symlink"` 在 Windows 上必红。
+**同一条测试可以同时踩中两个**(`keep_version_keeps_the_chosen_dir_in_place_and_links_the_rest`
+就是),所以只修一个它照样红、而且红的样子一模一样——看起来像"没修对",
+实际是"只修了一半"。
+
+**四条判据**:
+1. 🔴 **完整读一次失败输出**。`mode: "symlink"` 那半个病在**第二轮**的日志里就写着,
+   我三轮没看见——因为 grep 时只留了 `panicked at|assertion`,把 `left:`/`right:`
+   过滤掉了。本文件既有的「看测试输出永不截断」记的是 `head`/`tail` 会把**红的**
+   藏起来;**用 grep 把红的原因藏起来更隐蔽**:输出看着有内容、结论却建立在残缺信息上。
+2. 🔴 **跨平台 CI 红时,先假设"不止一个病"**。
+3. 🔴 **`cargo test` 是 fail-fast 的**,缺陷只会一个文件一个文件地暴露。
+   "修 CI 报出来的那几条"这个姿势**每修一轮就多烧一轮 CI**;正确姿势是先把
+   同一形状在全仓找全(判据:「带斜杠 join」∩「路径字符串比较」,以及
+   「硬编码 mode 字面量」)。
+4. 🔴 **正则找形状会漏"斜杠在调用点、join 在辅助函数里吃变量"那一种**
+   (`skill_dir(home, ".agents/skills/s", …)` → 函数内 `home.join(rel)`)。
+
+**修法与现役约定**(两个都在 `src-tauri/tests/` 里,加新测试时照用):
+- `fn join_rel<P: AsRef<Path>>(base: P, rel: &str) -> PathBuf` —— 分段 join,
+  让 fixture 路径本身就是规范路径,下游字符串比较自然对齐;
+- `const LINK_MODE: &str`(`#[cfg(windows)] = "junction"`,否则 `"symlink"`)——
+  把散落的平台差异变成一个**有名字、有 cfg 分支、有文档注释**的东西。
+
+⚠️ **是测试侧缺陷,产品不受影响**:core 一直产出规范路径、也一直按平台选建链方式,
+错的是 fixture 的期望值;**已发出的 0.6.0 包没有这个问题**。
+⚠️ **macOS 上两种写法恰好相同、symlink 也恰好是对的,本机怎么跑都是绿的**
+(`cargo check --target x86_64-pc-windows-msvc` 在 macOS 上跑不通,aws-lc-sys 要
+Windows SDK),**唯一的裁决者是 Windows CI**。
+
+(以下是第一轮时的记载,保留作为"当时只看到一半"的现场)
 🔴 **Windows 上 `join("a/b")` 会保留字面斜杠——M4 那条教训在 v7 的新测试里复发**
 (2026-09-11,v0.6.0 的 CI 抓到,macOS job 绿、Windows job 红):
 `home.join(".claude/skills")` 在 Windows 上产出 `...\.claude/skills\x`,而 core
@@ -594,7 +632,11 @@ macOS 包已签名·已公证·票据已装订;README 与 RELEASE_NOTES 已同�
    而那道"已发过就拒绝"的守卫查的是**内网 release**、不是 git tag),重跑即恢复。
    ⚠️ 教训:**发版脚本的可重入性是它最容易被忽略的质量指标**;中断后第一件事是
    定位"走到哪一步了",不是重跑也不是回滚。
-2. 🔴 **`CI` workflow 在 Windows job 上红了,而包已经发出去了**——因为
+2. ✅ **双平台 CI 已绿**(run `34801203022`,2026-09-14 逐 job 核实:
+   `macos-latest → success`、`windows-latest → success`)——这是 v7 系列 100+ 笔
+   提交以来的**第一份绿色 CI 记录**。但它是**四轮**才绿的,经过见下面
+   「Windows 上两个互相独立的平台差异」一条,那四轮里有两轮是白费的。
+3. 🔴 **发版当时 `CI` workflow 在 Windows job 上红了,而包已经发出去了**——因为
    **`publish-release.sh` 等的是 `Release` workflow(要它的 exe artifact),不等
    `CI` workflow**。这是脚本的既有设计,不是这次的疏漏,但它意味着双平台测试的
    结论**在发版之后**才知道。根因与修复见下面「Windows 上 join 带斜杠」一条。
