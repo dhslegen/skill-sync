@@ -138,6 +138,38 @@ async fn unchanged_sha_serves_cache_without_downloading_again() {
     );
 }
 
+/// 分支头没变时,`fetched_at` 要更新成**这一次确认的时间**(0.6.x,2026-09-14 真机)。
+///
+/// 界面把它显示成「X 前刷新」。此前命中缓存原样返回旧值,于是 5 分钟兜底一直在查、
+/// 界面却一直说「1 小时前刷新」——那句话的意思是"这份内容多久前确认过是最新的",
+/// 而不是"多久前下载过压缩包"。离线降级那一档**不更新**:没联系上就不算确认过。
+#[tokio::test]
+async fn a_confirmed_unchanged_head_counts_as_a_fresh_refresh_but_offline_does_not() {
+    let server = MockServer::start().await;
+    mount_branch(&server, "aaa1111").await;
+    mount_archive(&server, &slugs(2)).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
+    store::refresh_index(&client(&server), &repo_ref(), REGISTRY, &cache, false, 100).await.unwrap();
+
+    let (index, outcome) =
+        store::refresh_index(&client(&server), &repo_ref(), REGISTRY, &cache, false, 200).await.unwrap();
+    assert!(outcome.from_cache, "前提:这一次确实命中缓存");
+    assert_eq!(archive_hits(&server).await, 1, "前提:没有重新下载");
+    assert_eq!(index.fetched_at, 200, "确认过分支头没变,就是刚刷新过");
+
+    let down = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/v1/repos/skills/skills/branches/main$"))
+        .respond_with(ResponseTemplate::new(502))
+        .mount(&down)
+        .await;
+    let (offline, outcome) =
+        store::refresh_index(&client(&down), &repo_ref(), REGISTRY, &cache, false, 300).await.unwrap();
+    assert!(outcome.offline);
+    assert_ne!(offline.fetched_at, 300, "联系不上技能库不算确认过");
+}
+
 /// **旧版本用最新 head 建的缓存必须被丢弃重建**(2026-08-07 真机踩到的缺陷)。
 ///
 /// 场景:库里先提交了 authors.json,用户机器上**还没升级的旧版本**照常刷新,

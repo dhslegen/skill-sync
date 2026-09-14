@@ -134,7 +134,8 @@ pub struct StoreIndex {
     pub commit_sha: String,
     /// 该版本的提交时间(技能库返回的原样 ISO-8601)。
     pub committed_at: String,
-    /// 本机取得这份索引的时间(unix 秒),由调用方注入以便测试。
+    /// 最近一次**确认这份索引与技能库一致**的时间(unix 秒),由调用方注入以便测试。
+    /// 重新下载时是下载时刻;分支头没变、命中缓存时也更新成那一刻(界面「X 前刷新」)。
     pub fetched_at: i64,
     pub skills: Vec<IndexedSkill>,
     #[serde(default)]
@@ -652,6 +653,9 @@ pub async fn refresh_index(
         // 50 个技能连 SKILL.md 全文一起复制一遍纯属白花钱。
         if let Some(index) = cached.take() {
             if index.commit_sha == head.sha {
+                // 刚确认过与技能库一致,就是"刚刷新过"——界面的「X 前刷新」读的是它。
+                // 不写回缓存文件:只是展示时间,每 5 分钟落一次盘不值;重启后首次检查就会再盖上。
+                let index = StoreIndex { fetched_at, ..index };
                 return Ok((index, IndexOutcome { from_cache: true, offline: false }));
             }
             cached = Some(index);
