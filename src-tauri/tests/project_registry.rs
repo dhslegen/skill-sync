@@ -45,7 +45,14 @@ fn accepts_an_ordinary_existing_directory() {
 
     // ⚠️ 比的是 canonicalize 之后的值:macOS 上 /var 是指向 /private/var 的软链,
     // 实现刻意做归一化(不做的话 HOME 本身是软链的机器上守卫会比出假阴性)。
-    assert_eq!(got, std::fs::canonicalize(&proj).unwrap());
+    // 再过一道 `normalize`:Windows 上 canonicalize 带 verbatim 前缀(`\\?\C:\…`),
+    // 实现存的是普通形式(0.6.1 真机:带前缀的项目根让链接恒判"指向别处")。
+    assert_eq!(
+        got,
+        skillsync_lib::core::fsops::normalize(&std::fs::canonicalize(&proj).unwrap())
+    );
+    #[cfg(windows)]
+    assert!(!got.to_string_lossy().starts_with(r"\\?\"), "存进清单的不能是 verbatim 形式:{got:?}");
 }
 
 /// 不存在的路径:拒绝。**绝不替用户创建目录**(与 watcher 同一条纪律)。

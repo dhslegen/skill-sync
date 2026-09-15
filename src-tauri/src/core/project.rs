@@ -209,10 +209,11 @@ pub fn validate_project_path(
 /// 项目目录被删或移走时,这条记录天然降级为"目录不存在",不留孤儿记账。
 pub fn register_project(list: &mut Vec<String>, path: &Path) {
     // 按 `normalize` 后比:0.6.1 之前存进来的是 verbatim 形式,重新登记同一个文件夹时
-    // 要把旧那条换掉,而不是并排留两条。
-    let path = &fsops::normalize(path);
+    // 要把旧那条换掉,而不是并排留两条。**存的仍是调用方给的原字符串**——在这里顺手存
+    // normalize 的结果,Windows 上会把 `/w/a` 改写成 `\w\a`(786be12 在 Windows CI 上真红过)。
     let key = path.to_string_lossy().into_owned();
-    list.retain(|p| fsops::normalize(Path::new(p)) != *path);
+    let wanted = fsops::normalize(path);
+    list.retain(|p| fsops::normalize(Path::new(p)) != wanted);
     list.insert(0, key);
     // 最近用的在前,但插入位置是 0 而列表原本有序——重新登记等于置顶。
     // 注意测试断言的是"置顶后 a 仍在 b 前",不是"顺序不变"。
