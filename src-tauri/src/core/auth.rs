@@ -511,6 +511,15 @@ pub struct KeyringStore;
 
 impl KeyringStore {
     fn entry(account: &str) -> Result<keyring::Entry, AppError> {
+        // 🔴 首次使用串行化(0.6.2 发版前 Windows CI 连续偶发红,本机 5 次复现 4 次):
+        // keyring 4.1.5 的 `v1::Entry::new` 先 CAS 置"已初始化"、**之后**才构造平台存储并
+        // `set_default_store`。并发的第一次调用里,后到的线程跳过初始化直接建条目,拿到
+        // `NoDefaultStore`——写入报「No matching credential found」、读取报「无法访问系统凭据存储」。
+        // `Once` 让第一次完整跑完才放其余线程进来。护栏:`tests/keyring_first_use_race.rs`。
+        static STORE_READY: std::sync::Once = std::sync::Once::new();
+        STORE_READY.call_once(|| {
+            let _ = keyring::Entry::new(KEYRING_SERVICE, "skillsync-store-init");
+        });
         keyring::Entry::new(KEYRING_SERVICE, account).map_err(|e| {
             AppError::new("AUTH_KEYRING", "无法访问系统凭据存储,请重试或重新登录")
                 .with_detail(e.to_string())

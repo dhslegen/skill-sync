@@ -1348,6 +1348,12 @@ v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
   - **换技能看详情时必须清掉 notice 与 confirm**:`dismissNotice` 此前定义了却
     一处没调用,提示永久留着、说的是另一个技能的事;待确认条不清更糟——
     点「装到这里」装的是上一个技能。
+- 🔴 **keyring 4.1.5 首次使用有并发竞态**(0.6.2 发版前 Windows CI `keyring_windows` 两条测试
+  轮流偶发红,本机 5 次复现 4 次):`v1::Entry::new` 先 CAS 置"已初始化",之后才
+  `set_default_store`,并发的第一次调用里后到者拿 `NoDefaultStore`(写入被我们折成 `NoEntry`,
+  报「No matching credential found」)。`KeyringStore::entry` 用 `Once` 串行化首次初始化;
+  护栏 `tests/keyring_first_use_race.rs` **必须是独立二进制**(与别的测试同进程会被先初始化掉而空转)。
+  ⚠️ 这条红过两次都被当"偶发"看待——**同一文件轮流红不同的测试,就是共享状态的指纹**。
 - 🔴 **Windows 上 `canonicalize` 产出 verbatim 路径(`\\?\C:\…`),junction 读回来却没有前缀**
   (0.6.1 Windows 真机:装到项目时勾了 Claude Code,项目行上永远未勾选、点了也勾不上)。
   `validate_project_path` 把 verbatim 形式存进 `config.projects`,`junction::create` 建链时剥掉
