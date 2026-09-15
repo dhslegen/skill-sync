@@ -441,6 +441,27 @@ const SCREENS = [
       await page.waitForTimeout(300);
     },
   },
+  // ---------------------------------------------------------------- 0.6.x 全屏
+  // 用户真机全屏(~2000px)截图:内容列靠左封顶、顶栏全出血,右半边一大片空白。
+  // 此前所有屏都是 1200 宽,**全屏这一档从来没人截过**——送审截图要覆盖最宽的窗口,
+  // 与 21 号屏「最宽档」是同一条教训。`scale: 1`:2000px 再乘 2 的图太大,看布局不需要。
+  ...[
+    ["30-wide-store", "技能商店", null],
+    ["31-wide-my-skills", "我的技能", "gotoMine"],
+    ["32-wide-projects", "项目里的技能", "gotoProjects"],
+    ["33-wide-settings", "设置", null],
+    ["34-ultrawide-store", "技能商店", null, 2560],
+  ].map(([id, nav, go, width = 2000]) => ({
+    id,
+    title: `全屏 ${width}×1200 ·「${nav}」(内容左锚定铺满、顶栏全出血;设置页维持 620)`,
+    viewport: { width, height: 1200 },
+    scale: 1,
+    async run(page, ctx) {
+      if (go) await ctx[go](page);
+      else await page.getByRole("button", { name: nav }).first().click();
+      await page.waitForTimeout(500);
+    },
+  })),
 ];
 
 // ---------------------------------------------------------------- 交互小工具
@@ -543,7 +564,7 @@ try {
     if (ONLY.length && !ONLY.includes(screen.id)) continue;
     const context = await browser.newContext({
       viewport: screen.viewport ?? DEFAULT_VIEWPORT,
-      deviceScaleFactor: 2,
+      deviceScaleFactor: screen.scale ?? 2,
       locale: "zh-CN",
       colorScheme: "light",
     });

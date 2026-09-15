@@ -81,7 +81,11 @@ export default function App() {
       <main className="flex min-w-0 flex-col">
         <Toolbar />
         <div className="flex-1 overflow-y-auto px-5 pb-8 pt-1">
-          <div className="max-w-[980px]">
+          {/* 全屏档(0.6.x):不封顶、不居中,内容左锚定铺满——桌面程序的形态
+              (Finder / 系统设置 / VS Code)。此前的 `max-w-[980px]` 是 Demo 在 ~1200px
+              窗口下的值,默认尺寸里从未生效,全屏时却让右半边空一大片。
+              🔴 别加 `mx-auto`:居中定宽是网页的做法。设置页自己的 620 留在 SettingsPage。 */}
+          <div>
             {/* 「分享」页整页已撤销(v6 二期):首次分享的入口收进「我的技能」
                 那一行的确认屏(`ShareConfirm`),`PageId` 里的 `"share"` 也已删除,
                 所以这里不再有第四个分支——落回商店页的那条 else 现在只兜
