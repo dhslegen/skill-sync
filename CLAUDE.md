@@ -1348,6 +1348,15 @@ v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
   - **换技能看详情时必须清掉 notice 与 confirm**:`dismissNotice` 此前定义了却
     一处没调用,提示永久留着、说的是另一个技能的事;待确认条不清更糟——
     点「装到这里」装的是上一个技能。
+- 🔴 **Windows 上 `canonicalize` 产出 verbatim 路径(`\\?\C:\…`),junction 读回来却没有前缀**
+  (0.6.1 Windows 真机:装到项目时勾了 Claude Code,项目行上永远未勾选、点了也勾不上)。
+  `validate_project_path` 把 verbatim 形式存进 `config.projects`,`junction::create` 建链时剥掉
+  `\\?\`、`get_target` 读回 `C:\…`,`fsops::link_state` 的 `Path ==` 按前缀种类比判为不等
+  → 恒 `Foreign`。修法在 `fsops::normalize`:`VerbatimDisk`/`VerbatimUNC` 折成普通形式,所有经它的
+  比较一起对齐(含存量清单);新选的项目存普通形式;`register/forget_project` 按 normalize 比
+  (重新登记会把旧 verbatim 条目换掉);`project_list` 发给界面的 `path` 也是普通形式。
+  ⚠️ **macOS 上没有前缀这回事,三条回归测试全是 `cfg(windows)`,本机恒不编译——唯一的裁决者是
+  Windows CI**(`normalize` 片段已在临时 crate 按 `x86_64-pc-windows-msvc` 过了 check + clippy)。
 - 🔴 **项目里的技能以 lock 记录成行,但本体可以被用户在文件管理器里直接删掉**(0.6.x,
   2026-09-14 真机):`ProjectSkillView.bodyPresent` 如实报告;`false` 时那一行标「文件已不在
   这个项目里」,不摆「更新」与工具勾(勾一下必报 `FS_MISSING_SKILL`「请刷新后重试」,刷新

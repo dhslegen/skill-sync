@@ -234,6 +234,33 @@ fn remove_still_clears_the_record_and_dangling_links_when_the_body_is_gone() {
     );
 }
 
+/// 🔴 0.6.1 Windows 真机:项目根是 `canonicalize` 出来的 verbatim 形式(`\\?\C:\…`,
+/// 选文件夹时就是这么存的),junction 读回来却是去掉前缀的 `C:\…`,`Path ==` 判不等
+/// → 装的时候勾了 Claude Code,项目行上却永远是未勾选,点了也勾不上。
+/// 只在 Windows 上成立:macOS 的 `canonicalize` 没有前缀,这条在那里恒绿、不说明任何事。
+#[cfg(windows)]
+#[test]
+fn a_verbatim_project_root_still_recognises_its_own_links() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    assert!(root.to_string_lossy().starts_with(r"\\?\"), "前提:这是 verbatim 形式");
+    project::install(&root, "weekly-report", &payload("weekly-report", "正文"), &["claude-code".to_string()], &entry("x"))
+        .unwrap();
+
+    assert_eq!(project::current_agents(&root, "weekly-report").unwrap(), vec!["claude-code".to_string()]);
+}
+
+/// 旧版本存进清单的 verbatim 路径,重新登记同一个文件夹时被换成普通形式,不并排留两条。
+#[cfg(windows)]
+#[test]
+fn registering_a_folder_again_replaces_its_old_verbatim_entry() {
+    let mut list = vec![r"\\?\C:\work\demo".to_string()];
+    project::register_project(&mut list, Path::new(r"C:\work\demo"));
+    assert_eq!(list, vec![r"C:\work\demo".to_string()]);
+    project::forget_project(&mut list, Path::new(r"\\?\C:\work\demo"));
+    assert!(list.is_empty(), "按任一形式都能移除");
+}
+
 /// Windows 降级链是 `[Junction, Copy]`,junction 建链失败时留下的就是**实体目录**
 /// (对齐 `remove` 处理"降级复制副本"的既有姿态)。这份副本如果与本体内容相同,
 /// 必须能被摘掉——否则:①用户取消勾选该工具没有任何效果,技能继续对它生效;

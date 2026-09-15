@@ -311,10 +311,23 @@ fn link_failed(link: &Path, detail: &str) -> AppError {
 /// 断言链接目标时,断言的是"词法上写的是哪条路径",不是"这条路径最终解析到哪"
 /// ——两者在家目录本身是软链的机器上会给出不同答案,断言 realpath 会漏判。
 pub fn normalize(path: &Path) -> PathBuf {
-    use std::path::Component;
+    use std::path::{Component, Prefix};
     let mut out = PathBuf::new();
     for c in path.components() {
         match c {
+            // 🔴 Windows 的 verbatim 前缀(`\\?\C:`)与普通盘符(`C:`)是同一个位置,但 `Path ==`
+            // 按前缀种类比,判为不同(0.6.1 Windows 真机):`canonicalize` 产出 verbatim 形式,
+            // 而 `junction::get_target` 读回的是去掉前缀的形式,于是项目里刚建的链接永远被判成
+            // "指向别处"、勾永远勾不上。统一折成普通形式,所有经过这里的比较都对齐。
+            Component::Prefix(p) => match p.kind() {
+                Prefix::VerbatimDisk(d) => out.push(format!("{}:", d as char)),
+                Prefix::VerbatimUNC(server, share) => out.push(format!(
+                    r"\\{}\{}",
+                    server.to_string_lossy(),
+                    share.to_string_lossy()
+                )),
+                _ => out.push(p.as_os_str()),
+            },
             Component::CurDir => {}
             Component::ParentDir => {
                 if !out.pop() {
@@ -709,6 +722,16 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("SKILL.md"), body).unwrap();
         dir
+    }
+
+    /// verbatim 前缀折成普通形式(0.6.1 Windows 真机:项目里勾不上 Claude Code)。
+    /// 只在 Windows 上有前缀这回事,macOS 上 `\\?\` 只是一个普通路径段。
+    #[cfg(windows)]
+    #[test]
+    fn normalize_folds_the_windows_verbatim_prefix_into_the_plain_form() {
+        assert_eq!(normalize(Path::new(r"\\?\C:\Users\a\b")), PathBuf::from(r"C:\Users\a\b"));
+        assert_eq!(normalize(Path::new(r"\\?\UNC\srv\share\x")), PathBuf::from(r"\\srv\share\x"));
+        assert_eq!(normalize(Path::new(r"C:\Users\a")), PathBuf::from(r"C:\Users\a"), "普通形式原样");
     }
 
     #[test]

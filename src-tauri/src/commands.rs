@@ -2726,7 +2726,9 @@ fn project_group(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| root.to_string_lossy().into_owned());
     let base = ProjectGroupView {
-        path: root.to_string_lossy().into_owned(),
+        // 普通形式:0.6.1 之前的清单里可能存着 `\\?\C:\…`,原样发给界面就会露出来。
+        // 这个值也是界面回传的寻址键,`forget_project`/`register_project` 都按 normalize 比,对得上。
+        path: crate::core::fsops::normalize(root).to_string_lossy().into_owned(),
         folder_name,
         missing: !root.is_dir(),
         read_only: false,

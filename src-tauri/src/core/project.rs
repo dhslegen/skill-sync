@@ -196,7 +196,9 @@ pub fn validate_project_path(
         return Err(ProjectPathError::InsideCanonical);
     }
 
-    Ok(resolved)
+    // 存普通形式,不存 verbatim(`\\?\C:\…`):那是 Windows 上 `canonicalize` 的产物,
+    // 界面上原样露出来不像人话,链接判定也会因前缀种类不同而失配(见 `fsops::normalize`)。
+    Ok(fsops::normalize(&resolved))
 }
 
 // ============================================================ 项目清单
@@ -206,8 +208,11 @@ pub fn validate_project_path(
 /// 清单只是"用户碰过哪些项目"的路径列表——技能级真相在各项目的 `skills-lock.json` 里。
 /// 项目目录被删或移走时,这条记录天然降级为"目录不存在",不留孤儿记账。
 pub fn register_project(list: &mut Vec<String>, path: &Path) {
+    // 按 `normalize` 后比:0.6.1 之前存进来的是 verbatim 形式,重新登记同一个文件夹时
+    // 要把旧那条换掉,而不是并排留两条。
+    let path = &fsops::normalize(path);
     let key = path.to_string_lossy().into_owned();
-    list.retain(|p| Path::new(p) != path);
+    list.retain(|p| fsops::normalize(Path::new(p)) != *path);
     list.insert(0, key);
     // 最近用的在前,但插入位置是 0 而列表原本有序——重新登记等于置顶。
     // 注意测试断言的是"置顶后 a 仍在 b 前",不是"顺序不变"。
@@ -215,7 +220,8 @@ pub fn register_project(list: &mut Vec<String>, path: &Path) {
 
 /// 从清单移除。**纯记账**:磁盘一个字节都不动(用户的技能仍在项目里)。
 pub fn forget_project(list: &mut Vec<String>, path: &Path) {
-    list.retain(|p| Path::new(p) != path);
+    let path = fsops::normalize(path);
+    list.retain(|p| fsops::normalize(Path::new(p)) != path);
 }
 
 /// 从载荷里取出安装键。
