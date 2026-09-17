@@ -943,6 +943,41 @@ pub async fn share_installed(
     let remote_path = record.source.path.trim_end_matches('/').to_string();
     let prefix = format!("{remote_path}/");
     let archive = read.download_archive(&repo).await?;
+
+    // 🔴 **「不是我分享的技能」在这里被拒**(v8 任务 6 / D7)。
+    //
+    // ⚠️ **这不是「同一条规则查两遍」,别当空转删掉**:界面自 v8 任务 6 起已经
+    // 不摆「贡献更改」那颗按钮了——那是**不摆**;这里是**不许**,防的是绕过界面
+    // 的调用(存量前端、脚本、以后被人顺手接回去的新入口)。两层职责不同:
+    // 界面负责"不引导用户走一条死路",core 负责"这条路真的走不通"。
+    //
+    // 判据走 [`ownership::relation`](全仓唯一一处"这是不是我分享的"判定),
+    // 作者取自**刚下载的这份压缩包**里的库根 authors.json:零新增请求,而且是
+    // 此刻库里的实时事实。**刻意不用 `store::cached_author`**——索引缓存冷着时
+    // 它返回 `None`,会把一次合法的「分享改动」误拒。
+    //
+    // 🔴 **库里没登记作者时放行**:那一刻我们并不知道"这不是你的",而
+    // "拿不知道当没有"是本项目反复记着的另一种撒谎(与"权限探不到一律 Unknown、
+    // 绝不落进无权限档"同一条)。真实内网库里"改别人的技能"这一档必然有作者
+    // (38 个技能 / 5 位作者,D7 的实证),漏掉的只是"作者未登记"那一小撮,
+    // 而那一撮界面同样不摆按钮。
+    if let Some(library_slug) = record.library_dir_slug() {
+        if let Some(author) =
+            crate::core::store::parse_authors(&archive).get(&library_slug).map(|a| a.author.clone())
+        {
+            let config = store.load_config()?.value;
+            let me = config.identities.get(&record.source.registry_id);
+            if ownership::relation(me, Some(author.as_str()), true, true) != ownership::Relation::Shared
+            {
+                return Err(AppError::new(
+                    "REPO_NOT_AUTHOR",
+                    format!("这个技能是 {author} 分享的,你的改动不会自动进技能库。想让作者采纳,直接联系 {author}"),
+                )
+                .with_detail(format!("author={author}, slug={library_slug}, me={:?}", me.map(|i| &i.login))));
+            }
+        }
+    }
+
     let changes =
         plan_changes(&prefix, &remote_files(&archive, &prefix), payload_files(&source_dir, &prefix)?)?;
 

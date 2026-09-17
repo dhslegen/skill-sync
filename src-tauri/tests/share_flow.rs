@@ -1433,6 +1433,125 @@ fn zip_of_weekly(md: &str) -> Vec<u8> {
     buf
 }
 
+/// 同上,但库根多一份 `authors.json` 把 `weekly-report` 记在 `author` 名下
+/// (v8 任务 6:`share_installed` 的归属闸就是从这里读作者的,零新增请求)。
+fn zip_of_weekly_by(md: &str, author: &str) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut buf = Vec::new();
+    {
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let opts = zip::write::SimpleFileOptions::default();
+        w.start_file("repo/authors.json", opts).unwrap();
+        w.write_all(
+            serde_json::json!({ "authors": { "weekly-report": { "author": author } } })
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+        w.start_file("repo/skills/weekly-report/SKILL.md", opts).unwrap();
+        w.write_all(md.as_bytes()).unwrap();
+        w.finish().unwrap();
+    }
+    buf
+}
+
+/// 这台机器上的登录身份(赵文浩 / zhaowh)落进 `config.identities["company"]`。
+fn login_as_me(c: &Ctx) {
+    let mut config = skillsync_lib::core::state::Config::default();
+    config.identities.insert(
+        "company".into(),
+        Identity { login: "zhaowh".into(), display_name: "赵文浩".into() },
+    );
+    c.store.save_config(&config).unwrap();
+}
+
+/// 账上有一条已改过的 `weekly-report`,准备回推。
+fn installed_and_edited(c: &Ctx) -> PathBuf {
+    let dir = canonical(c).join("weekly-report");
+    write_skill(&dir, "weekly-report", "原版");
+    let mut state = state_of(c);
+    state.installed.push(install_record(c, &dir));
+    c.store.save_state(&state).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: weekly-report\ndescription: 我改过\n---\n").unwrap();
+    dir
+}
+
+/// 🔴 **v8 任务 6 / D7:改**别人**的技能,core 直接拒,而且一个写请求都不发。**
+///
+/// 界面那侧已经不摆「贡献更改」按钮了(那是**不摆**);这一条钉的是**不许**
+/// ——防的是绕过界面的调用。两层职责不同,不是同一条规则查两遍。
+#[tokio::test]
+async fn contributing_to_someone_elses_skill_is_refused_without_writing_anything() {
+    let (c, env) = ctx();
+    installed_and_edited(&c);
+    login_as_me(&c);
+
+    let server = MockServer::start().await;
+    // 刻意**不挂**任何写端点:闸没生效的话,这条测试红在别的地方也照样是红的,
+    // 而下面对错误码与"零 POST"的正面断言保证它只在该红的时候红成这个样子。
+    mount_archive(&server, zip_of_weekly_by(WEEKLY_PRISTINE, "李四")).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+
+    let err = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", true, NOW)
+        .await
+        .expect_err("库里记的作者是李四,不是我 —— 必须拒");
+    assert_eq!(err.code, "REPO_NOT_AUTHOR", "{err:?}");
+    assert!(err.message.contains("李四"), "要点名作者是谁:{}", err.message);
+
+    let reqs = server.received_requests().await.unwrap();
+    assert!(
+        !reqs.iter().any(|r| r.method.as_str() != "GET"),
+        "拒绝那一档不许发任何写请求:{:?}",
+        reqs.iter().map(|r| (r.method.as_str().to_string(), r.url.path().to_string())).collect::<Vec<_>>()
+    );
+    // 账本也一个字不动(基线还是改之前那份)。
+    let state = state_of(&c);
+    assert_eq!(state.installed[0].commit_sha, "aaa");
+}
+
+/// 对照组一:库里记的作者就是我 → 照常推得上去。
+///
+/// 没有它,"`share_installed` 一进门无条件报 `REPO_NOT_AUTHOR`"这个坏实现也能
+/// 让上一条通过。(对照组二是 `pushing_local_changes_back_updates_the_books`:
+/// 库里**没登记作者**时放行——那一刻我们并不知道"这不是你的"。)
+#[tokio::test]
+async fn my_own_skill_still_pushes_when_the_library_records_me_as_the_author() {
+    let (c, env) = ctx();
+    let dir = installed_and_edited(&c);
+    login_as_me(&c);
+
+    let server = MockServer::start().await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/repos/skills/skills/branches/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "commit": { "id": "head1", "timestamp": "2026-07-31T08:00:00Z" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/api/v1/repos/skills/skills/git/trees/.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "tree": [ { "path": "skills/weekly-report/SKILL.md", "sha": "oldsha", "type": "blob" } ],
+            "truncated": false
+        })))
+        .mount(&server)
+        .await;
+    // 展示名那一种写法(`Identity::aliases` 两种都认)。
+    mount_archive(&server, zip_of_weekly_by(WEEKLY_PRISTINE, "赵文浩")).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", true, NOW)
+        .await
+        .unwrap();
+    let share::ShareInstalledOutcome::Submitted(submitted) = outcome else {
+        panic!("库里记的作者就是我,应当直接提交:{outcome:?}");
+    };
+    assert_eq!(submitted.mode, ShareMode::Pushed);
+    assert_eq!(state_of(&c).installed[0].content_hash, fsops::dir_content_hash(&dir).unwrap());
+}
+
 /// `write_skill(dir, "weekly-report", "原版")` 落盘的同一份字节——远端与账上一致的场景用它。
 const WEEKLY_PRISTINE: &str = "---\nname: weekly-report\ndescription: 原版\n---\n正文\n";
 

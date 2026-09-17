@@ -29,7 +29,7 @@ import { useStoreIndex } from "@/store/store-index";
  * ——真出现了那种形状,用户看到的是错误态,不是一个不弹的弹窗。
  */
 export function ConflictDialog() {
-  const { phase, precheck, dirSlug, run, keepLocalAndShare, keepLocalAndShareMine, cancel } =
+  const { phase, precheck, dirSlug, run, keepLocalAndShareMine, cancel } =
     useInstall();
   // 弹窗里要出现的是用户认得的名字(周报生成),不是内部目录名(weekly-report)。
   // core 里流转的一直是目录名,到界面这一层必须换回展示名。
@@ -131,15 +131,13 @@ export function ConflictDialog() {
         <div className="mt-4 flex flex-col gap-2">
           {modified ? (
             <>
-              {/* 默认项(用户拍板):保留本地并把改动分享上去——任务 11 起通道真实存在 */}
+              {/* 🔴 v8 任务 6 / D7:「保留并分享我的改动」已删除——这一档改的是
+                  **别人**的技能,那条路整条下线了(core 侧 `share_installed` 直接拒)。
+                  默认焦点顺势落到「保留本地的」:它一个字节都不动,是两条里无损的
+                  那一条(与 `localDiffers` 那一档同一个理由)。 */}
               <Choice
                 ref={keepRef}
                 primary
-                label={t("conflict.keepShare")}
-                hint={t("conflict.keepShareHint")}
-                onClick={() => void keepLocalAndShare()}
-              />
-              <Choice
                 label={t("conflict.keepLocal")}
                 hint={t("conflict.keepLocalHint")}
                 onClick={() => void run("keepLocal")}
@@ -160,8 +158,8 @@ export function ConflictDialog() {
               onClick={() => void run("overwrite")}
             />
           ) : mine ? (
-            // 只有两个按钮(v6 任务分解裁定 #2):没有「保留并贡献」——那个是给
-            // 分享别人技能的非作者用的,作者本人不需要"贡献"自己的东西。
+            // 只有两个按钮(v6 任务分解裁定 #2):没有「保留并贡献」——那条路
+            // v8 任务 6 已整条下线,连非作者那一档都没有了。
             <>
               <Choice
                 ref={keepRef}

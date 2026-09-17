@@ -524,7 +524,12 @@ fn parse_tags(archive: &RepoArchive) -> std::collections::HashMap<String, Vec<St
 ///
 /// 管理员侧的约定就是这个形状(scripts/gen-authors 产出、部署指南 §5)——
 /// 改形状要连同这里的注释、脚本与部署指南一起改。
-fn parse_authors(archive: &RepoArchive) -> std::collections::HashMap<String, SkillAttribution> {
+/// (v8 任务 6 起 `pub(crate)`:`share::share_installed` 要从**它自己刚下载的
+/// 那份压缩包**里读同一份 authors.json 判"这是不是我分享的技能"。抄一份解析
+/// 就是本项目记录的空转模式 ①——两份宽容规则漂了没有任何测试会发现。)
+pub(crate) fn parse_authors(
+    archive: &RepoArchive,
+) -> std::collections::HashMap<String, SkillAttribution> {
     let Some(raw) = archive.tree.read_file(&format!("{}/authors.json", archive.root)) else {
         return Default::default();
     };

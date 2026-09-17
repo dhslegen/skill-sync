@@ -42,7 +42,7 @@ export function ShareConfirm() {
   const shareBusy = useMySkills((s) => s.shareBusy);
   // 归属过滤(终审复审轮 1,C-A):`shareError` 现在带 dirSlug。这个确认屏只该
   // 说自己这一个技能的事——`beginShare` 已经把它清空,过滤更多是防"另一条路
-  // (行上的「贡献更改」)在确认屏开着时失败"这种交叠。
+  // (行上的「分享改动」)在确认屏开着时失败"这种交叠。
   const rawShareError = useMySkills((s) => s.shareError);
   const confirmShare = useMySkills((s) => s.confirmShare);
   const rawPreview = useMySkills((s) => s.sharePreview);

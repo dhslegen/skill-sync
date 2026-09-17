@@ -1,27 +1,26 @@
-//! 端到端(v7 任务 9):**一个"安装自公司技能库"的技能被本地改过、贡献回库**的完整一圈。
+//! 端到端(v7 任务 9;v8 任务 6 改写终点):**一个"安装自公司技能库"的技能被
+//! 本地改过之后会怎样**的完整一圈。
 //!
 //! `my_skills::build`(三区判据)→ `acquire::acquire`(取回)→ 本地编辑 →
-//! `share::share_installed`(贡献更改,v8 起直推)→ 再回 `my_skills::build`
-//! → 库里内容变成用户贡献的那一版 → 再回 `my_skills::build`。
+//! `share::share_installed`(**被 core 拒**)→ 再回 `my_skills::build`。
 //!
-//! # 🔴 v8 任务 3 起这条链路只剩直推(D1)
+//! # 🔴 v8 任务 6 起「贡献更改」整条下线(D7)
 //!
-//! 这个文件原先记着 v7 的两处"与任务书叙述的偏离",两处的根都是**「贡献更改」恒走
-//! 提交审核**:①"审核中"只属于「可分享到」区,所以贡献完这一行不显示审核中;
-//! ②走评审刻意不更新 `content_hash` 基线,于是 PR 合并后 `local_modified` 与
-//! `remoteChanged` **同时**为真,终态是冲突档而不是「有更新」。
+//! 这个文件原先走到底:贡献更改 → 直推进库 → 基线对齐 → 两侧一致。**那条路
+//! 已经没有了**。内网实测 38 个技能 / 5 位作者,`authors.json` 里贡献者字段一个
+//! 都没有——"改别人的技能"这件事从未真正发生过;而它今天走的是提交审核
+//! (v8 任务 3 已砍),留着就是"点了之后什么都不会发生"。用户拍板:**这个 app
+//! 的定位是分发,不是协作编辑**;想改别人的技能,说一声比什么机制都快。
 //!
-//! **v8 把那条路整个删了,两处偏离随之作废**——而②描述的那个死循环正是 v8 的起因
-//! (内网实测:同事点「分享改动」开出空 PR,合并后行上仍显示"库里有新版",再点又
-//! 一个)。现在贡献更改直推进库、**当场更新基线**(D3),所以这条端到端的终态变成
-//! 了它本该有的样子:**推完就一致了,行上什么都不用做**。下面第 ④/⑤ 步正面断言
-//! 这件事——它同时是"基线在内容确实进库时才更新"这条承诺的端到端护栏。
+//! 所以终态变成:行上如实说一句「和库里的不一样」,出路是「改用库里的版本」
+//! 或者直接联系作者。core 这一侧是**不许**(界面那一侧是**不摆**,两层职责
+//! 不同,不是同一条规则查两遍)。
 //!
 //! # 断言口径(与 `e2e_author_loop.rs` 同一套纪律)
 //!
 //! 磁盘层与账本层分开断言——只断言磁盘的话,"内容对了但账本没有对应记录"照样能过;
-//! 只断言账本的话,"账本说贡献成功但本体其实没改"也一样能过。步骤③额外多断言一层
-//! **网络请求本身**(head 分支前缀、提交矩阵砍掉直推),这是本任务书唯一点名要测的东西。
+//! 只断言账本的话,"账本说成功但本体其实没改"也一样能过。步骤③额外多断言一层
+//! **网络请求本身**(零写请求),这是"拒绝那一档磁盘与远端都零动作"唯一的正面证据。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -33,9 +32,8 @@ use skillsync_lib::core::gitea::{GiteaClient, RepoRef};
 use skillsync_lib::core::my_skills;
 use skillsync_lib::core::ownership::{Identity, Relation, Section};
 use skillsync_lib::core::registry;
-use skillsync_lib::core::share::{self, ShareClient, ShareInstalledOutcome, ShareMode};
+use skillsync_lib::core::share::{self, ShareClient};
 use skillsync_lib::core::state::{Config, State, Store};
-use skillsync_lib::core::store as store_index;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -201,93 +199,19 @@ async fn mount_library_v1(server: &MockServer) {
         .await;
     Mock::given(method("GET"))
         .and(wiremock::matchers::path_regex(r"^/api/v1/repos/skills/skills/archive/main\.zip$"))
-        // 配额 3:① 取回一次;③ 贡献更改的**预览轮**一次(算差集 + 覆盖闸);
-        // ③' 用户确认后的**执行轮**再一次(v8 任务 5 起两轮各自下载一次压缩包,
-        // 两轮之间用户可能等了很久,拿上一轮的旧快照提交才是真的危险)
+        // 配额 2:① 取回一次;③ 被拒的那一跳一次(归属闸读的是这份压缩包里的
+        // 库根 authors.json —— 零新增请求,闸在下载之后、任何写请求之前)
         .respond_with(ResponseTemplate::new(200).set_body_bytes(library_zip("库里的初版正文", "李四")))
-        .up_to_n_times(3)
+        .up_to_n_times(2)
         .mount(server)
         .await;
-}
-
-/// 库的第二版:贡献更改已经直推进库 —— 库里的内容与用户本地贡献的
-/// 一致。挂载时机**必须晚于**步骤③(v1 的配额届时已经用完,见 [`mount_library_v1`])。
-async fn mount_library_v2(server: &MockServer, merged_body: &str) {
-    Mock::given(method("GET"))
-        .and(path("/api/v1/repos/skills/skills/branches/main"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "name": "main",
-            "commit": { "id": "sha-v2", "timestamp": "2026-08-29T09:30:00+08:00" }
-        })))
-        .mount(server)
-        .await;
-    Mock::given(method("GET"))
-        .and(wiremock::matchers::path_regex(r"^/api/v1/repos/skills/skills/archive/main\.zip$"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(library_zip(merged_body, "李四")))
-        .mount(server)
-        .await;
-}
-
-/// 「贡献更改」(`share::share_installed`,v8 起直推)要用到的端点:
-/// 仓库信息(有推权限)、`git/trees`(更新路径要拿远端 blob sha)、当前登录用户
-/// 与库根 `authors.json`(归因维护,读 404 = 库里还没有这份文件)、提交。
-async fn mount_contribute_endpoints(server: &MockServer) {
-    Mock::given(method("GET"))
-        .and(path("/api/v1/repos/skills/skills"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "default_branch": "main",
-            "permissions": { "admin": false, "push": true, "pull": true },
-            "empty": false
-        })))
-        .mount(server)
-        .await;
-    Mock::given(method("GET"))
-        .and(wiremock::matchers::path_regex(r"^/api/v1/repos/skills/skills/git/trees/sha-v1$"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "tree": [
-                { "path": format!("skills/{SLUG}/SKILL.md"), "sha": "old-blob-sha", "type": "blob" }
-            ],
-            "truncated": false
-        })))
-        .mount(server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/api/v1/user"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "login": "zhaowh", "full_name": "赵文浩"
-        })))
-        .mount(server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/api/v1/repos/skills/skills/contents/authors.json"))
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({"message": "GetContentsOrList"})))
-        .mount(server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/contents"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "commit": { "sha": "commit-with-my-edit", "html_url": "http://x/commit/commit-with-my-edit" }
-        })))
-        .mount(server)
-        .await;
-}
-
-async fn refresh_index(server: &MockServer, c: &Ctx) -> store_index::StoreIndex {
-    let client = GiteaClient::new(server.uri(), None).unwrap();
-    let repo = repo_ref();
-    let cache = store_index::cache_path(c.store.dir(), registry::BUILTIN_REGISTRY_ID, &repo);
-    let (index, _) = store_index::refresh_index(&client, &repo, registry::BUILTIN_REGISTRY_ID, &cache, false, 0)
-        .await
-        .unwrap();
-    index
 }
 
 // ============================================================ 闭环
 
-/// 取回 → 三区落"安装自" → 本地改 → 贡献更改(恒走评审)→ 再回「我的技能」→
-/// 模拟 PR 合并 → 再回「我的技能」。
+/// 取回 → 三区落"安装自" → 本地改 → 试着推回去被 core 拒 → 磁盘与账本零变化。
 #[tokio::test]
-async fn a_skill_installed_from_the_company_library_can_be_edited_and_contributed_back() {
+async fn a_skill_installed_from_the_company_library_cannot_be_pushed_back_by_a_non_author() {
     let (c, env) = ctx();
     let server = MockServer::start().await;
     mount_library_v1(&server).await;
@@ -352,38 +276,23 @@ async fn a_skill_installed_from_the_company_library_can_be_edited_and_contribute
 
     let rows = c.rows(&env);
     let row = &rows[0];
-    // 这一元组就是前端 rowAction 判定表(installedFrom 分支)选中「贡献更改」的全部依据:
-    // localModified 为真、这一刻 remoteChanged 为假(库还没变)、没有被分享闸拦住。
+    // 这一元组就是前端 rowAction 判定表(installedFrom 分支)选中
+    // 「和库里的不一样」(v8 任务 6 起取代「贡献更改」)的全部依据:
+    // localModified 为真、这一刻 remoteChanged 为假(库还没变)。
     assert!(row.local_modified, "编辑之后必须被认出来");
     assert_eq!(row.content_hash, baseline_hash, "基线不因本地编辑而动");
     assert!(row.share_blocked.is_none(), "编辑后内容仍合规");
     assert_eq!(row.section, Section::InstalledFrom, "本地改动不改变这一行归属的区");
 
-    // ────────────── ③ 贡献更改(v8 任务 3 起:直推,不再开合并请求)
-    mount_contribute_endpoints(&server).await;
-    // v8 任务 5:先走一轮预览(确认屏打开时发的那一跳),拿到这次会改动哪些文件。
-    let preview = share::share_installed(
-        &ShareClient::Gitea(&client),
-        &client,
-        &c.registry,
-        &env,
-        &c.store,
-        SLUG,
-        &repo.branch,
-        false,
-        NOW,
-    )
-    .await
-    .unwrap();
-    let ShareInstalledOutcome::NeedsConfirm { plan, overwrite } = preview else {
-        panic!("预览轮应当回一份清单:{preview:?}");
-    };
-    assert_eq!(plan.modified, vec!["SKILL.md".to_string()], "只改了正文");
-    assert!(plan.added.is_empty() && plan.deleted.is_empty(), "{plan:?}");
-    assert!(overwrite.is_none(), "远端内容与基线一致,没有人会被顶掉");
-
-    // 用户在确认屏上按了确认 → 这一跳才真的提交。
-    let outcome = share::share_installed(
+    // ────────────── ③ 「贡献更改」已下线:core 直接拒,且一个写请求都不发
+    //
+    // 🔴 **v8 任务 6 / D7**:内网实测 38 个技能 / 5 位作者,`authors.json` 里贡献者
+    // 字段一个都没有——"改别人的技能"这件事从未真正发生过。界面自此不摆那颗按钮
+    // (**不摆**),core 这一道是**不许**,防的是绕过界面的调用。两层职责不同,
+    // 不是同一条规则查两遍。
+    //
+    // 刻意**不挂**任何写端点:闸真的生效时,一个写请求都发不出去。
+    let err = share::share_installed(
         &ShareClient::Gitea(&client),
         &client,
         &c.registry,
@@ -395,66 +304,29 @@ async fn a_skill_installed_from_the_company_library_can_be_edited_and_contribute
         NOW,
     )
     .await
-    .unwrap();
-    let ShareInstalledOutcome::Submitted(submitted) = outcome else {
-        panic!("确认之后应当直接提交:{outcome:?}");
-    };
-    assert_eq!(submitted.mode, ShareMode::Pushed);
+    .expect_err("库里记的作者是李四,不是我 —— 必须拒");
+    assert_eq!(err.code, "REPO_NOT_AUTHOR", "{err:?}");
+    assert!(err.message.contains("李四"), "要点名作者是谁:{}", err.message);
 
-    // 🔴 断言请求本身:只有一笔**不带 `new_branch`** 的 /contents,且**没有**任何
-    // /pulls ——这是 D1「提交审核整条下线」在这条路径上唯一的正面证据。只断言
-    // 返回值的 mode 分不清"直推成功"与"顺手又开了个没人看的审核请求"。
     let reqs = server.received_requests().await.unwrap();
-    let contents_posts: Vec<serde_json::Value> = reqs
-        .iter()
-        .filter(|r| r.url.path().ends_with("/contents") && r.method.as_str() == "POST")
-        .map(|r| serde_json::from_slice(&r.body).unwrap())
-        .collect();
-    assert_eq!(contents_posts.len(), 1, "只发一笔提交:{contents_posts:?}");
     assert!(
-        contents_posts[0].get("new_branch").and_then(|v| v.as_str()).is_none(),
-        "不该再开分支:{:?}",
-        contents_posts[0]
-    );
-    assert!(
-        !reqs.iter().any(|r| r.url.path().ends_with("/pulls")),
-        "不该再开合并请求:{:?}",
-        reqs.iter().map(|r| r.url.path().to_string()).collect::<Vec<_>>()
+        !reqs.iter().any(|r| r.method.as_str() != "GET"),
+        "拒绝那一档不许发任何写请求:{:?}",
+        reqs.iter().map(|r| (r.method.as_str().to_string(), r.url.path().to_string())).collect::<Vec<_>>()
     );
 
-    // ────────────── ④ 内容确实进库了 → **基线当场对齐**(D3)
+    // ────────────── ④ 磁盘与账本都一个字没动 → 行上仍然是"和库里的不一样"
     //
-    // 这一条正是 v8 的起因那个死循环的反面:旧实现走评审时刻意不动基线,于是
-    // 合并之后 `local_modified` 与 `remoteChanged` 同时为真,用户点一次开一个空 PR,
-    // 自己出不来。
-    let after_submit = c.state();
-    assert_eq!(
-        after_submit.installed[0].content_hash, edited_hash,
-        "内容确实进库了,基线必须跟上——这是 v8 那个死循环的根因所在"
-    );
-    assert_ne!(after_submit.installed[0].content_hash, baseline_hash);
-    assert!(after_submit.shared.is_empty(), "贡献更改不写 state.shared 记录");
-    assert!(skill_md(&c).contains("我贡献的正文"), "提交不碰本体");
+    // 这就是 D7 给这条路定的终态:主按钮不再是分享,行上如实说一句
+    // 「和库里的不一样」,出路是「改用库里的版本」或者直接联系作者李四。
+    let after = c.state();
+    assert_eq!(after.installed[0].content_hash, baseline_hash, "拒绝那一档不许动基线");
+    assert!(after.shared.is_empty());
+    assert!(skill_md(&c).contains("我贡献的正文"), "更不许动本体");
 
     let rows = c.rows(&env);
     let row = &rows[0];
-    assert_eq!(row.section, Section::InstalledFrom, "贡献更改不搬区");
-    assert!(!row.local_modified, "推上去了,本地相对新基线不再算「改过」");
-
-    // ────────────── ⑤ 库里也是这一版了:两侧指纹相等,行上什么都不用做
-    mount_library_v2(&server, "我贡献的正文").await;
-    let index = refresh_index(&server, &c).await;
-    assert_eq!(index.commit_sha, "sha-v2", "第二版的 mock 没有盖住第一版的配额");
-    let merged_hash = index.skills.iter().find(|s| s.dir_slug == SLUG).unwrap().content_hash.clone();
-    assert_eq!(merged_hash, edited_hash, "进主线的内容应当与我们贡献的完全一致");
-
-    let rows = c.rows(&env);
-    let row = &rows[0];
-    assert_eq!(row.relation, Relation::Installed);
     assert_eq!(row.section, Section::InstalledFrom);
-    assert!(!row.local_modified, "本地与基线一致");
-    assert_eq!(
-        merged_hash, row.content_hash,
-        "库里内容 == 基线 == 本地 —— 前端三个判据全为假,这一行不摆任何按钮"
-    );
+    assert!(row.local_modified, "本地与库里仍然不一样(前端据此显示「和库里的不一样」)");
+    assert_eq!(row.relation, Relation::Installed);
 }

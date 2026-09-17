@@ -16,6 +16,7 @@ import {
   cardFor,
   groupBySource,
   hasUpdate,
+  libraryAuthorFor,
   localDiffersNoBaseline,
   remoteChangedForShareable,
   sections,
@@ -341,6 +342,7 @@ export function MySkillsPage() {
         remoteChanged={remoteChanged}
         noBaselineDiffers={noBaselineDiffers}
         noWriteAccess={noWriteAccess}
+        libraryAuthor={libraryAuthorFor(skill, index)}
         pulling={activeSlug === skill.dirSlug && installPhase === "running"}
         sharing={shareBusy === skill.dirSlug}
         onPull={() => void pull(skill.dirSlug)}
@@ -925,6 +927,7 @@ function Row({
   remoteChanged,
   noBaselineDiffers,
   noWriteAccess,
+  libraryAuthor,
   pulling,
   sharing,
   onPull,
@@ -943,6 +946,9 @@ function Row({
   noBaselineDiffers: boolean;
   /** 对目标技能库没有写权限(D8)。「…」菜单也要据此收窄,见 `buildRowMenuItems`。 */
   noWriteAccess: boolean;
+  /** 库里登记的作者(v8 任务 6):`differsFromLibrary` 那一档提示"请联系谁"。
+   *  `null` = 库里没登记,只说"和库里的不一样",不编名字。 */
+  libraryAuthor: string | null;
   pulling: boolean;
   sharing: boolean;
   onPull: () => void;
@@ -1011,6 +1017,21 @@ function Row({
             {action.kind === "shareBlocked" && (
               <div className="mt-0.5 text-[11.5px] leading-[1.5] text-[#9a6c00] dark:text-[#d4a017]">
                 {t(SHARE_BLOCK_LABEL[action.reason])}
+              </div>
+            )}
+            {/* 🔴 v8 任务 6 / D7:「和库里的不一样」。这一档**没有主按钮**,这句话
+                就是这一行全部的可见性——不摆的话,用户看到的是一行什么都没有的
+                技能,而他明明改过它。作者名取自索引里已有的归因数据(零新增查询);
+                **取不到就只说"不一样"**,绝不编一个名字出来(公司库里那个叫
+                「测试」的技能就是这一档)。 */}
+            {action.kind === "differsFromLibrary" && (
+              <div className="mt-0.5 text-[11.5px] leading-[1.5] text-[#9a6c00] dark:text-[#d4a017]">
+                {t("mine.differsFromLibrary")}
+                {libraryAuthor && (
+                  <span className="ml-1.5">
+                    {t("mine.differsFromLibraryAuthor", { author: libraryAuthor })}
+                  </span>
+                )}
               </div>
             )}
             {/* D8:「为什么这颗按钮点不动」。与上面那一档同一种形态——两者都是

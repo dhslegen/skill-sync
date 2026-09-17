@@ -749,9 +749,10 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     // ⚠️ **v8 任务 3**:这里曾经按 `section` 分流——「安装自」那一区的贡献更改
     // 恒带 `forceReview`(那不是我的技能,作者该先看一眼),其余走权限分流。
     // 提交审核整条链路下线之后**只剩一条路**,分流没有了,所以这个函数退化成
-    // 一层薄壳。⚠️ **「改别人的技能」这件事本身的出路是 v8 任务 6**(D7:
-    // 入口下线,改说「和库里的不一样」+ 联系作者),**不是**在这里悄悄改成直推
-    // 别人的技能就完事了——今天它仍然走同一条提交路径,只是不再开合并请求。
+    // 一层薄壳。✅ **「改别人的技能」这件事的出路已在 v8 任务 6 落地**(D7:
+    // 入口整条下线,行上改说「和库里的不一样」+ 联系作者;core 侧
+    // `share_installed` 对非本人技能直接拒)。所以这个函数今天只服务
+    // 「已分享到」区的「分享改动」。
     //
     // 🔴 查不到这一行就不发请求(与 `pull` 同款防护,M2 修复轮 1):今天的入口
     // (界面按行渲染按钮)保证 `skill` 存在,这条闸是防将来的调用方(比如批量
@@ -871,7 +872,7 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
 }));
 
 /**
- * 「贡献更改」/「分享改动」共用的那一跳。
+ * 「分享改动」那一跳(v8 任务 6 起只剩这一个调用方——「贡献更改」已下线)。
  *
  * **v8 任务 4:「库里那一版与本地基线不符」是一个拍板档,不是失败。**
  * 走 `useOverwrite.ask` 摆覆盖确认屏(点名覆盖谁、什么时候推的、去哪找回),
@@ -1238,6 +1239,29 @@ export function cardFor(
   return skill.section === "shareable"
     ? shareableCardFor(skill, shareableIndexes)
     : (index?.skills.find((s) => s.dirSlug === skill.dirSlug) ?? null);
+}
+
+/**
+ * 「和库里的不一样」那一档要提的作者名(v8 任务 6 / D7)——**唯一实现**,
+ * 「我的技能」行与详情面板动作区共用。
+ *
+ * 取自**已经在手里的那份索引**(`authors.json` 随索引一起下来),所以是
+ * **零新增查询**;`null` = 库里没登记作者,调用方据此**只说"和库里的不一样"、
+ * 不提任何名字**——公司库里那个叫「测试」的技能就是这一档,编一个名字出来
+ * 比不说更糟。
+ *
+ * 只对「安装自」区有意义(那是唯一会落进 `differsFromLibrary` 的区),所以
+ * 直接查当前浏览的那份库索引,不走 `cardFor` 的 `shareable` 分支。
+ *
+ * ⚠️ 它继承了本项目已登记的既有缺口:`index` 是**商店页此刻选中**的那个库的
+ * 索引,商店切到别的库时这个名字会跟着漂。与 `hasUpdate` 同一个缺口,不在本任务修。
+ */
+export function libraryAuthorFor(
+  skill: Pick<InstalledSkillView, "dirSlug" | "section">,
+  index: StoreIndexView | null | undefined,
+): string | null {
+  if (skill.section !== "installedFrom") return null;
+  return index?.skills.find((s) => s.dirSlug === skill.dirSlug)?.author ?? null;
 }
 
 /**

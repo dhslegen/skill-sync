@@ -39,20 +39,35 @@ export type RowAction =
   | { kind: "pull" }
   | { kind: "update" } // 安装自 · 库有新版;或 可分享到 · 外源有新版(分享退进「…」)
   | { kind: "conflict" } // 库新 + 本地改 → 既有三选弹窗
-  | { kind: "contribute" } // 安装自 · 本地改(浅底;v8 任务 6 会把这个入口撤掉,见 D7)
+  /**
+   * 安装自 · 本地改过,而库里那一版没动(v8 任务 6 / D7,取代旧的 `contribute`)。
+   *
+   * 🔴 **没有主按钮**:内网实测 38 个技能 / 5 位作者,`authors.json` 里贡献者
+   * 字段一个都没有——"改别人的技能"这件事从未真正发生过,而这条路今天走的是
+   * 提交审核(v8 任务 3 已砍),留着就是"点了之后什么都不会发生"。用户拍板:
+   * **这个 app 的定位是分发,不是协作编辑**;想改别人的技能,说一声比什么机制
+   * 都快。所以这一档只**如实陈述**一句「和库里的不一样」,再给两条出路:
+   * 提示联系作者(名字取自索引里已有的归因数据,零新增查询;**取不到就不提**,
+   * 绝不编一个名字出来)、「…」里的「改用库里的版本」。
+   *
+   * 它**要计进 `needsAttention`**:折起来就看不见"我改过的东西没进库",
+   * 正是 v7「只写例外」要保住的那类感知。
+   */
+  | { kind: "differsFromLibrary" }
   | { kind: "shareChanges" } // 已分享到 · 本地改
   | { kind: "share" } // 可分享到 · 合格、未提交过
   /**
    * 分享前的标准校验没过(A-2 拍板不复议的硬规则:分享前按 Agent Skills 标准
    * 全量校验,不合格不让分享)。🔴 **v7 任务 7 修复轮 1(C1)**:这一档以前
-   * 只在 `shareable` 区判——`installedFrom`(贡献更改)与 `sharedTo`(分享改动)
-   * 同样会把本地内容推进技能库(`skill_share_changes`),同一道闸必须在三个区
-   * 都生效,否则用户在 Claude Code 里把 name 改成不合规的值,点一下就直推
-   * 进公司技能库,是终审 C-3 明确点名要堵住的旗舰场景。`blockedAction` 记着
-   * 这一档本来该是哪个动作,界面据此选对按钮文案(「分享」/「贡献更改」/
-   * 「分享改动」),不是每次都说「分享」。
+   * 只在 `shareable` 区判——`sharedTo`(分享改动)同样会把本地内容推进技能库
+   * (`skill_share_changes`),同一道闸两个区都要生效,否则用户在 Claude Code 里
+   * 把 name 改成不合规的值,点一下就直推进公司技能库,是终审 C-3 明确点名要
+   * 堵住的旗舰场景。`blockedAction` 记着这一档本来该是哪个动作,界面据此选对
+   * 按钮文案(「分享」/「分享改动」),不是每次都说「分享」。
+   * (v8 任务 6 起 `installedFrom` 区不再有推上去的通道,那一档落
+   * {@link RowAction} 的 `differsFromLibrary`,与本闸无关。)
    */
-  | { kind: "shareBlocked"; reason: ShareBlock; blockedAction: "share" | "contribute" | "shareChanges" }
+  | { kind: "shareBlocked"; reason: ShareBlock; blockedAction: "share" | "shareChanges" }
   /**
    * 对目标技能库**没有写权限**(v8 任务 3 / D8)。形态与 {@link RowAction} 的
    * `shareBlocked` 一样:主按钮禁用 + 一句说明 + 「打开文件夹」出口,
@@ -62,10 +77,10 @@ export type RowAction =
    * 报错的按钮",而这里用户需要知道**为什么自己没有这个能力**——不摆的话,
    * 同一个技能在同事那里有「分享」、在他这里凭空少一颗按钮,他只会以为坏了。
    *
-   * **只覆盖分享族**(`share`/`contribute`/`shareChanges`):没有写权限照样能
+   * **只覆盖分享族**(`share`/`shareChanges`):没有写权限照样能
    * 获取、能更新,`pull`/`update`/`conflict` 一概不动。
    */
-  | { kind: "noWriteAccess"; blockedAction: "share" | "contribute" | "shareChanges" }
+  | { kind: "noWriteAccess"; blockedAction: "share" | "shareChanges" }
   | { kind: "chooseVersion" }; // 压过一切
 
 /**
@@ -83,7 +98,8 @@ export type RowAction =
  *    "外源有新版"届时仍在「…」里等着(见 {@link RowAction} 的 `update` 注释),
  *    不会丢失,只是不作为这一刻的主按钮。
  * 4. **`installedFrom` 区内,`localModified && remoteChanged` 才是 `conflict`,
- *    单独的 `remoteChanged` 是 `update`,单独的 `localModified` 是 `contribute`。**
+ *    单独的 `remoteChanged` 是 `update`,单独的 `localModified` 是
+ *    `differsFromLibrary`(v8 任务 6 起没有主按钮,只陈述 + 给出路)。**
  *    三者互斥覆盖("都没变"落到 `none`),与 brief 给的四条测试逐字对应。
  * 5. **`sharedTo` 区内,`remoteChanged` 压过 `localModified`("不论本地")。**
  *    库被别人改过时,不管本地是否也改了,都要先弹既有的三选一冲突框——
@@ -114,7 +130,6 @@ export function rowAction(
   if (!noWriteAccess) return action;
   switch (action.kind) {
     case "share":
-    case "contribute":
     case "shareChanges":
       return { kind: "noWriteAccess", blockedAction: action.kind };
     default:
@@ -143,13 +158,11 @@ function rowActionIgnoringAccess(
   if (skill.section === "installedFrom") {
     if (skill.localModified && remoteChanged) return { kind: "conflict" };
     if (remoteChanged) return { kind: "update" };
-    if (skill.localModified) {
-      // 🔴 C1:贡献更改一样要过标准校验这道闸,不是 shareable 区的专利。
-      if (skill.shareBlocked) {
-        return { kind: "shareBlocked", reason: skill.shareBlocked, blockedAction: "contribute" };
-      }
-      return { kind: "contribute" };
-    }
+    // 🔴 v8 任务 6:这里**不再判 `shareBlocked`**——这一档已经不推任何东西上去了,
+    // 没有可拦的动作。C1 当年在三个区都加这道闸是因为三个区都能直推进库;
+    // 现在「安装自」区没有那条通道,再摆一个"分享被拦下"的禁用按钮是在说
+    // 一件不会发生的事。
+    if (skill.localModified) return { kind: "differsFromLibrary" };
     return { kind: "none" };
   }
 
@@ -173,7 +186,7 @@ function rowActionIgnoringAccess(
 
 export type RowMenuItemKind =
   | "reveal"
-  | "contributeOrShareChanges"
+  | "shareChangesFromMenu"
   | "update"
   | "share"
   | "useLibraryVersion"
@@ -194,7 +207,8 @@ export interface RowMenuItemSpec {
  * 修复轮 1/2 定下的规则(design §8「不可用项不显示」),原样搬出来:
  *
  * 1. 有本体就有「打开文件夹」;
- * 2. `conflict` 压过主按钮之后,「贡献更改」/「分享改动」不会消失——用户可能就是
+ * 2. `conflict` 压过主按钮之后,「分享改动」不会消失(v8 任务 6 起**只剩
+ *    「已分享到」区**)——用户可能就是
  *    想直接把改动推上去,不想先经过冲突框的三选一。**必须再叠一道 `!shareBlocked`**
  *    ——C1 刚在主按钮堵上"不合规内容也能推上去"这个洞,这里若不重复同一道闸,
  *    用户仍能从「更多」菜单绕过去点一个必然报 `FS_SKILL_INVALID` 的按钮;
@@ -217,11 +231,17 @@ export function buildRowMenuItems(
   if (skill.body) {
     items.push({ kind: "reveal", labelKey: "mine.openFolder" });
   }
-  if (action.kind === "conflict" && skill.localModified && !skill.shareBlocked && !noWriteAccess) {
-    items.push({
-      kind: "contributeOrShareChanges",
-      labelKey: skill.section === "installedFrom" ? "mine.contribute" : "mine.shareChanges",
-    });
+  // 🔴 v8 任务 6:**只剩「已分享到」区**。「安装自」区的「贡献更改」已整条下线
+  // (D7),这里若照旧摆一条,用户仍能从「…」里点到一个 core 必拒的动作
+  // ——与 C1 当年"主按钮堵上了、「…」里那条漏掉"是同一个洞,方向相反而已。
+  if (
+    action.kind === "conflict" &&
+    skill.section === "sharedTo" &&
+    skill.localModified &&
+    !skill.shareBlocked &&
+    !noWriteAccess
+  ) {
+    items.push({ kind: "shareChangesFromMenu", labelKey: "mine.shareChanges" });
   }
   if (skill.section === "shareable") {
     if (action.kind === "shareBlocked" && remoteChanged) {
@@ -230,7 +250,10 @@ export function buildRowMenuItems(
       items.push({ kind: "share", labelKey: "mine.share" });
     }
   }
-  if (noBaselineDiffers) {
+  // 🔴 v8 任务 6:`differsFromLibrary` 这一档**唯一**的可点出路就是它
+  // (那一档没有主按钮)。与"没有安装基线但内容不一样"合成同一条,**只 push 一次**
+  // ——两次 push 会在同一个菜单里出现两条一模一样的项。
+  if (noBaselineDiffers || action.kind === "differsFromLibrary") {
     items.push({
       kind: "useLibraryVersion",
       labelKey: "mine.useLibraryVersion",
@@ -290,7 +313,7 @@ export function needsAttention(action: RowAction): boolean {
     case "pull":
     case "update":
     case "conflict":
-    case "contribute":
+    case "differsFromLibrary":
     case "shareChanges":
     case "shareBlocked":
     case "noWriteAccess":

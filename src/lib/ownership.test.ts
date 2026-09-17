@@ -40,7 +40,7 @@ describe("rowAction(判定表)", () => {
   it.each<[string, Partial<RowSkill>, boolean, RowAction["kind"]]>([
     ["安装自 · 库有新版", { section: "installedFrom" }, true, "update"],
     ["安装自 · 库新+本地改", { section: "installedFrom", localModified: true }, true, "conflict"],
-    ["安装自 · 只本地改", { section: "installedFrom", localModified: true }, false, "contribute"],
+    ["安装自 · 只本地改", { section: "installedFrom", localModified: true }, false, "differsFromLibrary"],
     ["安装自 · 都没变", { section: "installedFrom" }, false, "none"],
     ["已分享到 · 本地改", { section: "sharedTo", localModified: true }, false, "shareChanges"],
     ["已分享到 · 都没变", { section: "sharedTo" }, false, "none"],
@@ -96,9 +96,8 @@ describe("rowAction(判定表)", () => {
   //
   // 三档分享族动作各一条:只覆盖它们、且如实带回被拦下的是哪一个动作
   // (界面据此选对按钮文案)。判定表本身一个字不动——权限是最后一步的换档。
-  it.each<[string, Partial<RowSkill>, boolean, "share" | "contribute" | "shareChanges"]>([
+  it.each<[string, Partial<RowSkill>, boolean, "share" | "shareChanges"]>([
     ["可分享到 · 分享", { section: "shareable" }, false, "share"],
-    ["安装自 · 贡献更改", { section: "installedFrom", localModified: true }, false, "contribute"],
     ["已分享到 · 分享改动", { section: "sharedTo", localModified: true }, false, "shareChanges"],
   ])("没有写权限时,%s 换成禁用态并说清被拦下的是哪个动作", (_n, over, remoteChanged, blocked) => {
     expect(rowAction({ ...rowBase, ...over }, remoteChanged, true)).toEqual({
@@ -139,18 +138,21 @@ describe("rowAction(判定表)", () => {
   // (skill_share_changes),同一道闸必须在三个区都生效。
   // ---------------------------------------------------------------------
 
-  it("安装自 · 本地改了但标准校验不过 → shareBlocked,blockedAction 是 contribute", () => {
+  // 🔴 v8 任务 6 / D7:「安装自」区不再有推上去的通道,所以这一档**不再判
+  // shareBlocked**——摆一个"分享被拦下"的禁用按钮是在说一件不会发生的事。
+  it("安装自 · 本地改了、标准校验也不过 → 仍然只是「和库里的不一样」", () => {
     const s: RowSkill = {
       ...rowBase,
       section: "installedFrom",
       localModified: true,
       shareBlocked: "nameFormat",
     };
-    expect(rowAction(s, false)).toEqual({
-      kind: "shareBlocked",
-      reason: "nameFormat",
-      blockedAction: "contribute",
-    });
+    expect(rowAction(s, false)).toEqual({ kind: "differsFromLibrary" });
+  });
+
+  it("安装自 · 没有写权限也不换档:这一档本来就不推任何东西上去", () => {
+    const s: RowSkill = { ...rowBase, section: "installedFrom", localModified: true };
+    expect(rowAction(s, false, true)).toEqual({ kind: "differsFromLibrary" });
   });
 
   it("已分享到 · 本地改了但标准校验不过 → shareBlocked,blockedAction 是 shareChanges", () => {
@@ -167,9 +169,9 @@ describe("rowAction(判定表)", () => {
     });
   });
 
-  it("对照组:安装自区标准校验通过时照常是 contribute,不受 shareBlocked 字段存在与否影响", () => {
+  it("对照组:安装自区标准校验通过时同样是 differsFromLibrary——两档不再有区别", () => {
     const s: RowSkill = { ...rowBase, section: "installedFrom", localModified: true, shareBlocked: null };
-    expect(rowAction(s, false).kind).toBe("contribute");
+    expect(rowAction(s, false).kind).toBe("differsFromLibrary");
   });
 
   it("对照组:已分享到区标准校验通过时照常是 shareChanges", () => {
@@ -214,7 +216,7 @@ describe("needsAttention:折起来会不会藏掉一件事", () => {
     [{ kind: "pull" }, true],
     [{ kind: "update" }, true],
     [{ kind: "conflict" }, true],
-    [{ kind: "contribute" }, true],
+    [{ kind: "differsFromLibrary" }, true],
     [{ kind: "shareChanges" }, true],
     [{ kind: "shareBlocked", reason: "nameFormat", blockedAction: "share" }, true],
     // 没有按钮可点,但"这条我分享不出去"是折起来会丢失的感知,所以计入。

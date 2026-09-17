@@ -12,7 +12,7 @@ export type ButtonSize = "row" | "footer";
 const SIZE_CLASS: Record<ButtonSize, string> = {
   row: "h-6 px-2.5 text-[11.5px]",
   // 🔴 `shrink-0` 照画布(每颗页脚按钮都是 `flex:none`)。没有它,页脚里按钮一多
-  // (`conflict` 档会同时有 主按钮/打开文件夹/贡献更改/在技能库里查看/移除 五颗)
+  // (`conflict` 档会同时有 主按钮/打开文件夹/分享改动/在技能库里查看/移除 五颗)
   // 就会被压扁,文字在按钮里折成两行——真机走查看到的正是这种"挤成一团"。
   footer: "h-[30px] shrink-0 whitespace-nowrap px-3 text-[12.5px]",
 };
@@ -84,14 +84,12 @@ export function PrimaryAction({
           {pulling ? t("mine.updating") : t("mine.conflictPending")}
         </ChipButton>
       );
-    case "contribute":
-      // 画布里「贡献更改」是浅橙 chip(不是灰描边):它是动作,但比「分享改动」
-      // 轻一档——改的是别人库里的东西。(v8 任务 6 会把这个入口整个撤掉,见 D7。)
-      return (
-        <ChipButton size={size} disabled={sharing} onClick={onShareChanges}>
-          {sharing ? t("mine.contributing") : t("mine.contribute")}
-        </ChipButton>
-      );
+    case "differsFromLibrary":
+      // 🔴 v8 任务 6 / D7:**没有按钮**。这一档只是一句如实的陈述
+      // (「和库里的不一样」),它的两条出路——提示联系作者、「…」里的
+      // 「改用库里的版本」——分别由行上/详情动作区的提示区与「…」菜单承担。
+      // 摆一颗禁用 chip 是另一种撒谎:用户会以为"等某个条件满足就能点"。
+      return null;
     case "shareChanges":
       // 画布里「分享改动」是实心(自己分享的技能推自己的改动,是本行的主动作)。
       return (
@@ -117,11 +115,7 @@ export function PrimaryAction({
       // 🔴 C1:三个区都可能落进这一档,按钮文案要说对被拦下的是哪个动作
       // ——不是每次都说「分享」(那句话对 installedFrom/sharedTo 是错的)。
       const label =
-        action.blockedAction === "contribute"
-          ? t("mine.contribute")
-          : action.blockedAction === "shareChanges"
-            ? t("mine.shareChanges")
-            : t("mine.share");
+        action.blockedAction === "shareChanges" ? t("mine.shareChanges") : t("mine.share");
       // 🔴 v7.1 任务 5:被拦下的形态必须与它**启用时**的形态一致,只多一层
       // `disabled:opacity-50`(画布里禁用态就是"同一颗按钮 + opacity .5")。
       // 用另一种形态画禁用态,等于对用户撒谎——他分不出被禁的到底是哪个动作。
@@ -142,11 +136,7 @@ export function PrimaryAction({
       // 「为什么不能点」那句说明与「打开文件夹」出口在行上的提示区与详情面板
       // 动作区各自渲染。
       const label =
-        action.blockedAction === "contribute"
-          ? t("mine.contribute")
-          : action.blockedAction === "shareChanges"
-            ? t("mine.shareChanges")
-            : t("mine.share");
+        action.blockedAction === "shareChanges" ? t("mine.shareChanges") : t("mine.share");
       const Btn = action.blockedAction === "shareChanges" ? SolidButton : ChipButton;
       return (
         <Btn size={size} disabled onClick={() => {}}>
@@ -191,7 +181,7 @@ export function SolidButton({
  *   **实心 = 这一栏里的例外;chip = 这一栏里人人都有的那个动作。**
  *
  * ghost 图标 = 「更多」。⚠️ **刻意不枚举具体档位**:此前这里列的是
- * "实心 = 更新/分享改动/取回,chip = 分享/库里有新版…/贡献更改",一加新档就对不上,
+ * "实心 = 更新/分享改动/取回,chip = 分享/库里有新版…",一加新档就对不上,
  * 而且会诱导人按名单对号入座、不看它在自己那一栏里是不是常态。v7.3 把「分享」
  * 从实心挪到这一档,正是按上面那句原则办的(见 `PrimaryAction` 的 `share` 分支)。所有 chip **必须共用这一个实现**
  * ——各写一份就是本项目记录的空转模式 #1(其中一份漂移了没有任何测试发现)。
@@ -268,7 +258,7 @@ export function rowMenuHandler(kind: RowMenuItemKind, handlers: RowMenuHandlers)
   switch (kind) {
     case "reveal":
       return handlers.onReveal;
-    case "contributeOrShareChanges":
+    case "shareChangesFromMenu":
       return handlers.onShareChanges;
     case "update":
       return handlers.onPull;

@@ -31,7 +31,7 @@ export const SHARE_BLOCK_LABEL: Record<ShareBlock, MessageKey> = {
  *
  * - `"share"`:首次把一个技能分享到公司技能库(`skill_share`,确认屏那条路);
  * - `"changes"`:把一个**已有**技能的改动推回去(`skill_share_changes`,
- *   「贡献更改」/「分享改动」)。
+ *   「分享改动」;v8 任务 6 之前还有「贡献更改」,那一档已下线)。
  *
  * 🔴 **为什么记在 store 里,而不是在渲染时看 `rowAction` 分流**:反馈是在动作
  * **完成之后**显示的,而 `confirmShare` 成功后会 `load()` 重刷整张列表——首次

@@ -353,73 +353,11 @@ describe("获取流程状态机", () => {
     expect(useInstall.getState().localKept).toBe(true);
   });
 
-  // 🔴 这条是「保留并贡献」(改**别人**的技能):v8 任务 4 的「仍然覆盖」只给
-  // 「我自己那一版」,顶掉别人的技能的出路是 v8 任务 6 的入口下线。所以这一跳
-  // 仍然撞上 core 的覆盖闸,前端如实说一句「库里已经有更新的版本」。
-  it("保留并分享:先 keepLocal 落稳,再推改动 —— 库里有新版时如实报错,绝不直推", async () => {
-    let installCalls = 0;
-    invoke.mockImplementation(async (cmd) => {
-      if (cmd === "agents_detected") return AGENTS;
-      if (cmd === "installed_list") return [];
-      if (cmd === "skill_share_changes")
-        return { kind: "needsConfirm", plan: { added: [], modified: ["SKILL.md"], deleted: [] }, overwrite: null };
-      installCalls += 1;
-      return installCalls === 1
-        ? { outcome: "needsDecision", precheck: { status: "locallyModified", installedSha: "aaa" } }
-        : { outcome: "installed", report: report(), localKept: true, lock: "written" };
-    });
-
-    await useInstall.getState().begin("weekly-report");
-    await useInstall.getState().run();
-    await useInstall.getState().keepLocalAndShare();
-
-    // keepLocal 的重试带了 resolution
-    const second = invoke.mock.calls.filter(([cmd]) => cmd === "skill_install")[1];
-    expect(second?.[1].args.resolution).toBe("keepLocal");
-    // 分享确实发生在保留之后,且**不再**带 forceReview(那个参数已下线)
-    const shared = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
-    expect(shared?.[1].args.dirSlug).toBe("weekly-report");
-    expect(Object.keys(shared?.[1].args as Record<string, unknown>)).not.toContain("forceReview");
-    // 保留成功了,只是分享没推出去——不能把整个结果画成失败
-    expect(useInstall.getState().shareResult).toMatchObject({
-      error: { code: "CONFLICT_REMOTE_CHANGED" },
-    });
-    expect(useInstall.getState().phase).toBe("done");
-  });
-
-  it("保留那一步没成,绝不接着分享", async () => {
-    invoke.mockImplementation(async (cmd) => {
-      if (cmd === "agents_detected") return AGENTS;
-      if (cmd === "skill_share_changes") return { mode: "pushed", commitSha: "n", reviewUrl: null };
-      throw { code: "NET_UNREACHABLE", message: "连不上公司技能库,请确认已接入公司内网或 VPN" };
-    });
-
-    await useInstall.getState().begin("weekly-report");
-    await useInstall.getState().keepLocalAndShare();
-
-    expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_share_changes")).toBe(false);
-    expect(useInstall.getState().shareResult).toBeNull();
-  });
-
-  it("保留成功、分享失败:结果不能画成整体失败", async () => {
-    invoke.mockImplementation(async (cmd) => {
-      if (cmd === "agents_detected") return AGENTS;
-      if (cmd === "installed_list") return [];
-      if (cmd === "skill_share_changes")
-        throw { code: "AUTH_REQUIRED", message: "分享前请先登录公司技能库" };
-      return { outcome: "installed", report: report(), localKept: true, lock: "written" };
-    });
-
-    await useInstall.getState().begin("weekly-report");
-    await useInstall.getState().keepLocalAndShare();
-
-    const s = useInstall.getState();
-    expect(s.phase).toBe("done");
-    expect(s.localKept).toBe(true);
-    expect(s.shareResult && "error" in s.shareResult && s.shareResult.error.message).toContain(
-      "登录",
-    );
-  });
+  // 🔴 **v8 任务 6 / D7**:这里原先有三条「保留并贡献」(改**别人**的技能)的
+  // 用例。那条通道已整条下线——`keepLocalAndShare` 连同冲突弹窗上那个选项一起
+  // 删除,core 侧 `share_installed` 对非本人技能直接拒。剩下的
+  // `keepLocalAndShareMine`(改**自己**分享的技能)是唯一的"保留并分享"通道,
+  // 它的用例在下面。
 
   describe("keepLocalAndShareMine(v6 任务 5:「我分享的」冲突弹窗的「以本地为准」)", () => {
     // v8 任务 4:`remoteChanged` 是拍板档不是失败——摆覆盖确认屏,点名覆盖谁

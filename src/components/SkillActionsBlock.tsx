@@ -6,7 +6,7 @@ import { t } from "@/i18n";
 import { isAppError, openLibraryUrl, skillReveal, type InstalledSkillView } from "@/lib/ipc";
 import { buildRowMenuItems, rowAction } from "@/lib/ownership";
 import { SHARE_BLOCK_LABEL, SHARE_DONE_LABEL, SHARE_FAILED_LABEL } from "@/lib/share-block";
-import { localDiffersNoBaseline, useMySkills } from "@/store/my-skills";
+import { libraryAuthorFor, localDiffersNoBaseline, useMySkills } from "@/store/my-skills";
 import { useInstall } from "@/store/install";
 import { useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
@@ -44,7 +44,7 @@ import { useStoreIndex } from "@/store/store-index";
  * `host: "store" | "mine"` 拍板不复议:
  * - `host="mine"`(「我的技能」详情,行为**一个字不变**):这个组件仍然是
  *   **完整的**固定页脚——自己的边框/内边距、主按钮走 `rowAction`
- *   (分享/贡献更改/取回……这些都是「我的技能」的语境)、分享结果的成功与
+ *   (分享/分享改动/取回……这些都是「我的技能」的语境)、分享结果的成功与
  *   失败也在这里渲染(见下面「动作搬进来了」一节)。
  * - `host="store"`:**不渲染自己的主按钮**——那一格让给 `InstallPanel`
  *   (它的 `cardState` 才是"拉"的语境:获取/更新/换成库里的版本)。这里返回的
@@ -52,7 +52,7 @@ import { useStoreIndex } from "@/store/store-index";
  *   由 `InstallPanel` 直接插进它自己那一行——这才是"并进底部页脚"的字面意思,
  *   不是两个 bordered 的 div 前后紧贴,也不是两行紧贴。**只贡献次要动作**
  *   (打开文件夹 / 在技能库里查看 / 移除):`items` 过滤掉除 `reveal`
- *   以外的所有 `buildRowMenuItems` 结果——分享/贡献更改/更新这些都是"推"的
+ *   以外的所有 `buildRowMenuItems` 结果——分享/分享改动/更新这些都是"推"的
  *   动作,v7.4 已拍板"推"的动作不摆在"拉"的界面里,`rowAction` 本身
  *   也不该在这个宿主下驱动任何按钮。分享结果(`shareError`/`shareDone`/
  *   `shareBlocked` 的原因)同理不渲染——触发它们的按钮在这个宿主下根本不存在,
@@ -139,11 +139,11 @@ import { useStoreIndex } from "@/store/store-index";
  * - 从「我的技能」打开时 `MySkillsPage` 在场,但详情面板是 `fixed inset-0 z-50`
  *   的全屏遮罩,那一行反馈被盖在后面,连「知道了」都点不到。
  *
- * 「贡献更改」这一档后果最重:core 刻意**不动任何记账**(`share.rs` 模块头
- * 「记账一个字不动」),所以刷新之后按钮原样还是「贡献更改」——用户看到的是
- * "点了没反应",而再点一次会**开出第二个内容相同的合并请求**
- * (`share.rs::review_branch` 的分支名带时间戳)。所以**成功也要有反馈**,
- * 不只是失败。
+ * 「成功也要有反馈,不只是失败」这条结论当初是「贡献更改」那一档逼出来的:
+ * 它走评审时 core 刻意不动记账,刷新后按钮原样不变,用户看到的是"点了没反应",
+ * 再点一次就开出第二个内容相同的合并请求。**那一档已随 v8 任务 6 / D7 整条
+ * 下线**(连同 v8 任务 3 砍掉的提交审核),但结论本身对「分享改动」同样成立
+ * ——分享成功后如果这一行看不出任何变化,"没反应"照样会诱发重复提交。
  *
  * 归属校验(`shareDone.dirSlug`/`shareError.dirSlug` 必须等于本行的 `dirSlug`)
  * 不是可选的:本期已经抓到过这条的变体——补上渲染点却不校验归属,详情面板 B
@@ -287,9 +287,11 @@ export function SkillActionsBlock({
   const shareDone = rawShareDone?.dirSlug === skill.dirSlug ? rawShareDone : null;
 
   const noBaselineDiffers = localDiffersNoBaseline(skill, index);
+  // v8 任务 6:「和库里的不一样」那一档要提的作者名(零新增查询,取不到就是 null)。
+  const libraryAuthor = libraryAuthorFor(skill, index);
   // 🔴 v8 任务 3 / D8:没有写权限时分享族主按钮禁用 + 一句说明。`unknown`
   // (探不到)不禁——预检永远 fail-open。`host="store"` 下主按钮来自
-  // `cardState` 不来自这里,但次要动作(「…」里的贡献更改/分享)同样要拦,
+  // `cardState` 不来自这里,但次要动作(「…」里的分享改动/分享)同样要拦,
   // 所以这个判定在两个宿主下都参与。
   const noWriteAccess = useShare((s) => s.preview) === "noAccess";
   const action = rowAction(skill, remoteChanged, noWriteAccess);
@@ -297,7 +299,7 @@ export function SkillActionsBlock({
   // 「移除」单独摘出来靠右摆,其余按 `buildRowMenuItems` 的自然顺序排在左边
   // ——那个顺序本来就是「打开文件夹」在前、「移除」在末,与画布一致。
   const allItems = buildRowMenuItems(skill, action, remoteChanged, noBaselineDiffers, noWriteAccess);
-  // 🔴 `host="store"` 下只留 `reveal`(打开文件夹)——`contributeOrShareChanges`/
+  // 🔴 `host="store"` 下只留 `reveal`(打开文件夹)——`shareChangesFromMenu`/
   // `update`/`share`/`useLibraryVersion` 都是"推"的动作(改库里的内容、或是
   // `rowAction` 语境下的取回),v7.4 已拍板"推"的动作不摆在"拉"的界面里,见组件
   // 文档「两种宿主」一节。
@@ -434,7 +436,7 @@ export function SkillActionsBlock({
   );
 
   // 🔴 `shareError`/`shareDone`/`shareBlocked` 三段只在 `host="mine"` 下渲染:
-  // 触发它们的按钮(`PrimaryAction`/`contributeOrShareChanges` 等)在
+  // 触发它们的按钮(`PrimaryAction`/`shareChangesFromMenu` 等)在
   // `host="store"` 下根本不存在,摆出来要么是孤儿反馈,要么会把「我的技能」页
   // 上一次操作的陈旧结果带进商店详情(见组件文档「两种宿主」一节)。
   //
@@ -479,6 +481,20 @@ export function SkillActionsBlock({
       {/* 🔴 D8:「为什么这颗按钮点不动」。禁用态没有这句说明就是个哑按钮,
           而 D8 明确要求**说清原因**(此处刻意不套用「不摆比解释好」)。
           「打开文件夹」由上面的 `secondaryButtons` 恒摆着,出口不丢。 */}
+      {/* 🔴 v8 任务 6 / D7:「和库里的不一样」。这一档**没有主按钮**,这句话
+          就是它全部的可见性——不摆的话,用户看到的是一行什么都没有的技能,
+          而他明明改过它。作者名取自索引里已有的归因数据(零新增查询);
+          **取不到就只说"不一样"**,绝不编一个名字出来。 */}
+      {caps.shareFeedback && action.kind === "differsFromLibrary" && (
+        <p className="mt-1.5 basis-full rounded-card border border-[#b8860b]/40 px-2.5 py-1.5 text-[11.5px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
+          {t("mine.differsFromLibrary")}
+          {libraryAuthor && (
+            <span className="mt-0.5 block">
+              {t("mine.differsFromLibraryAuthor", { author: libraryAuthor })}
+            </span>
+          )}
+        </p>
+      )}
       {caps.shareFeedback && action.kind === "noWriteAccess" && (
         <p className="mt-1.5 basis-full rounded-card border border-[#b8860b]/40 px-2.5 py-1.5 text-[11.5px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
           {t("mine.shareNoAccess")}

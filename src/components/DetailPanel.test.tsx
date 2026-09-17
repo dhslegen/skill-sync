@@ -785,16 +785,16 @@ describe("DetailPanel(本地详情模式)", () => {
   });
 
   it("🔴 设计 §12:动作区把行上主按钮与「…」各项全部摆出来,不必先关面板", async () => {
-    // 详情面板是 modal + 遮罩,此前行上的按钮(更新/贡献更改/移除…)一个都够
-    // 不到——用户必须先关掉详情才能点。这条钉住:同一份判定(installedFrom
-    // 区、本地改过、远端没变 → 贡献更改)在详情面板里也要给出同一颗主按钮,
+    // 详情面板是 modal + 遮罩,此前行上的按钮(更新/分享改动/移除…)一个都够
+    // 不到——用户必须先关掉详情才能点。这条钉住:同一份判定(sharedTo 区、
+    // 本地改过、远端没变 → 分享改动)在详情面板里也要给出同一颗主按钮,
     // 「…」的各项(移除等)全部平铺,不再收进一个「更多」下拉。
     // ⚠️ 不断言「打开文件夹」——那颗按钮属于紧邻的 `WhereBlocks`「这台电脑上」
     // 块,动作区自己把这一项过滤掉了(两处摆同一颗按钮是噪音,见
     // `SkillActionsBlock` 模块头),这里只钉动作区独有的项。
     useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null, index: null });
     useMySkills.setState({
-      list: [installedView({ localModified: true })],
+      list: [installedView({ relation: "shared", localModified: true })],
       agentNames: new Map([["claude-code", "Claude Code"]]),
       installedAgents: null,
       canonicalDir: "/home/u/.agents/skills",
@@ -803,13 +803,77 @@ describe("DetailPanel(本地详情模式)", () => {
     openLocal();
     render(<DetailPanel />);
 
-    expect(screen.getByRole("button", { name: "贡献更改" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "分享改动" })).toBeInTheDocument();
 
     // 「移除」触发的是全局状态(`useMySkills.askRemove`),不依赖 MySkillsPage
     // 在场——`RemoveDialog` 同样全局挂在 App.tsx,这正是 §12 要解决的问题本身。
     await userEvent.click(screen.getByRole("button", { name: "移除" }));
     expect(useMySkills.getState().removePhase).toBe("confirming");
     expect(useMySkills.getState().removeTarget).toBe("weekly-report");
+  });
+
+  // ── v8 任务 6 / D7:「和库里的不一样」的第二个渲染点(行上是第一个)──────
+  //
+  // 🔴 这一档**没有主按钮**,这句话就是它在详情面板里全部的可见性。不摆的话,
+  // 用户打开详情看到的是一个什么都没有的动作区,而他明明改过这个技能。
+  const withLibraryAuthor = (author: string | null) => {
+    useStoreIndex.setState({
+      detailSlug: null,
+      detail: null,
+      detailError: null,
+      index: {
+        registryId: "company",
+        owner: "skills",
+        repo: "skills",
+        branch: "main",
+        commitSha: "head",
+        committedAt: "2026-08-01T00:00:00.000Z",
+        fetchedAt: 0,
+        skipped: [],
+        fromCache: false,
+        offline: false,
+        curated: [],
+        skills: [
+          {
+            name: "weekly-report",
+            dirSlug: "weekly-report",
+            description: "",
+            path: "",
+            hasScripts: false,
+            fileCount: 1,
+            // 与 `installedView` 的 `localHash` 相同:remoteChanged 为假,
+            // 这一行才落进 `differsFromLibrary` 而不是 conflict。
+            contentHash: "sha256:base",
+            tags: [],
+            author,
+            updatedAt: { kind: "unknown" as const },
+          },
+        ],
+      },
+    });
+    useMySkills.setState({
+      list: [installedView({ localModified: true })],
+      agentNames: new Map([["claude-code", "Claude Code"]]),
+      installedAgents: null,
+      canonicalDir: "/home/u/.agents/skills",
+      toolDirs: new Map(),
+    });
+    openLocal();
+  };
+
+  it("安装自 · 本地改过 → 动作区说「和库里的不一样」并提示联系作者", () => {
+    withLibraryAuthor("李四");
+    render(<DetailPanel />);
+    expect(screen.getByText("和库里的不一样")).toBeInTheDocument();
+    expect(screen.getByText("想让作者采纳,请联系 李四")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /分享|贡献/ })).toBeNull();
+  });
+
+  it("库里没登记作者时只说「和库里的不一样」,一个名字都不编", () => {
+    withLibraryAuthor(null);
+    render(<DetailPanel />);
+    expect(screen.getByText("和库里的不一样")).toBeInTheDocument();
+    expect(screen.queryByText(/请联系/)).toBeNull();
   });
 
   it("没有主按钮(未改动、库里也没有新版)时,动作区仍摆着「移除」这类恒在项", () => {
@@ -826,7 +890,7 @@ describe("DetailPanel(本地详情模式)", () => {
 
     // 没有主按钮(action.kind === "none"),但「移除」这条「…」项仍在
     // ——它不依赖有没有主按钮,只要本体存在。
-    expect(screen.queryByRole("button", { name: "贡献更改" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /分享改动|贡献更改/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "移除" })).toBeInTheDocument();
   });
 });
@@ -869,27 +933,29 @@ describe("商店详情的动作区(设计 §12 + Q44-A,`PanelBody` 一侧)", () 
     expect(screen.getByRole("button", { name: /更多/ })).toBeInTheDocument();
   });
 
-  it("🔴 Q44-A:商店宿主下不摆 rowAction 的主按钮(「贡献更改」)——那一格让给 InstallPanel", async () => {
+  it("🔴 Q44-A:商店宿主下不摆 rowAction 的主按钮(「分享改动」)——那一格让给 InstallPanel", async () => {
     const d = open();
     useMySkills.setState({
-      // localModified:true 且 section 落 installedFrom 时,rowAction 会给出
-      // {kind:"contribute"}(mine 宿主下渲染成「贡献更改」)——正面构造这个
+      // localModified:true 且 section 落 sharedTo 时,rowAction 会给出
+      // {kind:"shareChanges"}(mine 宿主下渲染成「分享改动」)——正面构造这个
       // 档,确认它在商店宿主下确实不出现,不是靠数据本身没有主按钮蒙混过关。
-      list: [installedView({ dirSlug: d.dirSlug, localModified: true })],
+      // (v8 任务 6 之前这里用的是 installedFrom + 「贡献更改」,那一档已整条
+      // 下线、两个宿主下都没有主按钮,拿它做鉴别等于什么都没测。)
+      list: [installedView({ dirSlug: d.dirSlug, relation: "shared", localModified: true })],
       agentNames: new Map(),
       canonicalDir: "/home/u/.agents/skills",
       toolDirs: new Map(),
     });
     render(<DetailPanel />);
 
-    expect(screen.queryByRole("button", { name: "贡献更改" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "分享改动" })).not.toBeInTheDocument();
   });
 
-  it("对照组:同一份数据,「我的技能」详情(本地模式)里「贡献更改」照常渲染", async () => {
+  it("对照组:同一份数据,「我的技能」详情(本地模式)里「分享改动」照常渲染", async () => {
     // 与上一条断言的是同一个 rowAction 判定,只是宿主换成 mine——证明"商店
     // 宿主下不摆"确实是 host 分流的结果,不是这份数据本身判不出主按钮。
     useMySkills.setState({
-      list: [installedView({ localModified: true })],
+      list: [installedView({ relation: "shared", localModified: true })],
       agentNames: new Map([["claude-code", "Claude Code"]]),
       canonicalDir: "/home/u/.agents/skills",
       toolDirs: new Map(),
@@ -897,7 +963,7 @@ describe("商店详情的动作区(设计 §12 + Q44-A,`PanelBody` 一侧)", () 
     openLocal();
     render(<DetailPanel />);
 
-    expect(screen.getByRole("button", { name: "贡献更改" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "分享改动" })).toBeInTheDocument();
   });
 
   it("这台电脑上没有这个技能(纯浏览)时,「移除」不出现——没有可回答的「在哪」", () => {

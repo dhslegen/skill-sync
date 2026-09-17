@@ -128,11 +128,12 @@ interface InstallState {
   toggleAgent: (name: string) => void;
   /** 确认安装。`resolution` 只在从冲突弹窗回来时带。 */
   run: (resolution?: Resolution) => Promise<void>;
-  /** 冲突弹窗的默认选项(用户拍板):保留本地改动,随后把改动分享回公司技能库。 */
-  keepLocalAndShare: () => Promise<void>;
   /**
    * 「我分享的」冲突弹窗(v6 任务 5)的默认选项:「以本地为准,分享更新」。
-   * 与 `keepLocalAndShare` 同名的兄弟,分流不同——见函数体注释。
+   *
+   * ⚠️ **v8 任务 6 起这是唯一的"保留并分享"通道**:它的兄弟 `keepLocalAndShare`
+   * (改**别人**的技能那一档)已随「贡献更改」整条下线(D7),core 侧
+   * `share_installed` 对非本人技能直接拒。
    */
   keepLocalAndShareMine: () => Promise<void>;
   cancel: () => void;
@@ -154,18 +155,6 @@ function toAppError(raw: unknown): AppError {
   return isAppError(raw)
     ? raw
     : { code: "IPC_FAILED", message: t("error.generic"), detail: String(raw) };
-}
-
-/**
- * 「库里被别人改过,这一跳没分享出去」。
- *
- * ⚠️ **v8 任务 4 之后它只剩两个用处**:①「保留并贡献」(改**别人**的技能,
- * 那条路的出路是 v8 任务 6 的入口下线,不是给它一个覆盖按钮);
- * ②`CONFLICT_STALE`(拍板与提交之间又被抢先)。自己那一版的覆盖走
- * `useOverwrite` 的确认屏,不走这条。
- */
-function remoteChangedError(): AppError {
-  return { code: "CONFLICT_REMOTE_CHANGED", message: t("mine.shareRemoteChanged") };
 }
 
 /** 每次安装一个独立频道,避免上一次的残余进度串到这一次。 */
@@ -450,38 +439,6 @@ export const useInstall = create<InstallState>((set, get) => ({
       set({ phase: "error", error: toAppError(raw) });
     } finally {
       unlisten?.();
-    }
-  },
-
-  keepLocalAndShare: async () => {
-    await get().run("keepLocal");
-    // 保留那一步没走完(又冲突/出错)就不分享:分享的前提是本地已经站稳
-    if (get().phase !== "done") return;
-    const dirSlug = get().dirSlug;
-    if (!dirSlug) return;
-    try {
-      // ⚠️ **这条是「保留并贡献」——改的是别人的技能,刻意不给「仍然覆盖」**。
-      // v8 任务 4 只给「我自己那一版」配了覆盖确认屏(`useOverwrite`);顶掉
-      // **别人**的技能这件事的出路是 v8 任务 6(D7:入口整条下线,改说「和库里
-      // 的不一样」+ 联系作者),不是在这里摆一个覆盖按钮。所以这一档仍然
-      // 如实说一句"库里有新版本,这次没有分享"。
-      const outcome = await skillShareChanges({
-        dirSlug,
-        registryId: get().registryId ?? undefined,
-      });
-      if (outcome.kind === "needsConfirm") {
-        set({ shareResult: { error: remoteChangedError() } });
-      } else if (outcome.kind === "alreadyInSync") {
-        // 库里已经与本地一致:这一跳什么都没做,但**必须说出来**
-        // ——"没反应"会诱发重复提交。
-        set({ shareResult: { mode: "inSync" } });
-      } else {
-        set({ shareResult: { mode: outcome.mode } });
-      }
-      await get().refreshInstalled();
-    } catch (raw) {
-      // 保留已经成功,分享失败只是"下一步没走成"——不能把整个结果画成失败
-      set({ shareResult: { error: toAppError(raw) } });
     }
   },
 

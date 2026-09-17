@@ -28,14 +28,16 @@ describe("冲突对话框", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
-  it("用户改过本体:三个选项都在,且说清各自后果", () => {
+  // 🔴 v8 任务 6 / D7:这一档改的是**别人**的技能,「保留并分享我的改动」
+  // 已整条下线,只剩两个选项。
+  it("用户改过本体:两个选项都在,且说清各自后果", () => {
     conflict({ status: "locallyModified", installedSha: "aaa1111" });
     render(<ConflictDialog />);
 
     expect(screen.getByRole("alertdialog")).toBeInTheDocument();
     expect(screen.getByText("你修改过这个技能")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /保留并分享我的改动/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /只保留,暂不分享/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /保留并分享/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /保留本地的/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /用团队库的版本覆盖/ })).toBeInTheDocument();
     // 🔴 破坏性那一项必须写明**后果与能不能挽回**,而且必须是真话(终审 C-2)。
     // 这条断言此前查的是「无法找回」——**它把一句假话钉住了**:core 的
@@ -48,40 +50,30 @@ describe("冲突对话框", () => {
     expect(screen.queryByText(/无法找回|找不回/)).toBeNull();
   });
 
-  it("默认焦点落在「保留并分享」上 —— 用户拍板的默认项,且回车不会误覆盖", () => {
+  it("默认焦点落在无损的「保留本地的」上 —— 回车不会误覆盖", () => {
     conflict({ status: "locallyModified", installedSha: "aaa1111" });
     render(<ConflictDialog />);
-    expect(screen.getByRole("button", { name: /保留并分享我的改动/ })).toHaveFocus();
+    expect(screen.getByRole("button", { name: /保留本地的/ })).toHaveFocus();
   });
 
-  it("「只保留」选项指路到之后可以分享的入口", () => {
-    // 任务 11 之前这里写的是"分享功能开放后"——通道落地了,文案也要跟着指路,
-    // 不能让用户保留了改动却不知道下一步去哪。
+  // 🔴 v8 任务 6:措辞跟着语义走。「之后可在「我的技能」里把改动分享到公司
+  // 技能库」这句指路已经成了假话——那条入口没有了;改成如实说"它会和库里的
+  // 那一版不一样"。
+  it("「保留本地的」如实说明后果,不再指向一条已经不存在的分享入口", () => {
     conflict({ status: "locallyModified", installedSha: "aaa1111" });
     render(<ConflictDialog />);
-    expect(screen.getByText(/「我的技能」/)).toBeInTheDocument();
+    expect(screen.getByText(/和公司技能库里的那一版不一样/)).toBeInTheDocument();
+    expect(screen.queryByText(/之后可在「我的技能」里把改动分享/)).toBeNull();
   });
 
-  it("选「只保留」→ 带 keepLocal 重试,不发分享", async () => {
+  it("选「保留本地的」→ 带 keepLocal 重试,不发分享", async () => {
     const run = vi.fn();
-    const keepLocalAndShare = vi.fn();
     conflict({ status: "locallyModified", installedSha: "aaa1111" });
-    useInstall.setState({ run, keepLocalAndShare });
+    useInstall.setState({ run });
     render(<ConflictDialog />);
 
-    await userEvent.click(screen.getByRole("button", { name: /只保留,暂不分享/ }));
+    await userEvent.click(screen.getByRole("button", { name: /保留本地的/ }));
     expect(run).toHaveBeenCalledWith("keepLocal");
-    expect(keepLocalAndShare).not.toHaveBeenCalled();
-  });
-
-  it("选「保留并分享」→ 走 keepLocalAndShare", async () => {
-    const keepLocalAndShare = vi.fn();
-    conflict({ status: "locallyModified", installedSha: "aaa1111" });
-    useInstall.setState({ keepLocalAndShare });
-    render(<ConflictDialog />);
-
-    await userEvent.click(screen.getByRole("button", { name: /保留并分享我的改动/ }));
-    expect(keepLocalAndShare).toHaveBeenCalled();
   });
 
   it("选覆盖 → 带 overwrite 重试", async () => {
@@ -166,16 +158,14 @@ describe("冲突对话框", () => {
       expect(screen.getByRole("button", { name: /以库为准,丢弃本地改动/ })).toBeInTheDocument();
     });
 
-    it("点「以本地为准」→ 走 keepLocalAndShareMine,不是 keepLocalAndShare", async () => {
+    it("点「以本地为准」→ 走 keepLocalAndShareMine(v8 任务 6 起唯一的「保留并分享」通道)", async () => {
       const keepLocalAndShareMine = vi.fn();
-      const keepLocalAndShare = vi.fn();
       conflict({ status: "mine", localChanged: true, remoteChanged: true });
-      useInstall.setState({ keepLocalAndShareMine, keepLocalAndShare });
+      useInstall.setState({ keepLocalAndShareMine });
       render(<ConflictDialog />);
 
       await userEvent.click(screen.getByRole("button", { name: /以本地为准,分享更新/ }));
       expect(keepLocalAndShareMine).toHaveBeenCalled();
-      expect(keepLocalAndShare).not.toHaveBeenCalled();
     });
 
     it("点「以库为准」第一下就生效 —— 二次确认已撤销(终审 C-2)", async () => {

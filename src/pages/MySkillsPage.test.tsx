@@ -51,10 +51,12 @@ function sectionOfRelation(section: Section): InstalledSkillView["relation"] {
 /** 一行 fixture。`remote: "NEW"` 是这个文件自己的记号(不进真实 DTO,`seed()` 用它
  *  决定 mock 出的 `store_index` 该给这一行哪份远端指纹),不是 `InstalledSkillView`
  *  的字段——渲染前用 `stripFixtureOnly` 剥掉,不让它悄悄混进 `installed_list`。 */
-type Fixture = InstalledSkillView & { remote?: "NEW" };
+/** `author` 同样是 fixture-only:它住在**库索引**里(`authors.json` 随索引下来),
+ *  不是 `InstalledSkillView` 的字段。v8 任务 6 的「请联系 X」提示从这里取。 */
+type Fixture = InstalledSkillView & { remote?: "NEW"; author?: string };
 
 function mk(dirSlug: string, section: Section, over: Partial<Fixture> = {}): Fixture {
-  const { remote, ...rest } = over;
+  const { remote, author, ...rest } = over;
   return {
     dirSlug,
     commitSha: "sha",
@@ -80,14 +82,16 @@ function mk(dirSlug: string, section: Section, over: Partial<Fixture> = {}): Fix
     libraryUrl: null,
     canonicalReaders: null,
     remote,
+    author,
     ...rest,
   };
 }
 
 function stripFixtureOnly(list: Fixture[]): InstalledSkillView[] {
   return list.map((s) => {
-    const { remote, ...rest } = s;
-    void remote; // 只是为了从 rest 里剥掉这个字段,不是真的要用它
+    const { remote, author, ...rest } = s;
+    void remote; // 只是为了从 rest 里剥掉这两个字段,不是真的要用它们
+    void author;
     return rest;
   });
 }
@@ -116,7 +120,7 @@ function companyIndex(list: Fixture[]): StoreIndexView {
         fileCount: 1,
         contentHash: s.remote === "NEW" ? `sha256:remote-new-${s.dirSlug}` : s.contentHash,
         tags: [],
-        author: null,
+        author: s.author ?? null,
         updatedAt: { kind: "unknown" } as const,
       })),
   };
@@ -422,10 +426,36 @@ describe("三区排列与判定表接线", () => {
     expect(titles).toEqual(["安装自技能库", "已分享到技能库", "可分享到技能库"]);
   });
 
-  it("installedFrom:本地改过但库没变 → 「贡献更改」", async () => {
+  // ── v8 任务 6 / D7:「贡献更改」入口下线 ────────────────────────────────
+  it("installedFrom:本地改过但库没变 → 「和库里的不一样」,而且没有分享类按钮", async () => {
+    seed([mk("a", "installedFrom", { localModified: true, author: "李四" })]);
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-a");
+    expect(within(row).getByText("和库里的不一样")).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /分享|贡献/ })).toBeNull();
+  });
+
+  it("有作者时提示联系谁,「…」里给「改用库里的版本」这条出路", async () => {
+    seed([mk("a", "installedFrom", { localModified: true, author: "李四" })]);
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-a");
+    expect(within(row).getByText("想让作者采纳,请联系 李四")).toBeInTheDocument();
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
+    expect(screen.getByRole("menuitem", { name: "改用库里的版本" })).toBeInTheDocument();
+  });
+
+  // 🔴 库里没登记作者(公司库那个叫「测试」的技能就是这一档):**只说不一样,
+  // 绝不编一个名字出来**。正面断言文案,不是只断言"没崩"。
+  it("作者取不到时只说「和库里的不一样」,一个名字都不提", async () => {
     seed([mk("a", "installedFrom", { localModified: true })]);
     render(<MySkillsPage />);
-    expect(await screen.findByRole("button", { name: "贡献更改" })).toBeInTheDocument();
+    const row = await screen.findByTestId("row-a");
+    expect(within(row).getByText("和库里的不一样")).toBeInTheDocument();
+    expect(within(row).queryByText(/请联系/)).toBeNull();
+    expect(row.textContent ?? "").not.toMatch(/null|undefined/);
+    // 出路仍在:「改用库里的版本」不依赖作者名
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
+    expect(screen.getByRole("menuitem", { name: "改用库里的版本" })).toBeInTheDocument();
   });
 
   it("installedFrom:库新 + 本地也改过 → 冲突态的浅色按钮,点击走 pull(既有 beginUpdate 编排)", async () => {
@@ -459,11 +489,13 @@ describe("三区排列与判定表接线", () => {
     expect((await screen.findByRole("button", { name: "库里有新版…" })).textContent).toMatch(/…$/);
   });
 
-  it("🔴 修复轮 2(①):conflict 档的「更多」菜单里,贡献更改/分享改动同样要过 shareBlocked 这道闸(正反对照)", async () => {
-    // 正例:conflict + 本地改过 + 合格 → 菜单里有「贡献更改」,点击真的调
+  it("🔴 修复轮 2(①):conflict 档的「更多」菜单里,分享改动同样要过 shareBlocked 这道闸(正反对照)", async () => {
+    // 正例:conflict + 本地改过 + 合格 → 菜单里有「分享改动」,点击真的调
     // skill_share_changes(与主按钮那条 conflict 链路互不冲突,是"更多"里的
     // 另一条路)。
-    const list = [mk("a", "installedFrom", { remote: "NEW", localModified: true })];
+    // 🔴 v8 任务 6:这一条搬到**「已分享到」区**——「安装自」区的「贡献更改」
+    // 已整条下线,那个区的「…」里不再有这条动作(下面另有一条正面钉住)。
+    const list = [mk("a", "sharedTo", { remote: "NEW", localModified: true })];
     seed(list);
     // 🔴 覆写 invoke 时不能读 `useMySkills.getState().list` 回填
     // `installed_list`——首次 `load()` 落地之前那份状态还是初值 `null`,会喂出
@@ -476,22 +508,32 @@ describe("三区排列与判定表接线", () => {
         return { kind: "submitted", mode: "pushed", commitSha: "new" };
       return null;
     });
-    render(<MySkillsPage />);
+    await renderAtTab(/已分享到技能库/);
     const row = await screen.findByTestId("row-a");
     await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
-    await userEvent.click(screen.getByRole("menuitem", { name: "贡献更改" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "分享改动" }));
     await vi.waitFor(() =>
       expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_share_changes")).toBe(true),
     );
   });
 
-  it("🔴 修复轮 2(①反例):conflict + 本地改过 + 标准校验不过 → 「更多」菜单里没有贡献更改/分享改动", async () => {
-    // C1 在主按钮那一侧堵上了"不合规内容也能推去评审"这个洞;这里补上
+  // 🔴 v8 任务 6:「安装自」区的 conflict 档,「…」里**不能**再冒出分享类动作
+  // ——与 C1 当年"主按钮堵上了、「…」里那条漏掉"是同一个洞,方向相反而已。
+  it("🔴 v8 任务 6:安装自区的 conflict 档,「…」里没有任何分享类动作", async () => {
+    seed([mk("a", "installedFrom", { remote: "NEW", localModified: true })]);
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-a");
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
+    expect(screen.queryByRole("menuitem", { name: /分享|贡献/ })).toBeNull();
+  });
+
+  it("🔴 修复轮 2(①反例):conflict + 本地改过 + 标准校验不过 → 「更多」菜单里没有分享改动", async () => {
+    // C1 在主按钮那一侧堵上了"不合规内容也能直推进库"这个洞;这里补上
     // 「更多」菜单那一侧的同款反例——不合规时这条动作不该从另一个入口冒出来。
     seed([
-      mk("a", "installedFrom", { remote: "NEW", localModified: true, shareBlocked: "nameFormat" }),
+      mk("a", "sharedTo", { remote: "NEW", localModified: true, shareBlocked: "nameFormat" }),
     ]);
-    render(<MySkillsPage />);
+    await renderAtTab(/已分享到技能库/);
     const row = await screen.findByTestId("row-a");
     await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     expect(screen.queryByRole("menuitem", { name: "贡献更改" })).toBeNull();
@@ -524,12 +566,14 @@ describe("三区排列与判定表接线", () => {
     expect(screen.getByText(/团队标准要求两者相同/)).toBeInTheDocument();
   });
 
-  it("🔴 C1:安装自区本地改了但标准校验不过 → 禁用的「贡献更改」+ 说明,不能直推不合规内容", async () => {
+  // 🔴 v8 任务 6:C1 那道闸在「安装自」区**已无对象**——那个区不再往库里推
+  // 任何东西,摆一个"分享被拦下"的禁用按钮是在说一件不会发生的事。
+  it("🔴 v8 任务 6:安装自区本地改了、标准校验也不过 → 仍然只是「和库里的不一样」", async () => {
     seed([mk("a", "installedFrom", { localModified: true, shareBlocked: "nameFormat" })]);
     render(<MySkillsPage />);
-    const btn = await screen.findByRole("button", { name: "贡献更改" });
-    expect(btn).toBeDisabled();
-    expect(screen.getByText(/只能用英文小写字母、数字和短横线/)).toBeInTheDocument();
+    const row = await screen.findByTestId("row-a");
+    expect(within(row).getByText("和库里的不一样")).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /分享|贡献/ })).toBeNull();
   });
 
   it("🔴 C1:已分享到区本地改了但标准校验不过 → 禁用的「分享改动」+ 说明", async () => {
@@ -1201,8 +1245,8 @@ describe("chooseVersion 档(补充覆盖:此前整页零测试覆盖)", () => {
 
     const button = within(row).getByRole("button", { name: "选择保留哪一份" });
     expect(button).toBeInTheDocument();
-    // 其余按 localModified 本该出现的「贡献更改」不该同时出现
-    expect(within(row).queryByRole("button", { name: "贡献更改" })).toBeNull();
+    // 其余按 localModified 本该出现的分享类按钮不该同时出现
+    expect(within(row).queryByRole("button", { name: /分享改动|贡献更改/ })).toBeNull();
 
     await userEvent.click(button);
 
