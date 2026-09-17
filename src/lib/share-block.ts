@@ -53,9 +53,19 @@ export type ShareFlow = "share" | "changes";
  * (提交审核整条下线),**结构刻意不压平**——core 仍如实回报这次做成了什么,
  * 将来再多一档时这里会当场要求补一句人话。
  */
-export const SHARE_DONE_LABEL: Record<ShareFlow, Record<ShareMode, MessageKey>> = {
-  share: { pushed: "mine.shareDone" },
-  changes: { pushed: "mine.shareChangesDone" },
+/**
+ * 分享**落地成了什么**。`ShareMode` 是"真的推了一笔"的那几档(v8 任务 3 起只剩
+ * `pushed`);`"inSync"` 是 v8 任务 5 新增的一档:**库里已经与本地一致,一个请求
+ * 都没发**。
+ *
+ * 🔴 它必须有自己的一句话。这一档"成功但什么都没变"——没有反馈的话用户看到的
+ * 就是"点了没反应",而"没反应"会诱发重复提交(本项目 §12 记着的第 6 次现身)。
+ */
+export type ShareResultKind = ShareMode | "inSync";
+
+export const SHARE_DONE_LABEL: Record<ShareFlow, Record<ShareResultKind, MessageKey>> = {
+  share: { pushed: "mine.shareDone", inSync: "mine.shareInSync" },
+  changes: { pushed: "mine.shareChangesDone", inSync: "mine.shareInSync" },
 };
 
 /** 同上,失败侧。`mine.shareFailed`(「分享没能完成」)是既有键,确认屏一直在用。 */

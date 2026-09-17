@@ -1,12 +1,13 @@
 import { create } from "zustand";
-import type { OverwriteWarning } from "@/lib/ipc";
+import type { OverwriteWarning, SharePlan } from "@/lib/ipc";
 
 /**
- * 一次待拍板的覆盖(v8 任务 4 / 决策 D2)。
+ * 一次待拍板的分享(v8 任务 4 / 决策 D2,任务 5 / D9 扩成统一确认屏)。
  *
- * 「推上去会顶掉库里那一版」这件事有**三个发起方**(「我的技能」的分享、
- * 分享改动,以及获取冲突里的「保留并分享」),而确认屏只该有一处实现——
- * 所以待拍板状态放在这个独立的 store 里,弹窗挂 `App.tsx` 全局。
+ * 「这次分享会让技能库有哪些变化」这件事有**两个发起方**走这个 store
+ * (「分享改动」与获取冲突里的「保留并分享」);「可分享到」区那条路有自己的
+ * 确认屏(`ShareConfirm`),那一屏在同一处渲染同一份清单——**一个动作一屏**
+ * 是 D9 的原话,不是先弹覆盖框再弹清单框。
  *
  * 🔴 **渲染点必须是全局的**:从商店详情发起时 `MySkillsPage` 根本没挂载,
  * 从「我的技能」发起时它被详情面板的遮罩盖着。本项目已经因为"错误写进了
@@ -17,7 +18,17 @@ export interface OverwriteDecision {
   dirSlug: string;
   /** 技能展示名(拿不到时发起方传 dirSlug)。 */
   name: string;
-  warning: OverwriteWarning;
+  /**
+   * 这次会新增/修改/**删除**哪些文件(v8 任务 5)。它是这一屏存在的主要理由:
+   * 覆盖警告是"可能有"(`warning` 为 `null` 就是没人被顶掉),清单是"一定有"
+   * ——差集为空时 core 根本不会走到这里(那一档是「库里已与本地一致」)。
+   */
+  plan: SharePlan;
+  /**
+   * 库里那一版还会被顶掉时的警告,摆在清单**顶部**。
+   * `null` = 库里那一版与本地基线一致,没有人会被顶掉,这一段整条不摆。
+   */
+  warning: OverwriteWarning | null;
   /**
    * 用户按「仍然覆盖」时重跑的那一跳。
    *

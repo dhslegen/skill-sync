@@ -133,7 +133,7 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
             registry_id: "fixture",
             repo: &repo,
             dir_slug: &name,
-            overwrite: false,
+            confirmed: true,
         },
         NOW,
     )
@@ -166,7 +166,7 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
             registry_id: "fixture",
             repo: &repo,
             dir_slug: &name,
-            overwrite: false,
+            confirmed: true,
         },
         NOW,
     )
@@ -198,7 +198,7 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
             registry_id: "fixture",
             repo: &repo,
             dir_slug: &name,
-            overwrite: false,
+            confirmed: true,
         },
         NOW,
     )
@@ -424,7 +424,7 @@ async fn remote_conflict_detection_against_a_real_gitea() {
     .await
     .expect("空基线不该报错");
     assert!(
-        matches!(outcome, share::ShareInstalledOutcome::RemoteChanged(_)),
+        matches!(outcome, share::ShareInstalledOutcome::NeedsConfirm { overwrite: Some(_), .. }),
         "没有基线时本地 v2 与库里 v3 不同,照样要弹覆盖确认:{outcome:?}",
     );
     // 把基线放回去,下面几步测的是"有基线"那一档
@@ -446,7 +446,7 @@ async fn remote_conflict_detection_against_a_real_gitea() {
     )
     .await
     .expect("冲突检测不该报错");
-    let share::ShareInstalledOutcome::RemoteChanged(warning) = outcome else {
+    let share::ShareInstalledOutcome::NeedsConfirm { overwrite: Some(warning), .. } = outcome else {
         panic!("远端已是 v3,应进冲突档");
     };
     let url = warning.history_url.expect("Gitea 源应给出历史链接");
@@ -604,7 +604,7 @@ async fn author_loop_in_a_tool_dir_against_a_real_gitea() {
         &env,
         &store,
         &trash,
-        share::ShareRequest { registry_id: "fixture", repo: &repo, dir_slug: &name, overwrite: false },
+        share::ShareRequest { registry_id: "fixture", repo: &repo, dir_slug: &name, confirmed: true },
         NOW,
     )
     .await

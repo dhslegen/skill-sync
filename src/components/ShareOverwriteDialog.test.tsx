@@ -20,6 +20,7 @@ const ask = (over: Partial<{ lastAuthor: string | null; lastAt: string | null; h
   useOverwrite.getState().ask({
     dirSlug: "weekly-report",
     name: "weekly-report",
+    plan: { added: [], modified: ["SKILL.md"], deleted: [] },
     warning: {
       lastAuthor: "李四",
       lastAt: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(),

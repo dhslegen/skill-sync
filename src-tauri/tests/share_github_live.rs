@@ -87,7 +87,7 @@ async fn share_fresh_then_update_against_real_github() {
         registry_id: "gh-live",
         repo: &repo,
         dir_slug: &share_name,
-        overwrite: false,
+        confirmed: true,
     };
     // 显式注入沙盒废纸篓,理由同 share_live.rs
     let trash = skillsync_lib::core::fsops::SandboxTrash::new(tmp.path().join("gh-live-trash"));

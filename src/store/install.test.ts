@@ -361,7 +361,8 @@ describe("获取流程状态机", () => {
     invoke.mockImplementation(async (cmd) => {
       if (cmd === "agents_detected") return AGENTS;
       if (cmd === "installed_list") return [];
-      if (cmd === "skill_share_changes") return { kind: "remoteChanged", historyUrl: null };
+      if (cmd === "skill_share_changes")
+        return { kind: "needsConfirm", plan: { added: [], modified: ["SKILL.md"], deleted: [] }, overwrite: null };
       installCalls += 1;
       return installCalls === 1
         ? { outcome: "needsDecision", precheck: { status: "locallyModified", installedSha: "aaa" } }
@@ -430,10 +431,13 @@ describe("获取流程状态机", () => {
         if (cmd === "installed_list") return [];
         if (cmd === "skill_share_changes")
           return {
-            kind: "remoteChanged",
-            lastAuthor: "李四",
-            lastAt: "2026-09-10T03:04:05Z",
-            historyUrl: "http://g/commits/x",
+            kind: "needsConfirm",
+            plan: { added: [], modified: ["SKILL.md"], deleted: [] },
+            overwrite: {
+              lastAuthor: "李四",
+              lastAt: "2026-09-10T03:04:05Z",
+              historyUrl: "http://g/commits/x",
+            },
           };
         if (cmd === "skill_install")
           return { outcome: "kept", remoteChanged: true } satisfies AcquireOutcome;
@@ -450,25 +454,27 @@ describe("获取流程状态机", () => {
       });
       const pending = useOverwrite.getState().pending;
       expect(pending?.dirSlug).toBe("weekly-report");
-      expect(pending?.warning.lastAuthor).toBe("李四");
-      expect(pending?.warning.historyUrl).toBe("http://g/commits/x");
+      expect(pending?.warning?.lastAuthor).toBe("李四");
+      expect(pending?.warning?.historyUrl).toBe("http://g/commits/x");
+      // v8 任务 5:清单也要一起带过去——这一屏的主要理由是"库里哪几个文件会没"。
+      expect(pending?.plan.modified).toEqual(["SKILL.md"]);
       expect(useInstall.getState().shareResult).toBeNull();
       expect(useInstall.getState().phase).toBe("done");
       expect(useInstall.getState().mineKept).toEqual({ remoteChanged: true, kind: "mine" });
     });
 
-    it("按「仍然覆盖」→ 带 overwrite 重来一次 → 分享成功", async () => {
+    it("按「仍然覆盖」→ 带 confirmed 重来一次 → 分享成功", async () => {
       useOverwrite.setState({ pending: null, busy: false });
       const seen: unknown[] = [];
       invoke.mockImplementation(async (cmd, payload) => {
         if (cmd === "agents_detected") return AGENTS;
         if (cmd === "installed_list") return [];
         if (cmd === "skill_share_changes") {
-          const args = (payload as { args: { overwrite?: boolean } }).args;
-          seen.push(args.overwrite);
-          return args.overwrite
+          const args = (payload as { args: { confirmed?: boolean } }).args;
+          seen.push(args.confirmed);
+          return args.confirmed
             ? { kind: "submitted", mode: "pushed", commitSha: "new" }
-            : { kind: "remoteChanged", lastAuthor: null, lastAt: null, historyUrl: null };
+            : { kind: "needsConfirm", plan: { added: [], modified: ["SKILL.md"], deleted: [] }, overwrite: null };
         }
         if (cmd === "skill_install")
           return { outcome: "kept", remoteChanged: true } satisfies AcquireOutcome;

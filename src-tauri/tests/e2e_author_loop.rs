@@ -325,7 +325,7 @@ async fn author_develops_in_a_tool_dir_shares_gets_edited_pulls_back_and_keeps_e
             registry_id: registry::BUILTIN_REGISTRY_ID,
             repo: &repo,
             dir_slug: SLUG,
-            overwrite: false,
+            confirmed: true,
         },
         NOW,
     )

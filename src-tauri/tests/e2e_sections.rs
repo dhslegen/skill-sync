@@ -201,10 +201,11 @@ async fn mount_library_v1(server: &MockServer) {
         .await;
     Mock::given(method("GET"))
         .and(wiremock::matchers::path_regex(r"^/api/v1/repos/skills/skills/archive/main\.zip$"))
-        // 配额 2:① 取回下一次;③ 贡献更改**前的远端变更检测**再下一次
-        // (v8 任务 3 起 `share_installed` 不再有 `force_review` 那条跳过检测的旁路)
+        // 配额 3:① 取回一次;③ 贡献更改的**预览轮**一次(算差集 + 覆盖闸);
+        // ③' 用户确认后的**执行轮**再一次(v8 任务 5 起两轮各自下载一次压缩包,
+        // 两轮之间用户可能等了很久,拿上一轮的旧快照提交才是真的危险)
         .respond_with(ResponseTemplate::new(200).set_body_bytes(library_zip("库里的初版正文", "李四")))
-        .up_to_n_times(2)
+        .up_to_n_times(3)
         .mount(server)
         .await;
 }
@@ -360,7 +361,8 @@ async fn a_skill_installed_from_the_company_library_can_be_edited_and_contribute
 
     // ────────────── ③ 贡献更改(v8 任务 3 起:直推,不再开合并请求)
     mount_contribute_endpoints(&server).await;
-    let outcome = share::share_installed(
+    // v8 任务 5:先走一轮预览(确认屏打开时发的那一跳),拿到这次会改动哪些文件。
+    let preview = share::share_installed(
         &ShareClient::Gitea(&client),
         &client,
         &c.registry,
@@ -373,8 +375,29 @@ async fn a_skill_installed_from_the_company_library_can_be_edited_and_contribute
     )
     .await
     .unwrap();
+    let ShareInstalledOutcome::NeedsConfirm { plan, overwrite } = preview else {
+        panic!("预览轮应当回一份清单:{preview:?}");
+    };
+    assert_eq!(plan.modified, vec!["SKILL.md".to_string()], "只改了正文");
+    assert!(plan.added.is_empty() && plan.deleted.is_empty(), "{plan:?}");
+    assert!(overwrite.is_none(), "远端内容与基线一致,没有人会被顶掉");
+
+    // 用户在确认屏上按了确认 → 这一跳才真的提交。
+    let outcome = share::share_installed(
+        &ShareClient::Gitea(&client),
+        &client,
+        &c.registry,
+        &env,
+        &c.store,
+        SLUG,
+        &repo.branch,
+        true,
+        NOW,
+    )
+    .await
+    .unwrap();
     let ShareInstalledOutcome::Submitted(submitted) = outcome else {
-        panic!("远端内容与基线一致,应当直接提交:{outcome:?}");
+        panic!("确认之后应当直接提交:{outcome:?}");
     };
     assert_eq!(submitted.mode, ShareMode::Pushed);
 

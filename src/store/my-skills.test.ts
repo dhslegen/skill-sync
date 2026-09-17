@@ -643,14 +643,48 @@ describe("拍板留哪一份(skill_keep_version)", () => {
 describe("分享确认屏(零编辑)", () => {
   beforeEach(reset);
 
-  it("beginShare 只记目标并探一次路径预告,一个字节都不推", async () => {
+  it("beginShare 记下目标、探一次路径预告,并走一轮**预览**——一个字节都不推", async () => {
     useMySkills.setState({ list: [view({ relation: "draft" })] });
-    invoke.mockImplementation(async () => "unknown");
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_share")
+        return { outcome: "needsConfirm", plan: { added: ["SKILL.md"], modified: [], deleted: [] }, overwrite: null };
+      return "unknown";
+    });
 
     useMySkills.getState().beginShare("weekly-report");
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(useMySkills.getState().shareTarget).toEqual({ dirSlug: "weekly-report" });
-    expect(invoke).not.toHaveBeenCalledWith("skill_share", expect.anything());
+    // 🔴 v8 任务 5:确认屏一打开就问 core"这次会改动哪些文件",但那一跳
+    // **不带 `confirmed`** —— core 据此走预览路,一个写请求都不发。
+    // 断言的是"没带那个开关",不是"没调过这个 command":后者在新流程里
+    // 恒假,留着就是一条永远不触发的空转断言。
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share");
+    expect(call?.[1].args.confirmed).toBeUndefined();
+    expect(useMySkills.getState().sharePreview).toEqual({
+      dirSlug: "weekly-report",
+      plan: { added: ["SKILL.md"], modified: [], deleted: [] },
+      overwrite: null,
+    });
+  });
+
+  it("🔴 库里已与本地一致:如实说出来,并且不许再提交(那一笔就是空提交)", async () => {
+    useMySkills.setState({ list: [view({ relation: "shared" })], shareTarget: { dirSlug: "weekly-report" } });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_share") return { outcome: "alreadyInSync" };
+      if (cmd === "installed_list") return [view()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().confirmShare();
+
+    expect(useMySkills.getState().sharePreview).toEqual({ dirSlug: "weekly-report", inSync: true });
+    expect(useMySkills.getState().shareDone).toEqual({
+      dirSlug: "weekly-report",
+      mode: "inSync",
+      flow: "share",
+    });
   });
 
   it("确认时带账上的来源坐标——缺省会推到该源主库,追加库的技能就推错了地方", async () => {
@@ -671,6 +705,7 @@ describe("分享确认屏(零编辑)", () => {
       dirSlug: "weekly-report",
       registryId: "company",
       repo: "design/skills",
+      confirmed: true,
     });
     // flow 必须是 "share"(终审复审轮 1 #3):确认屏这条路是**首次分享**,
     // 界面据此说「已分享到公司技能库」而不是「**改动**已分享」——记错了就直接
@@ -716,6 +751,7 @@ describe("分享确认屏(零编辑)", () => {
       dirSlug: "weekly-report",
       registryId: "custom-1",
       repo: "design/design-skills",
+      confirmed: true,
     });
   });
 
@@ -734,7 +770,7 @@ describe("分享确认屏(零编辑)", () => {
     await useMySkills.getState().confirmShare();
 
     const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share");
-    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", repo: "skills/skills" });
+    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", repo: "skills/skills", confirmed: true });
   });
 
   it("🔴 终审 C-1:「可分享到」区哪怕带着(它自己外部来源的)坐标,也恒推公司库", async () => {
@@ -771,7 +807,7 @@ describe("分享确认屏(零编辑)", () => {
     const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share");
     // 不带 registryId(缺省内建源)、repo 不是 vercel-labs/agent-skills
     // (没选过额外仓,缺省该源主库,IPC 层面就是不传 repo)
-    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report" });
+    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", confirmed: true });
   });
 
   it("失败时确认屏留着、错误可读——关掉就等于失败被静默吞掉", async () => {
@@ -809,10 +845,13 @@ describe("分享改动撞上「库里那一版与本地基线不符」(v8 任务
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "skill_share_changes")
         return {
-          kind: "remoteChanged",
-          lastAuthor: "李四",
-          lastAt: "2026-09-10T03:04:05Z",
-          historyUrl: "http://g/skills/skills/commits/x",
+          kind: "needsConfirm",
+          plan: { added: [], modified: ["SKILL.md"], deleted: ["旧的.md"] },
+          overwrite: {
+            lastAuthor: "李四",
+            lastAt: "2026-09-10T03:04:05Z",
+            historyUrl: "http://g/skills/skills/commits/x",
+          },
         };
       if (cmd === "installed_list") return [modified()];
       return AGENTS;
@@ -822,9 +861,12 @@ describe("分享改动撞上「库里那一版与本地基线不符」(v8 任务
 
     const pending = useOverwrite.getState().pending;
     expect(pending?.dirSlug).toBe("weekly-report");
-    expect(pending?.warning.lastAuthor).toBe("李四");
-    expect(pending?.warning.lastAt).toBe("2026-09-10T03:04:05Z");
-    expect(pending?.warning.historyUrl).toBe("http://g/skills/skills/commits/x");
+    expect(pending?.warning?.lastAuthor).toBe("李四");
+    expect(pending?.warning?.lastAt).toBe("2026-09-10T03:04:05Z");
+    expect(pending?.warning?.historyUrl).toBe("http://g/skills/skills/commits/x");
+    // 🔴 v8 任务 5:清单也要一起带过去——覆盖警告"可能有",而"库里哪几个文件
+    // 会没"是这一屏存在的主要理由,漏了它用户就是在盲签。
+    expect(pending?.plan.deleted).toEqual(["旧的.md"]);
     // 这一档不是失败:它是"要你先拍板"
     const s = useMySkills.getState();
     expect(s.shareError).toBeNull();
@@ -832,16 +874,16 @@ describe("分享改动撞上「库里那一版与本地基线不符」(v8 任务
     expect(s.shareBusy).toBeNull();
   });
 
-  it("按「仍然覆盖」→ 带 overwrite 重来一次 → 分享成功", async () => {
+  it("按「仍然覆盖」→ 带 confirmed 重来一次 → 分享成功", async () => {
     useMySkills.setState({ list: [modified()] });
     const seen: unknown[] = [];
     invoke.mockImplementation(async (cmd: string, payload: Record<string, unknown>) => {
       if (cmd === "skill_share_changes") {
-        const args = payload.args as { overwrite?: boolean };
-        seen.push(args.overwrite);
-        return args.overwrite
+        const args = payload.args as { confirmed?: boolean };
+        seen.push(args.confirmed);
+        return args.confirmed
           ? { kind: "submitted", mode: "pushed", commitSha: "n" }
-          : { kind: "remoteChanged", lastAuthor: null, lastAt: null, historyUrl: null };
+          : { kind: "needsConfirm", plan: { added: [], modified: ["SKILL.md"], deleted: [] }, overwrite: null };
       }
       if (cmd === "installed_list") return [modified()];
       return AGENTS;
@@ -859,7 +901,7 @@ describe("分享改动撞上「库里那一版与本地基线不符」(v8 任务
     useMySkills.setState({ list: [modified()] });
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "skill_share_changes")
-        return { kind: "remoteChanged", lastAuthor: null, lastAt: null, historyUrl: null };
+        return { kind: "needsConfirm", plan: { added: [], modified: ["SKILL.md"], deleted: [] }, overwrite: null };
       if (cmd === "installed_list") return [modified()];
       return AGENTS;
     });

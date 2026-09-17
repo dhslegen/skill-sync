@@ -31,9 +31,9 @@ import {
   type InstallStage,
   type Precheck,
   type Resolution,
-  type ShareMode,
   type SkillVersion,
 } from "@/lib/ipc";
+import type { ShareResultKind } from "@/lib/share-block";
 import { useRegistries } from "@/store/registries";
 // 🔴 与 `my-skills.ts` 的循环导入(它反过来 `import { useInstall } from "@/store/install"`
 // ——`pull`/`confirmRemove`/`setAgents` 都要用到获取流程与已装清单;这一侧则要在
@@ -96,7 +96,7 @@ interface InstallState {
    */
   mineKept: { remoteChanged: boolean; kind: "mine" | "localDiffers" } | null;
   /** 「保留并分享」的分享结果。null = 没走这条路。 */
-  shareResult: { mode: ShareMode } | { error: AppError } | null;
+  shareResult: { mode: ShareResultKind } | { error: AppError } | null;
   precheck: Precheck | null;
   error: AppError | null;
   /** 已安装技能:商店卡片的状态机数据源。 */
@@ -469,8 +469,12 @@ export const useInstall = create<InstallState>((set, get) => ({
         dirSlug,
         registryId: get().registryId ?? undefined,
       });
-      if (outcome.kind === "remoteChanged") {
+      if (outcome.kind === "needsConfirm") {
         set({ shareResult: { error: remoteChangedError() } });
+      } else if (outcome.kind === "alreadyInSync") {
+        // 库里已经与本地一致:这一跳什么都没做,但**必须说出来**
+        // ——"没反应"会诱发重复提交。
+        set({ shareResult: { mode: "inSync" } });
       } else {
         set({ shareResult: { mode: outcome.mode } });
       }
@@ -529,7 +533,7 @@ export const useInstall = create<InstallState>((set, get) => ({
  */
 async function pushMyChanges(
   dirSlug: string,
-  overwrite: boolean,
+  confirmed: boolean,
   set: (partial: Partial<InstallState>) => void,
   get: () => InstallState,
 ) {
@@ -537,19 +541,21 @@ async function pushMyChanges(
     const outcome = await skillShareChanges({
       dirSlug,
       registryId: get().registryId ?? undefined,
-      ...(overwrite ? { overwrite: true } : {}),
+      ...(confirmed ? { confirmed: true } : {}),
     });
-    if (outcome.kind === "remoteChanged") {
+    if (outcome.kind === "needsConfirm") {
       useOverwrite.getState().ask({
         dirSlug,
         name: dirSlug,
-        warning: {
-          lastAuthor: outcome.lastAuthor,
-          lastAt: outcome.lastAt,
-          historyUrl: outcome.historyUrl,
-        },
+        plan: outcome.plan,
+        warning: outcome.overwrite,
         confirm: () => pushMyChanges(dirSlug, true, set, get),
       });
+      return;
+    }
+    if (outcome.kind === "alreadyInSync") {
+      set({ shareResult: { mode: "inSync" } });
+      await get().refreshInstalled();
       return;
     }
     set({ shareResult: { mode: outcome.mode } });

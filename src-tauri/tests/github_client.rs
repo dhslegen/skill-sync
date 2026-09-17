@@ -254,3 +254,69 @@ async fn tree_request_uses_the_given_sha_not_the_branch_name() {
         .await
         .expect("必须命中按 sha 拼的 URL,而不是按分支名拼的那条 404 桩");
 }
+
+/// 🔴 **`createCommitOnBranch` 的 `fileChanges` 必须带 `deletions`**(v8 任务 5 / D5)。
+///
+/// 此前这个请求体里**根本没有 `deletions` 键**,于是"分享 = 让库里与本地一致"
+/// 这句话在 GitHub 源上只兑现了一半:上传永远做,删除一次都没发生过。
+/// 断言的是**请求体的形状**,不是返回值好看。
+#[tokio::test]
+async fn create_commit_on_branch_carries_both_additions_and_deletions() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": { "createCommitOnBranch": { "commit": { "oid": "newoid" } } }
+        })))
+        .mount(&server)
+        .await;
+    let c = client(&server, Some("t"));
+
+    let oid = c
+        .create_commit_on_branch(
+            "team/skills",
+            "main",
+            "headsha",
+            "更新技能:my-notes",
+            &[("skills/my-notes/SKILL.md".to_string(), b"hi".to_vec())],
+            &["skills/my-notes/gone.md".to_string()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(oid, "newoid");
+
+    let reqs = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    let changes = &body["variables"]["input"]["fileChanges"];
+    assert_eq!(changes["additions"][0]["path"], "skills/my-notes/SKILL.md");
+    // GraphQL 的 deletions 只要路径,不要 sha(Gitea 那边删除反而必须给 blob sha)
+    assert_eq!(changes["deletions"], serde_json::json!([{ "path": "skills/my-notes/gone.md" }]));
+}
+
+/// 对照组:没有要删的东西时 `deletions` 是**空数组**,不是缺席也不是 null
+/// ——GraphQL 的 schema 认空数组,而"缺席"会让下一个人以为这个键是可选的。
+#[tokio::test]
+async fn create_commit_on_branch_sends_an_empty_deletions_list_when_nothing_is_gone() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": { "createCommitOnBranch": { "commit": { "oid": "o" } } }
+        })))
+        .mount(&server)
+        .await;
+    let c = client(&server, Some("t"));
+    c.create_commit_on_branch(
+        "team/skills",
+        "main",
+        "headsha",
+        "新增技能:my-notes",
+        &[("skills/my-notes/SKILL.md".to_string(), b"hi".to_vec())],
+        &[],
+    )
+    .await
+    .unwrap();
+    let reqs = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(body["variables"]["input"]["fileChanges"]["deletions"], serde_json::json!([]));
+}

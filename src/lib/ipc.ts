@@ -767,12 +767,29 @@ export interface OverwriteWarning {
 }
 
 /**
+ * 这次分享会让技能库发生什么(v8 任务 5 / D5)。路径是**技能目录内的相对路径**。
+ *
+ * 🔴 `deleted` 是这一期新增的能力:分享现在等于"让库里的这个技能和我本地的一致",
+ * 包含把本地已经删掉的文件从技能库里删掉。铁律「绝不静默删除用户文件」对服务端
+ * 同样适用,所以它必须先摆在用户眼前(D6)。
+ */
+export interface SharePlan {
+  added: string[];
+  modified: string[];
+  deleted: string[];
+}
+
+/**
  * 分享的结果。**库里同名且不是我分享的**不是拍板档,而是 `REPO_NAME_TAKEN`
  * 这个错误——覆盖**别人**的技能这条路整体取消,改名由用户在本地完成。
  *
- * `needsOverwrite`(v8 任务 4)是另一回事:库里已有**我自己**的同名技能,
- * 而且它那一版与本地不符,推上去会顶掉它。core 一个字节都没动就退回来,
- * 用户拍板后带 `overwrite: true` 重来。
+ * `needsConfirm`(v8 任务 5 / D9)是**预览轮**的结果:core 一个写请求都没发,
+ * 只回一份"会改动哪些文件"的清单;`overwrite` 非空时库里那一版还会被顶掉,
+ * 确认屏把它摆在清单**顶部**——同一个动作只有一屏(D9),不是先弹覆盖框再弹清单框。
+ * 用户拍板后带 `confirmed: true` 重来。
+ *
+ * `alreadyInSync`:库里已与本地逐字节一致,一个请求都没发。这不是"什么都没做",
+ * 它是空提交的正解(此前这一档照样提交,Gitea 照样建一个零改动的 commit)。
  */
 export type ShareOutcome =
   | {
@@ -781,7 +798,8 @@ export type ShareOutcome =
       commitSha: string;
       shareName: string;
     }
-  | ({ outcome: "needsOverwrite" } & OverwriteWarning);
+  | { outcome: "needsConfirm"; plan: SharePlan; overwrite: OverwriteWarning | null }
+  | { outcome: "alreadyInSync" };
 
 export interface Submitted {
   mode: ShareMode;
@@ -789,12 +807,13 @@ export interface Submitted {
 }
 
 /**
- * 回推的两种结局。`remoteChanged` 不是错误:库里这一版与本地基线不符,
- * 推上去会顶掉它,core 一个字节都没动就退回来等用户拍板(v8 任务 4)。
+ * 回推的三种结局,与 [`ShareOutcome`] 同构:回推改动同样会删除库里的文件,
+ * 所以它也必须过同一道确认屏(D6 在**两条分享通道**上都成立)。
  */
 export type ShareInstalledOutcome =
   | ({ kind: "submitted" } & Submitted)
-  | ({ kind: "remoteChanged" } & OverwriteWarning);
+  | { kind: "needsConfirm"; plan: SharePlan; overwrite: OverwriteWarning | null }
+  | { kind: "alreadyInSync" };
 
 export interface CreateReport {
   dirSlug: string;
@@ -844,14 +863,16 @@ export const skillShare = (args: {
   /** 分享目标技能库的寻址键,缺省 = 该源主库。 */
   repo?: string;
   /** 用户已在覆盖确认屏上按过「仍然覆盖」。缺省 false。 */
-  overwrite?: boolean;
+  /** 用户已在统一分享确认屏上拍过板。缺省 false = **预览轮**,core 零写请求。 */
+  confirmed?: boolean;
 }) => call<ShareOutcome>("skill_share", { args });
 
 export const skillShareChanges = (args: {
   dirSlug: string;
   registryId?: string;
   /** 用户已在覆盖确认屏上按过「仍然覆盖」。缺省 false。 */
-  overwrite?: boolean;
+  /** 同上。 */
+  confirmed?: boolean;
 }) => call<ShareInstalledOutcome>("skill_share_changes", { args });
 
 /**

@@ -1820,9 +1820,11 @@ pub struct SkillShareArgs {
     /// 技能标识。**没有 `sourcePath`**:本体在哪由 core 自己解析
     /// (`converge::locate`),前端不替它回答这个问题。
     pub dir_slug: String,
-    /// 用户已在覆盖确认屏上按过「仍然覆盖」(v8 任务 4)。缺省 false。
+    /// 用户已在**统一分享确认屏**上看过这次会新增/修改/删除哪些文件(库里被改过时
+    /// 还看过顶部那条覆盖警告)并按了确认(v8 任务 5 / D9)。缺省 false =
+    /// **预览轮**,core 一个写请求都不发,只回一份 `NeedsConfirm`。
     #[serde(default)]
-    pub overwrite: bool,
+    pub confirmed: bool,
 }
 
 /// 分享一个本机技能。**零编辑**:名称、描述、文件夹名一律照原样推,
@@ -1846,7 +1848,7 @@ pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, Ap
             registry_id,
             repo: &repo,
             dir_slug: &args.dir_slug,
-            overwrite: args.overwrite,
+            confirmed: args.confirmed,
         },
         &now_iso8601(),
     )
@@ -1926,9 +1928,11 @@ pub struct ShareChangesArgs {
     #[serde(default)]
     pub registry_id: Option<String>,
     pub dir_slug: String,
-    /// 用户已在覆盖确认屏上按过「仍然覆盖」(v8 任务 4)。缺省 false。
+    /// 用户已在**统一分享确认屏**上看过这次会新增/修改/删除哪些文件(库里被改过时
+    /// 还看过顶部那条覆盖警告)并按了确认(v8 任务 5 / D9)。缺省 false =
+    /// **预览轮**,core 一个写请求都不发,只回一份 `NeedsConfirm`。
     #[serde(default)]
-    pub overwrite: bool,
+    pub confirmed: bool,
 }
 
 /// 回推目标技能库的寻址键,取**账上**的来源坐标(M4 任务 1)。
@@ -1977,7 +1981,7 @@ pub async fn skill_share_changes(
         &store,
         &args.dir_slug,
         &repo.branch,
-        args.overwrite,
+        args.confirmed,
         &now_iso8601(),
     )
     .await

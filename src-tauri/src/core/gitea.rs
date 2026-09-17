@@ -245,6 +245,20 @@ impl FileChange {
             sha: Some(sha.into()),
         }
     }
+
+    /// 删除远端的一个文件(v8 任务 5)。
+    ///
+    /// `sha` **必须**是该文件在目标分支上当前的 blob sha——Gitea 拿它做乐观锁,
+    /// 给错或不给都会被拒。它与 `update` 用的是同一份 `tree_files` 产物,
+    /// 不额外发请求。`content` 恒 `None`:删除不需要内容,带上去只会让请求体变大。
+    pub fn delete(path: impl Into<String>, sha: impl Into<String>) -> Self {
+        Self {
+            operation: FileOperation::Delete,
+            path: path.into(),
+            content: None,
+            sha: Some(sha.into()),
+        }
+    }
 }
 
 /// 多文件单次提交的请求体。

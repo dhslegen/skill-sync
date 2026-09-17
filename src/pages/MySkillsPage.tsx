@@ -467,7 +467,7 @@ export function MySkillsPage() {
               <ErrorLine label={t("mine.shareChangesFailed")} detail={installShareResult.error.message} />
             ) : (
               <p className="pb-2 text-[12px] text-text-2">
-                {t("mine.shareChangesDone")}
+                {t(SHARE_DONE_LABEL.changes[installShareResult.mode])}
               </p>
             ))}
           {updateAllError && <ErrorLine label={t("mine.updateAllFailed")} detail={updateAllError.message} />}

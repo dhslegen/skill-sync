@@ -603,6 +603,9 @@ impl GithubClient {
         expected_head_oid: &str,
         headline: &str,
         additions: &[(String, Vec<u8>)],
+        // v8 任务 5:远端有、本地没有的文件。GraphQL 的 `deletions` 只要路径,
+        // 不要 sha(与 Gitea 的 contents API 不同,那边删除也要 blob sha)。
+        deletions: &[String],
     ) -> Result<String, AppError> {
         use base64::Engine;
         const QUERY: &str = "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }";
@@ -621,7 +624,10 @@ impl GithubClient {
                 "branch": { "repositoryNameWithOwner": name_with_owner, "branchName": branch },
                 "expectedHeadOid": expected_head_oid,
                 "message": { "headline": headline },
-                "fileChanges": { "additions": files },
+                "fileChanges": {
+                    "additions": files,
+                    "deletions": deletions.iter().map(|p| serde_json::json!({ "path": p })).collect::<Vec<_>>(),
+                },
             }},
         });
 

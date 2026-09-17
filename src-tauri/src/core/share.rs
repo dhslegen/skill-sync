@@ -42,7 +42,9 @@ use crate::core::agents::{AgentEnv, AgentRegistry};
 use crate::core::converge;
 use crate::core::fsops::{self, Trasher};
 use crate::core::installer::Installer;
-use crate::core::gitea::{ChangeFilesRequest, FileChange, GiteaClient, RepoRef, RepoSource};
+use crate::core::gitea::{
+    ChangeFilesRequest, FileChange, GiteaClient, RepoArchive, RepoRef, RepoSource,
+};
 use crate::core::github::GithubClient;
 use crate::core::ownership::{self, Identity};
 use crate::core::skill_lock;
@@ -394,12 +396,14 @@ pub struct ShareRequest<'a> {
     /// ——**调用方不传路径**(旧的 `source_path` 让前端替 core 回答"本体在哪",
     /// 而那正是 v6 二期要收进 core 的唯一判定)。
     pub dir_slug: &'a str,
-    /// 用户已在覆盖确认屏上拍过板:**知道库里已有我的同名技能、仍然要顶掉它**。
+    /// 用户已在**统一分享确认屏**上拍过板(v8 任务 5 / D9):他看过了这次会新增、
+    /// 修改、**删除**哪些文件,库里被改过时还看过顶部那条覆盖警告,仍然要推。
     ///
-    /// ⚠️ 这个字段的名字与 v6 二期删掉的那个 `overwrite` 相同、**语义不同**:
-    /// 那个是"覆盖别人的同名技能"(整条路已取消,撞名一律报 `REPO_NAME_TAKEN`);
-    /// 这个只对 [`SharePrecheck::Mine`] 那一档生效,覆盖的是**我自己**上一版。
-    pub overwrite: bool,
+    /// ⚠️ 它取代了任务 4 的 `overwrite`,**不是改名**:那个只回答"知不知道会顶掉
+    /// 我自己上一版",而删除能力上线后,同一次动作还要回答"知不知道库里哪几个文件
+    /// 会没"。两件事拆成两个 bool 就是同一个动作两屏确认(D9 明确反对),所以合成
+    /// 一个:`false` = 预览轮(**一个写请求都不发**),`true` = 执行轮。
+    pub confirmed: bool,
 }
 
 /// 提交走的路径。
@@ -432,9 +436,22 @@ pub enum ShareOutcome {
         /// 库里这个技能的目录名(= 本体文件夹名 = frontmatter `name`,三者同一)。
         share_name: String,
     },
-    /// 库里已有我的同名技能,而且它那一版与本地基线不符——推上去会顶掉它。
-    /// **返回它时磁盘与远端一个字节都没动**,用户拍板后带 `overwrite: true` 重来。
-    NeedsOverwrite(OverwriteWarning),
+    /// 预览轮的结果:这次会改动库里哪些文件(D6/D9)。**返回它时磁盘与远端
+    /// 一个字节都没动**,用户在确认屏上拍板后带 `confirmed: true` 重来。
+    ///
+    /// `overwrite` 非空 = 库里那一版与本地基线不符,推上去会顶掉它——确认屏把它
+    /// 显示在清单**顶部**,不另开一屏(D9)。
+    NeedsConfirm {
+        plan: SharePlan,
+        overwrite: Option<OverwriteWarning>,
+    },
+    /// 库里这个技能已经与本地逐字节一致,**一个请求都没发**。
+    ///
+    /// 这不是"什么都没做",它是 v8 要治的那个病灶的正解:此前分享只上传不比对,
+    /// 内容相同时照样提交,Gitea 照样建 commit——同事那三个空的合并请求就是这么
+    /// 来的。走到这一档时顺手把陈旧基线对齐(T2 的 `align_baseline` 同一件事),
+    /// 用户那一行就不会永远显示"和库里不一样"。
+    AlreadyInSync,
 }
 
 /// 校验没过。`detail` 带 [`ShareBlock`] 的 camelCase 字面量,界面按它查文案表
@@ -539,11 +556,27 @@ pub async fn share(
         .with_detail(format!("taken: {share_name}")));
     }
 
-    // ③' 覆盖闸(D14)。只对 `Mine` 那一档有意义:`Fresh` 时库里还没有这个技能,
-    //    没有任何东西会被顶掉。基线取 `state.shared` 里对应那条记账的指纹——
-    //    🔴 换过电脑 / 从没经本 app 分享过的作者根本没有这条记账,基线为空,
-    //    [`overwrite_gate`] 会退回"本地实时 vs 库里实时"直接比,**不跳过检测**。
-    if checked == SharePrecheck::Mine && !req.overwrite {
+    // ③' 差集(D5)+ 覆盖闸(D14)。**两件事共用一次压缩包下载**——检测走读链路,
+    //    提交走写链路,这条既有约束没变;变的是读那一侧只下载一次就够了。
+    //    `Fresh` 时库里还没有这个技能:远端清单恒空 → 删除清单恒空、其余全进新增,
+    //    也没有任何东西会被顶掉,所以这一档连压缩包都不用下。
+    let fresh = checked == SharePrecheck::Fresh;
+    let remote_path = format!("skills/{share_name}");
+    let prefix = format!("{remote_path}/");
+    let archive = if fresh { None } else { Some(read.download_archive(req.repo).await?) };
+    let remote: BTreeMap<String, Vec<u8>> =
+        archive.as_ref().map(|a| remote_files(a, &prefix)).unwrap_or_default();
+    let changes = plan_changes(&prefix, &remote, payload_files(&body, &prefix)?)?;
+
+    // 🔴 **差集为空 → 一个写请求都不发**(D5)。这是本期病灶的正解:此前这里
+    //    照样提交,Gitea 照样建一个零改动的 commit。顺手对齐陈旧基线,否则那一行
+    //    会永远显示"和库里不一样",用户只能一遍遍点分享、一遍遍造空提交。
+    if changes.plan.is_empty() {
+        align_shared_baseline(&installer, store, &loaded.value, &body, &req)?;
+        return Ok(ShareOutcome::AlreadyInSync);
+    }
+
+    if let (Some(archive), false) = (archive.as_ref(), req.confirmed) {
         let baseline = loaded
             .value
             .shared
@@ -555,12 +588,16 @@ pub async fn share(
             })
             .map(|s| s.content_hash.as_str())
             .unwrap_or("");
-        let remote_path = format!("skills/{share_name}");
-        if let Some(warning) =
-            overwrite_gate(read, client, req.repo, &remote_path, baseline, &body).await?
-        {
-            return Ok(ShareOutcome::NeedsOverwrite(warning));
-        }
+        // 🔴 覆盖闸的基线取 `state.shared` 那条记账的指纹;换过电脑 / 从没经本 app
+        //    分享过的作者根本没有这条记账,基线为空——[`overwrite_gate`] 仍然检测,
+        //    **不跳过**(任务 4 / D14)。
+        let overwrite = overwrite_gate(archive, client, req.repo, &remote_path, baseline).await?;
+        return Ok(ShareOutcome::NeedsConfirm { plan: changes.plan, overwrite });
+    }
+    if !req.confirmed {
+        // Fresh:库里还没有这个技能,没有覆盖警告可言,但清单照样要先给用户看一眼
+        //(D6 的理由是"绝不静默删除",D9 的理由是"同一个动作只有一屏")。
+        return Ok(ShareOutcome::NeedsConfirm { plan: changes.plan, overwrite: None });
     }
 
     // ④ 本体留在原地,canonical 只补一条指向它的链接。
@@ -568,22 +605,12 @@ pub async fn share(
     converge::ensure_canonical_link(&installer, &home)?;
 
     // ⑤ 提交
-    let prefix = format!("skills/{share_name}/");
-    let files = payload_files(&body, &prefix)?;
     let message = match checked {
         SharePrecheck::Fresh => format!("新增技能:{share_name}"),
         _ => format!("更新技能:{share_name}"),
     };
-    let submitted = submit(
-        client,
-        req.repo,
-        &prefix,
-        checked == SharePrecheck::Fresh,
-        files,
-        &message,
-        &share_name,
-    )
-    .await?;
+    let submitted =
+        submit(client, req.repo, &prefix, fresh, changes, &message, &share_name).await?;
 
     // ⑥ 记账:content_hash 从**本体**算——"有未分享的改动"的判据就是它
     let mut next = loaded.value.clone();
@@ -619,6 +646,50 @@ pub async fn share(
         commit_sha: submitted.commit_sha,
         share_name,
     })
+}
+
+/// 「库里已与本地一致」那一档顺手做的基线对齐(v8 任务 5,呼应任务 2 的 D3)。
+///
+/// 两本账各自一条:
+/// - `state.shared[..].content_hash` 是**覆盖闸**的基线。它陈旧时,下一次分享会
+///   在内容明明一致的情况下弹一条"库里被人改过"的假警告;
+/// - `state.installed[..].content_hash` 是**界面**"和库里不一样"的基线,由任务 2 的
+///   [`converge::align_baseline`] 负责——**复用它,不另写一份**:那边的三道守卫
+///   (不给无记账的行建账、坐标必须对得上、core 自己重算实时指纹)一条都不该绕过。
+///
+/// 两条都是"没有账就不建账",所以 `align_baseline` 的
+/// `FS_NOT_INSTALLED` / `FS_LIBRARY_MISMATCH` 在这里**不是失败**:这次分享本来
+/// 就可能是一个从没被本 app 装过的本地技能。其余错误照常上报。
+fn align_shared_baseline(
+    installer: &Installer<'_>,
+    store: &Store,
+    state: &state::State,
+    body: &Path,
+    req: &ShareRequest<'_>,
+) -> Result<(), AppError> {
+    let hash = fsops::dir_content_hash(body)?;
+    let mut next = state.clone();
+    if let Some(entry) =
+        next.shared.iter_mut().find(|s| Path::new(&s.local_path) == body)
+    {
+        if entry.content_hash != hash {
+            entry.content_hash = hash.clone();
+            store.save_state(&next)?;
+        }
+    }
+    match converge::align_baseline(
+        installer,
+        store,
+        req.dir_slug,
+        &hash,
+        req.registry_id,
+        &req.repo.owner,
+        &req.repo.repo,
+    ) {
+        Ok(()) => Ok(()),
+        Err(e) if e.code == "FS_NOT_INSTALLED" || e.code == "FS_LIBRARY_MISMATCH" => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 fn missing_body_err(dir_slug: &str) -> AppError {
@@ -709,21 +780,22 @@ fn record_pushed_skill(
 /// `read` 走**读链路**、`client` 走**写链路**,两者不能省成一个(现役约束)。
 /// 拿不到"最后由谁改的"不影响这道闸拦不拦——那是 best-effort 的展示信息。
 async fn overwrite_gate(
-    read: &impl RepoSource,
+    archive: &RepoArchive,
     client: &ShareClient<'_>,
     repo: &RepoRef,
     remote_path: &str,
     baseline: &str,
-    local_dir: &Path,
 ) -> Result<Option<OverwriteWarning>, AppError> {
-    let archive = read.download_archive(repo).await?;
     // entries 的键保留压缩包顶层目录,技能路径必须拼上 archive.root 才剥得到条目
     // (store.rs 建索引时的 s.dir 天然带着它,这里的记账路径没有)
     let remote_dir = format!("{}/{}", archive.root, remote_path);
-    let remote_hash = crate::core::store::remote_content_hash(&archive, &remote_dir);
+    let remote_hash = crate::core::store::remote_content_hash(archive, &remote_dir);
     let differs = if baseline.is_empty() {
-        // 库里压根没有这个技能(指纹为空)= 没有任何东西会被顶掉,放行。
-        !remote_hash.is_empty() && remote_hash != fsops::dir_content_hash(local_dir)?
+        // 🔴 **不再在这里比"库里 vs 本地"**(v8 任务 5):两边逐字节相同的那一档
+        // 已经被调用方的差集短路成 `AlreadyInSync` 了,再比一遍就是同一条规则查
+        // 两遍、而且那一遍永远不触发——本项目记着的空转模式 ①,它会吞掉注入信号。
+        // 走到这里就意味着两边确实不同,库里非空即有东西会被顶掉。
+        !remote_hash.is_empty()
     } else {
         remote_hash != baseline
     };
@@ -780,7 +852,14 @@ pub struct OverwriteWarning {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ShareInstalledOutcome {
     Submitted(Submitted),
-    RemoteChanged(OverwriteWarning),
+    /// 与 [`ShareOutcome::NeedsConfirm`] 同构:回推改动同样会删除库里的文件,
+    /// 所以它也必须过确认屏(D6 在**两条分享通道**上都成立,不能只管一条)。
+    NeedsConfirm {
+        plan: SharePlan,
+        overwrite: Option<OverwriteWarning>,
+    },
+    /// 库里已与本地一致;顺手做一次基线对齐(T2 的 [`converge::align_baseline`])。
+    AlreadyInSync,
 }
 
 /// 把本 app 安装、用户改过的技能推回它的来源仓库。
@@ -801,11 +880,12 @@ pub async fn share_installed(
     store: &Store,
     dir_slug: &str,
     branch: &str,
-    // 用户已在覆盖确认屏上拍过板:**知道会顶掉库里那一版,仍然要推**。
+    // 用户已在**统一分享确认屏**上拍过板:看过这次会新增/修改/删除哪些文件,
+    // 库里被改过时还看过顶部那条覆盖警告,仍然要推(v8 任务 5 / D9)。
     //
     // 🔴 它与已下线的 `force_review` 只是形参位置相同,**语义方向完全相反**:
-    // 那个是"有权限也不许直推,强制开合并请求";这个是"检测到会覆盖,仍然直推"。
-    overwrite: bool,
+    // 那个是"有权限也不许直推,强制开合并请求";这个是"看过了,照推"。
+    confirmed: bool,
     now: &str,
 ) -> Result<ShareInstalledOutcome, AppError> {
     // 显式 `.with_trasher(SYSTEM_TRASH)`:默认值本来就是它,这条路上的 installer
@@ -859,28 +939,40 @@ pub async fn share_installed(
     // 事就是 `download_archive`。`share()` 那侧有"请求条数 = 0"的硬断言,这侧同款。
     skills::validate_skill_dir(&source_dir).map_err(skill_invalid_err)?;
 
-    // 覆盖闸(D14)。`overwrite == true` 表示用户已经在确认屏上看过
-    // 「覆盖谁、什么时候推的、去哪找回」并按了「仍然覆盖」,这一跳照推。
-    if !overwrite {
-        if let Some(warning) = overwrite_gate(
-            read,
-            client,
-            &repo,
-            &record.source.path,
-            &record.content_hash,
-            &source_dir,
-        )
-        .await?
-        {
-            return Ok(ShareInstalledOutcome::RemoteChanged(warning));
-        }
+    // 差集 + 覆盖闸共用一次压缩包下载(检测走读链路、提交走写链路,这条没变)。
+    let remote_path = record.source.path.trim_end_matches('/').to_string();
+    let prefix = format!("{remote_path}/");
+    let archive = read.download_archive(&repo).await?;
+    let changes =
+        plan_changes(&prefix, &remote_files(&archive, &prefix), payload_files(&source_dir, &prefix)?)?;
+
+    // 🔴 差集为空 → 一个写请求都不发,顺手对齐陈旧基线(D5 + 任务 2 的 D3)。
+    // 这条正是同事那几行"永远显示不一样、点分享只造空提交"的出路。
+    if changes.plan.is_empty() {
+        let observed = fsops::dir_content_hash(&source_dir)?;
+        converge::align_baseline(
+            &installer,
+            store,
+            dir_slug,
+            &observed,
+            &record.source.registry_id,
+            &repo.owner,
+            &repo.repo,
+        )?;
+        return Ok(ShareInstalledOutcome::AlreadyInSync);
     }
 
-    let prefix = format!("{}/", record.source.path.trim_end_matches('/'));
-    let files = payload_files(&source_dir, &prefix)?;
+    // 确认屏(D6/D9):`confirmed == true` 表示用户已经看过这份清单(库里被改过时
+    // 还看过顶部那条覆盖警告)并按了确认,这一跳照推。
+    if !confirmed {
+        let overwrite =
+            overwrite_gate(&archive, client, &repo, &remote_path, &record.content_hash).await?;
+        return Ok(ShareInstalledOutcome::NeedsConfirm { plan: changes.plan, overwrite });
+    }
+
     let message = format!("更新技能:{dir_slug}");
     // fresh=false:已装技能的回推,远端必然已有这组文件
-    let submitted = submit(client, &repo, &prefix, false, files, &message, dir_slug).await?;
+    let submitted = submit(client, &repo, &prefix, false, changes, &message, dir_slug).await?;
 
     // 内容确实进库了才更新基线(D3)。`submit` 只有直推一条路,走到这里就是成功。
     let mut next = loaded.value.clone();
@@ -907,13 +999,14 @@ async fn submit(
     repo: &RepoRef,
     prefix: &str,
     fresh: bool,
-    files: Vec<(String, Vec<u8>)>,
+    changes: PlannedChanges,
     message: &str,
     share_name: &str,
 ) -> Result<Submitted, AppError> {
     match client {
         ShareClient::Gitea(c) => {
-            // 更新路径需要远端各文件的 blob sha;Fresh 不需要(全 create)
+            // 更新路径需要远端各文件的 blob sha,**删除也要**(Gitea 拿它做乐观锁);
+            // Fresh 不需要(全 create,而且删除清单恒空)。
             let remote_shas: BTreeMap<String, String> = if fresh {
                 BTreeMap::new()
             } else {
@@ -925,18 +1018,35 @@ async fn submit(
                     .map(|f| (f.path, f.sha))
                     .collect()
             };
-            let changes = files
+            let mut files: Vec<FileChange> = changes
+                .upload
                 .into_iter()
                 .map(|(path, bytes)| match remote_shas.get(&path) {
                     Some(sha) => FileChange::update(path.clone(), &bytes, sha.clone()),
                     None => FileChange::create(path.clone(), &bytes),
                 })
                 .collect();
+            for path in changes.delete {
+                // 🔴 sha 拿不到就跳过这一条,而且**这不是"部分应用"那种半成品**:
+                // 差集来自压缩包快照,sha 来自 `branch_head` 那一刻的文件树,
+                // 后者更新。树里没有这条路径 = 这个文件在目标分支上**已经不存在了**
+                // (别人先删掉了),要办的事已经办成,跳过之后两边仍然一致。
+                // 树被截断那种"清单不完整"的情形不会走到这里——`tree_files` 自己
+                // 就对 `truncated` 报 `REPO_TOO_LARGE`,一条都不返回。
+                // 硬发一条没有 sha 的删除只会被 Gitea 整笔拒掉,把用户真正要办的
+                // 上传也一起拖垮。
+                match remote_shas.get(&path) {
+                    Some(sha) => files.push(FileChange::delete(path.clone(), sha.clone())),
+                    None => tracing::warn!(%path, "要删除的文件不在远端文件树里,跳过这一条"),
+                }
+            }
             // 归因修订(M7 任务 5)在 submit_gitea 内部追加。GitHub 臂刻意不做:
             // authors.json 是公司库契约,GitHub 源本来就不展示归因。
-            submit_gitea(c, repo, changes, message, share_name).await
+            submit_gitea(c, repo, files, message, share_name).await
         }
-        ShareClient::Github(c) => submit_github(c, repo, files, message).await,
+        ShareClient::Github(c) => {
+            submit_github(c, repo, &changes.upload, &changes.delete, message).await
+        }
     }
 }
 
@@ -1351,7 +1461,8 @@ async fn submit_gitea(
 async fn submit_github(
     client: &GithubClient,
     repo: &RepoRef,
-    files: Vec<(String, Vec<u8>)>,
+    additions: &[(String, Vec<u8>)],
+    deletions: &[String],
     message: &str,
 ) -> Result<Submitted, AppError> {
     let view = client.repo_view(&repo.owner, &repo.repo).await?;
@@ -1361,9 +1472,165 @@ async fn submit_github(
     let name_with_owner = format!("{}/{}", repo.owner, repo.repo);
     let head = client.branch_head(repo).await?;
     let oid = client
-        .create_commit_on_branch(&name_with_owner, &repo.branch, &head.sha, message, &files)
+        .create_commit_on_branch(
+            &name_with_owner,
+            &repo.branch,
+            &head.sha,
+            message,
+            additions,
+            deletions,
+        )
         .await?;
     Ok(Submitted { mode: ShareMode::Pushed, commit_sha: oid })
+}
+
+// ============================================================ 差集(v8 任务 5 / D5)
+
+/// 这次分享会让技能库发生什么,**按用户看得懂的相对路径**列出来。
+///
+/// 三份清单各自排序,空清单就是"这一类没有"。界面按它渲染确认屏(D6/D9),
+/// core 按同一次计算的结果提交——**展示与提交出自同一个函数**,不是两把尺子
+/// (本项目记着「确认屏说推去 A、实际推去 B」那类缺陷)。
+///
+/// ⚠️ `rename_all` 必须写在这个 struct 自己身上:外层枚举的 `rename_all_fields`
+/// 管不到 newtype/struct variant 内层 struct 的字段名(`review_url` 那次真炸过)。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharePlan {
+    /// 本地有、库里没有。
+    pub added: Vec<String>,
+    /// 两边都有,但内容不同。
+    pub modified: Vec<String>,
+    /// 🔴 **库里有、本地没有——这次会把它们从技能库里删掉**。
+    pub deleted: Vec<String>,
+}
+
+impl SharePlan {
+    /// 一个字节都不用改。这正是"空提交"的判据:此前分享只上传不比对,
+    /// 于是内容一模一样时照样发一笔提交,同事那三个空的合并请求就是这么来的。
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.modified.is_empty() && self.deleted.is_empty()
+    }
+}
+
+/// 差集的完整产物:给用户看的 [`SharePlan`],以及给提交用的全远端路径。
+///
+/// 两者**同一次算出来**,所以不可能出现"屏上列了三个删除、实际删了两个"。
+#[derive(Debug)]
+pub(crate) struct PlannedChanges {
+    pub plan: SharePlan,
+    /// 要上传的文件(新增 + 修改),键是**完整远端路径**。
+    pub upload: Vec<(String, Vec<u8>)>,
+    /// 要删除的文件,同样是完整远端路径。
+    pub delete: Vec<String>,
+}
+
+/// 算出"让库里与本地一致"需要做的事。**纯函数,不发任何请求。**
+///
+/// `prefix` 是该技能在库里的目录前缀(带尾斜杠,如 `skills/my-notes/`);
+/// `remote` 与 `local` 的键都是**完整远端路径**。远端首次分享时 `remote` 为空,
+/// 于是删除清单恒空、其余全进新增——不需要为"首次"单开一条分支。
+///
+/// # 两把尺子必须一样
+///
+/// 远端那侧要过 [`fsops::is_excluded_rel`],因为本地那侧的 [`fsops::list_files`]
+/// 就是这么筛的。不筛的话:①库里被 `npx skills` 写下的 `metadata.json` 会被当成
+/// "本地没有"而删掉——那不是本 app 管的文件;②"差集为空"与
+/// `dir_content_hash == remote_content_hash` 会脱钩,而后者正是界面判断
+/// "一不一样"的尺子,两者一旦不等价,用户就会陷入"点了分享、还是显示不一样"。
+///
+/// # 两道护栏(删除是破坏性动作,删的还是服务端的东西)
+///
+/// 1. **本地一个文件都读不到 → 拒绝整笔提交**。那多半是本体路径解析出了岔子
+///    或目录被挪走,照着一份空清单提交就是**把库里这个技能删空**。正常路径上
+///    它不可达(上游 `validate_skill_dir` 已经要求 SKILL.md 在),所以它防的是
+///    将来某条新路径绕过校验——测试直接喂空清单来走到它。
+/// 2. **删除路径必须落在这个技能目录内**。`..` 段、绝对路径、空段一律拒绝整笔
+///    提交(不是"跳过这一条"):远端清单里出现越界路径说明上游数据已经不可信,
+///    此时最该做的是停手,而不是挑着做一半。
+fn plan_changes(
+    prefix: &str,
+    remote: &BTreeMap<String, Vec<u8>>,
+    local: Vec<(String, Vec<u8>)>,
+) -> Result<PlannedChanges, AppError> {
+    if local.is_empty() {
+        return Err(AppError::new(
+            "FS_EMPTY_PAYLOAD",
+            "读不到这个技能的任何文件,为免误删技能库里的内容,这次没有提交",
+        )
+        .with_detail(format!("empty payload for {prefix}")));
+    }
+    let local: BTreeMap<String, Vec<u8>> = local.into_iter().collect();
+
+    let mut out = PlannedChanges {
+        plan: SharePlan::default(),
+        upload: Vec::new(),
+        delete: Vec::new(),
+    };
+
+    for (path, bytes) in &local {
+        let rel = strip_within(prefix, path)?;
+        match remote.get(path) {
+            Some(existing) if existing == bytes => {} // 一个都不发
+            Some(_) => {
+                out.plan.modified.push(rel);
+                out.upload.push((path.clone(), bytes.clone()));
+            }
+            None => {
+                out.plan.added.push(rel);
+                out.upload.push((path.clone(), bytes.clone()));
+            }
+        }
+    }
+    for path in remote.keys() {
+        if local.contains_key(path) {
+            continue;
+        }
+        let rel = strip_within(prefix, path)?;
+        if fsops::is_excluded_rel(&rel) {
+            continue; // 不是本 app 管的文件,不碰
+        }
+        out.plan.deleted.push(rel);
+        out.delete.push(path.clone());
+    }
+    Ok(out)
+}
+
+/// 把完整远端路径剥成技能目录内的相对路径,越界就拒。
+///
+/// 判据是**路径段**不是子串:`..` 只在整段等于它时才越界,`..foo` 是个正常文件名。
+fn strip_within(prefix: &str, path: &str) -> Result<String, AppError> {
+    let bad = |why: &str| {
+        AppError::new(
+            "FS_UNSAFE_PATH",
+            "这个技能里有一条不该出现的文件路径,为安全起见没有提交",
+        )
+        .with_detail(format!("{why}: {path}"))
+    };
+    let rel = path.strip_prefix(prefix).ok_or_else(|| bad("outside skill dir"))?;
+    if rel.is_empty() || rel.starts_with('/') {
+        return Err(bad("empty or absolute"));
+    }
+    if rel.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..") {
+        return Err(bad("traversal"));
+    }
+    Ok(rel.to_string())
+}
+
+/// 从压缩包里剥出该技能目录下的远端文件(键是**完整远端路径**,与本地那侧同形)。
+///
+/// `archive.entries` 的键带着压缩包顶层目录,这里一并剥掉——与
+/// `store::remote_content_hash` 拼 `archive.root` 是同一个约定。
+pub(crate) fn remote_files(archive: &RepoArchive, prefix: &str) -> BTreeMap<String, Vec<u8>> {
+    let full_prefix = format!("{}/{}", archive.root, prefix);
+    archive
+        .entries
+        .iter()
+        .filter_map(|(full, entry)| {
+            let rel = full.strip_prefix(full_prefix.as_str())?;
+            (!rel.is_empty()).then(|| (format!("{prefix}{rel}"), entry.bytes.clone()))
+        })
+        .collect()
 }
 
 /// 把本地目录读成 `(远端路径, 字节)` 清单。来源无关:Gitea 侧再按远端 blob sha
@@ -1386,8 +1653,9 @@ fn payload_files(dir: &Path, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, App
 mod tests {
     use super::{
         skill_invalid_err, upsert_attribution, AttributionUpsert, CandidateOrigin,
-        OverwriteWarning, ShareInstalledOutcome, ShareMode, ShareOutcome,
+        OverwriteWarning, ShareInstalledOutcome, ShareMode, ShareOutcome, SharePlan,
     };
+    use std::collections::BTreeMap;
     use crate::core::skills::ShareBlock;
 
     fn keys(v: &serde_json::Value) -> Vec<String> {
@@ -1425,41 +1693,163 @@ mod tests {
         assert_eq!(v["shareName"], "weekly-report");
     }
 
-    /// 覆盖警告是 newtype variant 里的 struct——**外层枚举的 `rename_all_fields`
-    /// 管不到它**,`rename_all` 必须写在 `OverwriteWarning` 自己身上。两条通道
-    /// (首次分享与回推改动)共用同一个 struct,所以两边一起钉。
+    /// 确认档的两层嵌套 struct——**外层枚举的 `rename_all_fields` 只管到
+    /// variant 自己的字段名**(`plan`/`overwrite`),管不到 `SharePlan` 与
+    /// `OverwriteWarning` 内部;那两个的 `rename_all` 必须写在它们自己身上。
+    /// 两条通道(首次分享与回推改动)共用同一对 struct,所以两边一起钉。
     #[test]
-    fn overwrite_warning_serializes_every_field_in_camel_case() {
+    fn needs_confirm_serializes_every_field_in_camel_case() {
         let warning = OverwriteWarning {
             last_author: Some("李四".into()),
             last_at: Some("2026-09-10T03:04:05Z".into()),
             history_url: Some("http://x/commits".into()),
         };
-        let v = serde_json::to_value(ShareOutcome::NeedsOverwrite(warning.clone())).unwrap();
+        let plan = SharePlan {
+            added: vec!["a.md".into()],
+            modified: vec!["SKILL.md".into()],
+            deleted: vec!["old.md".into()],
+        };
+        let v = serde_json::to_value(ShareOutcome::NeedsConfirm {
+            plan: plan.clone(),
+            overwrite: Some(warning.clone()),
+        })
+        .unwrap();
         assert_eq!(
             keys(&v),
-            vec![
-                "historyUrl".to_string(),
-                "lastAt".to_string(),
-                "lastAuthor".to_string(),
-                "outcome".to_string(),
-            ]
+            vec!["outcome".to_string(), "overwrite".to_string(), "plan".to_string()]
         );
-        assert_eq!(v["outcome"], "needsOverwrite");
-        assert_eq!(v["lastAuthor"], "李四");
+        assert_eq!(v["outcome"], "needsConfirm");
+        assert_eq!(keys(&v["plan"]), vec!["added", "deleted", "modified"]);
+        assert_eq!(v["plan"]["deleted"][0], "old.md");
+        assert_eq!(
+            keys(&v["overwrite"]),
+            vec!["historyUrl".to_string(), "lastAt".to_string(), "lastAuthor".to_string()]
+        );
+        assert_eq!(v["overwrite"]["lastAuthor"], "李四");
 
-        let v = serde_json::to_value(ShareInstalledOutcome::RemoteChanged(warning)).unwrap();
+        let v = serde_json::to_value(ShareOutcome::AlreadyInSync).unwrap();
+        assert_eq!(v["outcome"], "alreadyInSync");
+
+        let v = serde_json::to_value(ShareInstalledOutcome::NeedsConfirm {
+            plan,
+            overwrite: Some(warning),
+        })
+        .unwrap();
         assert_eq!(
             keys(&v),
-            vec![
-                "historyUrl".to_string(),
-                "kind".to_string(),
-                "lastAt".to_string(),
-                "lastAuthor".to_string(),
-            ]
+            vec!["kind".to_string(), "overwrite".to_string(), "plan".to_string()]
         );
-        assert_eq!(v["kind"], "remoteChanged");
-        assert_eq!(v["lastAt"], "2026-09-10T03:04:05Z");
+        assert_eq!(v["kind"], "needsConfirm");
+        assert_eq!(v["overwrite"]["lastAt"], "2026-09-10T03:04:05Z");
+        assert_eq!(
+            serde_json::to_value(ShareInstalledOutcome::AlreadyInSync).unwrap()["kind"],
+            "alreadyInSync"
+        );
+    }
+
+    // ==================================================== 差集(v8 任务 5 / D5)
+
+    fn remote_of(pairs: &[(&str, &str)]) -> BTreeMap<String, Vec<u8>> {
+        pairs.iter().map(|(p, c)| (p.to_string(), c.as_bytes().to_vec())).collect()
+    }
+    fn local_of(pairs: &[(&str, &str)]) -> Vec<(String, Vec<u8>)> {
+        pairs.iter().map(|(p, c)| (p.to_string(), c.as_bytes().to_vec())).collect()
+    }
+    const PFX: &str = "skills/my-notes/";
+
+    /// 四类各归各位,**内容相同的一个都不发**——今天那三个空的合并请求正是
+    /// 漏了最后这一条判断。
+    #[test]
+    fn plan_splits_added_modified_deleted_and_drops_the_identical_ones() {
+        let remote = remote_of(&[
+            ("skills/my-notes/SKILL.md", "新正文"),
+            ("skills/my-notes/same.md", "一模一样"),
+            ("skills/my-notes/gone.md", "库里还留着"),
+        ]);
+        let local = local_of(&[
+            ("skills/my-notes/SKILL.md", "旧正文"),
+            ("skills/my-notes/same.md", "一模一样"),
+            ("skills/my-notes/brand-new.md", "刚写的"),
+        ]);
+        let c = super::plan_changes(PFX, &remote, local).unwrap();
+        assert_eq!(c.plan.added, vec!["brand-new.md".to_string()]);
+        assert_eq!(c.plan.modified, vec!["SKILL.md".to_string()]);
+        assert_eq!(c.plan.deleted, vec!["gone.md".to_string()]);
+        let uploaded: Vec<&str> = c.upload.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            uploaded,
+            vec!["skills/my-notes/SKILL.md", "skills/my-notes/brand-new.md"],
+            "内容相同的 same.md 一个字节都不该发"
+        );
+        assert_eq!(c.delete, vec!["skills/my-notes/gone.md".to_string()]);
+    }
+
+    /// 两边逐字节相同 → 空计划。调用方据此短路成「库里已与本地一致」,零请求。
+    #[test]
+    fn plan_is_empty_when_both_sides_match_byte_for_byte() {
+        let same = &[("skills/my-notes/SKILL.md", "正文"), ("skills/my-notes/a.md", "甲")];
+        let c = super::plan_changes(PFX, &remote_of(same), local_of(same)).unwrap();
+        assert!(c.plan.is_empty(), "内容一致时不该有任何改动:{:?}", c.plan);
+        assert!(c.upload.is_empty() && c.delete.is_empty());
+    }
+
+    /// 首次分享:远端什么都没有 → 删除清单恒空,其余全进新增。
+    #[test]
+    fn a_first_share_has_nothing_to_delete() {
+        let c = super::plan_changes(
+            PFX,
+            &BTreeMap::new(),
+            local_of(&[("skills/my-notes/SKILL.md", "正文")]),
+        )
+        .unwrap();
+        assert_eq!(c.plan.added, vec!["SKILL.md".to_string()]);
+        assert!(c.plan.deleted.is_empty());
+    }
+
+    /// 🔴 护栏一:本地一个文件都读不到 → **拒绝整笔提交**。照着空清单提交
+    /// 就是把库里这个技能删空。
+    #[test]
+    fn an_empty_local_payload_is_refused_outright() {
+        let remote = remote_of(&[("skills/my-notes/SKILL.md", "库里还在")]);
+        let err = super::plan_changes(PFX, &remote, Vec::new()).unwrap_err();
+        assert_eq!(err.code, "FS_EMPTY_PAYLOAD");
+    }
+
+    /// 🔴 护栏二:越界路径一律拒绝整笔提交,不是"跳过这一条"。
+    #[test]
+    fn a_path_escaping_the_skill_directory_is_refused() {
+        let remote = remote_of(&[("skills/my-notes/../other/SKILL.md", "别人的技能")]);
+        let local = local_of(&[("skills/my-notes/SKILL.md", "我的")]);
+        let err = super::plan_changes(PFX, &remote, local).unwrap_err();
+        assert_eq!(err.code, "FS_UNSAFE_PATH");
+        assert!(err.detail.unwrap_or_default().contains("traversal"));
+    }
+
+    /// `..foo` 是个正常文件名:判据是**路径段**,不是子串。
+    #[test]
+    fn a_file_named_with_leading_dots_is_not_a_traversal() {
+        let local = local_of(&[("skills/my-notes/..gitkeep", "x")]);
+        let c = super::plan_changes(PFX, &BTreeMap::new(), local).unwrap();
+        assert_eq!(c.plan.added, vec!["..gitkeep".to_string()]);
+    }
+
+    /// 🔴 **两侧排除清单必须是同一把尺子**:本地那侧 `fsops::list_files` 早就
+    /// 把 `metadata.json`/`.DS_Store` 筛掉了。远端不筛的话,`npx skills` 写下的
+    /// `metadata.json` 会被当成"本地没有"删掉——那不是本 app 管的文件;而且
+    /// "差集为空"会与 `dir_content_hash == remote_content_hash` 脱钩,
+    /// 用户会陷入"点了分享、还是显示不一样"。
+    #[test]
+    fn files_that_the_hash_ruler_ignores_are_never_deleted() {
+        let remote = remote_of(&[
+            ("skills/my-notes/SKILL.md", "正文"),
+            ("skills/my-notes/metadata.json", "{}"),
+            ("skills/my-notes/.DS_Store", "\u{0}"),
+            // 目录段也在排除清单里(`EXCLUDE_DIRS`),不只是文件名
+            ("skills/my-notes/__pycache__/x.pyc", "字节码"),
+        ]);
+        let local = local_of(&[("skills/my-notes/SKILL.md", "正文")]);
+        let c = super::plan_changes(PFX, &remote, local).unwrap();
+        assert!(c.plan.is_empty(), "这三个文件不该产生任何改动:{:?}", c.plan);
     }
 
     /// 同一个坑的第二处:`CandidateOrigin::NpxSkills { source }` 眼下是单词字段,

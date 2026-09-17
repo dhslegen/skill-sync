@@ -97,7 +97,7 @@ fn share_req<'a>(repo: &'a RepoRef, dir_slug: &'a str) -> share::ShareRequest<'a
         registry_id: "gh-src",
         repo,
         dir_slug,
-        overwrite: false,
+        confirmed: true,
     }
 }
 

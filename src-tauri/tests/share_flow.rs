@@ -574,7 +574,7 @@ fn share_req<'a>(repo: &'a RepoRef, dir_slug: &'a str) -> share::ShareRequest<'a
         registry_id: "company",
         repo,
         dir_slug,
-        overwrite: false,
+        confirmed: true,
     }
 }
 
@@ -979,9 +979,11 @@ async fn share_reads_identity_and_library_author_itself_so_the_author_is_never_a
         })))
         .mount(&server)
         .await;
-    // 覆盖闸(v8 任务 4):`Mine` 档提交前要比一比库里的实时内容。这条用例测的
-    // 是别的命题,所以让库里那一版与本地**逐字节相同**,闸放行、原命题照测。
-    mount_archive_of(&server, "my-notes", "---\nname: my-notes\ndescription: d\n---\n正文\n").await;
+    // 覆盖闸(v8 任务 4)与差集(任务 5)共用这次压缩包下载。这条用例测的是别的
+    // 命题,所以 ①库里那一版与本地**不同**——相同的话任务 5 起会短路成
+    // 「库里已与本地一致」、一个请求都不发,原命题就测不到了;②请求带
+    // `confirmed: true`(`share_req` 的缺省),跳过确认屏直接走提交。
+    mount_archive_of(&server, "my-notes", "---\nname: my-notes\ndescription: 库里那一版\n---\n正文\n").await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
@@ -1014,7 +1016,7 @@ async fn share_reads_identity_and_library_author_itself_so_the_author_is_never_a
 /// 「更新我分享的技能」这一档的请求体形状:远端已有 → 必须 `update` 且带旧 blob sha,
 /// 发 `create` 会被 Gitea 422 拒掉。
 ///
-/// ⚠️ 它原先叫 `overwriting_a_taken_name_updates_with_remote_shas`,靠 `overwrite: true`
+/// ⚠️ 它原先叫 `overwriting_a_taken_name_updates_with_remote_shas`,靠 `confirmed: true`
 /// 走到这条路;`overwrite` 这个字段已随「覆盖别人的技能」一起删掉,现在的前提换成
 /// **本机有一条分享记账**(= `SharePrecheck::Mine`)——被测的请求体形状一个字没变。
 #[tokio::test]
@@ -1064,9 +1066,11 @@ async fn updating_a_skill_i_shared_before_uses_remote_shas() {
         })))
         .mount(&server)
         .await;
-    // 覆盖闸(v8 任务 4):`Mine` 档提交前要比一比库里的实时内容。这条用例测的
-    // 是别的命题,所以让库里那一版与本地**逐字节相同**,闸放行、原命题照测。
-    mount_archive_of(&server, "my-notes", "---\nname: my-notes\ndescription: d\n---\n正文\n").await;
+    // 覆盖闸(v8 任务 4)与差集(任务 5)共用这次压缩包下载。这条用例测的是别的
+    // 命题,所以 ①库里那一版与本地**不同**——相同的话任务 5 起会短路成
+    // 「库里已与本地一致」、一个请求都不发,原命题就测不到了;②请求带
+    // `confirmed: true`(`share_req` 的缺省),跳过确认屏直接走提交。
+    mount_archive_of(&server, "my-notes", "---\nname: my-notes\ndescription: 库里那一版\n---\n正文\n").await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
@@ -1498,7 +1502,7 @@ async fn pushing_changes_back_refuses_non_conforming_skills_before_any_network_c
     mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let err = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+    let err = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", true, NOW)
         .await
         .unwrap_err();
 
@@ -1548,7 +1552,7 @@ async fn pushing_local_changes_back_updates_the_books() {
     mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", true, NOW)
         .await
         .unwrap();
 
@@ -1611,7 +1615,7 @@ async fn pushing_changes_into_a_protected_library_is_reported_not_downgraded() {
     mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let err = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+    let err = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", true, NOW)
         .await
         .unwrap_err();
 
@@ -1678,7 +1682,7 @@ async fn pushing_changes_back_reads_the_body_not_canonical() {
     mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", true, NOW)
         .await
         .expect("本体就在 .claude/skills 里,不该报「内容已不存在」");
 
@@ -1739,7 +1743,7 @@ async fn pushing_changes_back_looks_the_record_up_by_the_sanitized_key() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
     // 传的是**库里的原始目录名**(带大写),账上记的是清洗后的 `weekly-report`
-    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "Weekly-Report", "main", false, NOW)
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "Weekly-Report", "main", true, NOW)
         .await
         .expect("按记账键查账应当找得到这条记账");
     assert!(matches!(outcome, share::ShareInstalledOutcome::Submitted(_)));
@@ -1771,11 +1775,21 @@ async fn first_share_warns_when_the_library_already_has_my_different_version() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
-        .await
-        .unwrap();
+    // `confirmed: false` = 预览轮:这正是确认屏打开时发的那一跳。
+    let outcome = share::share(
+        &share::ShareClient::Gitea(&client),
+        &client,
+        &c.registry,
+        &env,
+        &c.store,
+        &c.trash,
+        share::ShareRequest { registry_id: "company", repo: &repo, dir_slug: "my-notes", confirmed: false },
+        NOW,
+    )
+    .await
+    .unwrap();
 
-    let ShareOutcome::NeedsOverwrite(warning) = outcome else {
+    let ShareOutcome::NeedsConfirm { overwrite: Some(warning), .. } = outcome else {
         panic!("库里已有我的另一版,应当先让用户拍板:{outcome:?}");
     };
     assert_eq!(warning.last_author.as_deref(), Some("赵文浩"));
@@ -1819,7 +1833,7 @@ async fn first_share_pushes_once_the_overwrite_is_confirmed() {
         &env,
         &c.store,
         &c.trash,
-        share::ShareRequest { registry_id: "company", repo: &repo, dir_slug: "my-notes", overwrite: true },
+        share::ShareRequest { registry_id: "company", repo: &repo, dir_slug: "my-notes", confirmed: true },
         NOW,
     )
     .await
@@ -1854,7 +1868,7 @@ async fn remote_changed_since_install_needs_decision_and_sends_nothing() {
         .await
         .unwrap();
 
-    let share::ShareInstalledOutcome::RemoteChanged(warning) = outcome else {
+    let share::ShareInstalledOutcome::NeedsConfirm { overwrite: Some(warning), .. } = outcome else {
         panic!("远端变过,应当进冲突档而不是提交");
     };
     // Gitea 源给得出改动历史链接:指向该技能目录在目标分支上的提交历史
@@ -1898,7 +1912,7 @@ async fn remote_changed_blocks_even_when_local_is_pristine() {
         .unwrap();
 
     assert!(
-        matches!(outcome, share::ShareInstalledOutcome::RemoteChanged(_)),
+        matches!(outcome, share::ShareInstalledOutcome::NeedsConfirm { overwrite: Some(_), .. }),
         "远端变过就该拦,与本地改没改无关"
     );
 }
@@ -1956,7 +1970,7 @@ async fn overwrite_warning_names_who_changed_it_and_when() {
         .await
         .unwrap();
 
-    let share::ShareInstalledOutcome::RemoteChanged(warning) = outcome else {
+    let share::ShareInstalledOutcome::NeedsConfirm { overwrite: Some(warning), .. } = outcome else {
         panic!("远端变过,应当进覆盖确认档");
     };
     // 展示名优先于登录名(与 authors.json 同一把尺子)
@@ -1988,7 +2002,7 @@ async fn empty_baseline_still_warns_when_local_and_library_differ() {
         .await
         .unwrap();
 
-    let share::ShareInstalledOutcome::RemoteChanged(warning) = outcome else {
+    let share::ShareInstalledOutcome::NeedsConfirm { overwrite: Some(warning), .. } = outcome else {
         panic!("没有基线也要弹覆盖确认,不能直接覆盖库里那一版");
     };
     // full_name 是空串时退到 login——**空串不算一个人名**
@@ -2003,9 +2017,14 @@ async fn empty_baseline_still_warns_when_local_and_library_differ() {
     assert_eq!(posts, 0, "覆盖确认档不许发任何写请求");
 }
 
+/// 🔴 **v8 任务 5 改写了这条的终态**:它原先叫
+/// `empty_baseline_submits_when_local_matches_the_library`,断言"照常提交"
+/// ——而"照常提交"正是本期要治的病(内容一模一样还发一笔提交,Gitea 照样建
+/// 一个零改动的 commit,同事那三个空的合并请求就是这么来的)。现在这一档短路成
+/// 「库里已与本地一致」:一个写请求都不发,顺手把空基线对齐。
 #[tokio::test]
-async fn empty_baseline_submits_when_local_matches_the_library() {
-    // 基线为空、但本地与库里逐字节相同:没有任何东西会被顶掉,照常提交。
+async fn an_empty_baseline_realigns_instead_of_pushing_an_empty_commit() {
+    // 基线为空、但本地与库里逐字节相同。
     let (c, env) = ctx();
     let dir = canonical(&c).join("weekly-report");
     write_skill(&dir, "weekly-report", "原版");
@@ -2025,8 +2044,23 @@ async fn empty_baseline_submits_when_local_matches_the_library() {
         .unwrap();
 
     assert!(
-        matches!(outcome, share::ShareInstalledOutcome::Submitted(_)),
-        "本地与库里一致,没什么可覆盖的,应当照常提交"
+        matches!(outcome, share::ShareInstalledOutcome::AlreadyInSync),
+        "内容一致时不该发提交:{outcome:?}"
+    );
+    let posts = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .count();
+    assert_eq!(posts, 0, "「已一致」不许发任何写请求");
+    // 顺手把陈旧(这里是空)基线对齐——不对齐的话那一行会永远显示"和库里不一样",
+    // 用户只能一遍遍点分享、一遍遍造空提交。
+    assert_eq!(
+        state_of(&c).installed[0].content_hash,
+        fsops::dir_content_hash(&dir).unwrap(),
+        "「已一致」要顺手对齐基线"
     );
 }
 
@@ -2062,3 +2096,255 @@ async fn confirmed_overwrite_pushes_and_realigns_the_baseline() {
     assert_eq!(after.content_hash, local_hash, "覆盖成功后基线必须对齐到刚推上去的内容");
 }
 
+
+// ============================================================ 删除远端文件(v8 任务 5 / D5、D6)
+//
+// 病灶(实证):分享**只上传、从不删除**——`payload_files` 只发"本地有哪些文件",
+// 从不算"远端有、本地没有"的差集。用户在本地删过文件之后,远端会一直留着它,
+// 于是两边指纹**永不相等** → 行上永远显示"不一样" → 每次点分享都推一遍相同内容。
+// 这一节钉住:差集真的算了、删除真的进了请求体、没确认之前一个写请求都不发。
+
+/// 按给定的 `(技能目录内相对路径, 内容)` 造一份技能库压缩包。
+fn zip_with(slug: &str, files: &[(&str, &str)]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut buf = Vec::new();
+    {
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let opts = zip::write::SimpleFileOptions::default();
+        for (rel, body) in files {
+            w.start_file(format!("repo/skills/{slug}/{rel}"), opts).unwrap();
+            w.write_all(body.as_bytes()).unwrap();
+        }
+        w.finish().unwrap();
+    }
+    buf
+}
+
+/// 远端文件树:删除与修改都要拿它的 blob sha(Gitea 拿 sha 做乐观锁)。
+async fn mount_tree(server: &MockServer, entries: &[(&str, &str)]) {
+    let tree: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|(p, sha)| serde_json::json!({ "path": p, "sha": sha, "type": "blob" }))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path_regex(r"/api/v1/repos/skills/skills/git/trees/.*"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "tree": tree, "truncated": false })),
+        )
+        .mount(server)
+        .await;
+}
+
+/// 本地删掉一个文件之后分享:那个文件必须**从技能库里删掉**,而不是留在那儿
+/// 让两边指纹永远不等。
+#[tokio::test]
+async fn sharing_deletes_the_files_that_are_gone_locally() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("weekly-report");
+    write_skill(&dir, "weekly-report", "原版");
+    let mut state = state_of(&c);
+    state.installed.push(install_record(&c, &dir));
+    c.store.save_state(&state).unwrap();
+
+    let server = MockServer::start().await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/repos/skills/skills/branches/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "commit": { "id": "head1", "timestamp": "2026-07-31T08:00:00Z" }
+        })))
+        .mount(&server)
+        .await;
+    mount_tree(
+        &server,
+        &[
+            ("skills/weekly-report/SKILL.md", "sha-skill"),
+            ("skills/weekly-report/踩过的坑.md", "sha-gone"),
+            ("skills/weekly-report/一样的.md", "sha-same"),
+            // 别的技能的文件:同一棵树里,**一根汗毛都不许碰**
+            ("skills/other/SKILL.md", "sha-other"),
+        ],
+    )
+    .await;
+    mount_archive(
+        &server,
+        zip_with(
+            "weekly-report",
+            &[
+                ("SKILL.md", "---\nname: weekly-report\ndescription: 库里那一版\n---\n正文\n"),
+                ("踩过的坑.md", "这份本地已经删了"),
+                ("一样的.md", "两边一模一样"),
+            ],
+        ),
+    )
+    .await;
+    // 本地:改了 SKILL.md、删了「踩过的坑.md」、「一样的.md」原样、新增「新写的.md」
+    std::fs::write(dir.join("一样的.md"), "两边一模一样").unwrap();
+    std::fs::write(dir.join("新写的.md"), "刚写的").unwrap();
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", true, NOW)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, share::ShareInstalledOutcome::Submitted(_)), "{outcome:?}");
+
+    let reqs = server.received_requests().await.unwrap();
+    let posted: Vec<_> = reqs.iter().filter(|r| r.method.as_str() == "POST").collect();
+    let body: serde_json::Value = serde_json::from_slice(&posted[0].body).unwrap();
+    let files = body["files"].as_array().unwrap();
+    let op_of = |p: &str| {
+        files
+            .iter()
+            .find(|f| f["path"] == p)
+            .map(|f| f["operation"].as_str().unwrap_or("?").to_string())
+    };
+    assert_eq!(op_of("skills/weekly-report/踩过的坑.md").as_deref(), Some("delete"));
+    assert_eq!(op_of("skills/weekly-report/SKILL.md").as_deref(), Some("update"));
+    assert_eq!(op_of("skills/weekly-report/新写的.md").as_deref(), Some("create"));
+    // 🔴 内容相同的一个都不发——今天那几个空的合并请求正是漏了这条判断
+    assert_eq!(op_of("skills/weekly-report/一样的.md"), None, "两边一样的文件不该进请求体");
+    assert_eq!(op_of("skills/other/SKILL.md"), None, "别的技能的文件不该被碰");
+    // 删除要带远端 blob sha(Gitea 拿它做乐观锁,不给会被整笔拒掉)
+    let del = files.iter().find(|f| f["path"] == "skills/weekly-report/踩过的坑.md").unwrap();
+    assert_eq!(del["sha"], "sha-gone");
+    assert!(del.get("content").is_none(), "删除不该带内容");
+}
+
+/// 🔴 有删除时**未确认不得提交**(D6:「绝不静默删除用户文件」对服务端同样适用)。
+/// 断言的是"一个写请求都没发",不是返回值好看。
+#[tokio::test]
+async fn a_plan_with_deletions_is_not_committed_until_confirmed() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("weekly-report");
+    write_skill(&dir, "weekly-report", "原版");
+    // 先让本地与库里完全一致(基线由此算出),再删掉其中一个文件——这样这条用例
+    // 测的就只是"删除要先确认",不会顺带撞上覆盖闸(那是任务 4 的命题)。
+    std::fs::write(dir.join("踩过的坑.md"), "这份本地已经删了").unwrap();
+    let mut state = state_of(&c);
+    state.installed.push(install_record(&c, &dir));
+    c.store.save_state(&state).unwrap();
+    std::fs::remove_file(dir.join("踩过的坑.md")).unwrap();
+
+    let server = MockServer::start().await;
+    mount_archive(
+        &server,
+        zip_with(
+            "weekly-report",
+            &[("SKILL.md", WEEKLY_PRISTINE), ("踩过的坑.md", "这份本地已经删了")],
+        ),
+    )
+    .await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+        .await
+        .unwrap();
+    let share::ShareInstalledOutcome::NeedsConfirm { plan, overwrite } = outcome else {
+        panic!("有文件要删,必须先让用户看一眼:{outcome:?}");
+    };
+    assert_eq!(plan.deleted, vec!["踩过的坑.md".to_string()]);
+    assert!(plan.added.is_empty() && plan.modified.is_empty(), "SKILL.md 两边一样:{plan:?}");
+    // 库里那一版与账上基线一致 → 没有人顶掉谁,顶部不摆覆盖警告
+    assert!(overwrite.is_none(), "没被别人改过就不该摆覆盖警告");
+    let posts = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .count();
+    assert_eq!(posts, 0, "没确认之前不许发任何写请求");
+    assert_eq!(state_of(&c).installed[0].commit_sha, "aaa", "预览轮不许动记账");
+}
+
+/// 「可分享到」区那条路(`share()`)同样要先过确认屏——两条分享通道一个尺子。
+#[tokio::test]
+async fn the_first_channel_also_previews_before_it_commits() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "my-notes", "本地这一版");
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", false).await; // Fresh:库里还没有
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    let outcome = share::share(
+        &share::ShareClient::Gitea(&client),
+        &client,
+        &c.registry,
+        &env,
+        &c.store,
+        &c.trash,
+        share::ShareRequest { registry_id: "company", repo: &repo, dir_slug: "my-notes", confirmed: false },
+        NOW,
+    )
+    .await
+    .unwrap();
+    let ShareOutcome::NeedsConfirm { plan, overwrite } = outcome else {
+        panic!("预览轮应当回一份清单:{outcome:?}");
+    };
+    // 首次分享:删除清单**恒空**,确认屏只列新增
+    assert_eq!(plan.added, vec!["SKILL.md".to_string()]);
+    assert!(plan.deleted.is_empty() && plan.modified.is_empty());
+    assert!(overwrite.is_none(), "库里还没有这个技能,没有谁会被顶掉");
+    let posts = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .count();
+    assert_eq!(posts, 0, "预览轮不许发任何写请求");
+}
+
+/// 「可分享到」区:内容与库里逐字节相同 → 零写请求 + 对齐基线(D5 的正解)。
+#[tokio::test]
+async fn the_first_channel_reports_already_in_sync_without_pushing() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "my-notes", "一模一样");
+    let mut state = state_of(&c);
+    state.shared.push(SharedSkill {
+        name: "my-notes".into(),
+        local_path: dir.to_string_lossy().into_owned(),
+        origin: "local".into(),
+        target: SkillSource {
+            registry_id: "company".into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            path: "skills/my-notes".into(),
+            git_ref: "main".into(),
+        },
+        last_pushed_sha: "oldcommit".into(),
+        // 陈旧基线:这正是同事那几行"永远显示不一样"的成因
+        content_hash: "过时的指纹".into(),
+    });
+    c.store.save_state(&state).unwrap();
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", true).await;
+    mount_archive_of(&server, "my-notes", "---\nname: my-notes\ndescription: 一模一样\n---\n正文\n").await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    let outcome = share::share(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, ShareOutcome::AlreadyInSync), "{outcome:?}");
+    let posts = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .count();
+    assert_eq!(posts, 0, "内容一致时一个写请求都不该发");
+    assert_eq!(
+        state_of(&c).shared[0].content_hash,
+        fsops::dir_content_hash(&dir).unwrap(),
+        "「已一致」要顺手把陈旧基线对齐,否则那一行永远显示「和库里不一样」"
+    );
+}

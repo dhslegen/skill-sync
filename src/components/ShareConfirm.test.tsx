@@ -55,10 +55,22 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   ...over,
 });
 
-function openWith(skill = view()) {
+/**
+ * `sharePreview` 的缺省值:确认屏在**预览轮回来之前**按钮是禁用的(v8 任务 5)
+ * ——那一刻界面还答不出"会删掉哪些文件",而这一屏存在的理由就是先摆出那件事。
+ * 这些用例测的是别的命题,所以给一份已经到手的清单。
+ */
+type Preview = ReturnType<typeof useMySkills.getState>["sharePreview"];
+const PLAN = { added: [], modified: ["SKILL.md"], deleted: [] };
+
+function openWith(
+  skill = view(),
+  sharePreview: Preview = { dirSlug: "weekly-report", plan: PLAN, overwrite: null },
+) {
   useMySkills.setState({
     list: [skill],
     shareTarget: { dirSlug: skill.dirSlug },
+    sharePreview,
     shareBusy: null,
     shareError: null,
   });
@@ -82,7 +94,13 @@ beforeEach(() => {
     if (cmd === "installed_list") return [];
     return { agents: [], canonicalDir: "" };
   });
-  useMySkills.setState({ list: null, shareTarget: null, shareBusy: null, shareError: null });
+  useMySkills.setState({
+    list: null,
+    shareTarget: null,
+    sharePreview: null,
+    shareBusy: null,
+    shareError: null,
+  });
   useShare.setState({ targetRepo: null, preview: "unknown" });
 });
 
@@ -231,7 +249,7 @@ describe("确认与取消", () => {
     await vi.waitFor(() => {
       const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share");
       expect(call).toBeDefined();
-      for (const k of ["shareName", "displayName", "description", "overwrite"]) {
+      for (const k of ["shareName", "displayName", "description", "overwrite", "sourcePath"]) {
         expect(call?.[1].args).not.toHaveProperty(k);
       }
     });
@@ -279,5 +297,63 @@ describe("确认与取消", () => {
   it("没有目标时什么都不渲染", () => {
     const { container } = render(<ShareConfirm />);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("改动清单(v8 任务 5 / D5、D6、D9)", () => {
+  it("🔴 清单还没到之前不许提交——那一刻界面还答不出会删掉哪些文件", async () => {
+    openWith(view(), null);
+    await screen.findByText("周报生成");
+    expect(screen.getByRole("button", { name: "分享" })).toBeDisabled();
+    expect(screen.getByText("正在看技能库里现在是什么样…")).toBeInTheDocument();
+  });
+
+  it("🔴 会从技能库里删掉的文件必须逐个列出来,并说清后果", async () => {
+    openWith(view(), {
+      dirSlug: "weekly-report",
+      plan: { added: ["新写的.md"], modified: ["SKILL.md"], deleted: ["踩过的坑.md"] },
+      overwrite: null,
+    });
+    await screen.findByText("周报生成");
+    expect(screen.getByText("踩过的坑.md")).toBeInTheDocument();
+    expect(screen.getByText("新写的.md")).toBeInTheDocument();
+    expect(screen.getByText(/这 1 个文件会从技能库里删掉/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "分享" })).toBeEnabled();
+  });
+
+  it("🔴 D9:库里被别人改过时,覆盖警告与清单在**同一屏**上,不另开一个框", async () => {
+    openWith(view(), {
+      dirSlug: "weekly-report",
+      plan: { added: [], modified: ["SKILL.md"], deleted: [] },
+      overwrite: {
+        lastAuthor: "李四",
+        lastAt: "2026-09-10T03:04:05Z",
+        historyUrl: "http://g/commits/x",
+      },
+    });
+    await screen.findByText("周报生成");
+    expect(screen.getByText(/李四/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "在技能库里查看历史" })).toBeInTheDocument();
+    // 同一个 dialog 里既有警告又有清单
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(screen.getByText("SKILL.md")).toBeInTheDocument();
+  });
+
+  it("🔴 库里已经与本地一致:如实说出来,且不许提交(按下去就是一笔空提交)", async () => {
+    openWith(view(), { dirSlug: "weekly-report", inSync: true });
+    await screen.findByText("周报生成");
+    expect(screen.getByText(/已经和你本地的一样了/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "分享" })).toBeDisabled();
+  });
+
+  it("换技能时不把上一个技能的删除清单摆给他看(归属过滤)", async () => {
+    openWith(view(), {
+      dirSlug: "another-skill",
+      plan: { added: [], modified: [], deleted: ["别的技能的.md"] },
+      overwrite: null,
+    });
+    await screen.findByText("周报生成");
+    expect(screen.queryByText("别的技能的.md")).toBeNull();
+    expect(screen.getByRole("button", { name: "分享" })).toBeDisabled();
   });
 });

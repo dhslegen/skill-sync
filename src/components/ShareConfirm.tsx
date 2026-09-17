@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 
 import { t, type MessageKey } from "@/i18n";
-import { skillLocalDetail, skillReveal, type SharePath } from "@/lib/ipc";
+import { skillLocalDetail, skillReveal, type OverwriteWarning, type SharePath } from "@/lib/ipc";
 import { SHARE_BLOCK_LABEL } from "@/lib/share-block";
+import { SharePlanList } from "@/components/SharePlanList";
+import { relativeTimeFromIso } from "@/lib/format";
+import { openLibraryUrl } from "@/lib/ipc";
 import { shareTargetRepo, useMySkills } from "@/store/my-skills";
 import { useShare } from "@/store/share";
 
@@ -42,6 +45,7 @@ export function ShareConfirm() {
   // (行上的「贡献更改」)在确认屏开着时失败"这种交叠。
   const rawShareError = useMySkills((s) => s.shareError);
   const confirmShare = useMySkills((s) => s.confirmShare);
+  const rawPreview = useMySkills((s) => s.sharePreview);
   const cancelShare = useMySkills((s) => s.cancelShare);
   const preview = useShare((s) => s.preview);
   // 选择器只取原始值,不造新对象(否则 Object.is 永远判"变了" → 无限重渲染)
@@ -53,6 +57,8 @@ export function ShareConfirm() {
   const open = shareTarget !== null;
   const skill = list?.find((s) => s.dirSlug === shareTarget?.dirSlug);
   const shareError = rawShareError?.dirSlug === shareTarget?.dirSlug ? rawShareError : null;
+  // 归属过滤,与 `shareError` 同一条纪律:绝不把上一个技能的删除清单摆在这一屏上。
+  const changes = rawPreview?.dirSlug === shareTarget?.dirSlug ? rawPreview : null;
 
   useEffect(() => {
     if (open) cancelRef.current?.focus();
@@ -144,6 +150,20 @@ export function ShareConfirm() {
           </p>
         )}
 
+        {/* 🔴 统一确认屏(v8 任务 5 / D9):覆盖警告在**顶部**,改动清单在下面,
+            **同一屏**。分两屏问的话,用户要连点两次"确定"才能完成一个动作,
+            而第二次点的时候他已经忘了第一屏说过什么。 */}
+        {changes && "plan" in changes && changes.overwrite && (
+          <OverwriteNotice warning={changes.overwrite} />
+        )}
+        {changes === null && !blocked && !shareError && (
+          <p className="mt-2.5 text-[12px] text-text-3">{t("share.planLoading")}</p>
+        )}
+        {changes && "inSync" in changes && (
+          <p className="mt-2.5 text-[12px] leading-[1.6] text-text-2">{t("mine.shareInSync")}</p>
+        )}
+        {changes && "plan" in changes && <SharePlanList plan={changes.plan} />}
+
         {shareError && (
           <p className="mt-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
             {t("mine.shareFailed")}
@@ -186,14 +206,60 @@ export function ShareConfirm() {
           </button>
           <button
             type="button"
-            disabled={blocked !== null || noWriteAccess || shareBusy !== null}
+            // 🔴 清单还没到之前不许提交:那一刻界面还答不出"会删掉哪些文件",
+            // 而这一屏存在的理由就是先把那件事摆出来(D6)。
+            // 「已一致」也不许提交——按下去会造一笔零改动的提交,正是本期的病灶。
+            disabled={
+              blocked !== null ||
+              noWriteAccess ||
+              shareBusy !== null ||
+              changes === null ||
+              "inSync" in changes
+            }
             onClick={() => void confirmShare()}
             className="h-7 rounded-ctl bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
-            {shareBusy ? t("mine.sharing") : t("mine.share")}
+            {/* 🔴 预览轮也占着 `shareBusy`(它走的是同一个函数),但那一刻**什么都
+                还没推**——按钮写「正在分享…」就是一句假话。清单到手(`changes`
+                非空)之后的忙碌才是真的在提交,上面那句「正在看技能库里现在是
+                什么样…」负责交代预览轮。 */}
+            {shareBusy && changes ? t("mine.sharing") : t("mine.share")}
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * 顶部的覆盖警告(v8 任务 4 的 `ShareOverwriteDialog` 同一份说法,搬到这一屏上)。
+ * 三件事都可能取不到——取不到时**如实说"看不出"**,不拿空串冒充一个人名。
+ */
+function OverwriteNotice({ warning }: { warning: OverwriteWarning }) {
+  const at = warning.lastAt ? relativeTimeFromIso(warning.lastAt) : "";
+  const who = warning.lastAuthor?.trim() ?? "";
+  const provenance =
+    who && at
+      ? t("overwrite.byWhoAt", { author: who, at })
+      : who
+        ? t("overwrite.byWho", { author: who })
+        : at
+          ? t("overwrite.atOnly", { at })
+          : t("overwrite.unknownWho");
+  return (
+    <div className="mt-2.5 rounded-card border border-[#c0392b]/40 px-2.5 py-2 dark:border-[#e0705f]/40">
+      <p className="text-[12px] leading-[1.6] text-[#c0392b] dark:text-[#e0705f]">{provenance}</p>
+      <p className="mt-1 text-[12px] leading-[1.6] text-text-2">{t("overwrite.body")}</p>
+      <p className="mt-1 text-[12px] leading-[1.6] text-text-3">{t("overwrite.recoverable")}</p>
+      {warning.historyUrl && (
+        <button
+          type="button"
+          onClick={() => void openLibraryUrl(warning.historyUrl as string)}
+          className="mt-1.5 text-[12px] text-accent underline-offset-2 hover:underline"
+        >
+          {t("overwrite.history")}
+        </button>
+      )}
     </div>
   );
 }

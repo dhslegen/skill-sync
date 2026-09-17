@@ -688,7 +688,11 @@ function DoneFooter({
         >
           {"error" in shareResult
             ? `${t("install.shareAfterKeepFailed")}${t("punct.labelSeparator")}${shareResult.error.message}`
-            : t("install.sharedAfterKeep")}
+            : /* v8 任务 5:「库里已经和本地一样」也是一种成功,而且是**什么都没变**
+                 的那种——不单独说一句的话,用户看到的是"点了没反应"。 */
+              shareResult.mode === "inSync"
+              ? t("mine.shareInSync")
+              : t("install.sharedAfterKeep")}
         </p>
       ) : (
         localKept && (

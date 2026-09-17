@@ -42,17 +42,18 @@ import {
   type InstalledSkillView,
   type Converged,
   type KeepReport,
+  type OverwriteWarning,
   type RustResult,
   type Section,
   type SetAgentsOutcome,
-  type ShareMode,
+  type SharePlan,
   type SkillVersion,
   type StoreIndexView,
   type ToolView,
   type UninstallReport,
 } from "@/lib/ipc";
 import { rowAction, type RowAction } from "@/lib/ownership";
-import type { ShareFlow } from "@/lib/share-block";
+import type { ShareFlow, ShareResultKind } from "@/lib/share-block";
 import { remoteHashOf } from "@/lib/update";
 import { defaultSelectedAgents, useInstall } from "@/store/install";
 import { useOverwrite } from "@/store/overwrite";
@@ -169,10 +170,26 @@ interface MySkillsState {
 
   /** 分享确认屏的目标;null = 没开。 */
   shareTarget: { dirSlug: string } | null;
+  /**
+   * 确认屏打开时那一轮**预览**的结果(v8 任务 5 / D9)。
+   *
+   * - `null` = 还没探到(确认屏显示"正在看技能库里现在是什么样");
+   * - `{ plan, overwrite }` = 这次会改动哪些文件,`overwrite` 非空时顶部还要摆
+   *   覆盖警告;
+   * - `{ inSync: true }` = 库里已经与本地一致,一个请求都没发 → 按钮禁用,
+   *   并如实说出来(不说的话用户看到的是"点了没反应")。
+   *
+   * 🔴 **带 `dirSlug`**:与 `shareDone`/`shareError` 同一条归属纪律——换个技能
+   * 打开确认屏时,绝不能把上一个技能的删除清单摆给他看。
+   */
+  sharePreview:
+    | { dirSlug: string; plan: SharePlan; overwrite: OverwriteWarning | null }
+    | { dirSlug: string; inSync: true }
+    | null;
 
   /** 「分享改动」/「分享更新」/「分享」:正在推的技能 / 刚推完的结果 / 错误。 */
   shareBusy: string | null;
-  shareDone: { dirSlug: string; mode: ShareMode; flow: ShareFlow } | null;
+  shareDone: { dirSlug: string; mode: ShareResultKind; flow: ShareFlow } | null;
   /**
    * 分享失败。**带归属**(终审复审轮 1,C-A):形状与 `shareDone` 对称。
    *
@@ -519,6 +536,7 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   keepBusy: false,
   keepError: null,
   shareTarget: null,
+  sharePreview: null,
   shareBusy: null,
   shareDone: null,
   shareError: null,
@@ -710,18 +728,22 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     set({ toolFailures: null, setAgentsError: null, toolFailuresFor: null }),
 
   beginShare: (dirSlug) => {
-    set({ shareTarget: { dirSlug }, shareError: null, shareDone: null });
+    // `sharePreview: null` = 上一个技能的清单必须当场清掉,而不是留在屏上等新的
+    // 覆盖它——留着的那一瞬间,用户看到的是**另一个技能**会删哪些文件。
+    set({ shareTarget: { dirSlug }, sharePreview: null, shareError: null, shareDone: null });
     // 路径预告(能不能直接保存进去)是**仓库级**的,探一次就够;
     // 探不到就是 unknown,确认屏照常可提交——它只是提示,不是判据。
     void useShare.getState().refreshPreview();
+    // 预览轮(v8 任务 5):问一次 core"这次会改动哪些文件",**零写请求**。
+    void runShare(dirSlug, false, set, get);
   },
 
-  cancelShare: () => set({ shareTarget: null, shareError: null }),
+  cancelShare: () => set({ shareTarget: null, sharePreview: null, shareError: null }),
 
   confirmShare: async () => {
     const target = get().shareTarget;
     if (!target) return;
-    await runShare(target.dirSlug, false, set, get);
+    await runShare(target.dirSlug, true, set, get);
   },
   shareChanges: async (dirSlug) => {
     // ⚠️ **v8 任务 3**:这里曾经按 `section` 分流——「安装自」那一区的贡献更改
@@ -861,15 +883,19 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
  * 重复提交。
  */
 /**
- * 「分享」那一跳(`skill_share`)。
+ * 「分享」那一跳(`skill_share`),**两轮共用同一个函数**(v8 任务 5 / D9)。
  *
- * `overwrite` 为真 = 用户已在覆盖确认屏上按过「仍然覆盖」;为假时 core 可能
- * 退回 `needsOverwrite`——**那不是错误**,是"库里已有我的另一版,推上去会顶掉
- * 它",要用户先拍板(v8 任务 4 / 决策 D2)。
+ * - `confirmed: false` = **预览轮**,确认屏一打开就发:core 一个写请求都不发,
+ *   只回一份"这次会新增/修改/删除哪些文件"的清单(库里被改过时还带覆盖警告)。
+ *   结果落 `sharePreview`,由 `ShareConfirm` 在**同一屏**上渲染;
+ * - `confirmed: true` = 用户在那一屏上按了确认,这一跳才真的提交。
+ *
+ * 🔴 **两轮走同一个函数,不是两个**:目标库的分流(`shareTargetRepo`)只有一份
+ * 实现,分两处算就会出现"确认屏说推去 A、实际推去 B",而用户是照着那句话点的。
  */
 async function runShare(
   dirSlug: string,
-  overwrite: boolean,
+  confirmed: boolean,
   set: (partial: Partial<MySkillsState>) => void,
   get: () => MySkillsState,
 ) {
@@ -884,27 +910,25 @@ async function runShare(
       dirSlug,
       ...(registryId ? { registryId } : {}),
       ...(repo ? { repo } : {}),
-      ...(overwrite ? { overwrite: true } : {}),
+      ...(confirmed ? { confirmed: true } : {}),
     });
-    if (result.outcome === "needsOverwrite") {
-      // core 一个字节都没动就退回来了。关掉分享确认屏、摆覆盖确认屏。
-      set({ shareTarget: null });
-      useOverwrite.getState().ask({
-        dirSlug,
-        // 🔴 点名用**文件夹名**,不去索引里换展示名:文件夹名就是各个 AI 工具
-        // 里调用它的那个名字,界面本来就在展示它;而展示名要跨 store 现查一份
-        // 索引,等于为一句标题多接一条会失灵的依赖。
-        name: dirSlug,
-        warning: {
-          lastAuthor: result.lastAuthor,
-          lastAt: result.lastAt,
-          historyUrl: result.historyUrl,
-        },
-        confirm: () => runShare(dirSlug, true, set, get),
-      });
+    if (result.outcome === "needsConfirm") {
+      // core 一个字节都没动。清单留在**当前这一屏**上(D9:一个动作只有一屏),
+      // 不另开一个覆盖框。
+      set({ sharePreview: { dirSlug, plan: result.plan, overwrite: result.overwrite } });
       return;
     }
-    set({ shareTarget: null, shareDone: { dirSlug, mode: result.mode, flow: "share" } });
+    if (result.outcome === "alreadyInSync") {
+      // 库里已经与本地一致。**这一档也要说话**:它"成功但什么都没变",
+      // 不说的话用户看到的是"点了没反应",而"没反应"会诱发重复提交。
+      set({ sharePreview: { dirSlug, inSync: true } });
+      if (confirmed) {
+        set({ shareTarget: null, shareDone: { dirSlug, mode: "inSync", flow: "share" } });
+      }
+      await get().load();
+      return;
+    }
+    set({ shareTarget: null, sharePreview: null, shareDone: { dirSlug, mode: result.mode, flow: "share" } });
     // 分享成功后要刷新的不止这一页:商店索引(库里多了一个技能)、
     // 已装记录(商店卡片的按钮档位据它决定)、本页(直推进库的技能会被 core
     // 当场记进账,状态从「尚未分享」变成「已同步」)。
@@ -922,7 +946,7 @@ async function runShareChanges(
   dirSlug: string,
   set: (partial: Partial<MySkillsState>) => void,
   get: () => MySkillsState,
-  overwrite = false,
+  confirmed = false,
 ) {
   const remoteChangedError = (): AppError => ({
     code: "CONFLICT_REMOTE_CHANGED",
@@ -935,24 +959,26 @@ async function runShareChanges(
     const outcome = await skillShareChanges({
       dirSlug,
       registryId,
-      ...(overwrite ? { overwrite: true } : {}),
+      ...(confirmed ? { confirmed: true } : {}),
     });
-    if (outcome.kind === "remoteChanged") {
-      // 库里那一版与本地基线不符:core 一个字节没动就退回来了,
-      // 摆覆盖确认屏让用户拍板(v8 任务 4),而不是只说一句"没分享成"。
+    if (outcome.kind === "needsConfirm") {
+      // core 一个字节没动就退回来了:摆**统一确认屏**让用户拍板(v8 任务 5 / D9)
+      // ——清单一定有(这次会新增/修改/删除哪些文件),覆盖警告可能有。
       useOverwrite.getState().ask({
         dirSlug,
         // 🔴 点名用**文件夹名**,不去索引里换展示名:文件夹名就是各个 AI 工具
         // 里调用它的那个名字,界面本来就在展示它;而展示名要跨 store 现查一份
         // 索引,等于为一句标题多接一条会失灵的依赖。
         name: dirSlug,
-        warning: {
-          lastAuthor: outcome.lastAuthor,
-          lastAt: outcome.lastAt,
-          historyUrl: outcome.historyUrl,
-        },
+        plan: outcome.plan,
+        warning: outcome.overwrite,
         confirm: () => runShareChanges(dirSlug, set, get, true),
       });
+      return;
+    }
+    if (outcome.kind === "alreadyInSync") {
+      set({ shareDone: { dirSlug, mode: "inSync", flow: "changes" } });
+      await get().load();
       return;
     }
     set({ shareDone: { dirSlug, mode: outcome.mode, flow: "changes" } });
