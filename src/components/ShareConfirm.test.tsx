@@ -50,7 +50,6 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   versions: [],
   shareBlocked: null,
   section: sectionOfRelation(over.relation ?? "draft"),
-  review: null,
   libraryUrl: null,
   canonicalReaders: null,
   ...over,
@@ -157,7 +156,7 @@ describe("摆出来的信息", () => {
     useShare.setState({ preview: "unknown" });
     openWith();
     await screen.findByText("周报生成");
-    for (const s of ["直接生效", "需要管理员审核", "写入权限"]) {
+    for (const s of ["直接生效", "写入权限"]) {
       expect(screen.queryByText(new RegExp(s))).toBeNull();
     }
   });

@@ -161,7 +161,7 @@ describe("冲突对话框", () => {
       render(<ConflictDialog />);
 
       expect(screen.queryByText(/库里有新版/)).not.toBeInTheDocument();
-      expect(screen.queryByText(/同事通过审核改的/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/可能是同事改过/)).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: /以本地为准,分享更新/ })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /以库为准,丢弃本地改动/ })).toBeInTheDocument();
     });

@@ -688,9 +688,7 @@ function DoneFooter({
         >
           {"error" in shareResult
             ? `${t("install.shareAfterKeepFailed")}${t("punct.labelSeparator")}${shareResult.error.message}`
-            : shareResult.mode === "pushed"
-              ? t("install.sharedAfterKeep")
-              : t("install.sharedAfterKeepReview")}
+            : t("install.sharedAfterKeep")}
         </p>
       ) : (
         localKept && (

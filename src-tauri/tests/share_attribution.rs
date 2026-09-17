@@ -10,10 +10,9 @@
 use skillsync_lib::core::gitea::{GiteaClient, RepoRef};
 use skillsync_lib::core::ownership::Identity;
 use skillsync_lib::core::share::{self, ShareClient, ShareMode, ShareOutcome};
-use wiremock::matchers::{body_string_contains, method, path};
+use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-const NOW: &str = "2026-08-24T09:00:00.000Z";
 const SLUG: &str = "weekly-report";
 
 fn me() -> Identity {
@@ -119,7 +118,6 @@ async fn claiming_writes_only_the_authors_file() {
         &repo_ref(),
         SLUG,
         &me(),
-        NOW,
     )
     .await
     .unwrap();
@@ -165,7 +163,6 @@ async fn an_already_registered_skill_is_refused_before_any_write() {
         &repo_ref(),
         SLUG,
         &me(),
-        NOW,
     )
     .await
     .expect_err("已登记过就不该再写一遍");
@@ -180,21 +177,15 @@ async fn an_already_registered_skill_is_refused_before_any_write() {
     assert_eq!(err.code, "CONFLICT_ALREADY_ATTRIBUTED");
 }
 
-/// 默认分支受保护(直推 403)→ 开分支 + 提交审核。
+/// 🔴 **v8 任务 3:直推被 403 挡下 → 一句人话,不再降级开分支**。
+///
+/// 断言的是**请求条数**不只是错误码:降级那条路会再发一笔带 `new_branch` 的
+/// contents + 一笔 pulls,条数断言才挡得住"悄悄又开了一个没人看的审核请求"。
 #[tokio::test]
-async fn a_protected_branch_falls_back_to_review() {
+async fn a_protected_branch_is_reported_not_downgraded_to_a_review() {
     let server = MockServer::start().await;
     mount_repo_info(&server, true).await;
     mount_authors_json(&server, "skills/skills", "authsha", None).await;
-    // 注册顺序即匹配顺序:带 new_branch 的先挂(放行),裸提交落到后面那条(403)
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/contents"))
-        .and(body_string_contains("new_branch"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "commit": { "sha": "branchsha", "html_url": "http://x/commit/branchsha" }
-        })))
-        .mount(&server)
-        .await;
     Mock::given(method("POST"))
         .and(path("/api/v1/repos/skills/skills/contents"))
         .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
@@ -202,97 +193,43 @@ async fn a_protected_branch_falls_back_to_review() {
         })))
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/pulls"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "html_url": "http://x/pulls/7", "number": 7
-        })))
-        .mount(&server)
-        .await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let outcome = share::claim_attribution(
-        &ShareClient::Gitea(&client),
-        &repo_ref(),
-        SLUG,
-        &me(),
-        NOW,
-    )
-    .await
-    .unwrap();
+    let err = share::claim_attribution(&ShareClient::Gitea(&client), &repo_ref(), SLUG, &me())
+        .await
+        .unwrap_err();
 
-    let ShareOutcome::Shared { mode, commit_sha, review_url, .. } = outcome;
-    assert_eq!(mode, ShareMode::ReviewRequested);
-    assert_eq!(commit_sha, "branchsha");
-    assert_eq!(review_url.as_deref(), Some("http://x/pulls/7"));
-
+    assert_eq!(err.code, "REPO_PUSH_BLOCKED");
     let reqs = server.received_requests().await.unwrap();
-    let posted = posts(&reqs, "skills/skills");
-    assert_eq!(posted.len(), 2, "先试直推、被挡下才开分支");
-    let (_, op, _, doc) = only_file(&body_of(posted[1]));
-    assert_eq!(op, "create", "文件本来就不存在");
-    assert_eq!(doc["authors"][SLUG]["author"], "赵文浩");
+    assert_eq!(posts(&reqs, "skills/skills").len(), 1, "只试一次直推,不降级");
+    assert!(
+        !reqs.iter().any(|r| r.url.path().ends_with("/pulls")),
+        "不许再开审核请求:{:?}",
+        reqs.iter().map(|r| r.url.path().to_string()).collect::<Vec<_>>()
+    );
 }
 
-/// 只读用户走副本:**blob sha 必须取自副本仓**。拿上游的 sha 往副本上写会得到
-/// `404 object does not exist`,整笔提交失败——只读用户永远登记不上。
+/// 🔴 **v8 任务 3 / D8:只读用户 → 一句人话,而且在读完 authors.json 之后、
+/// 任何有副作用的请求之前就早退**(以前这一档会复制一份仓库到用户名下)。
 #[tokio::test]
-async fn a_read_only_user_claims_through_a_copy_and_takes_the_sha_from_it() {
+async fn a_read_only_user_is_told_why_instead_of_getting_a_personal_copy() {
     let server = MockServer::start().await;
     mount_repo_info(&server, false).await;
-    // 上游与副本的 authors.json 内容相同、blob sha 不同 —— 断言用的就是这个差别
-    let doc = r#"{"authors":{"other":{"author":"李四"}}}"#;
-    mount_authors_json(&server, "skills/skills", "upstreamsha", Some(doc)).await;
-    mount_authors_json(&server, "zhaowh/skills", "forkblobsha", Some(doc)).await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/forks"))
-        .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
-            "name": "skills", "owner": { "login": "zhaowh" }
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/zhaowh/skills/contents"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "commit": { "sha": "forksha", "html_url": "http://x" }
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/pulls"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "html_url": "http://x/pulls/9", "number": 9
-        })))
-        .mount(&server)
-        .await;
+    mount_authors_json(&server, "skills/skills", "upstreamsha", None).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let outcome = share::claim_attribution(
-        &ShareClient::Gitea(&client),
-        &repo_ref(),
-        SLUG,
-        &me(),
-        NOW,
-    )
-    .await
-    .unwrap();
-    let ShareOutcome::Shared { mode, .. } = outcome;
-    assert_eq!(mode, ShareMode::ReviewRequested);
+    let err = share::claim_attribution(&ShareClient::Gitea(&client), &repo_ref(), SLUG, &me())
+        .await
+        .unwrap_err();
 
+    // 请求断言排在错误码之前,理由同 `share_flow.rs` 的同名用例。
     let reqs = server.received_requests().await.unwrap();
     assert!(
-        reqs.iter().any(|r| r.url.path() == "/api/v1/repos/zhaowh/skills/contents/authors.json"),
-        "副本路径必须读副本自己的 authors.json"
+        reqs.iter().all(|r| r.method == wiremock::http::Method::GET),
+        "只读用户这条路一个写请求都不该发出去:{:?}",
+        reqs.iter().map(|r| format!("{} {}", r.method, r.url.path())).collect::<Vec<_>>()
     );
-    let posted = posts(&reqs, "zhaowh/skills");
-    assert_eq!(posted.len(), 1);
-    let (_, op, sha, _) = only_file(&body_of(posted[0]));
-    assert_eq!(op, "update");
-    assert_eq!(
-        sha.as_deref(),
-        Some("forkblobsha"),
-        "拿上游的 sha 往副本上写会 404,整笔提交失败"
-    );
+    assert_eq!(err.code, "REPO_NO_WRITE_ACCESS");
 }
 
 /// 提交被拒时**如实上报**,不许"剥掉归因重试一次"。
@@ -324,7 +261,6 @@ async fn a_rejected_single_file_commit_is_reported_not_retried_empty() {
         &repo_ref(),
         SLUG,
         &me(),
-        NOW,
     )
     .await
     .expect_err("提交被拒就该如实上报");
@@ -349,7 +285,6 @@ async fn a_github_source_says_so_instead_of_pretending() {
         &repo_ref(),
         SLUG,
         &me(),
-        NOW,
     )
     .await
     .expect_err("GitHub 源不登记作者");

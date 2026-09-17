@@ -86,7 +86,7 @@ export function PrimaryAction({
       );
     case "contribute":
       // 画布里「贡献更改」是浅橙 chip(不是灰描边):它是动作,但比「分享改动」
-      // 轻一档——改的是别人库里的东西,要走评审。
+      // 轻一档——改的是别人库里的东西。(v8 任务 6 会把这个入口整个撤掉,见 D7。)
       return (
         <ChipButton size={size} disabled={sharing} onClick={onShareChanges}>
           {sharing ? t("mine.contributing") : t("mine.contribute")}
@@ -104,7 +104,7 @@ export function PrimaryAction({
       //   **实心 = 这一栏里的例外;chip = 这一栏里人人都有的那个动作。**
       // 「分享」是「可分享到技能库」
       // 那一整栏的**常态**——41 行里 41 行都有它。此前它是实心橙,于是满屏
-      // 实心橙,那 1 个真正要处理的行(冲突/选版本/审核中)完全淹掉。
+      // 实心橙,那 1 个真正要处理的行(冲突/选版本/没有写权限)完全淹掉。
       // 对照「已分享到」栏没有这个问题,正因为那一栏的常态是"没有按钮"。
       // `needsAttention` 早就把 `share` 排除在"要处理"之外了(那个判定是对的),
       // 错的是**视觉没有跟着这个判定走**——这里把它补上。
@@ -135,26 +135,25 @@ export function PrimaryAction({
         </Btn>
       );
     }
-    case "underReview":
-      // 🔴 v7.1 任务 5:画布(`Main.dc.html`)把「审核中」画成**实心 + opacity .5**
-      // 的禁用按钮,而不是 Q5B 说的"轻量状态标记"——**这不是与 Q5B 冲突**:
-      // 「审核中」占的是这一行主按钮的位置,它是"分享"这个动作**此刻不能再点**
-      // 的形态(与同屏那颗禁用的「分享」逐字同款),不是一枚状态徽标。
-      // 别按 Q5B 把它"修"成浅底无边框的标记。
-      // 行上不再摆「在技能库里查看」(画布里那颗链接不在行上):`review.url`
-      // 在详情面板有两处渲染点——`WhereBlocks` 的 `ReviewLink`(「技能库里」
-      // 那一块,**默认收起**)与 `SkillActionsBlock` 的固定页脚。
-      // 🔴 **终审 I-1 订正**:这段话原先说页脚那颗是 `review.url` 的第二个渲染点
-      // ——**是错的**。页脚读的是 `skill.libraryUrl`(另一个字段),而
-      // `review` 非空 ⟹ `section == "shareable"` ⟹ `relation == Draft` ⟹
-      // `my_skills::row_library_url` 第一句就返回 `None`,于是审核中的行页脚
-      // **恒无库链接**,唯一入口埋在默认收起的折叠头里。现在 `SkillActionsBlock`
-      // 已改成 `libraryUrl ?? review.url`,这句话才成立(见该文件的组件文档)。
+    case "noWriteAccess": {
+      // 🔴 v8 任务 3 / D8:没有写权限时,主按钮**禁用且保持它启用时的形态**
+      // ——与 `shareBlocked` 逐字同款(用另一种形态画禁用态,用户分不出被禁的
+      // 是哪个动作)。为什么不干脆不摆:见 `RowAction.noWriteAccess` 的文档。
+      // 「为什么不能点」那句说明与「打开文件夹」出口在行上的提示区与详情面板
+      // 动作区各自渲染。
+      const label =
+        action.blockedAction === "contribute"
+          ? t("mine.contribute")
+          : action.blockedAction === "shareChanges"
+            ? t("mine.shareChanges")
+            : t("mine.share");
+      const Btn = action.blockedAction === "shareChanges" ? SolidButton : ChipButton;
       return (
-        <SolidButton size={size} disabled onClick={() => {}}>
-          {t("detail.whereReviewPending")}
-        </SolidButton>
+        <Btn size={size} disabled onClick={() => {}}>
+          {label}
+        </Btn>
       );
+    }
   }
 }
 

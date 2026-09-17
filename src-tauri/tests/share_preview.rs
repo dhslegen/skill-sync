@@ -70,6 +70,10 @@ async fn preview(client: &GiteaClient, r: &RepoRef) -> SharePath {
 }
 
 // ============================================================ Gitea 三档
+//
+// 🔴 **v8 任务 3 / D8:这个预检没有被删掉,是被收窄成三档**——它是「只读用户
+// 按钮禁用 + 说明」的**唯一判据来源**。删掉的只是 `ReviewInRepo`/`ReviewViaCopy`
+// 这两个结果档(那两条提交路径本身没了)。
 
 #[tokio::test]
 async fn writable_and_unprotected_predicts_a_direct_push() {
@@ -78,24 +82,28 @@ async fn writable_and_unprotected_predicts_a_direct_push() {
     assert_eq!(preview(&gitea(&server), &repo()).await, SharePath::DirectPush);
 }
 
+/// 🔴 **有写权限但目标受保护 ≠ 没有写权限**(v8 任务 3)。这两档以前分别是
+/// `ReviewInRepo` 与 `ReviewViaCopy`,去向完全不同;现在只剩一个禁用态,
+/// 把前者也折进 `NoAccess` 就会对一个**确实有写权限**的人说"你没有写入权限"
+/// ——而 D8 的禁用态正是拿这句话当理由的。它归 `Unknown`:不预告、不禁按钮,
+/// 受保护这件事由提交时刻的 403 出口说。
 #[tokio::test]
-async fn writable_but_protected_predicts_a_review_in_the_same_library() {
-    // 这一档是整个任务的理由:`permissions.push` 仍是 true,只有 user_can_push 说了实话。
-    // 判定若照抄 submit_gitea 的 permissions.push,这里就会预告"直接生效"——假话。
+async fn writable_but_protected_is_unknown_never_no_access() {
+    // `permissions.push` 仍是 true,只有 user_can_push 说了实话:不能直推。
     let server = MockServer::start().await;
     mount(&server, branch_body(true, false), repo_body(true)).await;
-    assert_eq!(preview(&gitea(&server), &repo()).await, SharePath::ReviewInRepo);
+    assert_eq!(preview(&gitea(&server), &repo()).await, SharePath::Unknown);
 }
 
 #[tokio::test]
-async fn read_only_predicts_a_review_via_a_personal_copy() {
+async fn read_only_predicts_no_write_access() {
     let server = MockServer::start().await;
     mount(&server, branch_body(true, false), repo_body(false)).await;
-    assert_eq!(preview(&gitea(&server), &repo()).await, SharePath::ReviewViaCopy);
+    assert_eq!(preview(&gitea(&server), &repo()).await, SharePath::NoAccess);
     // 未保护的只读库同样走这条:user_can_push=false 且没有写权限
     let server = MockServer::start().await;
     mount(&server, branch_body(false, false), repo_body(false)).await;
-    assert_eq!(preview(&gitea(&server), &repo()).await, SharePath::ReviewViaCopy);
+    assert_eq!(preview(&gitea(&server), &repo()).await, SharePath::NoAccess);
 }
 
 // ============================================================ 探不到时一律 Unknown
@@ -129,28 +137,29 @@ async fn an_unreachable_or_missing_branch_is_unknown_not_no_permission() {
 #[tokio::test]
 async fn an_old_gitea_without_user_can_push_falls_back_instead_of_erroring() {
     // 旧版 Gitea 的 branches 响应没有这个字段。此时唯一能说的是"有没有写权限",
-    // 分支保护未知——不能假装知道,退回 Unknown/ReviewViaCopy 两档。
+    // 保护状态未知——不能假装知道,退回 Unknown/NoAccess 两档。
     let server = MockServer::start().await;
     let mut body = branch_body(false, true);
     body.as_object_mut().unwrap().remove("user_can_push");
     mount(&server, body, repo_body(true)).await;
-    // 有写权限但探不到分支能否直推:说不准,不许预告"直接生效"
+    // 有写权限但探不到能否直推:说不准,不许预告"直接生效"
     assert_eq!(preview(&gitea(&server), &repo()).await, SharePath::Unknown);
 
-    // 没有写权限则与新版一致:必然要复制一份
+    // 没有写权限则与新版一致
     let server = MockServer::start().await;
     let mut body = branch_body(false, false);
     body.as_object_mut().unwrap().remove("user_can_push");
     mount(&server, body, repo_body(false)).await;
-    assert_eq!(preview(&gitea(&server), &repo()).await, SharePath::ReviewViaCopy);
+    assert_eq!(preview(&gitea(&server), &repo()).await, SharePath::NoAccess);
 }
 
 // ============================================================ GitHub 两档(不假装能预知保护)
 
 #[tokio::test]
-async fn github_with_push_access_says_maybe_direct_never_promises_it() {
-    // GitHub 的分支保护预检不到(REST branch-protection 端点要 admin 权限),
-    // 所以有写权限时只能说"可能直接生效"。硬说 DirectPush 就是在猜。
+async fn github_with_push_access_predicts_a_direct_push() {
+    // GitHub 的保护规则预检不到(要 admin 权限),所以这一档只回答"有没有写权限"
+    // ——v8 任务 3 起 `MaybeDirect` 那个"可能直接生效"的中间档已折进 `DirectPush`:
+    // 它唯一的语义是"可能被转成审核",而那条路没了。
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v3/repos/ai-skills/team-skills"))
@@ -164,12 +173,12 @@ async fn github_with_push_access_says_maybe_direct_never_promises_it() {
     let client = GithubClient::new(&server.uri(), Some("tok-abc".into()), reqwest::Client::new());
     assert_eq!(
         share::preview_permission(&ShareClient::Github(&client), &repo()).await,
-        SharePath::MaybeDirect
+        SharePath::DirectPush
     );
 }
 
 #[tokio::test]
-async fn github_without_push_access_predicts_a_personal_copy() {
+async fn github_without_push_access_predicts_no_write_access() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v3/repos/ai-skills/team-skills"))
@@ -183,7 +192,7 @@ async fn github_without_push_access_predicts_a_personal_copy() {
     let client = GithubClient::new(&server.uri(), Some("tok-abc".into()), reqwest::Client::new());
     assert_eq!(
         share::preview_permission(&ShareClient::Github(&client), &repo()).await,
-        SharePath::ReviewViaCopy
+        SharePath::NoAccess
     );
 }
 
@@ -209,9 +218,7 @@ fn the_serialized_shape_carries_no_user_facing_prose() {
     // tests/terminology.rs 只扒 AppError::new 的 message,前端守卫只扫 src/。
     for (variant, tag) in [
         (SharePath::DirectPush, "directPush"),
-        (SharePath::ReviewInRepo, "reviewInRepo"),
-        (SharePath::ReviewViaCopy, "reviewViaCopy"),
-        (SharePath::MaybeDirect, "maybeDirect"),
+        (SharePath::NoAccess, "noAccess"),
         (SharePath::Unknown, "unknown"),
     ] {
         let json = serde_json::to_string(&variant).unwrap();

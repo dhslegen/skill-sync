@@ -249,93 +249,22 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
     }
 }
 
-/// C3 的只读档全链路:fork → fork 上开分支提交 → 跨库提交审核。
-/// 任务 4 只实测过"只读直推/开分支都是 403",fork 之后那半条链在真库上没走过。
-#[tokio::test]
-async fn read_only_users_can_contribute_via_fork_for_real() {
-    let Some(vars) = fixture_env() else {
-        eprintln!("跳过:未找到 fixtures/.env.local");
-        return;
-    };
-    let need = [
-        "SKILLSYNC_FIXTURE_GITEA_URL",
-        "SKILLSYNC_FIXTURE_ORG",
-        "SKILLSYNC_FIXTURE_REPO",
-        "SKILLSYNC_FIXTURE_ADMIN_TOKEN",
-        "SKILLSYNC_FIXTURE_READER_TOKEN",
-    ];
-    if let Some(missing) = need.iter().find(|k| !vars.contains_key(**k)) {
-        eprintln!("跳过:fixtures/.env.local 缺 {missing}");
-        return;
-    }
-    let repo = RepoRef {
-        owner: vars["SKILLSYNC_FIXTURE_ORG"].clone(),
-        repo: vars["SKILLSYNC_FIXTURE_REPO"].clone(),
-        branch: "main".into(),
-    };
-    let reader = GiteaClient::new(
-        vars["SKILLSYNC_FIXTURE_GITEA_URL"].clone(),
-        Some(vars["SKILLSYNC_FIXTURE_READER_TOKEN"].clone()),
-    )
-    .unwrap();
-    if reader.branch_head(&repo).await.is_err() {
-        eprintln!("跳过:连不上 fixture Gitea");
-        return;
-    }
-
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().to_path_buf();
-    let env = TmpEnv { home: home.clone() };
-    let store = Store::new(home.join(".skillsync"));
-    let registry = AgentRegistry::builtin();
-    // 显式注入沙盒废纸篓:`share()` 内部的 `ensure_canonical_link` 有删除路径,
-    // 默认实现是这台机器真实的系统废纸篓。
-    let trash = skillsync_lib::core::fsops::SandboxTrash::new(home.join("..").join("share-live-trash"));
-
-    // 分支名从 now 派生 → 用进程号扰动,让重复跑不会撞已存在的分支
-    let now = format!("2026-07-31T10:00:{:02}.{:03}Z", std::process::id() % 60, std::process::id() % 1000);
-    let name = format!("share-fork-{:x}", std::process::id());
-    let dir = home.join(".agents").join("skills").join(&name);
-    write_skill(&dir, &name, "fork 链路实测");
-
-    let outcome = share::share(
-        &share::ShareClient::Gitea(&reader),
-        &registry,
-        &env,
-        &store,
-        &trash,
-        share::ShareRequest {
-            registry_id: "fixture",
-            repo: &repo,
-            dir_slug: &name,
-        },
-        &now,
-    )
-    .await
-    .expect("只读用户的 fork 分享失败");
-
-    let ShareOutcome::Shared { mode, review_url, .. } = outcome;
-    assert_eq!(mode, ShareMode::ReviewRequested, "只读用户只可能走评审");
-    let url = review_url.expect("评审必须有链接");
-    assert!(url.contains("/pulls/"), "评审链接不像话: {url}");
-
-    // 清理:admin 关掉这个评审,fixture 可反复跑(fork 留着,fork_repo 对 409 幂等)
-    let admin = GiteaClient::new(
-        vars["SKILLSYNC_FIXTURE_GITEA_URL"].clone(),
-        Some(vars["SKILLSYNC_FIXTURE_ADMIN_TOKEN"].clone()),
-    )
-    .unwrap();
-    if let Some(number) = url.rsplit('/').next().and_then(|n| n.parse::<u64>().ok()) {
-        let _ = admin.close_pull(&repo.owner, &repo.repo, number).await;
-    }
-}
+// ⚠️ **v8 任务 3 删掉了 `read_only_users_can_contribute_via_fork_for_real`**:
+// 它验的是「只读用户 → 复制一份到自己名下 → 跨库提交审核」这条链路,而那条链路
+// 已整体下线(D1)。只读用户现在的行为(一句人话 + 零写请求)由
+// `tests/share_flow.rs::a_read_only_user_is_told_why_instead_of_getting_a_personal_copy`
+// 与 `tests/share_attribution.rs` 的同名用例在 wiremock 上钉住——那是纯判定,
+// 不需要真 Gitea。
 
 /// 真实双写方冲突(M5 任务 1):A(本 app)基于旧版改,B 先推了新版。
 ///
 /// wiremock 矩阵验的是"我们怎么处理响应";这条验真实 Gitea 的三件事串起来通:
 /// ① 压缩包指纹与本地基线的比对真的认出"远端变过";
 /// ② history_url 的路由在真实 Gitea 上是活的(200);
-/// ③ 确认后的第二跳真的落成"开分支 + 提交审核",一笔直推都没有。
+/// ③ 被拦下时**远端 main 一个字节都没动**。
+///
+/// ⚠️ **v8 任务 3:第二跳(确认后强制走提交审核)已删除**——那条路整体下线,
+/// 而"仍然覆盖"是 v8 任务 4 的事。这条 live 现在到"认出冲突 + 零写入"为止。
 #[tokio::test]
 async fn remote_conflict_detection_against_a_real_gitea() {
     use skillsync_lib::core::fsops;
@@ -477,7 +406,6 @@ async fn remote_conflict_detection_against_a_real_gitea() {
         &store,
         &name,
         "main",
-        false,
         &now,
     )
     .await
@@ -489,36 +417,13 @@ async fn remote_conflict_detection_against_a_real_gitea() {
     let resp = reqwest::get(&url).await.expect("历史页请求失败");
     assert_eq!(resp.status().as_u16(), 200, "历史页路由变了: {url}");
 
-    // ⑤ 确认后的第二跳:开分支 + 提交审核,绝不直推
-    let outcome = share::share_installed(
-        &share::ShareClient::Gitea(&admin),
-        &admin,
-        &registry,
-        &env,
-        &store,
-        &name,
-        "main",
-        true,
-        &now,
-    )
-    .await
-    .expect("确认后的提交失败");
-    let share::ShareInstalledOutcome::Submitted(submitted) = outcome else {
-        panic!("确认后应当提交");
-    };
-    assert_eq!(submitted.mode, ShareMode::ReviewRequested, "admin 可直推也必须走评审");
-    let review = submitted.review_url.expect("评审必须有链接");
-
-    // 远端 main 上仍是 B 的 v3——直推没有发生
+    // ⑤ 远端 main 上仍是 B 的 v3——一个字节都没写
     let head = admin.branch_head(&repo).await.unwrap();
     let files = admin.tree_files(&repo.owner, &repo.repo, &head.sha).await.unwrap();
     assert!(files.iter().any(|f| f.path == format!("{remote_path}/SKILL.md")));
 
-    // 清理:关评审 + 把灌进 main 的技能删掉。留着会污染别的 live 断言
+    // 清理:把灌进 main 的技能删掉。留着会污染别的 live 断言
     // (gitea_live 对技能清单的断言真被上一轮残留打红过)。
-    if let Some(number) = review.rsplit('/').next().and_then(|n| n.parse::<u64>().ok()) {
-        let _ = admin.close_pull(&repo.owner, &repo.repo, number).await;
-    }
     let probe = format!("{remote_path}/SKILL.md");
     if let Ok(Some(sha)) = admin.file_sha(&repo, &probe).await {
         admin

@@ -8,7 +8,7 @@
 //
 // 所以本模块**不接触索引、不算指纹**,只吃调用方已经算好的布尔量
 // (`remoteChanged`),自己只管把它与 core 给的
-// `section`/`versions`/`shareBlocked`/`review`/`localModified`/`localPresent`
+// `section`/`versions`/`shareBlocked`/`localModified`/`localPresent`
 // 折成"这一行现在该摆哪颗按钮"。
 //
 // 🔴 **v6 二期的 `sharedState`/`SharedState`(八态机,回答"这一行现在是什么状态")
@@ -39,21 +39,33 @@ export type RowAction =
   | { kind: "pull" }
   | { kind: "update" } // 安装自 · 库有新版;或 可分享到 · 外源有新版(分享退进「…」)
   | { kind: "conflict" } // 库新 + 本地改 → 既有三选弹窗
-  | { kind: "contribute" } // 安装自 · 本地改(浅底,恒走评审)
+  | { kind: "contribute" } // 安装自 · 本地改(浅底;v8 任务 6 会把这个入口撤掉,见 D7)
   | { kind: "shareChanges" } // 已分享到 · 本地改
   | { kind: "share" } // 可分享到 · 合格、未提交过
   /**
    * 分享前的标准校验没过(A-2 拍板不复议的硬规则:分享前按 Agent Skills 标准
    * 全量校验,不合格不让分享)。🔴 **v7 任务 7 修复轮 1(C1)**:这一档以前
    * 只在 `shareable` 区判——`installedFrom`(贡献更改)与 `sharedTo`(分享改动)
-   * 同样会把本地内容推去评审(`skill_share_changes`),同一道闸必须在三个区
+   * 同样会把本地内容推进技能库(`skill_share_changes`),同一道闸必须在三个区
    * 都生效,否则用户在 Claude Code 里把 name 改成不合规的值,点一下就直推
    * 进公司技能库,是终审 C-3 明确点名要堵住的旗舰场景。`blockedAction` 记着
    * 这一档本来该是哪个动作,界面据此选对按钮文案(「分享」/「贡献更改」/
    * 「分享改动」),不是每次都说「分享」。
    */
   | { kind: "shareBlocked"; reason: ShareBlock; blockedAction: "share" | "contribute" | "shareChanges" }
-  | { kind: "underReview"; url: string | null }
+  /**
+   * 对目标技能库**没有写权限**(v8 任务 3 / D8)。形态与 {@link RowAction} 的
+   * `shareBlocked` 一样:主按钮禁用 + 一句说明 + 「打开文件夹」出口,
+   * 只是原因不在技能本身而在这个人的权限上。
+   *
+   * 🔴 **此处刻意不套用「不摆比解释好」**(D8 原话):那条针对的是"点了必然
+   * 报错的按钮",而这里用户需要知道**为什么自己没有这个能力**——不摆的话,
+   * 同一个技能在同事那里有「分享」、在他这里凭空少一颗按钮,他只会以为坏了。
+   *
+   * **只覆盖分享族**(`share`/`contribute`/`shareChanges`):没有写权限照样能
+   * 获取、能更新,`pull`/`update`/`conflict` 一概不动。
+   */
+  | { kind: "noWriteAccess"; blockedAction: "share" | "contribute" | "shareChanges" }
   | { kind: "chooseVersion" }; // 压过一切
 
 /**
@@ -66,20 +78,16 @@ export type RowAction =
  *    与已删除的 `sharedState`(v6 二期八态机)的第 1 档同一个理由,原样搬过来。
  * 2. **`!localPresent` 次之。** 本体都不在这台电脑上,后面任何"本地怎样"的
  *    判定都无从谈起(见上面 `RowAction["pull"]` 的文档)。
- * 3. **`shareable` 区内,`review != null` 压过 `shareBlocked` 与 `share`/`update`。**
- *    已经提交评审是一个正在进行的动作,即便这一版此刻标准校验不过、或它自己的
- *    外部来源又有了新内容,当务之急仍是等评审结果——不能让用户在"审核中"与
- *    "重新分享"之间反复横跳。
- * 4. **`shareable` 区内,`shareBlocked != null` 压过 `update`。** 分享不合格是一个
+ * 3. **`shareable` 区内,`shareBlocked != null` 压过 `update`。** 分享不合格是一个
  *    更根本的阻塞状态("这份内容不符合团队标准"),应该先被看到并处理;
  *    "外源有新版"届时仍在「…」里等着(见 {@link RowAction} 的 `update` 注释),
  *    不会丢失,只是不作为这一刻的主按钮。
- * 5. **`installedFrom` 区内,`localModified && remoteChanged` 才是 `conflict`,
+ * 4. **`installedFrom` 区内,`localModified && remoteChanged` 才是 `conflict`,
  *    单独的 `remoteChanged` 是 `update`,单独的 `localModified` 是 `contribute`。**
  *    三者互斥覆盖("都没变"落到 `none`),与 brief 给的四条测试逐字对应。
- * 6. **`sharedTo` 区内,`remoteChanged` 压过 `localModified`("不论本地")。**
+ * 5. **`sharedTo` 区内,`remoteChanged` 压过 `localModified`("不论本地")。**
  *    库被别人改过时,不管本地是否也改了,都要先弹既有的三选一冲突框——
- *    直接分享等于覆盖同事经审核改过的版本(与 `CLAUDE.md` 记的
+ *    直接分享等于覆盖同事改过的版本(与 `CLAUDE.md` 记的
  *    「回推前必须过远端变更检测」同一个理由)。
  *
  * @param remoteChanged 与这一行"该比的那个库"相比,内容是否已经不同——
@@ -87,11 +95,37 @@ export type RowAction =
  *   比的是它自己的来源;调用方按 section 选对索引后算出这一个布尔量喂进来,
  *   `rowAction` 自己不碰索引(本模块头的既有教训:判定只能有一处实现,
  *   这里不重新发明第二套"有没有更新")。
+ * @param noWriteAccess 对这一行该推去的那个技能库**探明了没有写权限**
+ *   (`useShare.preview === "noAccess"`;`unknown` 一律传 `false`——探不到不
+ *   假装知道)。它**只在最后一步**把已经算出来的分享族动作换成
+ *   {@link RowAction} 的 `noWriteAccess`,不参与上面任何一条短路顺序:
+ *   权限与"这一行处在什么状态"是两个正交的问题,揉进判定表会让
+ *   "为什么这颗按钮不见了"变得说不清。
  */
 export function rowAction(
   skill: Pick<
     InstalledSkillView,
-    "section" | "versions" | "shareBlocked" | "review" | "localModified" | "localPresent"
+    "section" | "versions" | "shareBlocked" | "localModified" | "localPresent"
+  >,
+  remoteChanged: boolean,
+  noWriteAccess = false,
+): RowAction {
+  const action = rowActionIgnoringAccess(skill, remoteChanged);
+  if (!noWriteAccess) return action;
+  switch (action.kind) {
+    case "share":
+    case "contribute":
+    case "shareChanges":
+      return { kind: "noWriteAccess", blockedAction: action.kind };
+    default:
+      return action;
+  }
+}
+
+function rowActionIgnoringAccess(
+  skill: Pick<
+    InstalledSkillView,
+    "section" | "versions" | "shareBlocked" | "localModified" | "localPresent"
   >,
   remoteChanged: boolean,
 ): RowAction {
@@ -99,7 +133,6 @@ export function rowAction(
   if (!skill.localPresent) return { kind: "pull" };
 
   if (skill.section === "shareable") {
-    if (skill.review) return { kind: "underReview", url: skill.review.url };
     if (skill.shareBlocked) {
       return { kind: "shareBlocked", reason: skill.shareBlocked, blockedAction: "share" };
     }
@@ -162,24 +195,29 @@ export interface RowMenuItemSpec {
  *
  * 1. 有本体就有「打开文件夹」;
  * 2. `conflict` 压过主按钮之后,「贡献更改」/「分享改动」不会消失——用户可能就是
- *    想直接推去评审,不想先经过冲突框的三选一。**必须再叠一道 `!shareBlocked`**
- *    ——C1 刚在主按钮堵上"不合规内容也能推去评审"这个洞,这里若不重复同一道闸,
+ *    想直接把改动推上去,不想先经过冲突框的三选一。**必须再叠一道 `!shareBlocked`**
+ *    ——C1 刚在主按钮堵上"不合规内容也能推上去"这个洞,这里若不重复同一道闸,
  *    用户仍能从「更多」菜单绕过去点一个必然报 `FS_SKILL_INVALID` 的按钮;
  * 3. `shareable` 区内,被压过一头、暂时不是主按钮的动作退进这里(不会丢失);
  * 4. 没有安装基线但本体与库不一样时,「改用库里的版本」是这一档唯一的出口;
  * 5. 破坏性动作(移除)放最后,并加分隔线——防止手滑。
+ *
+ * 🔴 **`noWriteAccess` 要在这里再拦一遍**(v8 任务 3 / D8):主按钮那侧已经
+ * 换成禁用态了,这里不拦的话用户仍能从「…」里点到同一个动作——与 C1 当年在
+ * 主按钮堵上 `shareBlocked`、却把「…」里那条漏掉是同一个洞。
  */
 export function buildRowMenuItems(
   skill: Pick<InstalledSkillView, "body" | "localPresent" | "localModified" | "shareBlocked" | "section">,
   action: RowAction,
   remoteChanged: boolean,
   noBaselineDiffers: boolean,
+  noWriteAccess = false,
 ): RowMenuItemSpec[] {
   const items: RowMenuItemSpec[] = [];
   if (skill.body) {
     items.push({ kind: "reveal", labelKey: "mine.openFolder" });
   }
-  if (action.kind === "conflict" && skill.localModified && !skill.shareBlocked) {
+  if (action.kind === "conflict" && skill.localModified && !skill.shareBlocked && !noWriteAccess) {
     items.push({
       kind: "contributeOrShareChanges",
       labelKey: skill.section === "installedFrom" ? "mine.contribute" : "mine.shareChanges",
@@ -188,7 +226,7 @@ export function buildRowMenuItems(
   if (skill.section === "shareable") {
     if (action.kind === "shareBlocked" && remoteChanged) {
       items.push({ kind: "update", labelKey: "mine.update" });
-    } else if (action.kind === "update") {
+    } else if (action.kind === "update" && !noWriteAccess) {
       items.push({ kind: "share", labelKey: "mine.share" });
     }
   }
@@ -216,7 +254,7 @@ export function buildRowMenuItems(
  *
  * 页头能给的只有 `updatesCount`(可一键更新的行,v7.3 起写在「全部更新 · N」
  * 那颗按钮上)与曾经的 `unsyncedCount`(有改动未分享,v7.3 Q28-C 已撤),
- * 而 `rowAction` 还有 `conflict` / `chooseVersion` / `shareBlocked` / `underReview`
+ * 而 `rowAction` 还有 `conflict` / `chooseVersion` / `shareBlocked` / `noWriteAccess`
  * 这些既不算"有更新"也不算"有改动未分享"的档。分区折叠一旦把这些行藏起来,
  * 而头上又没把它们数出来,v7「只写例外」这条承诺就被折叠打穿了——用户折起来
  * 就再也看不见那件事。所以这里按**每行真实算出的 `rowAction`** 判,不抄那些数。
@@ -234,8 +272,9 @@ export function buildRowMenuItems(
  * (「可分享到技能库 · 12 · 12 个要处理」),纯噪音,还会把「安装自」区里真正的
  * 两条冲突淹掉。
  *
- * 反过来 `underReview` **要计入**:它虽然没有按钮可点(审核结果不由用户这一步
- * 决定),但"有一条正在审"是用户折起来之后会丢失的感知,正是「只写例外」要保住的。
+ * 反过来 `noWriteAccess` **要计入**:它虽然没有按钮可点(权限不由用户这一步
+ * 决定),但"这条我分享不出去"是用户折起来之后会丢失的感知,正是「只写例外」
+ * 要保住的。
  *
  * # 穷尽 switch,不留 `default`
  *
@@ -254,7 +293,7 @@ export function needsAttention(action: RowAction): boolean {
     case "contribute":
     case "shareChanges":
     case "shareBlocked":
-    case "underReview":
+    case "noWriteAccess":
     case "chooseVersion":
       return true;
   }

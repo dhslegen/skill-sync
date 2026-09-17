@@ -30,9 +30,7 @@ import { useShare } from "@/store/share";
 /** `unknown` 不在表里:探不到就整条不显示,不假装知道(M4 任务 2 的既定取舍)。 */
 const PATH_LABEL: Record<Exclude<SharePath, "unknown">, MessageKey> = {
   directPush: "mine.sharePathDirect",
-  reviewInRepo: "mine.sharePathReview",
-  reviewViaCopy: "mine.sharePathReviewViaCopy",
-  maybeDirect: "mine.sharePathMaybeDirect",
+  noAccess: "mine.shareNoAccess",
 };
 
 export function ShareConfirm() {
@@ -100,6 +98,10 @@ export function ShareConfirm() {
   // 实际提交的目标库对不上(与 C-1 本身同一种缺陷,只是换了个地方)。
   const library = shareTargetRepo(skill, targetRepo) ?? t("mine.shareTargetDefault");
   const pathHint = preview === "unknown" ? null : PATH_LABEL[preview];
+  // 🔴 v8 任务 3 / D8:探明没有写权限时提交按钮禁用。行上与详情动作区已经把
+  // 主按钮禁掉了,这里是第三个渲染点——漏一处就是"行上禁了、确认屏里能点"。
+  // `unknown`(探不到)**不禁**:预检永远是 fail-open 的。
+  const noWriteAccess = preview === "noAccess";
 
   return (
     <div className="fixed inset-0 z-70 grid place-items-center bg-[rgba(15,14,12,.35)] backdrop-blur-[2px]">
@@ -124,9 +126,16 @@ export function ShareConfirm() {
           <Line label={t("mine.shareFieldTarget")} value={library} />
         </dl>
 
-        {/* 路径预告只是提示,探不到就整条不显示——不假装知道(M4 任务 2) */}
-        {pathHint && (
+        {/* 路径预告只是提示,探不到就整条不显示——不假装知道(M4 任务 2)。
+            没有写权限那一档是**说明为什么下面那颗按钮点不动**,不是提示,
+            所以画成与 `shareBlocked` 同款的警示框(D8)。 */}
+        {pathHint && preview !== "noAccess" && (
           <p className="mt-2.5 text-[12px] leading-[1.6] text-text-2">{t(pathHint)}</p>
+        )}
+        {noWriteAccess && (
+          <p className="mt-2.5 rounded-card border border-[#b8860b]/40 px-2.5 py-2 text-[12px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
+            {t("mine.shareNoAccess")}
+          </p>
         )}
 
         {blocked && (
@@ -147,8 +156,9 @@ export function ShareConfirm() {
         )}
 
         <div className="mt-4 flex justify-end gap-2">
-          {/* 不合格时的出口:用户自己改好文件夹名或 SKILL.md 就能分享了 */}
-          {blocked && skill.body && (
+          {/* 出口:不合格时用户自己改好文件夹名或 SKILL.md 就能分享;没有写权限
+              时也留着它(D8 明确要求保留「打开文件夹」,别让这一屏成为死路) */}
+          {(blocked || noWriteAccess) && skill.body && (
             <button
               type="button"
               onClick={() => {
@@ -176,7 +186,7 @@ export function ShareConfirm() {
           </button>
           <button
             type="button"
-            disabled={blocked !== null || shareBusy !== null}
+            disabled={blocked !== null || noWriteAccess || shareBusy !== null}
             onClick={() => void confirmShare()}
             className="h-7 rounded-ctl bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
           >

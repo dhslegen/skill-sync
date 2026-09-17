@@ -24,15 +24,14 @@ function v(path: string): SkillVersion {
 
 type RowSkill = Pick<
   InstalledSkillView,
-  "section" | "versions" | "shareBlocked" | "review" | "localModified" | "localPresent"
+  "section" | "versions" | "shareBlocked" | "localModified" | "localPresent"
 >;
 
-/** 默认形状:本体在,没改过,没有分歧版本,没有审核记录,校验合格。 */
+/** 默认形状:本体在,没改过,没有分歧版本,校验合格。 */
 const rowBase: RowSkill = {
   section: "installedFrom" as Section,
   versions: [],
   shareBlocked: null,
-  review: null,
   localModified: false,
   localPresent: true,
 };
@@ -93,19 +92,32 @@ describe("rowAction(判定表)", () => {
     });
   });
 
-  it("审核中压过 share 与 shareBlocked", () => {
-    const s: RowSkill = {
-      ...rowBase,
-      section: "shareable",
-      review: { url: "http://x/pulls/7" },
-      shareBlocked: "nameMismatch",
-    };
-    expect(rowAction(s, false)).toEqual({ kind: "underReview", url: "http://x/pulls/7" });
+  // ── v8 任务 3 / D8:没有写权限 ──────────────────────────────────────────
+  //
+  // 三档分享族动作各一条:只覆盖它们、且如实带回被拦下的是哪一个动作
+  // (界面据此选对按钮文案)。判定表本身一个字不动——权限是最后一步的换档。
+  it.each<[string, Partial<RowSkill>, boolean, "share" | "contribute" | "shareChanges"]>([
+    ["可分享到 · 分享", { section: "shareable" }, false, "share"],
+    ["安装自 · 贡献更改", { section: "installedFrom", localModified: true }, false, "contribute"],
+    ["已分享到 · 分享改动", { section: "sharedTo", localModified: true }, false, "shareChanges"],
+  ])("没有写权限时,%s 换成禁用态并说清被拦下的是哪个动作", (_n, over, remoteChanged, blocked) => {
+    expect(rowAction({ ...rowBase, ...over }, remoteChanged, true)).toEqual({
+      kind: "noWriteAccess",
+      blockedAction: blocked,
+    });
   });
 
-  it("审核中但没有 PR 链接(直推留下的记录 / v7 之前的存量记录):url 如实带 null", () => {
-    const s: RowSkill = { ...rowBase, section: "shareable", review: { url: null } };
-    expect(rowAction(s, false)).toEqual({ kind: "underReview", url: null });
+  it("没有写权限**不影响**取回与更新:只读用户照样能装、能更新", () => {
+    expect(rowAction({ ...rowBase, localPresent: false }, false, true).kind).toBe("pull");
+    expect(rowAction({ ...rowBase, section: "installedFrom" }, true, true).kind).toBe("update");
+    // 冲突档也不换:它的出路(「改用库里的版本」)与写权限无关
+    expect(
+      rowAction({ ...rowBase, section: "installedFrom", localModified: true }, true, true).kind,
+    ).toBe("conflict");
+  });
+
+  it("探不到(默认 false)时一切照旧——预检永远 fail-open", () => {
+    expect(rowAction({ ...rowBase, section: "shareable" }, false).kind).toBe("share");
   });
 
   it("可分享到 · 外源有新版 → update,分享退进「…」", () => {
@@ -205,8 +217,8 @@ describe("needsAttention:折起来会不会藏掉一件事", () => {
     [{ kind: "contribute" }, true],
     [{ kind: "shareChanges" }, true],
     [{ kind: "shareBlocked", reason: "nameFormat", blockedAction: "share" }, true],
-    // 没有按钮可点,但"有一条正在审"是折起来会丢失的感知,所以计入。
-    [{ kind: "underReview", url: null }, true],
+    // 没有按钮可点,但"这条我分享不出去"是折起来会丢失的感知,所以计入。
+    [{ kind: "noWriteAccess", blockedAction: "share" }, true],
     [{ kind: "chooseVersion" }, true],
   ];
   for (const [action, expected] of cases) {
@@ -224,7 +236,7 @@ describe("needsAttention:折起来会不会藏掉一件事", () => {
       { kind: "conflict" },
       { kind: "chooseVersion" },
       { kind: "shareBlocked", reason: "nameFormat", blockedAction: "share" },
-      { kind: "underReview", url: null },
+      { kind: "noWriteAccess", blockedAction: "share" },
     ];
     expect(missedByHeaderBand.every(needsAttention)).toBe(true);
   });

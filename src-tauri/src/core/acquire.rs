@@ -1218,10 +1218,6 @@ fn seed_shared_baseline(
             target,
             last_pushed_sha: remote_sha.to_string(),
             content_hash,
-            // 这条记账不是走 `share()` 写的(那条路才知道刚提交是直推还是评审),
-            // 没有审核态信息可填。
-            review_url: None,
-            review_number: None,
         }),
     }
 }

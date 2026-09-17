@@ -8,7 +8,6 @@ import { ProjectSections } from "@/components/ProjectSections";
 import { RemoveDialog } from "@/components/RemoveDialog";
 import { ShareConfirm } from "@/components/ShareConfirm";
 import { VersionChooser } from "@/components/VersionChooser";
-import { ShareConflictDialog } from "@/components/ShareConflictDialog";
 import { Sidebar } from "@/components/Sidebar";
 import { Toolbar } from "@/components/Toolbar";
 import { Wizard } from "@/components/Wizard";
@@ -112,7 +111,6 @@ export default function App() {
       <ProjectDecisionDialog />
       <ShareConfirm />
       <VersionChooser />
-      <ShareConflictDialog />
       <Wizard />
     </div>
   );

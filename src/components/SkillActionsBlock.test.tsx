@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SkillActionsBlock } from "./SkillActionsBlock";
 import type { InstalledSkillView, Section } from "@/lib/ipc";
 import { useMySkills } from "@/store/my-skills";
+import { useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
 
 const invoke = vi.fn(async (cmd: string, args?: unknown): Promise<unknown> => {
@@ -52,7 +53,6 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   versions: [],
   shareBlocked: null,
   section: sectionOfRelation(over.relation ?? "installed"),
-  review: null,
   libraryUrl: null,
   canonicalReaders: null,
   ...over,
@@ -64,6 +64,7 @@ beforeEach(() => {
   invoke.mockReset();
   invoke.mockImplementation(async () => null);
   useStoreIndex.setState({ index: null });
+  useShare.setState({ targetRepo: null, preview: "unknown" });
   useMySkills.setState({
     list: null,
     shareBusy: null,
@@ -101,17 +102,6 @@ describe("SkillActionsBlock:分享的结果必须在动作区里看得见", () =
     expect(screen.getByText(/改动已分享到公司技能库/)).toBeTruthy();
   });
 
-  // 🔴 这一条是「贡献更改」最要命的那一档:core 刻意不动记账,刷新后按钮原样
-  // 还是「贡献更改」,没有这句反馈用户会以为没点着,再点一次就会开出第二个
-  // 内容相同的合并请求(`share.rs::review_branch` 的分支名带时间戳)。
-  it("走评审成功:说「已提交审核」,不是静默无事发生", () => {
-    const skill = view();
-    render(<SkillActionsBlock skill={skill} remoteChanged={false} subject="示例技能" host="mine" />);
-    act(() => useMySkills.setState({ shareDone: { dirSlug: skill.dirSlug, mode: "reviewRequested", flow: "changes" as const } }));
-
-    expect(screen.getByText(/改动已提交审核/)).toBeTruthy();
-  });
-
   // 🔴 终审复审轮 1 #3:两条路的说法必须不一样。首次分享(`flow:"share"`)时
   // 用户并没有"改动"过什么,沿用「改动已分享」就是一句假话——而这一波正是把
   // 这些键搬到了首次分享也走得到的落点上,所以这个假话是本波引入的。
@@ -126,19 +116,6 @@ describe("SkillActionsBlock:分享的结果必须在动作区里看得见", () =
 
     expect(screen.getByText("已分享到公司技能库。")).toBeTruthy();
     expect(screen.queryByText(/改动已分享/)).toBeNull();
-  });
-
-  it("首次分享走评审:说「已提交审核」,同样不带「改动」", () => {
-    const skill = view({ relation: "draft" });
-    render(<SkillActionsBlock skill={skill} remoteChanged={false} subject="示例技能" host="mine" />);
-    act(() =>
-      useMySkills.setState({
-        shareDone: { dirSlug: skill.dirSlug, mode: "reviewRequested", flow: "share" },
-      }),
-    );
-
-    expect(screen.getByText("已提交审核,审核通过后生效。")).toBeTruthy();
-    expect(screen.queryByText(/改动已提交审核/)).toBeNull();
   });
 
   it("首次分享失败:说「分享没能完成」,不说「分享改动没能完成」", () => {
@@ -249,55 +226,31 @@ describe("页脚的「在技能库里查看」:core 拼得出地址才摆", () =
     expect(await screen.findByText(/不属于任何已配置的技能库/)).toBeInTheDocument();
   });
 
-  // 🔴 v7.1 任务 5:「审核中」是**禁用的实心按钮**(照画布),行上不再摆链接。
-  // 🔴 **终审 I-1**:这一档 `libraryUrl` 恒 null(`review` 非空 ⟹ shareable ⟹
-  // Draft ⟹ `row_library_url` 返回 None),所以页脚那颗按钮必须退回吃
-  // `review.url`——否则审核中的技能唯一的库入口只剩默认收起的折叠头,而
-  // `RowAction.underReview.url` 全仓零消费。上一版这里正面断言了"不摆",
-  // 把那个缺陷钉成了期望行为,现在翻转过来。
-  it("审核中:主按钮是禁用的实心按钮,页脚仍有一颗指向 review.url 的库链接", async () => {
-    const user = userEvent.setup();
+  // 🔴 v8 任务 3 / D8:没有写权限时,详情面板动作区这一处也要禁用 + 说明。
+  // 三处渲染点(行 / 详情动作区 / 分享确认屏)漏一处就是"行上禁了、详情里能点"。
+  it("没有写权限:分享族主按钮禁用,并说清为什么,「打开文件夹」仍在", () => {
+    useShare.setState({ preview: "noAccess" });
     render(
       <SkillActionsBlock
-        skill={view({ relation: "draft", localModified: false, review: { url: "http://g.local/pulls/9" } })}
+        skill={view({ relation: "draft", localModified: false })}
         remoteChanged={false} subject="示例技能" host="mine"
       />,
     );
-    const btn = screen.getByRole("button", { name: "审核中" });
-    expect(btn).toBeDisabled();
-    expect(btn.className.split(/\s+/)).toContain("bg-accent");
-    // 正面断言点开的是 review.url 那个地址,不只是"有这么一颗按钮"。
-    const link = screen.getByRole("button", { name: "在技能库里查看" });
-    await user.click(link);
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith(
-        "open_library_url",
-        expect.objectContaining({ args: { url: "http://g.local/pulls/9" } }),
-      ),
-    );
+    expect(screen.getByRole("button", { name: "分享" })).toBeDisabled();
+    expect(screen.getByText(/没有写入权限/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开文件夹" })).toBeInTheDocument();
   });
 
-  it("审核中但 url 为 null 时,「审核中」照摆,而库链接不摆(没有能打开的地址)", () => {
+  it("对照组:探不到(unknown)时照常可点——预检永远 fail-open", () => {
+    useShare.setState({ preview: "unknown" });
     render(
       <SkillActionsBlock
-        skill={view({ relation: "draft", localModified: false, review: { url: null } })}
+        skill={view({ relation: "draft", localModified: false })}
         remoteChanged={false} subject="示例技能" host="mine"
       />,
     );
-    expect(screen.getByRole("button", { name: "审核中" })).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "在技能库里查看" })).not.toBeInTheDocument();
-  });
-
-  // 🔴 两个来源互斥,不会摆出两颗(`libraryUrl` 只给在库里的行,`review.url`
-  // 只给「可分享到」区)——这条钉住"只有一颗",防止将来把 `??` 写成两个并列渲染。
-  it("审核中那一档只摆一颗库链接", () => {
-    render(
-      <SkillActionsBlock
-        skill={view({ relation: "draft", localModified: false, review: { url: "http://g.local/pulls/9" } })}
-        remoteChanged={false} subject="示例技能" host="mine"
-      />,
-    );
-    expect(screen.getAllByRole("button", { name: "在技能库里查看" })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "分享" })).toBeEnabled();
+    expect(screen.queryByText(/没有写入权限/)).not.toBeInTheDocument();
   });
 });
 

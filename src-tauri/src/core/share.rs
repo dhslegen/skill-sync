@@ -272,8 +272,7 @@ pub enum ShareClient<'a> {
 
 /// 分享**会走哪条路**的预告(M4 任务 2)。
 ///
-/// 判据来自真实录制(`tests/fixtures/gitea-permissions/NOTES.md`),与 [`submit`] 的
-/// 三条提交路径一一对应。**它只是提示,提交时刻的权限矩阵仍是权威判定**
+/// 判据来自真实录制(`tests/fixtures/gitea-permissions/NOTES.md`)。**它只是提示,提交时刻的权限矩阵仍是权威判定**
 /// ——预检与提交之间权限可能变化,所以两边不共用一次结果。
 ///
 /// 返回的是枚举不是句子:文案在 i18n。core 若返回中文,两道术语门都扫不到它
@@ -281,21 +280,27 @@ pub enum ShareClient<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SharePath {
-    /// 能直推目标分支:改动立即生效。
+    /// 能直接保存进目标库:改动立即生效。
     DirectPush,
-    /// 有写权限但分支受保护:在本库开分支提交审核。
-    ReviewInRepo,
-    /// 没有写权限:先复制一份到自己名下,再跨库提交审核。
-    ReviewViaCopy,
-    /// 有写权限但**探不到分支保护**(GitHub:保护规则要 admin 权限才读得到)。
-    /// 可能直推,也可能被挡下转评审——不假装知道。
-    MaybeDirect,
-    /// 探不到(网络失败 / 空库 404 / 旧版 Gitea 缺字段)。界面不显示预告。
+    /// **对这个技能库没有写权限**(v8 任务 3 / D8)。分享族按钮据此禁用并给一句
+    /// 说明——此处刻意不套用「不摆比解释好」:用户需要知道**为什么自己没有这个
+    /// 能力**,不摆的话他只会以为界面坏了。
+    NoAccess,
+    /// 探不到,或**有写权限但目标受保护**。界面不显示预告、也不禁用任何按钮。
+    ///
+    /// 🔴 「有写权限但受保护」刻意归到这一档、不归 [`Self::NoAccess`]:那个用户
+    /// 对这个库**确实有**写权限,说他"没有写权限"是假话;而 D8 的禁用态是拿这句
+    /// 话当理由的。受保护这件事由提交时刻的 403 出口如实说明(见 [`submit_gitea`]),
+    /// 预检不替它表态。
     Unknown,
 }
 
 /// 探一次目标库的分享路径。**永不返回 Err**:预检失败一律 [`SharePath::Unknown`],
 /// 绝不拦住分享本身(fail-open)。
+///
+/// 🔴 **v8 任务 3:这个函数没有被删掉,是被收窄**——它是 D8「只读用户按钮禁用 +
+/// 说明」的**唯一判据来源**。删掉的只是 `reviewInRepo`/`reviewViaCopy` 这两个
+/// **结果档**(那两条路本身没了),不是这次探测。
 ///
 /// 注意调用方必须传**带凭证**的 client:匿名与只读用户的 `permissions` 完全相同
 /// (录制结论 5),拿匿名 client 探出来的永远是"无权限"——而内建源的读链路
@@ -313,17 +318,20 @@ pub async fn preview_permission(client: &ShareClient<'_>, repo: &RepoRef) -> Sha
             };
             match (branch.user_can_push, info.permissions.push) {
                 (Some(true), _) => SharePath::DirectPush,
-                (Some(false), true) => SharePath::ReviewInRepo,
-                (Some(false), false) => SharePath::ReviewViaCopy,
-                // 旧版 Gitea 没有 user_can_push:有写权限时分支保护无从得知,
+                // 有写权限但目标受保护:**不是**"没有写权限",见 `SharePath::Unknown`
+                (Some(false), true) => SharePath::Unknown,
+                (Some(false), false) => SharePath::NoAccess,
+                // 旧版 Gitea 没有 user_can_push:有写权限时保护状态无从得知,
                 // 不许预告"直接生效";没有写权限则与新版结论一致。
                 (None, true) => SharePath::Unknown,
-                (None, false) => SharePath::ReviewViaCopy,
+                (None, false) => SharePath::NoAccess,
             }
         }
+        // GitHub 的保护规则要 admin 权限才读得到,所以有 push 权限时只说"能直接
+        // 保存"——探不到保护规则不影响这一档的用途(D8 的禁用态只认 NoAccess)。
         ShareClient::Github(c) => match c.repo_view(&repo.owner, &repo.repo).await {
-            Ok(view) if view.permissions.push => SharePath::MaybeDirect,
-            Ok(_) => SharePath::ReviewViaCopy,
+            Ok(view) if view.permissions.push => SharePath::DirectPush,
+            Ok(_) => SharePath::NoAccess,
             Err(_) => SharePath::Unknown,
         },
     }
@@ -389,13 +397,15 @@ pub struct ShareRequest<'a> {
 }
 
 /// 提交走的路径。
+///
+/// **v8 任务 3(D1)起只剩 `Pushed` 一档**:提交审核与只读用户的副本两条路整体
+/// 下线。留着这个枚举而不压成"没有返回值",是因为 core 仍要如实回报"这次到底
+/// 做成了什么",而不是让调用方从"没有报错"倒推。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ShareMode {
     /// 直接进了默认分支。
     Pushed,
-    /// 开了评审(直推被分支保护挡下,或只读用户走 fork)。
-    ReviewRequested,
 }
 
 /// 分享的结果。**只剩 `Shared` 一档**:同名被别人占用不再是"等用户三选一"
@@ -403,18 +413,16 @@ pub enum ShareMode {
 /// 已整体取消,改名由用户在本地完成(模块头 A-3)。
 ///
 /// ⚠️ **序列化形状**:`rename_all` 挂在**枚举**上只改 variant 名,**不改 struct
-/// variant 里的字段名**——必须另加 `rename_all_fields`。这个坑本期已经踩过两次
-/// (获取链路发了很久蛇形键),这里的具体后果是 `review_url` 原样发成蛇形,而
-/// 界面读的是 `reviewUrl`:**分享走评审之后那条「查看审核」链接从来没渲染过**。
-/// 下面的 `share_outcome_serializes_every_field_in_camel_case` 正面钉住完整键集合。
+/// variant 里的字段名**——必须另加 `rename_all_fields`。这个坑真炸过一次
+/// (`review_url` 原样发成蛇形,界面读 `reviewUrl`,那条链接从来没渲染过;
+/// 那个字段已随提交审核一起删除)。下面的
+/// `share_outcome_serializes_every_field_in_camel_case` 正面钉住完整键集合。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "outcome")]
 pub enum ShareOutcome {
     Shared {
         mode: ShareMode,
         commit_sha: String,
-        /// 评审链接(ReviewRequested 时有)。
-        review_url: Option<String>,
         /// 库里这个技能的目录名(= 本体文件夹名 = frontmatter `name`,三者同一)。
         share_name: String,
     },
@@ -536,11 +544,9 @@ pub async fn share(
         req.repo,
         &prefix,
         checked == SharePrecheck::Fresh,
-        false,
         files,
         &message,
         &share_name,
-        now,
     )
     .await?;
 
@@ -561,10 +567,6 @@ pub async fn share(
         },
         last_pushed_sha: submitted.commit_sha.clone(),
         content_hash: fsops::dir_content_hash(&body)?,
-        // v7 任务 2「审核态」:直推时两者恒 `None`(submitted.review_* 本就是 None);
-        // 走评审时原样带上,「可分享到」区据此在合并前隐藏分享按钮。
-        review_url: submitted.review_url.clone(),
-        review_number: submitted.review_number,
     };
     let content_hash = entry.content_hash.clone();
     // 🔴 **钥匙是本体路径,不是远端名**:CLAUDE.md 记着 `state.shared` 读写双键
@@ -580,7 +582,6 @@ pub async fn share(
     Ok(ShareOutcome::Shared {
         mode: submitted.mode,
         commit_sha: submitted.commit_sha,
-        review_url: submitted.review_url,
         share_name,
     })
 }
@@ -598,12 +599,12 @@ fn missing_body_err(dir_slug: &str) -> AppError {
 /// 只能绕回来重推一遍(`share_installed` 一进门就要求记账存在,必撞
 /// `FS_NOT_INSTALLED`),「移除」也一并没有。
 ///
-/// 三道闸(v6 二期从四道减到三道,少的那道是被推翻的,不是被忘掉的):
-/// 1. **只认直推**(`Pushed`)。走了提交审核的改动还在评审分支上,库里根本没有
-///    这个技能,记成已入库会让「更新」去找一个不存在的东西,用户还会以为已经生效;
-/// 2. **已有记账不覆盖**。回推改动走的是 [`share_installed`],不经过这里;
+/// 两道闸(v6 二期是三道;v8 任务 3 少的那道「只认直推」不是被忘掉的——
+/// 提交审核整条下线之后 [`ShareMode`] 只剩 `Pushed` 一档,再判一遍就是同一条
+/// 规则查两遍,而那一遍永远不触发,正是本项目记着的空转模式 ①,它会吞掉注入信号):
+/// 1. **已有记账不覆盖**。回推改动走的是 [`share_installed`],不经过这里;
 ///    真走到这里说明是另一条路,覆盖账本会把 commit_sha 等既有事实抹掉;
-/// 3. 记账键取 `home.dir_name`(= [`converge::record_key`]),`body` 只在本体
+/// 2. 记账键取 `home.dir_name`(= [`converge::record_key`]),`body` 只在本体
 ///    **不住在 canonical** 时才记——与 `acquire::record` 同一个约定。本体就在
 ///    canonical 时记成 `Some(canonical)` 是同一件事的第二种写法,是本项目吃过
 ///    亏的"两个概念取同值"。
@@ -624,9 +625,6 @@ fn record_pushed_skill(
     content_hash: String,
     now: &str,
 ) {
-    if submitted.mode != ShareMode::Pushed {
-        return;
-    }
     if next.installed.iter().any(|s| s.name == home.dir_name) {
         return;
     }
@@ -661,9 +659,12 @@ fn record_pushed_skill(
 
 /// 回推的两种结局:提交成功,或撞上"远端在获取之后被别人改过"的冲突档。
 ///
-/// 冲突档对齐 [`ShareOutcome::NeedsDecision`] 的模式:**不是错误,是需要用户拍板**
-/// ——返回它时磁盘与远端一个字节都没动,前端弹确认(提交审核 / 先不动),
-/// 确认后带 `force_review: true` 重来。
+/// 冲突档**不是错误,是"这一跳没做成"**:返回它时磁盘与远端一个字节都没动。
+///
+/// ⚠️ **v8 任务 3:它暂时没有"确认后继续"的第二跳**——旧的第二跳是强制走提交
+/// 审核,已随审核链路一起下线。前端把它如实说成一句"库里已经有更新的版本"。
+/// **「仍然覆盖」(含覆盖谁、什么时候推的、去哪找回)是 v8 任务 4 的事**,
+/// 别在这里补一个只有"取消"的弹窗。
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ShareInstalledOutcome {
@@ -678,15 +679,17 @@ pub enum ShareInstalledOutcome {
 /// 把本 app 安装、用户改过的技能推回它的来源仓库。
 ///
 /// 这就是获取流程冲突弹窗里承诺的"分享功能开放后可以分享改动"那条路。
-/// 直推成功 → 更新 `contentHash`/`commitSha`,「已改动」标记消失;
-/// 走了评审 → **记账一个字不动**:改动还没进 main,标记消失等于把它藏起来。
+/// 直推成功 → 更新 `contentHash`/`commitSha`,「已改动」标记消失。
 ///
 /// M5 任务 1 起,提交前先比对远端当前内容与账上 `content_hash`(`read` 走读链路):
 /// 不相等 = 远端在获取之后被别人改过,回推等于覆盖对方——进 [`ShareInstalledOutcome::RemoteChanged`],
 /// 与本地改没改无关(本地没改时回推的是旧版,照样覆盖)。乐观锁(CONFLICT_STALE)
 /// 只拦"拉 sha 与提交之间"的瞬间竞态,防不了这一档,两者是互补关系。
-/// `force_review = true` = 用户已在冲突档拍板:跳过检测,强制走「开分支 + 提交审核」,
-/// 绝不直推(合并交给技能库的评审流程)。
+///
+/// 🔴 **v8 任务 3:检测**本身**一个字没动,删掉的只是 `force_review` 那条旁路**
+/// ——那条旁路的语义是"跳过检测,强制走提交审核",而提交审核已经没了。把它改成
+/// "跳过检测直推"就等于静默覆盖同事的版本,正是这道检测存在的理由。覆盖确认
+/// 见 v8 任务 4。
 #[allow(clippy::too_many_arguments)]
 pub async fn share_installed(
     client: &ShareClient<'_>,
@@ -696,7 +699,6 @@ pub async fn share_installed(
     store: &Store,
     dir_slug: &str,
     branch: &str,
-    force_review: bool,
     now: &str,
 ) -> Result<ShareInstalledOutcome, AppError> {
     // 显式 `.with_trasher(SYSTEM_TRASH)`:默认值本来就是它,这条路上的 installer
@@ -750,10 +752,11 @@ pub async fn share_installed(
     // 事就是 `download_archive`。`share()` 那侧有"请求条数 = 0"的硬断言,这侧同款。
     skills::validate_skill_dir(&source_dir).map_err(skill_invalid_err)?;
 
-    // 远端变更检测:账上 content_hash = 上次与远端对齐时的内容指纹(本地改动、
-    // 走评审都不动它——现役不变量),远端当前指纹与它不等就是"别人改过"。
+    // 远端变更检测:账上 content_hash = 上次与远端对齐时的内容指纹(本地改动
+    // 不动它——现役不变量),远端当前指纹与它不等就是"别人改过"。
     // 基线为空时跳过(拿不准基线就不冤枉远端,提交时刻的乐观锁仍在兜底)。
-    if !force_review && !record.content_hash.is_empty() {
+    // ⚠️ **基线为空那一档是 v8 任务 4 要收掉的洞**,这里刻意维持现状不动。
+    if !record.content_hash.is_empty() {
         let archive = read.download_archive(&repo).await?;
         // entries 的键保留压缩包顶层目录,技能路径必须拼上 archive.root 才剥得到条目
         // (store.rs 建索引时的 s.dir 天然带着它,这里的记账路径没有)
@@ -772,16 +775,14 @@ pub async fn share_installed(
     let files = payload_files(&source_dir, &prefix)?;
     let message = format!("更新技能:{dir_slug}");
     // fresh=false:已装技能的回推,远端必然已有这组文件
-    let submitted =
-        submit(client, &repo, &prefix, false, force_review, files, &message, dir_slug, now).await?;
+    let submitted = submit(client, &repo, &prefix, false, files, &message, dir_slug).await?;
 
-    if submitted.mode == ShareMode::Pushed {
-        let mut next = loaded.value.clone();
-        next.installed[idx].commit_sha = submitted.commit_sha.clone();
-        next.installed[idx].content_hash = fsops::dir_content_hash(&source_dir)?;
-        next.installed[idx].updated_at = now.to_string();
-        store.save_state(&next)?;
-    }
+    // 内容确实进库了才更新基线(D3)。`submit` 只有直推一条路,走到这里就是成功。
+    let mut next = loaded.value.clone();
+    next.installed[idx].commit_sha = submitted.commit_sha.clone();
+    next.installed[idx].content_hash = fsops::dir_content_hash(&source_dir)?;
+    next.installed[idx].updated_at = now.to_string();
+    store.save_state(&next)?;
     Ok(ShareInstalledOutcome::Submitted(submitted))
 }
 
@@ -792,27 +793,18 @@ pub async fn share_installed(
 pub struct Submitted {
     pub mode: ShareMode,
     pub commit_sha: String,
-    pub review_url: Option<String>,
-    /// 走评审时开出的合并请求编号(v7 任务 2)。**只有 Gitea 才有**——GitHub 的
-    /// `PullView` 没有这个字段(`github.rs` 模块头),那两处构造点恒 `None`。
-    /// 审核态的匹配判据是分支名前缀(见 `gitea::review_branch_prefix`),不是这个
-    /// 编号——它只是锦上添花,给详情面板将来想直接展示编号时用。
-    pub review_number: Option<u64>,
 }
 
-/// 按来源类型分发提交。`fresh` = 远端还没有该技能(Gitea 路径可跳过拉取 blob sha);
-/// `force_review` = 冲突档确认后的第二跳,有直推权限也不许直推(直推正是冲突档要防的覆盖)。
+/// 按来源类型分发提交。`fresh` = 远端还没有该技能(Gitea 路径可跳过拉取 blob sha)。
 #[allow(clippy::too_many_arguments)]
 async fn submit(
     client: &ShareClient<'_>,
     repo: &RepoRef,
     prefix: &str,
     fresh: bool,
-    force_review: bool,
     files: Vec<(String, Vec<u8>)>,
     message: &str,
     share_name: &str,
-    now: &str,
 ) -> Result<Submitted, AppError> {
     match client {
         ShareClient::Gitea(c) => {
@@ -835,14 +827,11 @@ async fn submit(
                     None => FileChange::create(path.clone(), &bytes),
                 })
                 .collect();
-            // 归因修订(M7 任务 5)在 submit_gitea 内部按**实际提交目标仓**追加
-            // ——不能在这里做,fork 路径的目标仓不是 repo。GitHub 臂刻意不做:
+            // 归因修订(M7 任务 5)在 submit_gitea 内部追加。GitHub 臂刻意不做:
             // authors.json 是公司库契约,GitHub 源本来就不展示归因。
-            submit_gitea(c, repo, force_review, changes, message, share_name, now).await
+            submit_gitea(c, repo, changes, message, share_name).await
         }
-        ShareClient::Github(c) => {
-            submit_github(c, repo, force_review, files, message, share_name, now).await
-        }
+        ShareClient::Github(c) => submit_github(c, repo, files, message).await,
     }
 }
 
@@ -859,7 +848,9 @@ const AUTHORS_FILE: &str = "authors.json";
 /// 用户看到的是一句与归因毫无关系的冲突错误,而他的分享根本没进去。
 /// 「归因绝不拦分享」必须在**提交边界**也成立,不能只在读取边界成立。
 ///
-/// `REPO_FORBIDDEN` 直接上报:那是分支保护,调用方要据此降级走评审,不是归因的锅。
+/// `REPO_FORBIDDEN` 直接上报、**不剥归因重试**:那是目标受保护,不是归因的锅,
+/// 剥掉重试照样会被拒。调用方据此折成 [`push_blocked_err`](v8 任务 3 起不再
+/// 降级走提交审核——那条路已下线)。
 async fn change_files_sparing_skill(
     client: &GiteaClient,
     owner: &str,
@@ -974,9 +965,7 @@ fn upsert_attribution(
 /// 取分享者展示名 + 库根 authors.json 现值,算出要并进本次提交的归因修订。
 ///
 /// **任何一步失败都返回 None(跳过维护),绝不拦分享**——归因是锦上添花,
-/// 分享才是用户此刻要办的事。走评审的路径下这个 FileChange 与技能文件在同一分支里,
-/// 合并才一起进 main,不会给未合并的分享提前记账。
-/// fork 路径的 blob sha 取自上游:fork 是即时全量副本,同一文件的 blob sha 相同。
+/// 分享才是用户此刻要办的事。
 async fn attribution_file_change(
     client: &GiteaClient,
     repo: &RepoRef,
@@ -1054,8 +1043,9 @@ fn already_attributed(existing: Option<&[u8]>, dir_slug: &str) -> bool {
 /// 返回 `None`、跳过维护、绝不拦分享;**这条路本身就是用户按下的那个动作**,
 /// 失败必须如实上报,否则界面会显示"已登记"而库里什么都没发生。
 ///
-/// `existing` 必须来自**实际提交的目标仓**:blob sha 不跨仓通用,拿上游的 sha 往
-/// fork 上 update 会得到 `404 object does not exist`(share_live 的 fork 用例证伪过)。
+/// `existing` 必须来自**实际提交的目标仓**:blob sha 不跨仓通用(这条当年是
+/// share_live 的副本用例证伪出来的;副本那条路已随 v8 任务 3 下线,但"按目标仓
+/// 取 sha"这条约束本身仍然成立,别因为只剩一个目标仓就把它当成可以忽略的细节)。
 fn attribution_change(
     existing: Option<&(String, Vec<u8>)>,
     dir_slug: &str,
@@ -1085,8 +1075,8 @@ fn attribution_change(
                 AttributionUpsert::Updated(next) => {
                     Ok(FileChange::update(AUTHORS_FILE, next.as_bytes(), sha))
                 }
-                // 走到这里说明在"读上游 → 读 fork"之间有人抢先登记了(fork 是即时
-                // 副本,内容本该与刚读过的上游相同)。是真实可达的竞态,不是死代码。
+                // 走到这里说明在"读 → 提交"之间有人抢先登记了。真实可达的竞态,
+                // 不是死代码。
                 AttributionUpsert::Unchanged => Err(already_attributed_err(dir_slug)),
                 AttributionUpsert::Untouchable(reason) => Err(bad(reason)),
             }
@@ -1105,8 +1095,8 @@ fn already_attributed_err(dir_slug: &str) -> AppError {
 /// 「作者未登记 · 这是我分享的」:往技能库根 `authors.json` 里登记当前登录身份
 /// 为这个技能的分享者(v6 任务 3)。
 ///
-/// 与分享同一套权限矩阵(直推 → 开分支提交审核 → 只读用户走副本),但提交里
-/// **只有 authors.json 一个文件**,不碰任何技能内容。
+/// 与分享同一条提交路径(v8 任务 3 起只剩直推),但提交里**只有 authors.json
+/// 一个文件**,不碰任何技能内容。
 ///
 /// 结果**写回技能库、不写本地**:归属的真相在库里(设计文档 §1),写本地的话
 /// 换台电脑还要再认一次。
@@ -1120,7 +1110,6 @@ pub async fn claim_attribution(
     repo: &RepoRef,
     dir_slug: &str,
     me: &Identity,
-    now: &str,
 ) -> Result<ShareOutcome, AppError> {
     let ShareClient::Gitea(c) = client else {
         return Err(AppError::new(
@@ -1145,313 +1134,131 @@ pub async fn claim_attribution(
     }
     let aliases = me.aliases();
 
-    // 先读、先判、**再**做任何有副作用的事:已登记时连 fork 都不该建出来
-    // ——那是在用户账号下留一个注定用不上的副本。
+    // 先读、先判、**再**做任何有副作用的事:已登记时一个请求都不该多发。
     let upstream = c.file_content(repo, AUTHORS_FILE).await?;
     if already_attributed(upstream.as_ref().map(|(_, b)| b.as_slice()), dir_slug) {
         return Err(already_attributed_err(dir_slug));
     }
 
     let info = c.repo_info(&repo.owner, &repo.repo).await?;
-    let message = format!("登记分享者:{dir_slug}");
-    let branch_name = review_branch(dir_slug, now);
-
-    if info.permissions.push {
-        let change = attribution_change(upstream.as_ref(), dir_slug, display, &aliases)?;
-        let direct = ChangeFilesRequest {
-            branch: repo.branch.clone(),
-            new_branch: None,
-            message: message.clone(),
-            files: vec![change.clone()],
-        };
-        match change_files_sparing_skill(c, &repo.owner, &repo.repo, &direct).await {
-            Ok(commit) => {
-                return Ok(claimed(ShareMode::Pushed, commit.sha, None, dir_slug));
-            }
-            // 403 = 默认分支受保护(只读在下面分流)。降级开分支走提交审核。
-            Err(e) if e.code == "REPO_FORBIDDEN" => {}
-            Err(e) => return Err(e),
-        }
-        let via_branch = ChangeFilesRequest {
-            branch: repo.branch.clone(),
-            new_branch: Some(branch_name.clone()),
-            message: message.clone(),
-            files: vec![change],
-        };
-        let commit = change_files_sparing_skill(c, &repo.owner, &repo.repo, &via_branch).await?;
-        let pull = c
-            .create_pull(&repo.owner, &repo.repo, &branch_name, &repo.branch, &message, "")
-            .await?;
-        return Ok(claimed(
-            ShareMode::ReviewRequested,
-            commit.sha,
-            Some(pull.html_url),
-            dir_slug,
-        ));
+    // 🔴 v8 任务 3:只读用户那条路(复制一份到自己名下 → 跨库提交审核)已下线,
+    // 所以这里必须**早退给一句人话**,否则就是留一颗必然报错的按钮(D8 明确
+    // 点名这个入口)。界面侧对应的禁用态在 `DetailPanel` 的 `ClaimAttribution`。
+    if !info.permissions.push {
+        return Err(no_write_access_err(&repo.owner, &repo.repo));
     }
-
-    // 只读用户:实测连开分支都 403,唯一的路是先复制一份到自己名下
-    let fork = c.fork_repo(&repo.owner, &repo.repo).await?;
-    let fork_ref = RepoRef {
-        owner: fork.owner.clone(),
-        repo: fork.repo.clone(),
+    let message = format!("登记分享者:{dir_slug}");
+    let change = attribution_change(upstream.as_ref(), dir_slug, display, &aliases)?;
+    let direct = ChangeFilesRequest {
         branch: repo.branch.clone(),
-    };
-    // 🔴 blob sha 不跨仓通用:提交发到副本上,就必须拿副本自己的 sha
-    let on_fork = c.file_content(&fork_ref, AUTHORS_FILE).await?;
-    let change = attribution_change(on_fork.as_ref(), dir_slug, display, &aliases)?;
-    let via_fork = ChangeFilesRequest {
-        branch: repo.branch.clone(),
-        new_branch: Some(branch_name.clone()),
-        message: message.clone(),
+        new_branch: None,
+        message,
         files: vec![change],
     };
-    let commit = change_files_sparing_skill(c, &fork.owner, &fork.repo, &via_fork).await?;
-    let pull = c
-        .create_pull(
-            &repo.owner,
-            &repo.repo,
-            &format!("{}:{}", fork.owner, branch_name),
-            &repo.branch,
-            &message,
-            "",
-        )
-        .await?;
-    Ok(claimed(
-        ShareMode::ReviewRequested,
-        commit.sha,
-        Some(pull.html_url),
-        dir_slug,
-    ))
+    match change_files_sparing_skill(c, &repo.owner, &repo.repo, &direct).await {
+        Ok(commit) => Ok(claimed(commit.sha, dir_slug)),
+        // 403 = 默认分支受保护。如实报,不再降级开分支(D1)。
+        Err(e) if e.code == "REPO_FORBIDDEN" => Err(push_blocked_err(&repo.owner, &repo.repo)),
+        Err(e) => Err(e),
+    }
 }
 
-/// 登记结果复用 [`ShareOutcome::Shared`]:界面上它与分享是同一类事(可能直接生效、
-/// 也可能等审核),没必要为它另造一个只差名字的枚举。这条路一个文件都不搬,
-/// 也不碰任何技能内容。
-fn claimed(
-    mode: ShareMode,
-    commit_sha: String,
-    review_url: Option<String>,
-    dir_slug: &str,
-) -> ShareOutcome {
+/// 登记结果复用 [`ShareOutcome::Shared`]:界面上它与分享是同一类事,没必要为它
+/// 另造一个只差名字的枚举。这条路一个文件都不搬,也不碰任何技能内容。
+fn claimed(commit_sha: String, dir_slug: &str) -> ShareOutcome {
     ShareOutcome::Shared {
-        mode,
+        mode: ShareMode::Pushed,
         commit_sha,
-        review_url,
         share_name: dir_slug.to_string(),
     }
 }
 
-/// Gitea 的权限矩阵(gitea.rs 模块头的实测矩阵):
-/// 可写 → 先直推,被分支保护挡下(403)→ 开分支 + 提交审核;
-/// 只读 → fork 到自己名下 → fork 上开分支 → 跨库提交审核。
-/// `force_review` 只砍掉"先直推"那一步,其余分流不变(只读的 fork 路径本就是评审)。
-#[allow(clippy::too_many_arguments)]
+/// 没有写权限时的统一出口(v8 任务 3 / D8)。
+///
+/// 🔴 **必须排在任何有副作用的请求之前**——以前这一档会 fork 一份到用户名下再跨库
+/// 提交审核,那条路已下线;不早退的话,提交必然 403,而在此之前我们已经读过
+/// `authors.json`(白白一次请求),更早的版本还会在用户账号下留一个注定用不上的
+/// 副本。界面侧有对应的禁用态(`SharePath::NoAccess`),这条错误是防"绕过界面
+/// 直接调 IPC"与"预检探不到、点下去才知道"这两种情况,**不是**唯一防线。
+fn no_write_access_err(owner: &str, repo: &str) -> AppError {
+    AppError::new(
+        "REPO_NO_WRITE_ACCESS",
+        "你对这个技能库没有写入权限,分享不了。请找管理员开通后再试",
+    )
+    .with_detail(format!("no push permission on {owner}/{repo}"))
+}
+
+/// 目标受保护、直接保存被拒时的出口(v8 任务 3)。
+///
+/// 🔴 **不再降级开分支提交审核**(D1)。公司技能库实测没有开保护,所以这条路今天
+/// 走不到;真有人哪天开了保护,用户要看到的是一句能让他找对人的话,而不是一次
+/// 静默变成"提交了但没人看"的审核请求。
+fn push_blocked_err(owner: &str, repo: &str) -> AppError {
+    AppError::new(
+        "REPO_PUSH_BLOCKED",
+        "这个技能库开启了保护,现在不能直接分享,请联系它的管理员",
+    )
+    .with_detail(format!("direct push rejected by {owner}/{repo}"))
+}
+
+/// Gitea 的提交路径(v8 任务 3 起只剩一条):有写权限 → 直接保存进默认分支。
+///
+/// 两个失败出口各有一句人话:没有写权限 [`no_write_access_err`]、目标受保护
+/// [`push_blocked_err`]。**两者都不再自动降级**,原委见 `gitea.rs` 模块头的
+/// 权限矩阵。
 async fn submit_gitea(
     client: &GiteaClient,
     repo: &RepoRef,
-    force_review: bool,
     files: Vec<FileChange>,
     message: &str,
     share_name: &str,
-    now: &str,
 ) -> Result<Submitted, AppError> {
     let info = client.repo_info(&repo.owner, &repo.repo).await?;
-    let branch_name = review_branch(share_name, now);
-
-    if info.permissions.push {
-        // 归因修订并进同一笔提交(M7 任务 5)。**必须在这里按目标仓取 sha**:
-        // blob sha 不跨仓通用,拿上游的 sha 往 fork 上 update 会得到
-        // `404 object does not exist`——整笔提交连技能文件一起失败。
-        // 这个假设是 share_live 的 fork 用例当场证伪的,纯逻辑测试看不见。
-        let mut files = files;
-        if let Some(fc) = attribution_file_change(client, repo, share_name).await {
-            files.push(fc);
-        }
-        if !force_review {
-            let direct = ChangeFilesRequest {
-                branch: repo.branch.clone(),
-                new_branch: None,
-                message: message.to_string(),
-                files: files.clone(),
-            };
-            match change_files_sparing_skill(client, &repo.owner, &repo.repo, &direct).await {
-                Ok(commit) => {
-                    return Ok(Submitted {
-                        mode: ShareMode::Pushed,
-                        commit_sha: commit.sha,
-                        review_url: None,
-                        review_number: None,
-                    })
-                }
-                // 403 = 默认分支受保护(只读在上面已分流)。降级开分支走评审。
-                Err(e) if e.code == "REPO_FORBIDDEN" => {}
-                Err(e) => return Err(e),
-            }
-        }
-        let via_branch = ChangeFilesRequest {
-            branch: repo.branch.clone(),
-            new_branch: Some(branch_name.clone()),
-            message: message.to_string(),
-            files,
-        };
-        let commit = change_files_sparing_skill(client, &repo.owner, &repo.repo, &via_branch).await?;
-        let pull = client
-            .create_pull(&repo.owner, &repo.repo, &branch_name, &repo.branch, message, "")
-            .await?;
-        return Ok(Submitted {
-            mode: ShareMode::ReviewRequested,
-            commit_sha: commit.sha,
-            review_url: Some(pull.html_url),
-            review_number: Some(pull.number),
-        });
+    // 🔴 早退排在 `attribution_file_change` 的读取之前:见 `no_write_access_err`。
+    if !info.permissions.push {
+        return Err(no_write_access_err(&repo.owner, &repo.repo));
     }
 
-    // 只读:实测连开分支都 403,唯一的路是 fork
-    let fork = client.fork_repo(&repo.owner, &repo.repo).await?;
-    // 归因的 blob sha 必须来自 **fork 仓**——提交发到这里,上游的 sha 在这儿不认。
-    let fork_ref = RepoRef {
-        owner: fork.owner.clone(),
-        repo: fork.repo.clone(),
-        branch: repo.branch.clone(),
-    };
+    // 归因修订并进同一笔提交(M7 任务 5)。
     let mut files = files;
-    if let Some(fc) = attribution_file_change(client, &fork_ref, share_name).await {
+    if let Some(fc) = attribution_file_change(client, repo, share_name).await {
         files.push(fc);
     }
-    let via_fork = ChangeFilesRequest {
+    let direct = ChangeFilesRequest {
         branch: repo.branch.clone(),
-        new_branch: Some(branch_name.clone()),
+        new_branch: None,
         message: message.to_string(),
         files,
     };
-    let commit = change_files_sparing_skill(client, &fork.owner, &fork.repo, &via_fork).await?;
-    let pull = client
-        .create_pull(
-            &repo.owner,
-            &repo.repo,
-            &format!("{}:{}", fork.owner, branch_name),
-            &repo.branch,
-            message,
-            "",
-        )
-        .await?;
-    Ok(Submitted {
-        mode: ShareMode::ReviewRequested,
-        commit_sha: commit.sha,
-        review_url: Some(pull.html_url),
-        review_number: Some(pull.number),
-    })
+    match change_files_sparing_skill(client, &repo.owner, &repo.repo, &direct).await {
+        Ok(commit) => Ok(Submitted { mode: ShareMode::Pushed, commit_sha: commit.sha }),
+        // 403 = 默认分支受保护(只读在上面已分流)。如实报,不再降级。
+        Err(e) if e.code == "REPO_FORBIDDEN" => Err(push_blocked_err(&repo.owner, &repo.repo)),
+        Err(e) => Err(e),
+    }
 }
 
-/// GitHub 的权限矩阵(录制自真实行为,tests/fixtures/github-write/NOTES.md):
-/// 有 push 且分支未保护 → createCommitOnBranch 直接保存;
-/// 有 push 但分支受保护(protected 先探,或提交撞上
-/// BRANCH_PROTECTION_RULE_VIOLATION)→ 开分支 + 提交审核;
-/// 无 push → fork 到自己名下(202 异步,轮询就绪)→ fork 上开分支 → 跨库提交审核。
-/// `force_review` 只砍掉"直接保存"那一步,其余分流不变。
-#[allow(clippy::too_many_arguments)]
+/// GitHub 的提交路径(v8 任务 3 起只剩一条):有 push 权限 → createCommitOnBranch。
+///
+/// 保护规则要 admin 权限才读得到,所以**不先探**(`branch_protected` 已删除)
+/// ——提交时的 `BRANCH_PROTECTION_RULE_VIOLATION`(`REPO_PROTECTED`)才是真相,
+/// 它自己带着一句人话,原样上报。
 async fn submit_github(
     client: &GithubClient,
     repo: &RepoRef,
-    force_review: bool,
     files: Vec<(String, Vec<u8>)>,
     message: &str,
-    share_name: &str,
-    now: &str,
 ) -> Result<Submitted, AppError> {
     let view = client.repo_view(&repo.owner, &repo.repo).await?;
-    let branch_name = review_branch(share_name, now);
-    let name_with_owner = format!("{}/{}", repo.owner, repo.repo);
-
-    if view.permissions.push {
-        // protected 只是先探(保护规则可能只拦部分人),提交时的错误类型才是最终真相
-        if !force_review && !client.branch_protected(repo).await? {
-            let head = client.branch_head(repo).await?;
-            match client
-                .create_commit_on_branch(&name_with_owner, &repo.branch, &head.sha, message, &files)
-                .await
-            {
-                Ok(oid) => {
-                    return Ok(Submitted {
-                        mode: ShareMode::Pushed,
-                        commit_sha: oid,
-                        review_url: None,
-                        review_number: None,
-                    })
-                }
-                Err(e) if e.code == "REPO_PROTECTED" => {}
-                Err(e) => return Err(e),
-            }
-        }
-        let head = client.branch_head(repo).await?;
-        client
-            .create_branch(&repo.owner, &repo.repo, &branch_name, &head.sha)
-            .await?;
-        let oid = client
-            .create_commit_on_branch(&name_with_owner, &branch_name, &head.sha, message, &files)
-            .await?;
-        let pull = client
-            .create_pull(&repo.owner, &repo.repo, &branch_name, &repo.branch, message)
-            .await?;
-        return Ok(Submitted {
-            mode: ShareMode::ReviewRequested,
-            commit_sha: oid,
-            review_url: Some(pull.html_url),
-            // GitHub 的 `PullView` 没有 `number` 字段(github.rs 模块头)——
-            // 审核态匹配靠分支名前缀,不依赖这个编号,GitHub 侧恒 `None` 无害。
-            review_number: None,
-        });
+    if !view.permissions.push {
+        return Err(no_write_access_err(&repo.owner, &repo.repo));
     }
-
-    // 无 push:唯一的路是 fork(202 异步受理,实测约 3 秒可用)
-    let fork = client.fork_repo(&repo.owner, &repo.repo).await?;
-    let fork_ref = RepoRef {
-        owner: fork.owner.clone(),
-        repo: fork.repo.clone(),
-        branch: repo.branch.clone(),
-    };
-    let fork_head = client
-        .wait_fork_ready(&fork_ref, 60, std::time::Duration::from_secs(1))
-        .await?;
-    client
-        .create_branch(&fork.owner, &fork.repo, &branch_name, &fork_head.sha)
-        .await?;
+    let name_with_owner = format!("{}/{}", repo.owner, repo.repo);
+    let head = client.branch_head(repo).await?;
     let oid = client
-        .create_commit_on_branch(
-            &format!("{}/{}", fork.owner, fork.repo),
-            &branch_name,
-            &fork_head.sha,
-            message,
-            &files,
-        )
+        .create_commit_on_branch(&name_with_owner, &repo.branch, &head.sha, message, &files)
         .await?;
-    let pull = client
-        .create_pull(
-            &repo.owner,
-            &repo.repo,
-            &format!("{}:{}", fork.owner, branch_name),
-            &repo.branch,
-            message,
-        )
-        .await?;
-    Ok(Submitted {
-        mode: ShareMode::ReviewRequested,
-        commit_sha: oid,
-        review_url: Some(pull.html_url),
-        review_number: None,
-    })
-}
-
-/// 评审分支名。从 `now` 派生而非取系统时间:核心不摸时钟,测试才能钉住它。
-///
-/// 前缀部分委托给 [`crate::core::gitea::review_branch_prefix`]——v7 任务 2
-/// 的「审核态」判定要靠**同一把尺子**把开放的合并请求按分支名前缀匹配回技能,
-/// 两处各写一份字面量迟早会漂。`pub(crate)` 是因为 `my_skills`/`gitea` 侧的
-/// 同源测试要调用它。
-pub(crate) fn review_branch(share_name: &str, now: &str) -> String {
-    let stamp: String = now.chars().filter(|c| c.is_ascii_digit()).collect();
-    format!("{}{stamp}", crate::core::gitea::review_branch_prefix(share_name))
+    Ok(Submitted { mode: ShareMode::Pushed, commit_sha: oid })
 }
 
 /// 把本地目录读成 `(远端路径, 字节)` 清单。来源无关:Gitea 侧再按远端 blob sha
@@ -1487,14 +1294,15 @@ mod tests {
     /// 🔴 **断言的是键的完整集合,不是"某个键存在"**(本项目记着的空转模式 ②)。
     ///
     /// 这条守的是一个真实存在过的哑弹:`rename_all` 挂在枚举上只改 variant 名,
-    /// `review_url` 因此原样发成蛇形,而 `SharePage` 读的是 `reviewUrl`
-    /// ——分享走评审之后那条「查看审核」链接**从来没渲染过**。
+    /// 当年 `review_url` 因此原样发成蛇形,而界面读的是 `reviewUrl`——那条链接
+    /// 从来没渲染过。那个字段已随提交审核一起删除(v8 任务 3),但**断言"键的
+    /// 完整集合"这件事本身要留着**:下一个往这个 variant 加带下划线字段的人,
+    /// 要在这里当场变红。
     #[test]
     fn share_outcome_serializes_every_field_in_camel_case() {
         let v = serde_json::to_value(ShareOutcome::Shared {
-            mode: ShareMode::ReviewRequested,
+            mode: ShareMode::Pushed,
             commit_sha: "abc".into(),
-            review_url: Some("http://x/pulls/1".into()),
             share_name: "weekly-report".into(),
         })
         .unwrap();
@@ -1504,13 +1312,11 @@ mod tests {
                 "commitSha".to_string(),
                 "mode".to_string(),
                 "outcome".to_string(),
-                "reviewUrl".to_string(),
                 "shareName".to_string(),
             ]
         );
         assert_eq!(v["outcome"], "shared");
-        assert_eq!(v["mode"], "reviewRequested");
-        assert_eq!(v["reviewUrl"], "http://x/pulls/1");
+        assert_eq!(v["mode"], "pushed");
         assert_eq!(v["shareName"], "weekly-report");
     }
 

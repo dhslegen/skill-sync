@@ -352,15 +352,16 @@ describe("获取流程状态机", () => {
     expect(useInstall.getState().localKept).toBe(true);
   });
 
-  it("保留并分享:先 keepLocal 落稳,再以提交审核方式推改动(绝不直推)", async () => {
-    // 这条路的前提就是"远端有新版":直推会把远端刚更新的版本顶掉——
-    // M5 任务 1 起恒带 forceReview,合并交给技能库的评审流程
+  // 🔴 **v8 任务 3**:这条路的前提就是"远端有新版",以前恒带 `forceReview` 推去
+  // 评审。评审下线之后**不能退回直推**——那正是 D2 要防的静默覆盖。所以这一跳
+  // 必然撞上 core 的远端变更检测,前端如实说一句「库里已经有更新的版本」。
+  // 「仍然覆盖」是任务 4 的事。
+  it("保留并分享:先 keepLocal 落稳,再推改动 —— 库里有新版时如实报错,绝不直推", async () => {
     let installCalls = 0;
     invoke.mockImplementation(async (cmd) => {
       if (cmd === "agents_detected") return AGENTS;
       if (cmd === "installed_list") return [];
-      if (cmd === "skill_share_changes")
-        return { kind: "submitted", mode: "reviewRequested", commitSha: "new", reviewUrl: "http://x/pulls/5" };
+      if (cmd === "skill_share_changes") return { kind: "remoteChanged", historyUrl: null };
       installCalls += 1;
       return installCalls === 1
         ? { outcome: "needsDecision", precheck: { status: "locallyModified", installedSha: "aaa" } }
@@ -374,11 +375,14 @@ describe("获取流程状态机", () => {
     // keepLocal 的重试带了 resolution
     const second = invoke.mock.calls.filter(([cmd]) => cmd === "skill_install")[1];
     expect(second?.[1].args.resolution).toBe("keepLocal");
-    // 分享确实发生,且发生在保留之后,且带着 forceReview
+    // 分享确实发生在保留之后,且**不再**带 forceReview(那个参数已下线)
     const shared = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
     expect(shared?.[1].args.dirSlug).toBe("weekly-report");
-    expect(shared?.[1].args.forceReview).toBe(true);
-    expect(useInstall.getState().shareResult).toEqual({ mode: "reviewRequested" });
+    expect(Object.keys(shared?.[1].args as Record<string, unknown>)).not.toContain("forceReview");
+    // 保留成功了,只是分享没推出去——不能把整个结果画成失败
+    expect(useInstall.getState().shareResult).toMatchObject({
+      error: { code: "CONFLICT_REMOTE_CHANGED" },
+    });
     expect(useInstall.getState().phase).toBe("done");
   });
 
@@ -417,12 +421,13 @@ describe("获取流程状态机", () => {
   });
 
   describe("keepLocalAndShareMine(v6 任务 5:「我分享的」冲突弹窗的「以本地为准」)", () => {
-    it("remoteChanged 为真时,分享调用带 forceReview:true(正面断言完整键集合)", async () => {
+    // v8 任务 3:`remoteChanged` 为真时以前带 `forceReview` 推去评审;现在由
+    // core 的远端变更检测挡下,前端如实说一句(理由同 `keepLocalAndShare`)。
+    it("remoteChanged 为真时,这一跳不带 forceReview,并如实报「库里已有更新的版本」", async () => {
       invoke.mockImplementation(async (cmd) => {
         if (cmd === "agents_detected") return AGENTS;
         if (cmd === "installed_list") return [];
-        if (cmd === "skill_share_changes")
-          return { kind: "submitted", mode: "reviewRequested", commitSha: "new", reviewUrl: null };
+        if (cmd === "skill_share_changes") return { kind: "remoteChanged", historyUrl: null };
         if (cmd === "skill_install")
           return { outcome: "kept", remoteChanged: true } satisfies AcquireOutcome;
         throw new Error(`unexpected ${cmd}`);
@@ -435,14 +440,15 @@ describe("获取流程状态机", () => {
       expect(shared?.[1].args).toEqual({
         dirSlug: "weekly-report",
         registryId: undefined,
-        forceReview: true,
       });
-      expect(useInstall.getState().shareResult).toEqual({ mode: "reviewRequested" });
+      expect(useInstall.getState().shareResult).toMatchObject({
+        error: { code: "CONFLICT_REMOTE_CHANGED" },
+      });
       expect(useInstall.getState().phase).toBe("done");
       expect(useInstall.getState().mineKept).toEqual({ remoteChanged: true, kind: "mine" });
     });
 
-    it("remoteChanged 为假时,分享调用不带 forceReview(对照组,同样断言完整键集合)", async () => {
+    it("remoteChanged 为假时照常直推成功(对照组,同样断言完整键集合)", async () => {
       invoke.mockImplementation(async (cmd) => {
         if (cmd === "agents_detected") return AGENTS;
         if (cmd === "installed_list") return [];
@@ -460,45 +466,6 @@ describe("获取流程状态机", () => {
       expect(shared?.[1].args).toEqual({
         dirSlug: "weekly-report",
         registryId: undefined,
-      });
-      expect(useInstall.getState().shareResult).toEqual({ mode: "pushed" });
-    });
-
-    it("提交与检测之间被抢先(kind:remoteChanged)→ 自动带 forceReview 重试一次,不会无限循环", async () => {
-      // 真实竞态:点「以本地为准」时判定还是"没变"(remoteChanged:false,所以第一次
-      // 不带 forceReview),但提交前的这一小段时间里被别人抢先分享了一次。
-      // 用户已经表达过"以本地为准"的意图,不必再问一遍,直接带 forceReview 重试。
-      let shareCallCount = 0;
-      invoke.mockImplementation(async (cmd) => {
-        if (cmd === "agents_detected") return AGENTS;
-        if (cmd === "installed_list") return [];
-        if (cmd === "skill_share_changes") {
-          shareCallCount += 1;
-          return shareCallCount === 1
-            ? { kind: "remoteChanged", historyUrl: null }
-            : { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null };
-        }
-        if (cmd === "skill_install")
-          return { outcome: "kept", remoteChanged: false } satisfies AcquireOutcome;
-        throw new Error(`unexpected ${cmd}`);
-      });
-
-      await useInstall.getState().begin("weekly-report");
-      await useInstall.getState().keepLocalAndShareMine();
-
-      const shareCalls = invoke.mock.calls.filter(([cmd]) => cmd === "skill_share_changes");
-      // 只重试一次:一共两次调用,不是无限循环
-      expect(shareCalls).toHaveLength(2);
-      // 第一次是 kept.remoteChanged 决定的(这里为 false),不带 forceReview
-      expect(shareCalls[0][1].args).toEqual({
-        dirSlug: "weekly-report",
-        registryId: undefined,
-      });
-      // 第二次(重试)必须带 forceReview:true——正面断言完整参数对象
-      expect(shareCalls[1][1].args).toEqual({
-        dirSlug: "weekly-report",
-        registryId: undefined,
-        forceReview: true,
       });
       expect(useInstall.getState().shareResult).toEqual({ mode: "pushed" });
     });

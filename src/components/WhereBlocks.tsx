@@ -2,7 +2,6 @@ import {
   ArrowRight,
   ChevronDown,
   ChevronRight,
-  ExternalLink,
   FolderOpen,
   Laptop,
   Library,
@@ -16,7 +15,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { ToolChecks } from "@/components/ToolChecks";
 import { t } from "@/i18n";
-import { isAppError, openLibraryUrl, skillReveal, type InstalledSkillView, type Section } from "@/lib/ipc";
+import { isAppError, skillReveal, type InstalledSkillView, type Section } from "@/lib/ipc";
 import { useMySkills, visibleTools } from "@/store/my-skills";
 import { useProjects } from "@/store/project";
 import { useUi } from "@/store/ui";
@@ -424,40 +423,7 @@ function LibraryBlock({
         <p className="mt-0.5 text-text-3">{t("detail.whereSourceUnset")}</p>
       )}
       {remoteChanged && <p className="mt-0.5 text-text-3">{t("detail.whereHasUpdate")}</p>}
-      {skill.review && (
-        <p className="mt-0.5 text-text-3">
-          <span>{t("detail.whereReviewPending")}</span>
-          {skill.review.url && (
-            <>
-              {t("punct.labelSeparator")}
-              <ReviewLink url={skill.review.url} />
-            </>
-          )}
-        </p>
-      )}
     </BlockShell>
-  );
-}
-
-function ReviewLink({ url }: { url: string }) {
-  const [error, setError] = useState<string | null>(null);
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => {
-          setError(null);
-          openLibraryUrl(url).catch((raw: unknown) =>
-            setError(isAppError(raw) ? raw.message : t("error.generic")),
-          );
-        }}
-        className="inline-flex items-center gap-1 text-accent hover:underline"
-      >
-        <Icon icon={ExternalLink} size={11} />
-        {t("detail.whereReviewLink")}
-      </button>
-      {error && <span className="ml-1 text-[#c0392b] dark:text-[#e0705f]">{error}</span>}
-    </>
   );
 }
 
@@ -536,7 +502,7 @@ function ProjectsBlock({ skill }: { skill: InstalledSkillView }) {
  * # 🔴 收起来的东西里"有没有在等我",必须在这一行里说出来
  *
  * 这是本项目已经确立的原则(「我的技能」三区折叠那次定的):折叠不得把例外
- * 藏掉。所以「库里有新版」「审核中」这类**要处理**的信息,收起态下照样出现在
+ * 藏掉。所以「库里有新版」这类**要处理**的信息,收起态下照样出现在
  * 结论里;能折起来的只是路径清单与勾选这些细节。
  *
  * 判据一律复用既有实现,不新写一份:
@@ -544,7 +510,6 @@ function ProjectsBlock({ skill }: { skill: InstalledSkillView }) {
  *   同一份文案表);
  * - 「库里有新版」= 调用方按 section 分流算好的 `remoteChanged`
  *   (`hasUpdate` / `remoteChangedForShareable`,见 {@link LibraryBlock} 的文档);
- * - 「审核中」= `skill.review`(core 侧算好的,前端不再判一次)。
  *
  * 🔴 **刻意不数"几个工具开着"**(v7.1 用户裁定):那个数「容易计算错误还不讨好」
  * ——`tools` 与 `canonicalReaders` 是互补的两半,合起来数一次、两边口径再漂一次,
@@ -560,7 +525,6 @@ export function whereSummary(skill: InstalledSkillView, remoteChanged: boolean):
 
   const parts = [t(SECTION_TITLE[skill.section])];
   if (remoteChanged) parts.push(t("detail.whereSummaryUpdate"));
-  if (skill.review) parts.push(t("detail.whereReviewPending"));
   return parts;
 }
 

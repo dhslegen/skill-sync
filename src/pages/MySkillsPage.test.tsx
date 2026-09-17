@@ -77,7 +77,6 @@ function mk(dirSlug: string, section: Section, over: Partial<Fixture> = {}): Fix
     versions: [],
     shareBlocked: null,
     section,
-    review: null,
     libraryUrl: null,
     canonicalReaders: null,
     remote,
@@ -218,7 +217,6 @@ function resetStores() {
     shareBusy: null,
     shareDone: null,
     shareError: null,
-    shareConflict: null,
     shareableIndexes: new Map(),
     shareableIndexesLastFetchedAt: new Map(),
     updateAllBusy: false,
@@ -475,7 +473,7 @@ describe("三区排列与判定表接线", () => {
       if (cmd === "agents_detected") return AGENT_LIST;
       if (cmd === "store_index") return companyIndex(list);
       if (cmd === "skill_share_changes")
-        return { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null };
+        return { kind: "submitted", mode: "pushed", commitSha: "new" };
       return null;
     });
     render(<MySkillsPage />);
@@ -498,32 +496,6 @@ describe("三区排列与判定表接线", () => {
     await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     expect(screen.queryByRole("menuitem", { name: "贡献更改" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "分享改动" })).toBeNull();
-  });
-
-  // 🔴 v7.1 任务 5:行上的「审核中」改成**禁用的实心按钮**(照画布
-  // `Main.dc.html`,与同屏那颗禁用的「分享」同一形态),行上不再摆
-  // 「在技能库里查看」——那颗链接在详情面板的「技能库里」那一块
-  // (`WhereBlocks` 的 `ReviewLink`,含打开失败的渲染点)。
-  it("审核中是禁用的实心按钮,行上不再摆「在技能库里查看」", async () => {
-    seed([mk("a", "shareable", { review: { url: "http://gitea/x/y/pulls/7" } })]);
-    await renderAtTab(/可分享到技能库/);
-    const row = await screen.findByTestId("row-a");
-    const btn = within(row).getByRole("button", { name: "审核中" });
-    expect(btn).toBeDisabled();
-    // 🔴 终审 M-1:必须按**空白切分后的类名集合**断言,不能 `className.toContain`
-    // ——`"bg-accent-soft".includes("bg-accent")` 为真,实心↔chip 的漂移不会红,
-    // 而那正是任务 5 的全部命题。`/\bbg-accent\b/` 同样不行:`-` 是非词字符,
-    // `\b` 在 `accent` 与 `-` 之间照样成立。
-    expect(btn.className.split(/\s+/)).toContain("bg-accent");
-    expect(within(row).queryByRole("button", { name: "在技能库里查看" })).toBeNull();
-  });
-
-  it("审核中没有链接时,行上照样只有那颗禁用按钮(不用空串冒充链接)", async () => {
-    seed([mk("a", "shareable", { review: { url: null } })]);
-    await renderAtTab(/可分享到技能库/);
-    const row = await screen.findByTestId("row-a");
-    expect(within(row).getByRole("button", { name: "审核中" })).toBeDisabled();
-    expect(within(row).queryByRole("button", { name: "在技能库里查看" })).toBeNull();
   });
 
   it("🔴 修复轮 2(③):「更多」菜单里「移除」永远排最后,且与前面的动作有一条分隔线", async () => {
@@ -568,11 +540,31 @@ describe("三区排列与判定表接线", () => {
     expect(screen.getByText(/分享前请在 SKILL\.md 里补上 description/)).toBeInTheDocument();
   });
 
-  it("shareable:审核中 → 没有按钮,只有「审核中」文字", async () => {
-    seed([mk("a", "shareable", { review: { url: null } })]);
+  // 🔴 v8 任务 3 / D8:没有写权限 → 主按钮禁用 + 一句说明,「打开文件夹」仍在。
+  // 三处渲染点之一(另两处:详情面板动作区、分享确认屏)。
+  it("🔴 D8:只读用户的「分享」是禁用的,并说清为什么,「打开文件夹」仍在", async () => {
+    seed([mk("a", "shareable")]);
+    // 🔴 走真实路径:页面挂载会自己 `refreshPreview()`,直接 setState 会被那一跳
+    // 盖掉(第一版就是这么假红的)。禁用态的数据来源必须是 core 真的回了 noAccess。
+    const base = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (cmd: string, args?: unknown) =>
+      cmd === "share_preview" ? "noAccess" : base(cmd, args),
+    );
     await renderAtTab(/可分享到技能库/);
-    await screen.findByText("审核中");
-    expect(screen.queryByRole("button", { name: "分享" })).toBeNull();
+    const btn = await screen.findByRole("button", { name: "分享" });
+    expect(btn).toBeDisabled();
+    expect(screen.getByText(/没有写入权限/)).toBeInTheDocument();
+    const row = screen.getByTestId("row-a");
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
+    expect(screen.getByRole("menuitem", { name: "打开文件夹" })).toBeInTheDocument();
+  });
+
+  // 对照组同样走真实路径:`seed` 的默认 mock 就让 share_preview 回 unknown。
+  it("对照组:探不到(unknown)时「分享」照常可点——预检永远 fail-open", async () => {
+    seed([mk("a", "shareable")]);
+    await renderAtTab(/可分享到技能库/);
+    expect(await screen.findByRole("button", { name: "分享" })).toBeEnabled();
+    expect(screen.queryByText(/没有写入权限/)).not.toBeInTheDocument();
   });
 
   it("🔴 修复轮 2(④/M3):shareable 区外源行的来源标签是等宽字体(design §6)", async () => {
@@ -1002,9 +994,9 @@ describe("「取回」与「以本地为准分享」失败必须在这一页看�
     render(<MySkillsPage />);
     await screen.findByText("a");
     act(() => {
-      useInstall.setState({ shareResult: { mode: "reviewRequested" } });
+      useInstall.setState({ shareResult: { mode: "pushed" } });
     });
-    await screen.findByText("改动已提交审核,审核通过后生效。");
+    await screen.findByText("改动已分享到公司技能库。");
   });
 
   it("拍板框已经关掉之后再失败,keepError 也要有落点(M-2)", async () => {

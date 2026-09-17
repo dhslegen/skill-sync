@@ -56,7 +56,7 @@ function StoreBody() {
   const records = useInstall((s) => s.installed);
   // v7.5:商店卡片要认得出"这台电脑上已经有了"(`docs/v7.5-共识.md`),数据来自
   // 「我的技能」的 `list`——**不新增 IPC**,只是复用既有的四源合一表。挂载时若
-  // 还没加载过就触发一次;`load()` 本身不发任何网络请求(审核态查询挂在
+  // 还没加载过就触发一次;`load()` 本身不发任何网络请求(外源索引的补查挂在
   // `useLocalRefresh` 的窗口重获焦点那一级,不在 `load()` 里),不违反"翻页不
   // 发请求"。
   const myList = useMySkills((s) => s.list);

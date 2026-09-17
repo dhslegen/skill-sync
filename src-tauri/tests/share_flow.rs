@@ -12,7 +12,7 @@ use skillsync_lib::core::gitea::{GiteaClient, RepoRef};
 use skillsync_lib::core::ownership::{Identity, LibraryEntry, Relation};
 use skillsync_lib::core::share::{self, CandidateOrigin, ShareMode, ShareOutcome, SharePrecheck};
 use skillsync_lib::core::state::{InstalledSkill, LinkRecord, SharedSkill, SkillSource, Store};
-use wiremock::matchers::{body_partial_json, body_string_contains, method, path, path_regex};
+use wiremock::matchers::{body_string_contains, method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// 这台机器上"建链成功"时 `LinkRecord.mode` / `Converged::Linked.mode` 的取值。
@@ -236,8 +236,6 @@ fn the_shared_record_is_matched_by_path_not_by_string() {
         },
         last_pushed_sha: "abc".into(),
         content_hash: fsops::dir_content_hash(&dir).unwrap(),
-        review_url: None,
-        review_number: None,
     });
 
     let found = share::scan_candidates(&c.registry, &env, &state, &Default::default(), &Default::default()).unwrap();
@@ -380,8 +378,6 @@ fn previously_shared_skills_report_whether_local_changed_since() {
         },
         last_pushed_sha: "abc".into(),
         content_hash: fsops::dir_content_hash(&dir).unwrap(),
-        review_url: None,
-        review_number: None,
     });
 
     let found = share::scan_candidates(&c.registry, &env, &state, &Default::default(), &Default::default()).unwrap();
@@ -459,8 +455,6 @@ async fn precheck_mine_when_we_shared_it_before() {
         },
         last_pushed_sha: "abc".into(),
         content_hash: String::new(),
-        review_url: None,
-        review_number: None,
     });
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
@@ -834,79 +828,12 @@ async fn a_stale_attribution_entry_is_dropped_so_the_skill_still_lands() {
     assert_eq!(state_of(&c).shared.len(), 1);
 }
 
-/// 只读用户的 fork 路径:归因的 blob sha **必须从 fork 仓读**。
-/// 拿上游的 sha 往 fork 上 update,Gitea 报 `404 object does not exist`,
-/// 整笔提交连技能文件一起失败——只读用户分享必然报错。这是 share_live 的 fork
-/// 用例当场证伪的假设(纯逻辑测试看不见跨仓 sha 这回事),这里用 mock 钉住。
-#[tokio::test]
-async fn attribution_on_the_fork_path_reads_the_fork_not_the_upstream() {
-    let (c, env) = ctx();
-    let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "my-notes", "d");
+// ⚠️ **v8 任务 3 删掉了 `attribution_on_the_fork_path_reads_the_fork_not_the_upstream`**:
+// 它验的是"只读用户走副本时,归因的 blob sha 必须取自副本仓",而副本那条路已整体
+// 下线(D1)。**"按实际提交目标仓取 sha"这条约束本身没有作废**——只是眼下只剩一个
+// 目标仓,`attribution_change` 的文档里留着它的原委。只读用户现在的行为由
+// `a_read_only_user_is_told_why_instead_of_getting_a_personal_copy` 钉住。
 
-    let server = MockServer::start().await;
-    mount_skill_exists(&server, "my-notes", false).await;
-    mount_repo_info(&server, false).await; // 只读 → fork 路径
-    mount_current_user(&server).await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/forks"))
-        .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
-            "name": "skills", "owner": { "login": "zhang-san" }
-        })))
-        .mount(&server)
-        .await;
-    // fork 仓的 authors.json:sha 与上游刻意不同,断言用的就是这个差别
-    let fork_authors = {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(r#"{"authors":{"other":{"author":"张三"}}}"#)
-    };
-    Mock::given(method("GET"))
-        .and(path("/api/v1/repos/zhang-san/skills/contents/authors.json"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "sha": "forkblobsha", "encoding": "base64", "content": fork_authors
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/zhang-san/skills/contents"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "commit": { "sha": "forksha", "html_url": "http://x" }
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/pulls"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "html_url": "http://x/pulls/9", "number": 9
-        })))
-        .mount(&server)
-        .await;
-    let client = GiteaClient::new(server.uri(), None).unwrap();
-    let repo = repo_ref();
-
-    share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
-        .await
-        .unwrap();
-
-    let reqs = server.received_requests().await.unwrap();
-    // 读的是 fork 仓的 authors.json,不是上游的
-    assert!(
-        reqs.iter().any(|r| r.url.path() == "/api/v1/repos/zhang-san/skills/contents/authors.json"),
-        "fork 路径必须读 fork 仓的 authors.json"
-    );
-    assert!(
-        !reqs.iter().any(|r| r.url.path() == "/api/v1/repos/skills/skills/contents/authors.json"),
-        "不该拿上游的 blob sha 往 fork 上提交"
-    );
-    // 提交里带的是 fork 仓的 blob sha
-    let post = reqs
-        .iter()
-        .find(|r| r.url.path() == "/api/v1/repos/zhang-san/skills/contents" && r.method.as_str() == "POST")
-        .unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
-    let entry = body["files"].as_array().unwrap().iter().find(|f| f["path"] == "authors.json").unwrap();
-    assert_eq!(entry["sha"], "forkblobsha");
-}
 
 /// 归因是锦上添花:身份/文件读不到(此处连 /user 都没 mock,404)绝不拦分享,
 /// 提交里也不夹带半个 authors.json。上面 fresh 用例的 files.len()==2 断言
@@ -978,47 +905,6 @@ async fn a_skill_pushed_straight_into_the_library_gets_a_baseline_record() {
 
 /// 走了提交审核就**不能**记成已入库:改动还在评审分支上,库里根本没有这个技能。
 /// 记了的话「更新」会去库里找一个不存在的技能,而且用户会以为已经生效了。
-#[tokio::test]
-async fn a_skill_that_went_to_review_is_not_recorded_as_managed() {
-    let (c, env) = ctx();
-    let dir = canonical(&c).join("my-notes");
-    write_skill(&dir, "my-notes", "记点东西");
-
-    let server = MockServer::start().await;
-    mount_skill_exists(&server, "my-notes", false).await;
-    mount_repo_info(&server, true).await;
-    // main 受保护:第一次直推 403,之后带 new_branch 成功 → 走提交审核
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/contents"))
-        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
-            "message": "user should have a permission to write to the target branch"
-        })))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
-    mount_commit_ok(&server).await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/pulls"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "html_url": "http://x/pulls/7", "number": 7
-        })))
-        .mount(&server)
-        .await;
-    let client = GiteaClient::new(server.uri(), None).unwrap();
-    let repo = repo_ref();
-
-    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
-        .await
-        .unwrap();
-
-    let ShareOutcome::Shared { mode, .. } = outcome;
-    assert_eq!(mode, ShareMode::ReviewRequested);
-    assert!(
-        state_of(&c).installed.is_empty(),
-        "还没进库就建基线 = 对用户撒谎",
-    );
-}
-
 #[tokio::test]
 async fn taken_by_someone_else_is_an_error_not_a_three_way_dialog() {
     let (c, env) = ctx();
@@ -1148,8 +1034,6 @@ async fn updating_a_skill_i_shared_before_uses_remote_shas() {
         },
         last_pushed_sha: "oldcommit".into(),
         content_hash: String::new(),
-        review_url: None,
-        review_number: None,
     });
     c.store.save_state(&state).unwrap();
 
@@ -1201,8 +1085,13 @@ async fn updating_a_skill_i_shared_before_uses_remote_shas() {
     assert_eq!(state.shared[0].last_pushed_sha, "newsha1");
 }
 
+/// 🔴 **v8 任务 3:直推被 403 挡下 → 一句人话,不再降级开分支 + 提交审核**(D1)。
+///
+/// 断言的是**请求条数**不只是错误码:降级那条路会再发一笔带 `new_branch` 的
+/// contents 与一笔 pulls,只断言错误码的话,"报了错但顺手又开了个没人看的审核
+/// 请求"照样能过。
 #[tokio::test]
-async fn protected_branch_falls_back_to_review_request() {
+async fn a_protected_branch_is_reported_not_downgraded_to_a_review() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
     write_skill(&dir, "my-notes", "d");
@@ -1210,53 +1099,43 @@ async fn protected_branch_falls_back_to_review_request() {
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
     mount_repo_info(&server, true).await;
-    // 第一次(直推)403;之后(带 new_branch)201
     Mock::given(method("POST"))
         .and(path("/api/v1/repos/skills/skills/contents"))
         .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
             "message": "user should have a permission to write to the target branch"
-        })))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
-    mount_commit_ok(&server).await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/pulls"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "html_url": "http://x/pulls/7", "number": 7
         })))
         .mount(&server)
         .await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
+    let err = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
-        .unwrap();
+        .unwrap_err();
 
-    let ShareOutcome::Shared { mode, review_url, .. } = outcome;
-    assert_eq!(mode, ShareMode::ReviewRequested);
-    assert_eq!(review_url.as_deref(), Some("http://x/pulls/7"));
-
+    assert_eq!(err.code, "REPO_PUSH_BLOCKED");
     let reqs = server.received_requests().await.unwrap();
-    let contents: Vec<serde_json::Value> = reqs
+    let contents = reqs
         .iter()
         .filter(|r| r.url.path().ends_with("/contents") && r.method.as_str() == "POST")
-        .map(|r| serde_json::from_slice(&r.body).unwrap())
-        .collect();
-    assert_eq!(contents.len(), 2);
-    assert!(contents[0].get("new_branch").is_none(), "第一次应尝试直推");
-    let branch = contents[1]["new_branch"].as_str().unwrap();
-    assert!(branch.starts_with("skillsync/my-notes-"), "降级后要开分支: {branch}");
-    // 提交审核的 head 用的就是那个分支
-    let pull = reqs.iter().find(|r| r.url.path().ends_with("/pulls")).unwrap();
-    let pull_body: serde_json::Value = serde_json::from_slice(&pull.body).unwrap();
-    assert_eq!(pull_body["head"], branch);
-    assert_eq!(pull_body["base"], "main");
+        .count();
+    assert_eq!(contents, 1, "只试一次直推,不再降级开分支");
+    assert!(
+        !reqs.iter().any(|r| r.url.path().ends_with("/pulls")),
+        "不许再开审核请求:{:?}",
+        reqs.iter().map(|r| r.url.path().to_string()).collect::<Vec<_>>()
+    );
+    assert!(state_of(&c).shared.is_empty(), "没推成就别记账");
 }
 
+/// 🔴 **v8 任务 3 / D8:只读用户 → 一句人话,而且零写请求**(以前这一档会复制
+/// 一份技能库到用户名下,再跨库提交审核)。
+///
+/// 断言的是"一个写请求都没发出去"而不只是错误码:早退若放在 `attribution_file_change`
+/// 之后,库的 authors.json 会被白读一次;放在 fork 之后,用户账号下会留一个注定
+/// 用不上的副本。
 #[tokio::test]
-async fn read_only_users_go_through_a_fork() {
+async fn a_read_only_user_is_told_why_instead_of_getting_a_personal_copy() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("my-notes");
     write_skill(&dir, "my-notes", "d");
@@ -1264,48 +1143,24 @@ async fn read_only_users_go_through_a_fork() {
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
     mount_repo_info(&server, false).await; // 只读
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/forks"))
-        .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
-            "name": "skills", "owner": { "login": "zhang-san" }
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/zhang-san/skills/contents"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "commit": { "sha": "forksha", "html_url": "http://x" }
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/pulls"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "html_url": "http://x/pulls/9", "number": 9
-        })))
-        .mount(&server)
-        .await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
 
-    let outcome = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
+    let err = share::share(&share::ShareClient::Gitea(&client), &c.registry, &env, &c.store, &c.trash, share_req(&repo, "my-notes"), NOW)
         .await
-        .unwrap();
+        .unwrap_err();
 
-    let ShareOutcome::Shared { mode, .. } = outcome;
-    assert_eq!(mode, ShareMode::ReviewRequested);
-
+    // 🔴 **请求断言排在错误码之前**:早退一旦被拿掉,流程会一路走到提交、撞上
+    // 没挂的端点,拿到的是另一个错误码——先断言错误码的话,红的原因会变成
+    // "码不对",而这条测试真正的命题("一个写请求都不该发出去")永远跑不到。
     let reqs = server.received_requests().await.unwrap();
-    // 原库一个 contents POST 都不该有(只读连开分支都是 403)
     assert!(
-        !reqs.iter().any(|r| r.url.path() == "/api/v1/repos/skills/skills/contents"),
-        "只读用户不该往原库直接提交"
+        reqs.iter().all(|r| r.method.as_str() == "GET"),
+        "只读用户这条路一个写请求都不该发出去:{:?}",
+        reqs.iter().map(|r| format!("{} {}", r.method, r.url.path())).collect::<Vec<_>>()
     );
-    // 跨库提交审核:head 是 fork 拥有者:分支
-    let pull = reqs.iter().find(|r| r.url.path().ends_with("/pulls")).unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&pull.body).unwrap();
-    let head = body["head"].as_str().unwrap();
-    assert!(head.starts_with("zhang-san:skillsync/my-notes-"), "head: {head}");
+    assert_eq!(err.code, "REPO_NO_WRITE_ACCESS");
+    assert!(state_of(&c).shared.is_empty(), "没推成就别记账");
 }
 
 /// 🔴 **本体永不搬家**(v6 二期任务 6,取代旧的 `sharing_from_an_agent_dir_adopts_it_into_canonical`)。
@@ -1616,7 +1471,7 @@ async fn pushing_changes_back_refuses_non_conforming_skills_before_any_network_c
     mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let err = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+    let err = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", NOW)
         .await
         .unwrap_err();
 
@@ -1666,7 +1521,7 @@ async fn pushing_local_changes_back_updates_the_books() {
     mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", NOW)
         .await
         .unwrap();
 
@@ -1686,10 +1541,14 @@ async fn pushing_local_changes_back_updates_the_books() {
     assert_eq!(body["files"][0]["sha"], "oldsha");
 }
 
+/// 🔴 **v8 任务 3:回推撞上目标受保护 → 一句人话,不再降级开分支 + 提交审核。**
+///
+/// 这条测试取代了 `review_requested_changes_do_not_touch_the_install_books`
+/// (它守的是"走评审时记账一个字不动",而走评审这条路已整体下线)。它守的那条
+/// 不变量换了形式活着:**没推成就不更新基线**——现在由"报错时磁盘与账本零变化"
+/// 表达,下面正面断言。
 #[tokio::test]
-async fn review_requested_changes_do_not_touch_the_install_books() {
-    // 走了评审 = 改动还没进 main。此时更新 contentHash 等于把「已改动」标记藏起来,
-    // 评审被拒后用户的改动就在界面上彻底隐形了。
+async fn pushing_changes_into_a_protected_library_is_reported_not_downgraded() {
     let (c, env) = ctx();
     let dir = canonical(&c).join("weekly-report");
     write_skill(&dir, "weekly-report", "原版");
@@ -1715,38 +1574,36 @@ async fn review_requested_changes_do_not_touch_the_install_books() {
         })))
         .mount(&server)
         .await;
-    // 直推 403 → 分支 + 评审
     Mock::given(method("POST"))
         .and(path("/api/v1/repos/skills/skills/contents"))
-        .and(body_partial_json(serde_json::json!({"branch": "main"})))
         .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
             "message": "protected"
-        })))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
-    mount_commit_ok(&server).await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/pulls"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "html_url": "http://x/pulls/3", "number": 3
         })))
         .mount(&server)
         .await;
     mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+    let err = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", NOW)
         .await
-        .unwrap();
+        .unwrap_err();
 
-    let share::ShareInstalledOutcome::Submitted(submitted) = outcome else {
-        panic!("远端与账上一致,应当提交(走评审)");
-    };
-    assert_eq!(submitted.mode, ShareMode::ReviewRequested);
+    assert_eq!(err.code, "REPO_PUSH_BLOCKED");
+    let reqs = server.received_requests().await.unwrap();
+    let contents = reqs
+        .iter()
+        .filter(|r| r.method.as_str() == "POST" && r.url.path().ends_with("/contents"))
+        .count();
+    assert_eq!(contents, 1, "只试一次直推,不再降级开分支");
+    assert!(
+        !reqs.iter().any(|r| r.url.path().ends_with("/pulls")),
+        "不许再开审核请求:{:?}",
+        reqs.iter().map(|r| r.url.path().to_string()).collect::<Vec<_>>()
+    );
+    // 没推成 = 基线一个字不动(旧测试守的那条不变量,换了形式)
     let after = state_of(&c).installed[0].clone();
-    assert_eq!(after.commit_sha, before.commit_sha, "评审未合入就推进了版本记账");
-    assert_eq!(after.content_hash, before.content_hash, "评审未合入就清了「已改动」标记");
+    assert_eq!(after.commit_sha, before.commit_sha);
+    assert_eq!(after.content_hash, before.content_hash);
 }
 
 /// 🔴 **回推读的是本体,不是 canonical**(v6 二期任务 6)。
@@ -1794,7 +1651,7 @@ async fn pushing_changes_back_reads_the_body_not_canonical() {
     mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", NOW)
         .await
         .expect("本体就在 .claude/skills 里,不该报「内容已不存在」");
 
@@ -1855,7 +1712,7 @@ async fn pushing_changes_back_looks_the_record_up_by_the_sanitized_key() {
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
     // 传的是**库里的原始目录名**(带大写),账上记的是清洗后的 `weekly-report`
-    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "Weekly-Report", "main", false, NOW)
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "Weekly-Report", "main", NOW)
         .await
         .expect("按记账键查账应当找得到这条记账");
     assert!(matches!(outcome, share::ShareInstalledOutcome::Submitted(_)));
@@ -1883,7 +1740,7 @@ async fn remote_changed_since_install_needs_decision_and_sends_nothing() {
     mount_archive(&server, zip_of_weekly("---\nname: weekly-report\ndescription: 别人的新版\n---\n正文\n")).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", NOW)
         .await
         .unwrap();
 
@@ -1923,7 +1780,7 @@ async fn remote_changed_blocks_even_when_local_is_pristine() {
     mount_archive(&server, zip_of_weekly("---\nname: weekly-report\ndescription: 别人的新版\n---\n正文\n")).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", NOW)
         .await
         .unwrap();
 
@@ -1966,7 +1823,7 @@ async fn empty_baseline_skips_detection_and_submits() {
     // 特意不挂 archive:基线为空连压缩包都不该去下
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
-    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", false, NOW)
+    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", NOW)
         .await
         .unwrap();
 
@@ -1976,71 +1833,3 @@ async fn empty_baseline_skips_detection_and_submits() {
     );
 }
 
-#[tokio::test]
-async fn force_review_never_pushes_directly_even_with_permission() {
-    // 冲突档确认后的第二跳:有写权限、分支也没保护(平时会直推)——
-    // 用户拍板的是「走评审」,直推等于把别人的改动顶掉,恰恰是冲突档要防的事。
-    let (c, env) = ctx();
-    let dir = canonical(&c).join("weekly-report");
-    write_skill(&dir, "weekly-report", "原版");
-    let mut state = state_of(&c);
-    state.installed.push(install_record(&c, &dir));
-    c.store.save_state(&state).unwrap();
-    std::fs::write(dir.join("SKILL.md"), "---\nname: weekly-report\ndescription: 我改过\n---\n").unwrap();
-    let before = state_of(&c).installed[0].clone();
-
-    let server = MockServer::start().await;
-    mount_repo_info(&server, true).await;
-    mount_commit_ok(&server).await;
-    Mock::given(method("GET"))
-        .and(path("/api/v1/repos/skills/skills/branches/main"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "commit": { "id": "head1", "timestamp": "2026-07-31T08:00:00Z" }
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path_regex(r"/api/v1/repos/skills/skills/git/trees/.*"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "tree": [], "truncated": false
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/pulls"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "html_url": "http://x/pulls/9", "number": 9
-        })))
-        .mount(&server)
-        .await;
-    // 特意不挂 archive:force_review 的语义是"已经拍过板",不再重复检测
-    let client = GiteaClient::new(server.uri(), None).unwrap();
-
-    let outcome = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", true, NOW)
-        .await
-        .unwrap();
-
-    let share::ShareInstalledOutcome::Submitted(submitted) = outcome else {
-        panic!("确认后应当提交(走评审)");
-    };
-    assert_eq!(submitted.mode, ShareMode::ReviewRequested);
-    assert!(submitted.review_url.is_some(), "评审链接要带回给用户");
-    // 守卫断言:每一笔提交请求都开了新分支,没有一笔直推 main
-    let reqs = server.received_requests().await.unwrap();
-    let contents_posts: Vec<_> = reqs
-        .iter()
-        .filter(|r| r.method.as_str() == "POST" && r.url.path().ends_with("/contents"))
-        .collect();
-    assert!(!contents_posts.is_empty(), "应当发过提交请求");
-    for req in &contents_posts {
-        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
-        assert!(
-            body.get("new_branch").and_then(|v| v.as_str()).is_some(),
-            "出现了不带 new_branch 的直推请求:{body}"
-        );
-    }
-    // 走了评审,记账一个字不动(现役不变量)
-    let after = state_of(&c).installed[0].clone();
-    assert_eq!(after.commit_sha, before.commit_sha);
-    assert_eq!(after.content_hash, before.content_hash);
-}

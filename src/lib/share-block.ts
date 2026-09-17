@@ -48,12 +48,14 @@ export type ShareFlow = "share" | "changes";
  * 分享一个新技能时会被告知「**改动**已分享」,而他并没有改动过什么。
  * 「措辞跟着语义走」在本期已经打回过四次,这里不再犯。
  *
- * 用 `Record` 而不是若干个 `if`:两条路 × 两种落地方式(直推/审核)四格穷尽,
- * 少写一格 tsc 当场报错,不会静默漏掉某一档。
+ * 用 `Record` 而不是若干个 `if`:两条路 × 落地方式穷尽,少写一格 tsc 当场报错,
+ * 不会静默漏掉某一档。`ShareMode` 自 v8 任务 3 起只剩 `pushed` 一档
+ * (提交审核整条下线),**结构刻意不压平**——core 仍如实回报这次做成了什么,
+ * 将来再多一档时这里会当场要求补一句人话。
  */
 export const SHARE_DONE_LABEL: Record<ShareFlow, Record<ShareMode, MessageKey>> = {
-  share: { pushed: "mine.shareDone", reviewRequested: "mine.shareReview" },
-  changes: { pushed: "mine.shareChangesDone", reviewRequested: "mine.shareChangesReview" },
+  share: { pushed: "mine.shareDone" },
+  changes: { pushed: "mine.shareChangesDone" },
 };
 
 /** 同上,失败侧。`mine.shareFailed`(「分享没能完成」)是既有键,确认屏一直在用。 */

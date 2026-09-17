@@ -73,7 +73,6 @@ function localSkill(over: Partial<InstalledSkillView> & { dirSlug: string }): In
     versions: [],
     shareBlocked: null,
     section: "shareable",
-    review: null,
     libraryUrl: null,
     canonicalReaders: null,
     ...over,

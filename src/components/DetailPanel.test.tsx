@@ -390,7 +390,6 @@ const installedView = (over: Partial<InstalledSkillView> = {}): InstalledSkillVi
   versions: [],
   shareBlocked: null,
   section: sectionOfRelation(over.relation ?? "installed"),
-  review: null,
   libraryUrl: null,
   canonicalReaders: null,
   ...over,
@@ -1098,9 +1097,8 @@ describe("「这是我分享的」入口(v6 任务 5:作者未登记时的写回
       cmd === "skill_claim_attribution"
         ? {
             outcome: "shared",
-            mode: "reviewRequested",
+            mode: "pushed",
             commitSha: "new",
-            reviewUrl: "http://gitea.local/skills/skills/pulls/9",
             adopted: false,
             shareName: "weekly-report",
           }
@@ -1108,7 +1106,7 @@ describe("「这是我分享的」入口(v6 任务 5:作者未登记时的写回
     );
     render(<DetailPanel />);
     await userEvent.click(screen.getByRole("button", { name: "这是我分享的" }));
-    await screen.findByText("已提交审核,通过后生效");
+    await screen.findByText("已登记为分享者");
     expect(invokeMock).toHaveBeenCalledWith("skill_claim_attribution", {
       args: { dirSlug: "weekly-report", repo: undefined },
     });
@@ -1129,7 +1127,6 @@ describe("「这是我分享的」入口(v6 任务 5:作者未登记时的写回
             outcome: "shared",
             mode: "pushed",
             commitSha: "new",
-            reviewUrl: null,
             adopted: false,
             shareName: "weekly-report",
           }
@@ -1142,27 +1139,29 @@ describe("「这是我分享的」入口(v6 任务 5:作者未登记时的写回
     expect(invokeMock).not.toHaveBeenCalledWith("store_skill_detail", expect.anything());
   });
 
-  it("走审核后显示「已提交审核,通过后生效」,不会重新摆出按钮", async () => {
-    // 走审核的那一支还没合并进默认分支,即便重载 attribution 也仍是 null——
-    // 如果按钮态只看 attribution,会重新摆出来引诱用户再交一次审核。
+  // 🔴 v8 任务 3 / D8:登记分享者与分享走同一条提交路径,只读用户那条路
+  // (复制一份到自己名下再提交审核)已随提交审核整体下线——不禁用的话就是
+  // 留了一颗必然报错的按钮。探不到(unknown)时照常可点,预检永远 fail-open。
+  it("🔴 D8:只读用户的「这是我分享的」是禁用的,并说清为什么", async () => {
     signIn();
     open();
     invokeMock.mockImplementation(async (cmd) =>
-      cmd === "skill_claim_attribution"
-        ? {
-            outcome: "shared",
-            mode: "reviewRequested",
-            commitSha: "new",
-            reviewUrl: "http://gitea.local/skills/skills/pulls/9",
-            adopted: false,
-            shareName: "weekly-report",
-          }
-        : null,
+      cmd === "share_preview" ? "noAccess" : null,
     );
     render(<DetailPanel />);
-    await userEvent.click(screen.getByRole("button", { name: "这是我分享的" }));
-    await screen.findByText("已提交审核,通过后生效");
-    expect(screen.queryByRole("button", { name: "这是我分享的" })).not.toBeInTheDocument();
+    const btn = await screen.findByRole("button", { name: "这是我分享的" });
+    await waitFor(() => expect(btn).toBeDisabled());
+    expect(screen.getByText(/没有写入权限/)).toBeInTheDocument();
+  });
+
+  it("对照组:探不到(unknown)时照常可点", async () => {
+    signIn();
+    open();
+    invokeMock.mockImplementation(async (cmd) => (cmd === "share_preview" ? "unknown" : null));
+    render(<DetailPanel />);
+    const btn = await screen.findByRole("button", { name: "这是我分享的" });
+    expect(btn).toBeEnabled();
+    expect(screen.queryByText(/没有写入权限/)).not.toBeInTheDocument();
   });
 
   it("失败时显示错误信息,按钮恢复可点(比如已被别人抢先登记)", async () => {

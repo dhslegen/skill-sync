@@ -380,16 +380,12 @@ pub struct SharedSkill {
     /// 效果是"显示可再推"——宁可多推一次,也不把用户的改动藏起来。
     #[serde(default)]
     pub content_hash: String,
-    /// 上次分享走评审时开出的合并请求链接(v7 任务 2「审核态」)。`None` = 直推
-    /// 进了默认分支,或旧版 state 没有这个字段。**不是**审核态的匹配判据——
-    /// 匹配靠分支名前缀实时查(`core::my_skills::fill_review_from_pulls`),这两个
-    /// 字段只在网络查询失败时当本地兜底证据用,读旧文件不报错(见
-    /// `reads_a_pre_v7_state_json_without_the_review_fields`)。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub review_url: Option<String>,
-    /// 同一份合并请求的编号,与 `review_url` 同一来源,一并可选。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub review_number: Option<u64>,
+    // ⚠️ **v8 任务 3(D12):`reviewUrl`/`reviewNumber` 两个字段的定义已删除**。
+    // 审核态整条下线,没有任何读者;存量 state.json 里仍可能带着它们,serde 默认
+    // 对未知字段是**宽容**的(本结构没有 `deny_unknown_fields`),照常读得进来、
+    // 下一次 save 时自然被盖掉。**刻意不写迁移**:那是给"结构变了必须改写"的
+    // 场合准备的,这里只是少了两个没人看的字段。
+    // 守卫:`an_old_state_json_with_the_removed_review_fields_still_loads`。
 }
 
 // ============================================================ 读写
@@ -739,11 +735,13 @@ mod tests {
         );
     }
 
-    /// v7 任务 2 给 `SharedSkill` 加了 `reviewUrl`/`reviewNumber` 两个可选字段
-    /// (审核态)。旧文件没有它们,读的时候不能报错——`skip_serializing_if` +
-    /// `default` 补 `None`,不是升 schema。
+    /// 🔴 **v8 任务 3(D12):存量文件里带着已删除的 `reviewUrl`/`reviewNumber`
+    /// 时必须照常读得进来。** D12 的原话是"状态文件对未知字段本就宽容,旧文件
+    /// 照常读"——但那是一句**关于 serde 默认行为的假设**,而这个结构将来完全
+    /// 可能被加上 `deny_unknown_fields`(同一个文件里别的结构就有类似讲究)。
+    /// 一条测试换一个不用假设的结论:真喂一份带那两个字段的旧文件进去。
     #[test]
-    fn reads_a_pre_v7_state_json_without_the_review_fields() {
+    fn an_old_state_json_with_the_removed_review_fields_still_loads() {
         let (_tmp, s) = store();
         std::fs::create_dir_all(s.dir()).unwrap();
         let old = r#"{
@@ -761,7 +759,9 @@ mod tests {
                     "ref": "main"
                 },
                 "lastPushedSha": "abc123",
-                "contentHash": "sha256:deadbeef"
+                "contentHash": "sha256:deadbeef",
+                "reviewUrl": "http://gitea.internal/skills/skills/pulls/7",
+                "reviewNumber": 7
             }]
         }"#;
         std::fs::write(s.dir().join("state.json"), old).unwrap();
@@ -770,8 +770,13 @@ mod tests {
 
         assert_eq!(loaded.value.shared.len(), 1);
         assert_eq!(loaded.value.shared[0].name, "weekly-report");
-        assert_eq!(loaded.value.shared[0].review_url, None);
-        assert_eq!(loaded.value.shared[0].review_number, None);
+        assert_eq!(loaded.value.shared[0].content_hash, "sha256:deadbeef");
+        // 写回时那两个字段自然消失,其余内容一字不差
+        let next = loaded.value.clone();
+        s.save_state(&next).unwrap();
+        let text = std::fs::read_to_string(s.dir().join("state.json")).unwrap();
+        assert!(!text.contains("reviewUrl"), "已删除的字段不该再被写回:{text}");
+        assert!(text.contains("weekly-report"));
     }
 
     #[test]

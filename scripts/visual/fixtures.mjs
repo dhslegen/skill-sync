@@ -203,8 +203,6 @@ const SKILLS = [
     contentHash: "",
     remote: null,
     localModified: false,
-    // 「审核中」:core 查到这一行挂着一条开放的合并请求
-    review: { url: "http://gitea.internal.example/skills/skills/pulls/42" },
     tools: [{ agent: "claude-code", state: "linked" }],
     canonicalReaders: CANONICAL_READERS,
   },
@@ -437,7 +435,6 @@ function installedSkill(s) {
     versions: [],
     shareBlocked: s.shareBlocked ?? null,
     section: s.section,
-    review: s.review ?? null,
     // 「在技能库里查看」的地址由 core 拼(编译期内网地址 + 索引里的真实 path);
     // 只有确实在公司技能库里的行才有值。这里照那个形状造。
     libraryUrl:

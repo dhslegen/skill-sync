@@ -17,8 +17,6 @@ use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const NOW: &str = "2026-08-03T09:00:00.000Z";
-// review_branch 由 NOW 派生:数字全拼
-const REVIEW_BRANCH: &str = "skillsync/my-notes-20260803090000000";
 
 struct TmpEnv {
     home: PathBuf,
@@ -182,75 +180,22 @@ async fn push_and_unprotected_saves_directly() {
     .await
     .unwrap();
 
-    let ShareOutcome::Shared { mode, commit_sha, review_url, .. } = outcome;
-        assert_eq!(mode, ShareMode::Pushed);
-        assert_eq!(commit_sha, "e0ecf23eea0efcc72f5cbb54a96150dfbe3efd36");
-        assert!(review_url.is_none());
+    let ShareOutcome::Shared { mode, commit_sha, .. } = outcome;
+    assert_eq!(mode, ShareMode::Pushed);
+    assert_eq!(commit_sha, "e0ecf23eea0efcc72f5cbb54a96150dfbe3efd36");
     // 记账落了 shared
     let state = c.store.load_state().unwrap().value;
     assert_eq!(state.shared.len(), 1);
     assert_eq!(state.shared[0].name, "my-notes");
 }
 
+/// 🔴 **v8 任务 3:提交撞上保护规则 → 一句人话,不再降级开分支 + 提交审核**(D1)。
+///
+/// GitHub 的保护规则要 admin 权限才读得到,所以 `branch_protected` 那道先探已经
+/// 删掉——提交时的 `BRANCH_PROTECTION_RULE_VIOLATION` 就是唯一也是最终的真相。
+/// 断言的是**请求条数**不只是错误码:降级那条路会再发 `git/refs` 与 `pulls`。
 #[tokio::test]
-async fn push_but_protected_goes_review() {
-    let (c, env) = ctx();
-    let dir = c.home.join(".agents/skills/my-notes");
-    write_skill(&dir, "my-notes");
-
-    let server = MockServer::start().await;
-    mount_basics(&server, true, true).await;
-    // 保护先探为 true:不应对 main 发过任何提交,直接开分支
-    Mock::given(method("POST"))
-        .and(path("/api/v3/repos/team/skills/git/refs"))
-        .and(body_string_contains(REVIEW_BRANCH))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "ref": format!("refs/heads/{REVIEW_BRANCH}"),
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/graphql"))
-        .and(body_string_contains(REVIEW_BRANCH))
-        .respond_with(gql_ok("367cf1e2116316eca0dea34a4d1acd9e2a731820"))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v3/repos/team/skills/pulls"))
-        .and(body_string_contains(REVIEW_BRANCH))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "number": 1,
-            "html_url": "https://github.example/team/skills/pull/1",
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let gh = client(&server);
-    let repo = repo_ref();
-    let outcome = share::share(
-        &ShareClient::Github(&gh),
-        &c.registry,
-        &env,
-        &c.store,
-        &c.trash,
-        share_req(&repo, "my-notes"),
-        NOW,
-    )
-    .await
-    .unwrap();
-
-    let ShareOutcome::Shared { mode, review_url, .. } = outcome;
-        assert_eq!(mode, ShareMode::ReviewRequested);
-        assert_eq!(review_url.as_deref(), Some("https://github.example/team/skills/pull/1"));
-}
-
-#[tokio::test]
-async fn protection_violation_on_submit_degrades_to_review() {
-    // protected 先探是 false,但提交撞上 BRANCH_PROTECTION_RULE_VIOLATION(录制 09):
-    // 保护规则可能只拦部分人,错误类型才是最终真相
+async fn protection_violation_on_submit_is_reported_not_downgraded() {
     let (c, env) = ctx();
     let dir = c.home.join(".agents/skills/my-notes");
     write_skill(&dir, "my-notes");
@@ -259,38 +204,16 @@ async fn protection_violation_on_submit_degrades_to_review() {
     mount_basics(&server, true, false).await;
     Mock::given(method("POST"))
         .and(path("/api/graphql"))
-        .and(body_string_contains("\"branchName\":\"main\""))
         .respond_with(gql_error(
             "BRANCH_PROTECTION_RULE_VIOLATION",
             "protected branch 'main' check failed:\n  Changes must be made through a pull request.",
         ))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v3/repos/team/skills/git/refs"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({})))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/graphql"))
-        .and(body_string_contains(REVIEW_BRANCH))
-        .respond_with(gql_ok("367cf1e2116316eca0dea34a4d1acd9e2a731820"))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v3/repos/team/skills/pulls"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "number": 2,
-            "html_url": "https://github.example/team/skills/pull/2",
-        })))
         .mount(&server)
         .await;
 
     let gh = client(&server);
     let repo = repo_ref();
-    let outcome = share::share(
+    let err = share::share(
         &ShareClient::Github(&gh),
         &c.registry,
         &env,
@@ -300,76 +223,32 @@ async fn protection_violation_on_submit_degrades_to_review() {
         NOW,
     )
     .await
-    .unwrap();
+    .unwrap_err();
 
-    let ShareOutcome::Shared { mode, .. } = outcome;
-    assert_eq!(mode, ShareMode::ReviewRequested);
+    assert_eq!(err.code, "REPO_PROTECTED");
+    let reqs = server.received_requests().await.unwrap();
+    assert!(
+        !reqs.iter().any(|r| r.url.path().ends_with("/git/refs") || r.url.path().ends_with("/pulls")),
+        "不许再开分支/合并请求:{:?}",
+        reqs.iter().map(|r| r.url.path().to_string()).collect::<Vec<_>>()
+    );
+    assert!(c.store.load_state().unwrap().value.shared.is_empty(), "没推成就别记账");
 }
 
+/// 🔴 **v8 任务 3 / D8:没有写权限 → 一句人话,而且零写请求**(以前会 fork 一份
+/// 到用户名下再跨库提交审核)。
 #[tokio::test]
-async fn no_push_forks_then_cross_repo_review() {
+async fn no_push_access_is_told_why_instead_of_getting_a_fork() {
     let (c, env) = ctx();
     let dir = c.home.join(".agents/skills/my-notes");
     write_skill(&dir, "my-notes");
 
     let server = MockServer::start().await;
     mount_basics(&server, false, false).await;
-    // 录制 11:202 受理,响应体自带 full_name
-    Mock::given(method("POST"))
-        .and(path("/api/v3/repos/team/skills/forks"))
-        .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
-            "full_name": "zhang-san/skills",
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    // fork 就绪轮询:第一次 404(还在准备),之后可读
-    Mock::given(method("GET"))
-        .and(path("/api/v3/repos/zhang-san/skills/branches/main"))
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-            "message": "Not Found"
-        })))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/api/v3/repos/zhang-san/skills/branches/main"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "name": "main",
-            "commit": { "sha": "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d",
-                        "commit": { "committer": { "date": "2026-08-03T08:00:00Z" } } },
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v3/repos/zhang-san/skills/git/refs"))
-        .and(body_string_contains(REVIEW_BRANCH))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({})))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/graphql"))
-        .and(body_string_contains("zhang-san/skills"))
-        .respond_with(gql_ok("aaaa60b01f91b314f59955a4e4d4e80d8edf11d0"))
-        .expect(1)
-        .mount(&server)
-        .await;
-    // 跨库评审:head 必须是 {fork_owner}:{branch} 形式,发到上游仓
-    Mock::given(method("POST"))
-        .and(path("/api/v3/repos/team/skills/pulls"))
-        .and(body_string_contains(format!("zhang-san:{REVIEW_BRANCH}")))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "number": 7,
-            "html_url": "https://github.example/team/skills/pull/7",
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
 
     let gh = client(&server);
     let repo = repo_ref();
-    let outcome = share::share(
+    let err = share::share(
         &ShareClient::Github(&gh),
         &c.registry,
         &env,
@@ -379,11 +258,16 @@ async fn no_push_forks_then_cross_repo_review() {
         NOW,
     )
     .await
-    .unwrap();
+    .unwrap_err();
 
-    let ShareOutcome::Shared { mode, review_url, .. } = outcome;
-        assert_eq!(mode, ShareMode::ReviewRequested);
-        assert_eq!(review_url.as_deref(), Some("https://github.example/team/skills/pull/7"));
+    // 请求断言排在错误码之前,理由同 `share_flow.rs` 的同名用例。
+    let reqs = server.received_requests().await.unwrap();
+    assert!(
+        reqs.iter().all(|r| r.method.as_str() == "GET"),
+        "一个写请求都不该发出去:{:?}",
+        reqs.iter().map(|r| format!("{} {}", r.method, r.url.path())).collect::<Vec<_>>()
+    );
+    assert_eq!(err.code, "REPO_NO_WRITE_ACCESS");
 }
 
 // ============================================================ 错误与预检

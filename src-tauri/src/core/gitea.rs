@@ -9,17 +9,20 @@
 //! - 404 `{"errors":[…],"message":"GetContentsOrList"}`
 //! - 422 `{"message":"sha does not match [given: …, expected: …]"}`(提交瞬间的竞态)
 //!
-//! # 分享路径的权限矩阵(实测,任务 11 据此编排)
+//! # 分享路径的权限矩阵(实测)
 //!
-//! | 用户在目标库的权限 | 直推默认分支 | 开新分支 + 提交审核 |
-//! |---|---|---|
-//! | 只读(pull) | 403 | **403**——建分支同样被拒,只能先 fork 再从 fork 提交审核 |
-//! | 可写(push)且默认分支受保护 | 403 | 201 + 201 ✓ |
-//! | 可写且默认分支未受保护 | 201 ✓ | 201 ✓ |
+//! | 用户在目标库的权限 | 直推默认分支 |
+//! |---|---|
+//! | 只读(pull) | 403 |
+//! | 可写(push)且默认分支受保护 | 403 |
+//! | 可写且默认分支未受保护 | 201 ✓ |
 //!
-//! 决策 C3 写的"无写权限自动走 PR(new_branch + pulls)"只在**可写 + 分支受保护**时成立;
-//! 纯只读用户走这条路会 403。因此本模块同时提供 [`GiteaClient::fork_repo`],
-//! 由任务 11 按 `permissions.push` 选择路径:可写→直推或开分支,只读→fork 后提交审核。
+//! 🔴 **v8 任务 3(D1):这张表原先还有「开新分支 + 提交审核」一列,以及只读用户
+//! 先复制一份到自己名下再跨库提交审核那条路——整条链路已下线**。判据是内网实测:
+//! 开出去的合并请求没人看(4 个里 3 个挂着),`authors.json` 的贡献者字段一个都
+//! 没有,而公司技能库的主线并没有开保护,直推是实际可用的唯一路径。留着它等于
+//! 让用户以为"提交了",而库里什么都没变。剩下两种 403 各自有一句人话错误
+//! (见 `share::submit_gitea`),**不再自动降级**。
 //!
 //! # 系统代理:按源分两档(M1 任务 13 拍板"一律直连",M3 任务 3 修订)
 //!
@@ -54,17 +57,6 @@ pub fn app_http_client_proxied() -> Result<reqwest::Client, AppError> {
     build_client(false, None)
 }
 
-/// 内建源的 HTTP client,带一个**短超时**——只给"查不到就当没有"的锦上添花式
-/// 查询用(v7 任务 2「审核态」):`installed_list` 会被 `useLocalRefresh` 在窗口
-/// 重获焦点/切页/文件变更三处触发,而这次查询失败本就有既定的降级路。不给超时
-/// 的话,用户不在内网(或撞上黑洞网关)时整页数据会挂在一次无超时的请求上
-/// ——这是本任务新引入的暴露面,`app_http_client()`/`app_http_client_proxied()`
-/// 两个既有函数的默认无超时行为**不受影响**(`build_client` 的 `timeout` 参数
-/// 缺省给 `None`)。
-pub fn app_http_client_with_timeout(timeout: std::time::Duration) -> Result<reqwest::Client, AppError> {
-    build_client(true, Some(timeout))
-}
-
 fn build_client(no_proxy: bool, timeout: Option<std::time::Duration>) -> Result<reqwest::Client, AppError> {
     let mut builder =
         reqwest::Client::builder().user_agent(concat!("SkillSync/", env!("CARGO_PKG_VERSION")));
@@ -82,7 +74,7 @@ fn build_client(no_proxy: bool, timeout: Option<std::time::Duration>) -> Result<
 
 /// 判断一个链接是否与技能库同源(scheme + host + port 全等)。
 ///
-/// 「在系统浏览器里打开」的白名单:只放行技能库自己的页面(评审链接等)。
+/// 「在系统浏览器里打开」的白名单:只放行技能库自己的页面(「在技能库里查看」等)。
 /// 这是从 webview 通往系统的通道,放行任意 URL 等于让技能库内容(或未来的
 /// 自定义源)能把用户带去任何地方——宁可保守。
 pub fn is_same_origin(base_url: &str, candidate: &str) -> bool {
@@ -259,79 +251,6 @@ pub struct ChangeFilesRequest {
 pub struct CommitResult {
     pub sha: String,
     pub html_url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-// Gitea 发的是 snake_case,前端要的是 camelCase:只在序列化方向改名,
-// 否则反序列化会去找 htmlUrl 这种字段而拿到默认值(静默失真)。
-#[serde(rename_all(serialize = "camelCase"))]
-pub struct PullResult {
-    pub number: u64,
-    pub html_url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ForkResult {
-    pub owner: String,
-    pub repo: String,
-    /// 之前就存在同名副本(重复分享时的常态,不是错误)。
-    pub already_existed: bool,
-}
-
-/// [`GiteaClient::list_open_pulls`] 单页条数,同时用于生成请求参数与判断该不该
-/// 继续翻页(修复轮 2:公开出来是为了测试能直接引用这个数字,而不是在
-/// `tests/review_state.rs` 里另抄一份 20/50 的字面量——两边一旦漂移,测试守的
-/// 就是一个错误的边界)。Gitea 的 `[api] MAX_RESPONSE_ITEMS` 默认也是 50,
-/// 不同部署可能改过,所以显式给出而不依赖服务端默认值。
-pub const PULLS_PAGE_SIZE: u32 = 50;
-
-/// [`GiteaClient::list_open_pulls`] 翻页的硬上限(修复轮 2 新增)。配合
-/// [`PULLS_PAGE_SIZE`],最多请求 `PULLS_MAX_PAGES * PULLS_PAGE_SIZE` = 1000 条
-/// ——公司库开放的提交审核数量到不了这个量级,超出即视为异常(服务端不尊重
-/// `page` 参数、每页都原样回同一批数据),当作查询失败交回调用方走既有降级路。
-pub const PULLS_MAX_PAGES: u32 = 20;
-
-/// [`GiteaClient::list_open_pulls`] 整趟查询(含全部翻页)的总耗时上限(修复轮 2
-/// 新增)。单次请求各自还有调用方给的 `app_http_client_with_timeout`,但那管不住
-/// 翻页反复调用的总时长——这条查询按设计只是"查不到就当没有"的锦上添花,
-/// 不该让 `installed_list` 挂在一次可能要转二十页的查询上。
-pub const PULLS_QUERY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// 一个开放的合并请求(v7 任务 2「审核态」用)。
-///
-/// 只取解析用得上的三个字段,不 1:1 照搬 Gitea 的完整 PR 形状。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all(serialize = "camelCase"))]
-pub struct PullBrief {
-    pub number: u64,
-    pub html_url: String,
-    /// 源分支名(不带 `owner:` 前缀——本模块的评审分支都开在目标库自己身上,
-    /// fork 提交才会是那种形状,而列表查询问的是目标库,`head.ref` 就是纯分支名)。
-    pub head_ref: String,
-}
-
-/// Gitea 响应的原始形状:`head` 嵌套着 `ref`(Rust 关键字,需要 `rename`)。
-/// 只在这个函数内部用,不对外暴露——外部只该看到扁平的 [`PullBrief`]。
-#[derive(Debug, Deserialize)]
-struct RawPull {
-    number: u64,
-    html_url: String,
-    head: RawPullHead,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawPullHead {
-    #[serde(rename = "ref")]
-    git_ref: String,
-}
-
-/// 评审分支名的前缀,与 [`crate::core::share::review_branch`] 共用同一份实现
-/// (它内部就调用这个函数再拼时间戳)——两把尺子不能各自维护一份字面量,
-/// 一旦分支名的格式变了而这里没跟着变,「审核中」会永远匹配不上(见
-/// `tests/review_state.rs` 的同源断言)。
-pub fn review_branch_prefix(share_name: &str) -> String {
-    format!("skillsync/{share_name}-")
 }
 
 /// 压缩包里的一个文件。
@@ -684,161 +603,6 @@ impl GiteaClient {
             .collect())
     }
 
-    /// 复刻一份仓库到自己名下。
-    ///
-    /// 只读用户想贡献内容时唯一可走的路:实测只读用户在原库里连分支都建不了(403),但可以 fork。
-    /// 已存在同名 fork 时 Gitea 返回 409,此处按"已就绪"处理。
-    pub async fn fork_repo(&self, owner: &str, repo: &str) -> Result<ForkResult, AppError> {
-        let resp = self
-            .http_send(
-                self.request(
-                    reqwest::Method::POST,
-                    self.api(&format!("/repos/{owner}/{repo}/forks")),
-                )
-                .json(&serde_json::json!({})),
-            )
-            .await?;
-        if resp.status() == reqwest::StatusCode::CONFLICT {
-            let user = self.current_user().await?;
-            return Ok(ForkResult {
-                owner: user.login,
-                repo: repo.to_string(),
-                already_existed: true,
-            });
-        }
-        let resp = check_status(resp).await?;
-
-        #[derive(Deserialize)]
-        struct Fork {
-            name: String,
-            owner: ForkOwner,
-        }
-        #[derive(Deserialize)]
-        struct ForkOwner {
-            login: String,
-        }
-        let fork: Fork = parse_json(resp).await?;
-        Ok(ForkResult {
-            owner: fork.owner.login,
-            repo: fork.name,
-            already_existed: false,
-        })
-    }
-
-    /// 开一个待评审的合并请求。界面上叫「提交审核」,不出现 PR 字样。
-    ///
-    /// `head` 在同库分支时写分支名;从 fork 提交时写 `<fork 拥有者>:<分支名>`。
-    pub async fn create_pull(
-        &self,
-        owner: &str,
-        repo: &str,
-        head: &str,
-        base: &str,
-        title: &str,
-        body: &str,
-    ) -> Result<PullResult, AppError> {
-        let resp = self
-            .send(
-                self.request(
-                    reqwest::Method::POST,
-                    self.api(&format!("/repos/{owner}/{repo}/pulls")),
-                )
-                .json(&serde_json::json!({
-                    "head": head, "base": base, "title": title, "body": body
-                })),
-            )
-            .await?;
-        parse_json(resp).await
-    }
-
-    /// 关闭一个评审。界面暂无入口,live 测试清理与将来的"撤回提交审核"共用。
-    pub async fn close_pull(&self, owner: &str, repo: &str, number: u64) -> Result<(), AppError> {
-        self.send(
-            self.request(
-                reqwest::Method::PATCH,
-                self.api(&format!("/repos/{owner}/{repo}/pulls/{number}")),
-            )
-            .json(&serde_json::json!({ "state": "closed" })),
-        )
-        .await?;
-        Ok(())
-    }
-
-    /// 目标库当前开放的合并请求(v7 任务 2「审核态」)。
-    ///
-    /// **翻页到空**,不赌"开放 PR 数永远小于某个默认页大小"——躺久的审核请求
-    /// 掉出第一页会静默截断,表现是「审核中」凭空消失、分享按钮回来、用户重复
-    /// 提交,恰是这整个功能存在的理由。每页 [`PULLS_PAGE_SIZE`] 条。
-    ///
-    /// 🔴 **停止条件是"这一页空了"(`raw.is_empty()`),不是"这一页比页大小少"**
-    /// (修复轮 2 改,原实现的教训):按数量比较在服务端把 `limit` 截得比我们要求
-    /// 的更小时(比如某个部署把响应硬上限设成 20)会提前判定"到底了"——第一页
-    /// 拿到 20 条(< 50)就 `break`,后面的页再也不会去要,静默截断原样重演一次。
-    /// 空页判据对"服务端到底给多大一页"不敏感,只要 `page` 参数被服务端尊重,
-    /// 迟早会拿到一页真正的空数组。
-    ///
-    /// 🔴 **代价:正常情况下恒定多发一趟请求**——哪怕开放 PR 只有几条、一页就
-    /// 装得下,也必须再问一次第 2 页确认它是空的才敢停,不能靠"这一页没装满"
-    /// 就推断"后面没有了"(那正是上一条要消灭的静默截断)。典型场景(几条开放
-    /// 提交审核)因此是 **2 次**请求,不是修复轮 1 那版按数量比较时的 1 次——
-    /// 调用方(`commands::list_open_builtin_pulls` 的文档)按这个真实次数写,
-    /// 不要照抄"一次请求"这句已经不成立的旧说法。
-    ///
-    /// 🔴 **两层止损,防的是"服务端不尊重 `page` 参数"这个相反的极端**:如果服务端
-    /// 完全忽略 `page`(反向代理丢了 query string、或部署本身有 bug),每一页都会
-    /// 原样返回同一批非空数据,空页判据永远等不到——翻页会**转到 [`PULLS_MAX_PAGES`]
-    /// 页就止损**,同时整趟查询包着 [`PULLS_QUERY_DEADLINE`] 的**总耗时**上限
-    /// (单次请求各自还有调用方给的 `app_http_client_with_timeout`,但那管不住
-    /// 翻页反复调用的总时长)。两条中任一条命中都当作"这次查询失败",交回调用方
-    /// 走既有的按本地证据降级的路——这条路本来就是为"拿不到真实 PR 状态"准备的
-    /// 语义,不是新开一个错误分支。
-    ///
-    /// **不筛选**——筛选是调用方的事(按 [`review_branch_prefix`] 把 `head_ref`
-    /// 匹配回具体的技能,这样连存量分享(那些从没落过 PR 坐标的)也认得出,
-    /// 不必依赖本地记账里的 `review_number`)。
-    pub async fn list_open_pulls(&self, owner: &str, repo: &str) -> Result<Vec<PullBrief>, AppError> {
-        match tokio::time::timeout(PULLS_QUERY_DEADLINE, self.list_open_pulls_paged(owner, repo)).await {
-            Ok(result) => result,
-            Err(_) => Err(AppError::new("NET_PULLS_TIMEOUT", "查询提交审核状态超时,请稍后重试").with_detail(
-                format!("list_open_pulls exceeded overall deadline of {PULLS_QUERY_DEADLINE:?}"),
-            )),
-        }
-    }
-
-    async fn list_open_pulls_paged(&self, owner: &str, repo: &str) -> Result<Vec<PullBrief>, AppError> {
-        let base = self.api(&format!("/repos/{owner}/{repo}/pulls"));
-        let mut out = Vec::new();
-        let mut page = 1u32;
-        loop {
-            let resp = self
-                .send(self.request(
-                    reqwest::Method::GET,
-                    format!("{base}?state=open&limit={PULLS_PAGE_SIZE}&page={page}"),
-                ))
-                .await?;
-            let raw: Vec<RawPull> = parse_json(resp).await?;
-            if raw.is_empty() {
-                break;
-            }
-            out.extend(raw.into_iter().map(|p| PullBrief {
-                number: p.number,
-                html_url: p.html_url,
-                head_ref: p.head.git_ref,
-            }));
-            if page >= PULLS_MAX_PAGES {
-                return Err(AppError::new(
-                    "NET_PULLS_TOO_MANY",
-                    "开放的提交审核数量过多,已停止查询,请稍后重试",
-                )
-                .with_detail(format!(
-                    "list_open_pulls exceeded {PULLS_MAX_PAGES} pages of {PULLS_PAGE_SIZE} items each"
-                )));
-            }
-            page += 1;
-        }
-        Ok(out)
-    }
-
     async fn http_send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response, AppError> {
         req.send().await.map_err(|e| {
             if is_unreachable(&e) {
@@ -1052,22 +816,11 @@ pub fn unzip_archive(bytes: &[u8]) -> Result<RepoArchive, AppError> {
 mod tests {
     use super::*;
 
-    /// 两把尺子必须同源:`review_branch_prefix`(这个文件)与
-    /// `share::review_branch`(实际生成分支名的地方)如果各自维护一份字面量,
-    /// 分支名格式一变、这里没跟着变,「审核中」就会永远匹配不上。
-    /// `review_branch` 内部就调用这个函数,所以这条断言在正确实现下是必然成立的
-    /// ——它守的是"将来别把两者拆开各写一份"这件事。
-    #[test]
-    fn the_prefix_matches_what_review_branch_actually_produces() {
-        let branch = crate::core::share::review_branch("weekly-report", "2026-08-28T10:00:00Z");
-        assert!(branch.starts_with(&review_branch_prefix("weekly-report")));
-    }
-
     #[test]
     fn same_origin_accepts_only_the_library_itself() {
         let base = "http://gitea.internal.example:3000";
 
-        // 同源的不同路径都放行(评审链接就长这样)
+        // 同源的不同路径都放行(技能库里的技能页面就长这样)
         assert!(is_same_origin(base, "http://gitea.internal.example:3000/skills/skills/pulls/7"));
 
         // 异 host / 异端口 / 异 scheme 一律拒绝

@@ -124,7 +124,6 @@ function mk(
     versions: [],
     shareBlocked: null,
     section,
-    review: null,
     libraryUrl: null,
     canonicalReaders: null,
     ...over,
@@ -386,57 +385,6 @@ describe("WhereBlocks", () => {
     expect(screen.queryByText("技能库里有新版本")).not.toBeInTheDocument();
   });
 
-  it("块 3:审核中且有链接时可点开查看,调用 open_library_url", async () => {
-    const user = userEvent.setup();
-    renderExpanded(
-      <WhereBlocks
-        skill={mk("weekly-report", "shareable", {
-          review: { url: "http://gitea.local/skills/skills/pulls/9" },
-        })}
-        agentNames={NAMES} remoteChanged={false}
-      />,
-    );
-    expect(screen.getByText("审核中")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "查看审核" }));
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith(
-        "open_library_url",
-        expect.objectContaining({ args: { url: "http://gitea.local/skills/skills/pulls/9" } }),
-      ),
-    );
-  });
-
-  // 🔴 v7.1 任务 5:行上与详情动作区的「在技能库里查看」已按画布撤掉,
-  // `review.url` 在详情面板里的渲染点只剩这一处——**打开失败的渲染点也随之
-  // 只剩这一处**,所以在这里正面钉住它,别让那条不变量随旧测试一起消失。
-  it("🔴 块 3:「查看审核」打开失败要有渲染点,不能静默吞掉", async () => {
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "open_library_url")
-        throw { code: "NET_BLOCKED", message: "这个地址不允许打开" };
-      return null;
-    });
-    const user = userEvent.setup();
-    renderExpanded(
-      <WhereBlocks
-        skill={mk("weekly-report", "shareable", { review: { url: "http://gitea.local/pulls/9" } })}
-        agentNames={NAMES} remoteChanged={false}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: "查看审核" }));
-    expect(await screen.findByText(/这个地址不允许打开/)).toBeInTheDocument();
-  });
-
-  it("块 3:审核中但 url 为 null(直推留下的记录)时,「审核中」照摆,不用空串冒充链接", () => {
-    renderExpanded(
-      <WhereBlocks
-        skill={mk("weekly-report", "shareable", { review: { url: null } })}
-        agentNames={NAMES} remoteChanged={false}
-      />,
-    );
-    expect(screen.getByText("审核中")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "查看审核" })).not.toBeInTheDocument();
-  });
-
   it("三块外层左右留白与元信息行一致(px-5)", () => {
     const { container } = renderExpanded(
       <WhereBlocks skill={mk("weekly-report", "installedFrom")} agentNames={NAMES} remoteChanged={false} />,
@@ -548,18 +496,6 @@ describe("whereSummary:折起来之后那一行结论", () => {
   // 🔴 这是折叠必须过的那道闸:收起来的东西里"有没有在等我",结论行要说出来。
   it("库里有新版时,结论里必须出现「库里有新版」", () => {
     expect(whereSummary(mk("x", "installedFrom"), true)).toContain("库里有新版");
-  });
-
-  it("审核中时,结论里必须出现「审核中」", () => {
-    const skill = mk("x", "shareable", { review: { url: null } });
-    expect(whereSummary(skill, false)).toContain("审核中");
-  });
-
-  it("两件事同时成立时两句都在,一件都不许被另一件挤掉", () => {
-    const skill = mk("x", "shareable", { review: { url: null } });
-    const parts = whereSummary(skill, true);
-    expect(parts).toContain("库里有新版");
-    expect(parts).toContain("审核中");
   });
 
   it("🔴 无论工具怎么摆,结论行都不出现工具计数", () => {

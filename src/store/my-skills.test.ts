@@ -66,7 +66,6 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   versions: [],
   shareBlocked: null,
   section: sectionOfRelation(over.relation ?? "installed"),
-  review: null,
   libraryUrl: null,
   canonicalReaders: null,
   ...over,
@@ -95,7 +94,6 @@ function reset() {
     shareBusy: null,
     shareDone: null,
     shareError: null,
-    shareConflict: null,
     shareableIndexes: new Map(),
     shareableIndexesLastFetchedAt: new Map(),
     updateAllBusy: false,
@@ -797,12 +795,15 @@ describe("分享确认屏(零编辑)", () => {
   });
 });
 
-describe("分享改动的冲突档(M5 任务 1)", () => {
+describe("分享改动撞上「库里已有更新的版本」(M5 任务 1;v8 任务 3 改成如实报错)", () => {
   beforeEach(reset);
 
   const modified = () => view({ localModified: true });
 
-  it("远端变过:进冲突档等拍板,不当成错误", async () => {
+  // ⚠️ v8 任务 3:旧的拍板弹窗只有「提交审核 / 先不动」两条路,提交审核已整体
+  // 下线,所以这一档暂时是一句如实的失败(带 dirSlug 归属,两处渲染点都认它)。
+  // **「仍然覆盖」是任务 4 的事**,别在这里提前造。
+  it("远端变过:如实报一句「库里已有更新的版本」,而不是静默无事发生", async () => {
     useMySkills.setState({ list: [modified()] });
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "skill_share_changes")
@@ -814,36 +815,36 @@ describe("分享改动的冲突档(M5 任务 1)", () => {
     await useMySkills.getState().shareChanges("weekly-report");
 
     const s = useMySkills.getState();
-    expect(s.shareConflict).toEqual({
-      dirSlug: "weekly-report",
-      historyUrl: "http://g/skills/skills/commits/x",
-    });
-    expect(s.shareError).toBeNull();
+    expect(s.shareError?.dirSlug).toBe("weekly-report");
+    expect(s.shareError?.error.code).toBe("CONFLICT_REMOTE_CHANGED");
+    expect(s.shareError?.error.message).toContain("已经有更新的版本");
+    expect(s.shareError?.flow).toBe("changes");
     expect(s.shareDone).toBeNull();
   });
 
-  it("确认后带 forceReview 重试,结果按「已提交审核」展示", async () => {
-    useMySkills.setState({
-      list: [modified()],
-      shareConflict: { dirSlug: "weekly-report", historyUrl: null },
-    });
+  it("v8 任务 3:这一跳不再带 forceReview(那个参数已随提交审核一起下线)", async () => {
+    useMySkills.setState({ list: [modified()] });
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "skill_share_changes")
-        return { kind: "submitted", mode: "reviewRequested", commitSha: "n", reviewUrl: "http://x/pulls/7" };
+        return { kind: "submitted", mode: "pushed", commitSha: "n" };
       if (cmd === "installed_list") return [modified()];
       return AGENTS;
     });
 
-    await useMySkills.getState().confirmShareReview();
+    await useMySkills.getState().shareChanges("weekly-report");
 
     const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
-    expect((call?.[1] as { args: { forceReview?: boolean } }).args.forceReview).toBe(true);
-    const s = useMySkills.getState();
-    expect(s.shareConflict).toBeNull();
-    expect(s.shareDone).toEqual({ dirSlug: "weekly-report", mode: "reviewRequested", flow: "changes" });
+    expect(Object.keys((call?.[1] as { args: Record<string, unknown> }).args)).not.toContain(
+      "forceReview",
+    );
+    expect(useMySkills.getState().shareDone).toEqual({
+      dirSlug: "weekly-report",
+      mode: "pushed",
+      flow: "changes",
+    });
   });
 
-  it("提交瞬间被人抢先(CONFLICT_STALE)进同一个冲突档", async () => {
+  it("提交瞬间被人抢先(CONFLICT_STALE)说同一句话", async () => {
     // 前置检测过了、提交仍撞上 422:检测与提交之间被人抢先,语义相同,
     // 不该退化成一句通用错误让用户干瞪眼
     useMySkills.setState({ list: [modified()] });
@@ -857,8 +858,8 @@ describe("分享改动的冲突档(M5 任务 1)", () => {
     await useMySkills.getState().shareChanges("weekly-report");
 
     const s = useMySkills.getState();
-    expect(s.shareConflict).toEqual({ dirSlug: "weekly-report", historyUrl: null });
-    expect(s.shareError).toBeNull();
+    expect(s.shareError?.dirSlug).toBe("weekly-report");
+    expect(s.shareError?.error.code).toBe("CONFLICT_REMOTE_CHANGED");
   });
 
   // 终审复审轮 1,C-A:「贡献更改」这条路的失败也要带归属——详情面板的动作区
@@ -881,16 +882,6 @@ describe("分享改动的冲突档(M5 任务 1)", () => {
     });
   });
 
-  it("取消冲突档:不发第二跳,改动留在本地", async () => {
-    useMySkills.setState({
-      shareConflict: { dirSlug: "weekly-report", historyUrl: null },
-    });
-
-    useMySkills.getState().cancelShareConflict();
-
-    expect(useMySkills.getState().shareConflict).toBeNull();
-    expect(invoke).not.toHaveBeenCalledWith("skill_share_changes", expect.anything());
-  });
 });
 
 describe("更新判定与更新动作", () => {
@@ -1147,55 +1138,6 @@ describe("更新判定与更新动作", () => {
     expect(call?.[1].args.agentIds).toEqual(["claude-code"]);
   });
 
-});
-
-describe("shareChanges 的 forceReview(v7):安装自那一区恒走评审,已分享到不强制", () => {
-  beforeEach(reset);
-
-  function stubShareChanges() {
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "skill_share_changes")
-        return { kind: "submitted", mode: "pushed", commitSha: "new", reviewUrl: null };
-      if (cmd === "installed_list") return useMySkills.getState().list ?? [];
-      return AGENTS;
-    });
-  }
-
-  it("安装自那一区的贡献更改一律走提交审核 —— 不看权限矩阵", async () => {
-    useMySkills.setState({
-      list: [view({ dirSlug: "weekly-report", section: "installedFrom", localModified: true })],
-    });
-    stubShareChanges();
-
-    await useMySkills.getState().shareChanges("weekly-report");
-
-    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
-    expect(call?.[1].args.forceReview).toBe(true);
-  });
-
-  it("已分享到那一区的分享改动不强制评审 —— 走正常权限分流", async () => {
-    useMySkills.setState({
-      list: [view({ dirSlug: "rcs-generator", section: "sharedTo", localModified: true })],
-    });
-    stubShareChanges();
-
-    await useMySkills.getState().shareChanges("rcs-generator");
-
-    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
-    expect(call?.[1].args.forceReview).toBe(false);
-  });
-
-  it("可分享到那一区同样不强制(只有安装自才强制)", async () => {
-    useMySkills.setState({
-      list: [view({ dirSlug: "my-draft", section: "shareable", localModified: true })],
-    });
-    stubShareChanges();
-
-    await useMySkills.getState().shareChanges("my-draft");
-
-    const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share_changes");
-    expect(call?.[1].args.forceReview).toBe(false);
-  });
 });
 
 describe("sections(v7 三区)", () => {

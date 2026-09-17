@@ -188,12 +188,6 @@ interface MySkillsState {
    */
   shareError: { dirSlug: string; error: AppError; flow: ShareFlow } | null;
   /**
-   * 冲突档(M5 任务 1):库里那一版在获取之后被别人改过,core 一个字节没动就退了回来。
-   * 等用户拍板:提交审核 / 先不动。没有「强行覆盖」——覆盖别人的成果不该是一个按钮。
-   */
-  shareConflict: { dirSlug: string; historyUrl: string | null } | null;
-
-  /**
    * 「可分享到」区里,有外部来源(GitHub/plaza/自定义源,不是公司库)的行——
    * 它自己那个来源的索引(v7 任务 7)。键是 {@link shareableSourceKey}。
    */
@@ -316,9 +310,6 @@ interface MySkillsState {
    * (`Mine` 档),自然落进全局挂载的 `ConflictDialog`,不需要这里另开一条通道。
    */
   pull: (dirSlug: string) => Promise<void>;
-
-  confirmShareReview: () => Promise<void>;
-  cancelShareConflict: () => void;
 }
 
 function toAppError(raw: unknown): AppError {
@@ -530,7 +521,6 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   shareBusy: null,
   shareDone: null,
   shareError: null,
-  shareConflict: null,
   shareableIndexes: new Map(),
   shareableIndexesLastFetchedAt: new Map(),
   updateAllBusy: false,
@@ -720,7 +710,7 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
 
   beginShare: (dirSlug) => {
     set({ shareTarget: { dirSlug }, shareError: null, shareDone: null });
-    // 路径预告(直接生效 / 要审核)是**仓库级**的,探一次就够;
+    // 路径预告(能不能直接保存进去)是**仓库级**的,探一次就够;
     // 探不到就是 unknown,确认屏照常可提交——它只是提示,不是判据。
     void useShare.getState().refreshPreview();
   },
@@ -758,18 +748,18 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   },
 
   shareChanges: async (dirSlug) => {
-    // 🔴 v7:「安装自」那一区的贡献更改一律走提交审核,不看权限矩阵
-    // ——那不是我的技能,即便我有直推权限,作者也该先看一眼。「已分享到」
-    // 那一区不强制,走正常的权限分流(与既有回推权限矩阵一致)。
-    const skill = get().list?.find((s) => s.dirSlug === dirSlug);
-    // 🔴 查不到这一行就不发请求(与 `pull` 同款防护,M2 修复轮 1):
-    // "恒走评审"是这个函数唯一要守住的安全属性,`skill` 缺席时
-    // `skill?.section === "installedFrom"` 会静默落回 `false`,让理论上不该
-    // 发生的异常路径悄悄绕过它。今天的入口(界面按行渲染按钮)保证 `skill` 存在,
-    // 这条闸是防将来的调用方(比如批量入口)传一个不在 `list` 里的 dirSlug。
-    if (!skill) return;
-    const forceReview = skill.section === "installedFrom";
-    await runShareChanges(dirSlug, forceReview, set, get);
+    // ⚠️ **v8 任务 3**:这里曾经按 `section` 分流——「安装自」那一区的贡献更改
+    // 恒带 `forceReview`(那不是我的技能,作者该先看一眼),其余走权限分流。
+    // 提交审核整条链路下线之后**只剩一条路**,分流没有了,所以这个函数退化成
+    // 一层薄壳。⚠️ **「改别人的技能」这件事本身的出路是 v8 任务 6**(D7:
+    // 入口下线,改说「和库里的不一样」+ 联系作者),**不是**在这里悄悄改成直推
+    // 别人的技能就完事了——今天它仍然走同一条提交路径,只是不再开合并请求。
+    //
+    // 🔴 查不到这一行就不发请求(与 `pull` 同款防护,M2 修复轮 1):今天的入口
+    // (界面按行渲染按钮)保证 `skill` 存在,这条闸是防将来的调用方(比如批量
+    // 入口)传一个不在 `list` 里的 dirSlug ——那种情况下连"要推哪个库"都答不出。
+    if (!get().list?.some((s) => s.dirSlug === dirSlug)) return;
+    await runShareChanges(dirSlug, set, get);
   },
 
   pull: async (dirSlug) => {
@@ -790,15 +780,6 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     }
     await useInstall.getState().beginUpdate(dirSlug, agentIds, skill.registryId || undefined, repo);
   },
-
-  confirmShareReview: async () => {
-    const conflict = get().shareConflict;
-    if (!conflict) return;
-    set({ shareConflict: null });
-    await runShareChanges(conflict.dirSlug, true, set, get);
-  },
-
-  cancelShareConflict: () => set({ shareConflict: null }),
 
   ensureShareableIndexes: async (forceDirSlugs) => {
     const list = get().list ?? [];
@@ -891,31 +872,46 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   dismissUpdateAllFailures: () => set({ updateAllFailures: null, updateAllError: null }),
 }));
 
+/**
+ * 「贡献更改」/「分享改动」共用的那一跳。
+ *
+ * ⚠️ **v8 任务 3:「库里被别人改过」暂时是一句如实的失败,不是一个拍板弹窗。**
+ * 旧的拍板只有两条路——提交审核 / 先不动,而提交审核整条链路已经下线
+ * (内网实测:开出去的合并请求没人看)。这一版**不给"仍然覆盖"**:覆盖确认
+ * (含"覆盖谁、什么时候推的、去哪找回")是 **v8 任务 4** 的事,在这里先造一个
+ * 弹窗等于把它做两遍。
+ *
+ * 🔴 走 `shareError` 而不是静默返回,是因为本项目记着的「错误被写进状态却没有
+ * 渲染点」那条:`shareError` 在「我的技能」页与详情面板动作区都有渲染点,
+ * 且带 `dirSlug` 归属校验。静默返回的表现是"点了没反应",而"没反应"会诱发
+ * 重复提交。
+ */
 async function runShareChanges(
   dirSlug: string,
-  forceReview: boolean,
   set: (partial: Partial<MySkillsState>) => void,
   get: () => MySkillsState,
 ) {
+  const remoteChangedError = (): AppError => ({
+    code: "CONFLICT_REMOTE_CHANGED",
+    message: t("mine.shareRemoteChanged"),
+  });
   set({ shareBusy: dirSlug, shareDone: null, shareError: null });
   try {
     const registryId = get().list?.find((s) => s.dirSlug === dirSlug)?.registryId;
-    const outcome = await skillShareChanges({ dirSlug, registryId, forceReview });
+    const outcome = await skillShareChanges({ dirSlug, registryId });
     if (outcome.kind === "remoteChanged") {
-      // 别人改过:core 一个字节没动就退回来了,弹拍板而不是报错
-      set({ shareConflict: { dirSlug, historyUrl: outcome.historyUrl } });
+      // 别人改过:core 一个字节没动就退回来了,如实说一句(见函数文档)
+      set({ shareError: { dirSlug, error: remoteChangedError(), flow: "changes" } });
       return;
     }
     set({ shareDone: { dirSlug, mode: outcome.mode, flow: "changes" } });
-    // 直推成功后 core 已更新记录,「有改动未分享」随刷新消失;
-    // 走了评审则记录没动,状态留着——改动确实还没进库
+    // 直推成功后 core 已更新记录,「有改动未分享」随刷新消失
     await get().load();
   } catch (raw) {
     const err = toAppError(raw);
     if (err.code === "CONFLICT_STALE") {
-      // 检测与提交之间被人抢先:语义与冲突档相同,进同一个拍板弹窗
-      // (拿不到历史链接,降级为纯文案)
-      set({ shareConflict: { dirSlug, historyUrl: null } });
+      // 检测与提交之间被人抢先:语义与上面那一档相同,说同一句话
+      set({ shareError: { dirSlug, error: remoteChangedError(), flow: "changes" } });
       return;
     }
     set({ shareError: { dirSlug, error: err, flow: "changes" } });

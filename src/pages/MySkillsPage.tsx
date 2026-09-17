@@ -23,6 +23,7 @@ import {
   useMySkills,
 } from "@/store/my-skills";
 import { useSession } from "@/store/session";
+import { useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
 
@@ -152,7 +153,7 @@ export function MySkillsPage() {
 
   // 基线自愈(v8 任务 2,D3):列表与索引都在手上时,把「本地与库里已经一致、
   // 账上的基线却停在旧值」的那些行对齐一次——它们眼下永远显示「库里有新版」,
-  // 点分享还会一次次开出内容为空的审核请求,用户自己出不来。
+  // 那正是 v8 的起因:同事点分享一次次开出内容为空的审核请求,自己出不来。
   //
   // 重复触发是安全的:store 里按「库坐标 + 目录名 + 实时指纹」记着已经发过的行,
   // 同一份数据不会重复发(窗口重获焦点刷新、5 分钟兜底、StrictMode 双挂载都会
@@ -165,6 +166,16 @@ export function MySkillsPage() {
   useEffect(() => {
     void alignStaleBaselines(index);
   }, [list, index, alignStaleBaselines]);
+
+  // 🔴 只读用户禁用态(v8 任务 3 / D8)要在**进这一页时**就知道,不能等到打开
+  // 分享确认屏才探——行上的分享族按钮此刻就要画成禁用态。探一次就够(权限是
+  // 仓库级的,不跟着"在看哪个技能"走),失败即 `unknown`、不禁任何按钮。
+  const refreshPreview = useShare((s) => s.refreshPreview);
+  useEffect(() => {
+    void refreshPreview();
+  }, [refreshPreview]);
+  // `unknown` 一律当"不知道",不禁——预检永远 fail-open(见 `SharePath`)。
+  const noWriteAccess = useShare((s) => s.preview) === "noAccess";
 
   // 🔴 需求 3:搜索**穿透页签**(三栏一起搜)。同一条原则在 v7.1 分区折叠时就
   // 定过——"搜索必须穿透折叠,否则'搜到了但那区折着',用户看到的就是搜索坏了";
@@ -234,7 +245,7 @@ export function MySkillsPage() {
       skill.section === "shareable"
         ? remoteChangedForShareable(skill, shareableIndexes)
         : hasUpdate(skill, index);
-    return rowAction(skill, remoteChanged);
+    return rowAction(skill, remoteChanged, noWriteAccess);
   };
   // 🔴 v7.3 Q28-C:整页口径的那两段文字(「N 个有更新 · N 个有改动未分享」)已撤掉
   // ——页签角标**逐栏**报了"有几件事等你"且更精确(`needsAttention` 覆盖六档),
@@ -326,9 +337,10 @@ export function MySkillsPage() {
         skill={skill}
         name={nameOf(skill.dirSlug)}
         description={cardOf(skill)?.description ?? null}
-        action={rowAction(skill, remoteChanged)}
+        action={rowAction(skill, remoteChanged, noWriteAccess)}
         remoteChanged={remoteChanged}
         noBaselineDiffers={noBaselineDiffers}
+        noWriteAccess={noWriteAccess}
         pulling={activeSlug === skill.dirSlug && installPhase === "running"}
         sharing={shareBusy === skill.dirSlug}
         onPull={() => void pull(skill.dirSlug)}
@@ -455,7 +467,7 @@ export function MySkillsPage() {
               <ErrorLine label={t("mine.shareChangesFailed")} detail={installShareResult.error.message} />
             ) : (
               <p className="pb-2 text-[12px] text-text-2">
-                {installShareResult.mode === "pushed" ? t("mine.shareChangesDone") : t("mine.shareChangesReview")}
+                {t("mine.shareChangesDone")}
               </p>
             ))}
           {updateAllError && <ErrorLine label={t("mine.updateAllFailed")} detail={updateAllError.message} />}
@@ -894,7 +906,7 @@ function ToolFailuresBanner({
  * # 主按钮由 `rowAction.kind` 唯一决定
  *
  * 判定表在 `src/lib/ownership.ts`;这里只管把每一档翻译成一颗按钮(或者
- * `underReview` 那档:一句文字,没有按钮可点——审核结果不由用户这一步决定)。
+ * `shareBlocked`/`noWriteAccess` 那两档:同一颗按钮的禁用形态 + 一句说明)。
  * 🔴 **主按钮永远不带 `aria-label`**(靠自己的可见文字当可访问名),
  * 「更多」的触发按钮永远带 `aria-label`——`MySkillsPage.test.tsx` 那条
  * "每行至多一颗主按钮"测试按这条规则过滤,写错了测试会连带失真。
@@ -912,6 +924,7 @@ function Row({
   action,
   remoteChanged,
   noBaselineDiffers,
+  noWriteAccess,
   pulling,
   sharing,
   onPull,
@@ -928,6 +941,8 @@ function Row({
   remoteChanged: boolean;
   /** C3 修复:没有安装基线,但本体现在的内容与库里那一版不一样。 */
   noBaselineDiffers: boolean;
+  /** 对目标技能库没有写权限(D8)。「…」菜单也要据此收窄,见 `buildRowMenuItems`。 */
+  noWriteAccess: boolean;
   pulling: boolean;
   sharing: boolean;
   onPull: () => void;
@@ -948,6 +963,7 @@ function Row({
     action,
     remoteChanged,
     noBaselineDiffers,
+    noWriteAccess,
   ).map((spec) => ({
     key: spec.kind,
     label: t(spec.labelKey),
@@ -995,6 +1011,13 @@ function Row({
             {action.kind === "shareBlocked" && (
               <div className="mt-0.5 text-[11.5px] leading-[1.5] text-[#9a6c00] dark:text-[#d4a017]">
                 {t(SHARE_BLOCK_LABEL[action.reason])}
+              </div>
+            )}
+            {/* D8:「为什么这颗按钮点不动」。与上面那一档同一种形态——两者都是
+                "主按钮禁用 + 注解",只是原因一个在技能身上、一个在权限上。 */}
+            {action.kind === "noWriteAccess" && (
+              <div className="mt-0.5 text-[11.5px] leading-[1.5] text-[#9a6c00] dark:text-[#d4a017]">
+                {t("mine.shareNoAccess")}
               </div>
             )}
           </div>

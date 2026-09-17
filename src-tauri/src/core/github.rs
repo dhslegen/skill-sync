@@ -475,8 +475,13 @@ mod tree_tests {
 //   落 100644——与 Gitea 的 ChangeFilesRequest 同款限制,两侧一致,接受;
 // - GraphQL 的错误在 HTTP 200 里,判定用 `errors[].type`:陈旧头 `STALE_DATA`、
 //   分支保护 `BRANCH_PROTECTION_RULE_VIOLATION`,不 grep message;
-// - fork 是 202 异步受理,实测约 3 秒可用,响应体自带 full_name;
 // - 权限矩阵判据 `GET /repos` 的 `permissions.push`(匿名/无权限时字段整个缺席)。
+//
+// 🔴 **v8 任务 3(D1):开分支 + 提交审核、以及只读用户先 fork 再跨库提交审核
+// 那两条路已整体下线**(`create_branch`/`create_pull`/`fork_repo`/
+// `wait_fork_ready`/`branch_protected` 与它们的返回类型一并删除)。剩下的写链路
+// 只有 `createCommitOnBranch` 直推一条;`BRANCH_PROTECTION_RULE_VIOLATION` 仍然
+// 判,但**不再降级**,而是折成一句人话错误交给用户(见 `share::submit_github`)。
 
 /// 权限矩阵要用的仓库视图(录制 01/01b)。
 #[derive(Debug, Clone, Deserialize)]
@@ -533,19 +538,6 @@ pub(crate) async fn fetch_repo_view(
     parse_json(resp).await
 }
 
-/// fork 的落点。202 响应体自带 full_name(录制 11)。
-#[derive(Debug, Clone)]
-pub struct ForkTarget {
-    pub owner: String,
-    pub repo: String,
-}
-
-/// 开好的评审入口。
-#[derive(Debug, Clone, Deserialize)]
-pub struct PullView {
-    pub html_url: String,
-}
-
 impl GithubClient {
     /// GraphQL 端点。github.com 是 api 域根下的 /graphql;GHE 是 {base}/api/graphql
     /// (REST 的 api_base 带 /v3,GraphQL 不带)。
@@ -586,24 +578,6 @@ impl GithubClient {
         fetch_repo_view(&self.http, self.token.as_deref(), &self.api_base, owner, repo).await
     }
 
-    /// 分支是否受保护(录制 08b 的 `protected` 字段)。
-    /// 只作先探:保护规则可能只拦部分人,提交时的
-    /// `BRANCH_PROTECTION_RULE_VIOLATION` 才是最终真相。
-    pub async fn branch_protected(&self, r: &RepoRef) -> Result<bool, AppError> {
-        #[derive(Deserialize)]
-        struct Branch {
-            #[serde(default)]
-            protected: bool,
-        }
-        let url = format!(
-            "{}/repos/{}/{}/branches/{}",
-            self.api_base, r.owner, r.repo, r.branch
-        );
-        let resp = self.send_built(self.request(reqwest::Method::GET, url)).await?;
-        let branch: Branch = parse_json(resp).await?;
-        Ok(branch.protected)
-    }
-
     /// 远端是否已有该文件(分享预检)。404 是"没有",不是错误。
     pub async fn file_exists(&self, r: &RepoRef, path: &str) -> Result<bool, AppError> {
         let url = format!(
@@ -619,21 +593,6 @@ impl GithubClient {
         }
         check_status(resp).await?;
         Ok(true)
-    }
-
-    /// 从 `sha` 开出新分支(录制 05,REST git/refs)。
-    pub async fn create_branch(
-        &self,
-        owner: &str,
-        repo: &str,
-        branch: &str,
-        sha: &str,
-    ) -> Result<(), AppError> {
-        let url = format!("{}/repos/{owner}/{repo}/git/refs", self.api_base);
-        let body = serde_json::json!({ "ref": format!("refs/heads/{branch}"), "sha": sha });
-        self.send_built(self.request(reqwest::Method::POST, url).json(&body))
-            .await?;
-        Ok(())
     }
 
     /// 多文件一次提交(录制 03/04/06/09)。返回新提交的 oid。
@@ -706,7 +665,7 @@ impl GithubClient {
                 }
                 "BRANCH_PROTECTION_RULE_VIOLATION" => AppError::new(
                     "REPO_PROTECTED",
-                    "这个技能库不允许直接保存,需要提交审核",
+                    "这个技能库开启了保护,现在不能直接分享,请联系它的管理员",
                 ),
                 _ => AppError::new("NET_REQUEST", "保存未能完成,请稍后重试"),
             }
@@ -720,70 +679,5 @@ impl GithubClient {
                 AppError::new("NET_BAD_RESPONSE", "技能库返回了无法识别的内容")
                     .with_detail("createCommitOnBranch 无 commit")
             })
-    }
-
-    /// 发起评审(录制 07)。跨库时 `head` 用 `{owner}:{branch}` 形式。
-    pub async fn create_pull(
-        &self,
-        owner: &str,
-        repo: &str,
-        head: &str,
-        base: &str,
-        title: &str,
-    ) -> Result<PullView, AppError> {
-        let url = format!("{}/repos/{owner}/{repo}/pulls", self.api_base);
-        let body = serde_json::json!({ "title": title, "head": head, "base": base, "body": "" });
-        let resp = self
-            .send_built(self.request(reqwest::Method::POST, url).json(&body))
-            .await?;
-        parse_json(resp).await
-    }
-
-    /// fork 到自己名下(只读用户的评审路径)。202 异步受理,就绪用
-    /// [`Self::wait_fork_ready`] 轮询(实测约 3 秒,录制 11)。
-    pub async fn fork_repo(&self, owner: &str, repo: &str) -> Result<ForkTarget, AppError> {
-        #[derive(Deserialize)]
-        struct Fork {
-            full_name: String,
-        }
-        let url = format!("{}/repos/{owner}/{repo}/forks", self.api_base);
-        let body = serde_json::json!({ "default_branch_only": true });
-        let resp = self
-            .send_built(self.request(reqwest::Method::POST, url).json(&body))
-            .await?;
-        let fork: Fork = parse_json(resp).await?;
-        let (fork_owner, fork_repo) = fork.full_name.split_once('/').ok_or_else(|| {
-            AppError::new("NET_BAD_RESPONSE", "技能库返回了无法识别的内容")
-                .with_detail(format!("fork full_name: {}", fork.full_name))
-        })?;
-        Ok(ForkTarget {
-            owner: fork_owner.to_string(),
-            repo: fork_repo.to_string(),
-        })
-    }
-
-    /// 轮询 fork 就绪(分支头可读即就绪)。`delay` 注入以便测试不真等。
-    pub async fn wait_fork_ready(
-        &self,
-        r: &RepoRef,
-        attempts: u32,
-        delay: std::time::Duration,
-    ) -> Result<BranchHead, AppError> {
-        let mut last_detail = String::new();
-        for _ in 0..attempts {
-            match self.branch_head(r).await {
-                Ok(head) => return Ok(head),
-                Err(e) if e.code == "REPO_NOT_FOUND" => {
-                    // 还在准备中;原样抛会误导成"技能库不存在"
-                    last_detail = e.detail.unwrap_or(e.message);
-                    tokio::time::sleep(delay).await;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        Err(
-            AppError::new("REPO_FORK_PENDING", "技能库副本还没准备好,请稍后重试")
-                .with_detail(last_detail),
-        )
     }
 }

@@ -162,10 +162,11 @@ const SCREENS = [
       await page.waitForTimeout(300);
     },
   },
-  // 🔴 10 是 I-1 要看的那屏:「审核中」那一行的详情面板页脚,此前恒无库链接。
+  // 10:「可分享到」区某一行的详情面板页脚(v8 任务 3 之前这一屏拍的是「审核中」
+  // 那一档,审核链路已下线,现在它就是这一区普通一行的页脚)。
   {
-    id: "10-detail-under-review-footer",
-    title: "详情面板 ·「审核中」那一档的页脚(I-1:库链接退回 review.url)",
+    id: "10-detail-shareable-footer",
+    title: "详情面板 ·「可分享到」区一行的页脚",
     async run(page, ctx) {
       await ctx.gotoMine(page);
       await page.getByRole("tab", { name: /可分享到技能库/ }).click();

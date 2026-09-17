@@ -312,33 +312,6 @@ async fn branch_head_extracts_commit_id() {
 }
 
 #[tokio::test]
-async fn existing_fork_is_not_an_error() {
-    // 同一个人第二次分享时 fork 已存在,这是常态而不是失败
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/ai-skills/team-skills/forks"))
-        .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
-            "message": "repository is already forked by user"
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/api/v1/user"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "login": "skillsync-reader", "full_name": "", "avatar_url": ""
-        })))
-        .mount(&server)
-        .await;
-
-    let fork = client(&server)
-        .fork_repo("ai-skills", "team-skills")
-        .await
-        .unwrap();
-    assert_eq!(fork.owner, "skillsync-reader");
-    assert!(fork.already_existed);
-}
-
-#[tokio::test]
 async fn server_error_tells_user_to_retry_later() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

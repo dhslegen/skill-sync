@@ -14,6 +14,7 @@ import {
   BUILTIN_REGISTRY_ID,
   isAppError,
   openLibraryUrl,
+  sharePreview,
   skillClaimAttribution,
   skillReveal,
   type AppError,
@@ -632,13 +633,9 @@ function PanelBody({
 /**
  * 「作者未登记 · 这是我分享的」(v6 任务 3 的 `skill_claim_attribution`)。
  *
- * `done`/`review` 两档都**只落本地 `status`,不触碰 `useStoreIndex` 的任何字段**
+ * `done` 档**只落本地 `status`,不触碰 `useStoreIndex` 的任何字段**
  * ——既不调 `openDetail(dirSlug)` 也不调 `load(true)`,即便看起来"重刷一下索引/
  * 详情,让作者信息自然出现"更省事:
- * - `review`(走审核)那一支根本还没合并进默认分支,重载出来的 `attribution`
- *   仍是 `null`,门槛条件不变,按钮会重新摆出来引诱用户再交一次审核(核心的
- *   `CONFLICT_ALREADY_ATTRIBUTED` 只挡"已经登记过"的库,挡不住"我自己交了
- *   两次审核"这件事);
  * - `done`(直推)按理攒得到新数据,但**这个组件的门槛 `canClaimAttribution`
  *   与外层 `PanelBody` 的渲染分支,读的是同一份 `useStoreIndex` 状态**
  *   (`registryId`/`detail`)。`openDetail` 第一步就同步把 `detail` 置空当
@@ -648,14 +645,37 @@ function PanelBody({
  *   卸载,用户看到的是面板闪一下"正在读取…",连「已登记为分享者」这句确认都
  *   看不见(2026-08-24 本地复现两次,分别踩中这两条路,都不是测试假象)。
  *
- * 所以两档都不摸 `useStoreIndex`,状态只活在这个组件实例里(换一个技能查看会
+ * 所以它不摸 `useStoreIndex`,状态只活在这个组件实例里(换一个技能查看会
  * 重新挂载、重新判一次门槛);商店卡片上的作者字段留到下一次自然刷新
  * (重新进商店页/手动重试)才会跟上——这是刻意接受的代价,好过一个必然
  * 自我卸载的组件。
+ *
+ * # 🔴 只读用户:按钮禁用 + 一句说明(v8 任务 3 / D8)
+ *
+ * 登记分享者与分享走**同一套提交路径**,而只读用户那条路(复制一份到自己名下
+ * 再提交审核)已随提交审核整体下线。留着按钮就是留一颗必然报错的按钮,所以这里
+ * 自己探一次权限(`sharePreview`,与分享确认屏同一条 IPC、**按这一行自己的库
+ * 坐标**探,不借用 `useShare` 里那份可能指着别的库的结果)。
+ * `unknown`(探不到)**不禁**——预检永远 fail-open。
  */
 function ClaimAttribution({ dirSlug, repo }: { dirSlug: string; repo?: string }) {
-  const [status, setStatus] = useState<"idle" | "pending" | "done" | "review" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "pending" | "done" | "error">("idle");
   const [error, setError] = useState<AppError | null>(null);
+  const [noWriteAccess, setNoWriteAccess] = useState(false);
+
+  useEffect(() => {
+    let stale = false;
+    void sharePreview(repo ? { repo } : {})
+      .then((path) => {
+        if (!stale) setNoWriteAccess(path === "noAccess");
+      })
+      .catch(() => {
+        // 探不到就不禁:预检只是提示,提交时刻的权限判定才是权威
+      });
+    return () => {
+      stale = true;
+    };
+  }, [repo]);
 
   const claim = async () => {
     setStatus("pending");
@@ -663,7 +683,7 @@ function ClaimAttribution({ dirSlug, repo }: { dirSlug: string; repo?: string })
     try {
       const outcome = await skillClaimAttribution({ dirSlug, repo });
       if (outcome.outcome === "shared") {
-        setStatus(outcome.mode === "pushed" ? "done" : "review");
+        setStatus("done");
       }
       // 🔴 到此为止,**不**顺手刷 `useStoreIndex`(既不是 `openDetail(dirSlug)`
       // 也不是 `load(true)`):这个组件的 `canClaimAttribution` 门槛与外层
@@ -672,7 +692,7 @@ function ClaimAttribution({ dirSlug, repo }: { dirSlug: string; repo?: string })
       // 当加载态;`load(true)` 在请求落地前会先把 `index` 换成新对象、请求本身
       // 失败或竞态时甚至可能把 `index` 变成 `null`——两条路殊途同归:只要
       // `index`/`detail` 一变,`canClaimAttribution` 或 `open && detail` 的判定
-      // 就可能翻转,把这个组件连同刚设的 "done"/"review" 状态一起卸载
+      // 就可能翻转,把这个组件连同刚设的 "done" 状态一起卸载
       // (2026-08-24 本地复现两次,分别踩中这两条路,都不是测试假象)。
       // 商店卡片上的作者字段留到下一次自然刷新(重新进商店页/手动重试)才会跟上,
       // 这是刻意接受的代价——好过一个必然自我卸载的组件。
@@ -682,12 +702,12 @@ function ClaimAttribution({ dirSlug, repo }: { dirSlug: string; repo?: string })
     }
   };
 
-  if (status === "done" || status === "review") {
+  if (status === "done") {
     return (
       <div className="text-[11px] leading-[1.4] text-text-3">
         {t("detail.metaAuthor")}
         <b className="block text-[12.5px] font-[550] text-text">
-          {status === "done" ? t("detail.claimAttributionDone") : t("detail.claimAttributionReview")}
+          {t("detail.claimAttributionDone")}
         </b>
       </div>
     );
@@ -703,13 +723,18 @@ function ClaimAttribution({ dirSlug, repo }: { dirSlug: string; repo?: string })
         </span>
         <button
           type="button"
-          disabled={status === "pending"}
+          disabled={status === "pending" || noWriteAccess}
           onClick={() => void claim()}
           className="text-[12.5px] font-[550] text-accent hover:underline disabled:opacity-50"
         >
           {status === "pending" ? t("detail.claimAttributionPending") : t("detail.claimAttribution")}
         </button>
       </div>
+      {noWriteAccess && (
+        <p className="mt-1 max-w-[220px] text-[11px] leading-[1.4] text-text-3">
+          {t("mine.shareNoAccess")}
+        </p>
+      )}
       {status === "error" && error && (
         <p className="mt-1 max-w-[220px] text-[11px] leading-[1.4] text-[#c0392b] dark:text-[#e0705f]">
           {error.message}

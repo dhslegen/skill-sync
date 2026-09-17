@@ -94,7 +94,6 @@ describe("按页刷新", () => {
             versions: [],
             shareBlocked: null,
             section: "shareable",
-            review: null,
             libraryUrl: null,
             canonicalReaders: null,
           },

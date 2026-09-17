@@ -5,7 +5,9 @@
 //!
 //! 这个坑在本仓已经出现**三次**,一次比一次难发现:
 //! 1. `share::ShareOutcome::review_url` —— **真缺陷**:发出去的是 `review_url`,
-//!    界面读 `reviewUrl`,「分享走评审之后的『查看审核』链接」从来没渲染过;
+//!    界面读 `reviewUrl`,「分享走评审之后的『查看审核』链接」从来没渲染过。
+//!    ⚠️ 那个字段本身已随提交审核一起删除(v8 任务 3),这里只作为**这道守卫
+//!    存在的理由**留着;下面的自保测试用的是合成样本,不依赖真实类型;
 //! 2. `scheduler::CheckReport::head_sha` —— 哑弹(`ipc.ts` 声明 `headSha`,当下无人取值);
 //! 3. `commands::ProjectInstallOutcome::linked_agents` —— 同上,而它是在
 //!    "我全文扫描过了"这句话**之后**才被复审者找出来的。

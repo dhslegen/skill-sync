@@ -1,42 +1,21 @@
 //! 端到端(v7 任务 9):**一个"安装自公司技能库"的技能被本地改过、贡献回库**的完整一圈。
 //!
 //! `my_skills::build`(三区判据)→ `acquire::acquire`(取回)→ 本地编辑 →
-//! `share::share_installed`(贡献更改,恒 `force_review: true`)→ 再回 `my_skills::build`
-//! → 模拟 PR 合并(库里内容变成用户贡献的那一版)→ 再回 `my_skills::build`。
+//! `share::share_installed`(贡献更改,v8 起直推)→ 再回 `my_skills::build`
+//! → 库里内容变成用户贡献的那一版 → 再回 `my_skills::build`。
 //!
-//! # 🔴 与任务书叙述的两处偏离(写在最前面,交复审核验)
+//! # 🔴 v8 任务 3 起这条链路只剩直推(D1)
 //!
-//! 任务书(`docs/v7-任务分解.md` 任务 9)的伪代码写着"提交走评审 → 再次
-//! `installed_list` 时该行显示审核中 → 模拟 PR 合并 → 回到"安装自 · 有更新""。
-//! 逐条查证后,这句叙述与已拍板的设计**在两处对不上**,本测试按**设计文档 + 已实现的
-//! 代码**走,不按任务书的叙述走(与本期 Task 1/3/8 已发生过的"实现者纠正任务书缺陷"
-//! 同一种处置,证据链如下):
+//! 这个文件原先记着 v7 的两处"与任务书叙述的偏离",两处的根都是**「贡献更改」恒走
+//! 提交审核**:①"审核中"只属于「可分享到」区,所以贡献完这一行不显示审核中;
+//! ②走评审刻意不更新 `content_hash` 基线,于是 PR 合并后 `local_modified` 与
+//! `remoteChanged` **同时**为真,终态是冲突档而不是「有更新」。
 //!
-//! 1. **"审核中"是「可分享到」区专属,不适用于「安装自」区**。
-//!    `docs/设计-v7-我的技能重设计.md` 决策 #4 逐字写着「审核中 → 留在**「可分享到」**」,
-//!    决策 #7 的"安装自"那一行只有三种主按钮(更新/库里有新版.../贡献更改),没有"审核中"这一档;
-//!    `docs/v7-任务分解.md` 第 33 行(任务 2 的范围裁定)明写
-//!    「**「贡献更改」不新造路**:… 前端对 `relation == "installed"` 的行**恒传 `true`**」
-//!    ——即"贡献更改"只是给已有的 `skill_share_changes`/`force_review` 传参,不新增任何
-//!    候选/网络查询/DTO 字段。代码现状与设计一致:`my_skills::has_review_candidates` /
-//!    `fill_review_from_pulls` / `fill_review_from_records`(`src/core/my_skills.rs`)三处
-//!    都显式 `.filter(|r| r.section == ownership::Section::Shareable)`,`share_installed`
-//!    走评审时也不写任何 `state.shared` 记录(模块头原文「走了评审 → **记账一个字不动**」)。
-//!    在最后一个任务里把"审核中"扩到「安装自」区,需要新增候选闸 + 前端 `rowAction` 分支
-//!    ——这是一次会改变已批准设计的跨任务改动,不该由收尾任务顺手做。
-//! 2. **"回到安装自·有更新"这个终态在当前实现下不可达,真实终态是"库里有新版…"
-//!    (三选一冲突档)那一档,即 `RowAction::conflict` 而非 `update`**。
-//!    `local_modified` 与 `remoteChanged` 判的都是"disk/library 相对 `content_hash`
-//!    这个安装基线"(`my_skills.rs:620` / `src/store/my-skills.ts::remoteContentDiffers`
-//!    比的都是 `record.content_hash`/`skill.contentHash`,不是彼此)。`share_installed`
-//!    对 `ShareMode::ReviewRequested` 明确**不更新**这个基线(同一处注释:「改动没进
-//!    main,标记消失等于把它藏起来」)。PR 合并后,库里的新内容与用户本地内容相同,
-//!    但两者都与"未编辑前"的旧基线不同——`local_modified` 与 `remoteChanged` 因此
-//!    **同时为真**,`rowAction`(`src/lib/ownership.ts:110`)的短路顺序是
-//!    `localModified && remoteChanged → conflict` 排在单纯 `remoteChanged → update`
-//!    之前,故终态是 `conflict`。本测试断言的正是这个真实元组,而不是任务书写的那句话。
-//!
-//! 两处偏离都已交给用户/复审核验(见任务报告),**不是自行悄悄改写测试意图**。
+//! **v8 把那条路整个删了,两处偏离随之作废**——而②描述的那个死循环正是 v8 的起因
+//! (内网实测:同事点「分享改动」开出空 PR,合并后行上仍显示"库里有新版",再点又
+//! 一个)。现在贡献更改直推进库、**当场更新基线**(D3),所以这条端到端的终态变成
+//! 了它本该有的样子:**推完就一致了,行上什么都不用做**。下面第 ④/⑤ 步正面断言
+//! 这件事——它同时是"基线在内容确实进库时才更新"这条承诺的端到端护栏。
 //!
 //! # 断言口径(与 `e2e_author_loop.rs` 同一套纪律)
 //!
@@ -50,7 +29,7 @@ use std::path::{Path, PathBuf};
 use skillsync_lib::core::acquire::{self, AcquireOutcome, AcquireRequest, Stage};
 use skillsync_lib::core::agents::{AgentEnv, AgentRegistry};
 use skillsync_lib::core::fsops;
-use skillsync_lib::core::gitea::{self, GiteaClient, RepoRef};
+use skillsync_lib::core::gitea::{GiteaClient, RepoRef};
 use skillsync_lib::core::my_skills;
 use skillsync_lib::core::ownership::{Identity, Relation, Section};
 use skillsync_lib::core::registry;
@@ -222,14 +201,16 @@ async fn mount_library_v1(server: &MockServer) {
         .await;
     Mock::given(method("GET"))
         .and(wiremock::matchers::path_regex(r"^/api/v1/repos/skills/skills/archive/main\.zip$"))
+        // 配额 2:① 取回下一次;③ 贡献更改**前的远端变更检测**再下一次
+        // (v8 任务 3 起 `share_installed` 不再有 `force_review` 那条跳过检测的旁路)
         .respond_with(ResponseTemplate::new(200).set_body_bytes(library_zip("库里的初版正文", "李四")))
-        .up_to_n_times(1)
+        .up_to_n_times(2)
         .mount(server)
         .await;
 }
 
-/// 库的第二版:「贡献更改」开出的合并请求被同事合并了 —— 库里的内容与用户本地贡献的
-/// 一致。挂载时机**必须晚于**步骤③(v1 的两次配额届时已经用完,见 [`mount_library_v1`])。
+/// 库的第二版:贡献更改已经直推进库 —— 库里的内容与用户本地贡献的
+/// 一致。挂载时机**必须晚于**步骤③(v1 的配额届时已经用完,见 [`mount_library_v1`])。
 async fn mount_library_v2(server: &MockServer, merged_body: &str) {
     Mock::given(method("GET"))
         .and(path("/api/v1/repos/skills/skills/branches/main"))
@@ -246,9 +227,9 @@ async fn mount_library_v2(server: &MockServer, merged_body: &str) {
         .await;
 }
 
-/// 「贡献更改」(`share::share_installed`,`force_review: true`)要用到的端点:
+/// 「贡献更改」(`share::share_installed`,v8 起直推)要用到的端点:
 /// 仓库信息(有推权限)、`git/trees`(更新路径要拿远端 blob sha)、当前登录用户
-/// 与库根 `authors.json`(归因维护,读 404 = 库里还没有这份文件)、提交、开合并请求。
+/// 与库根 `authors.json`(归因维护,读 404 = 库里还没有这份文件)、提交。
 async fn mount_contribute_endpoints(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/api/v1/repos/skills/skills"))
@@ -285,13 +266,6 @@ async fn mount_contribute_endpoints(server: &MockServer) {
         .and(path("/api/v1/repos/skills/skills/contents"))
         .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
             "commit": { "sha": "commit-with-my-edit", "html_url": "http://x/commit/commit-with-my-edit" }
-        })))
-        .mount(server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/repos/skills/skills/pulls"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "html_url": "http://x/pulls/42", "number": 42
         })))
         .mount(server)
         .await;
@@ -367,12 +341,6 @@ async fn a_skill_installed_from_the_company_library_can_be_edited_and_contribute
     assert_eq!(row.relation, Relation::Installed, "库里记的作者不是我 = 「安装自」");
     assert_eq!(row.section, Section::InstalledFrom);
     assert!(!row.local_modified, "刚取回,内容与基线相同");
-    // `review` 恒 None 是 `my_skills::build` 自身的构造行为(三处构造点都是如此,
-    // 与 section 无关),这条断言只是走查这个字段确实存在、值符合预期——它**不是**
-    // "安装自区不参与审核候选"这个判据的证明,那件事有专门的正面测试
-    // (`tests/review_state.rs::an_installed_from_row_with_a_shared_record_is_never_marked_under_review`,
-    // 直接调 `fill_review_from_records`,只有那条测试删掉候选闸才会变红)。
-    assert!(row.review.is_none());
     assert!(row.share_blocked.is_none());
     assert_eq!(row.content_hash, baseline_hash);
 
@@ -390,7 +358,7 @@ async fn a_skill_installed_from_the_company_library_can_be_edited_and_contribute
     assert!(row.share_blocked.is_none(), "编辑后内容仍合规");
     assert_eq!(row.section, Section::InstalledFrom, "本地改动不改变这一行归属的区");
 
-    // ────────────── ③ 贡献更改(恒 `force_review: true`,不看权限矩阵)
+    // ────────────── ③ 贡献更改(v8 任务 3 起:直推,不再开合并请求)
     mount_contribute_endpoints(&server).await;
     let outcome = share::share_installed(
         &ShareClient::Gitea(&client),
@@ -400,82 +368,69 @@ async fn a_skill_installed_from_the_company_library_can_be_edited_and_contribute
         &c.store,
         SLUG,
         &repo.branch,
-        true, // force_review
         NOW,
     )
     .await
     .unwrap();
     let ShareInstalledOutcome::Submitted(submitted) = outcome else {
-        panic!("远端内容基线为空则跳过变更检测,应当直接提交:{outcome:?}");
+        panic!("远端内容与基线一致,应当直接提交:{outcome:?}");
     };
-    assert_eq!(submitted.mode, ShareMode::ReviewRequested, "force_review 恒走评审,不许直推");
+    assert_eq!(submitted.mode, ShareMode::Pushed);
 
-    // 🔴 断言请求本身:head 是 `skillsync/` 打头的分支;直推路径(不带 new_branch 的
-    // /contents 请求)一个都不该出现 —— 这是「提交矩阵砍掉直推」这条硬约束唯一的
-    // 正面证据,只断言返回值的 mode 分不清"没试直推"与"试了直推、被拒后才降级"。
+    // 🔴 断言请求本身:只有一笔**不带 `new_branch`** 的 /contents,且**没有**任何
+    // /pulls ——这是 D1「提交审核整条下线」在这条路径上唯一的正面证据。只断言
+    // 返回值的 mode 分不清"直推成功"与"顺手又开了个没人看的审核请求"。
     let reqs = server.received_requests().await.unwrap();
     let contents_posts: Vec<serde_json::Value> = reqs
         .iter()
         .filter(|r| r.url.path().ends_with("/contents") && r.method.as_str() == "POST")
         .map(|r| serde_json::from_slice(&r.body).unwrap())
         .collect();
-    assert_eq!(contents_posts.len(), 1, "force_review 下不该先尝试直推再降级:{contents_posts:?}");
-    let branch = contents_posts[0]["new_branch"].as_str().expect("提交审核必须带 new_branch");
+    assert_eq!(contents_posts.len(), 1, "只发一笔提交:{contents_posts:?}");
     assert!(
-        branch.starts_with(&gitea::review_branch_prefix(SLUG)),
-        "分支名必须是 skillsync/{{name}}- 打头:{branch}"
+        contents_posts[0].get("new_branch").and_then(|v| v.as_str()).is_none(),
+        "不该再开分支:{:?}",
+        contents_posts[0]
     );
-    let pull_body: serde_json::Value = reqs
-        .iter()
-        .find(|r| r.url.path().ends_with("/pulls"))
-        .map(|r| serde_json::from_slice(&r.body).unwrap())
-        .expect("应当开出一个合并请求");
-    assert_eq!(pull_body["head"], branch, "PR 的 head 必须是同一条分支");
-    assert_eq!(pull_body["base"], "main");
+    assert!(
+        !reqs.iter().any(|r| r.url.path().ends_with("/pulls")),
+        "不该再开合并请求:{:?}",
+        reqs.iter().map(|r| r.url.path().to_string()).collect::<Vec<_>>()
+    );
 
-    // ────────────── ④ 再次读「我的技能」:如实反映当前状态,不是"审核中"
+    // ────────────── ④ 内容确实进库了 → **基线当场对齐**(D3)
     //
-    // 见文件头偏离说明第 1 点:`share_installed` 走评审时刻意不写任何 `state.shared`
-    // 记录、也不改 `content_hash` 基线("记账一个字不动"),而 `Section::InstalledFrom`
-    // 从来不参与审核候选闸 —— 所以这一行此刻**磁盘与账本都没有变化**,和提交之前一样。
+    // 这一条正是 v8 的起因那个死循环的反面:旧实现走评审时刻意不动基线,于是
+    // 合并之后 `local_modified` 与 `remoteChanged` 同时为真,用户点一次开一个空 PR,
+    // 自己出不来。
     let after_submit = c.state();
-    assert_eq!(after_submit.installed[0].content_hash, baseline_hash, "走评审,记账一个字不动");
-    // 🔴 这才是 `share.rs` 那道"记账不动"承诺**真正**控制的量(复审 Important-1):
-    // `share_installed` 走评审时不写任何 `state.shared` 记录——它与 `share()`
-    // (首次分享草稿)长得像,但没有那一份"落一条 shared 账"的动作。这条断言与
-    // `content_hash` 那条断言合起来,才共同封死了"审核中候选"在这条路径上
-    // 连前提(有一条挂着的 shared 记录)都不成立的事实,而不是靠"review 恒为
-    // None"这种在任何 section 上都为真的空话。
-    assert!(after_submit.shared.is_empty(), "走评审不写任何 state.shared 记录");
-    assert!(skill_md(&c).contains("我贡献的正文"), "本体是我们自己刚编辑的那一份,提交不碰本体");
+    assert_eq!(
+        after_submit.installed[0].content_hash, edited_hash,
+        "内容确实进库了,基线必须跟上——这是 v8 那个死循环的根因所在"
+    );
+    assert_ne!(after_submit.installed[0].content_hash, baseline_hash);
+    assert!(after_submit.shared.is_empty(), "贡献更改不写 state.shared 记录");
+    assert!(skill_md(&c).contains("我贡献的正文"), "提交不碰本体");
 
     let rows = c.rows(&env);
     let row = &rows[0];
-    assert_eq!(row.relation, Relation::Installed);
-    assert_eq!(row.section, Section::InstalledFrom, "仍在「安装自」区,贡献更改不搬区");
-    assert!(row.local_modified, "本地改动仍未进 main,如实显示为「本地改」");
-    // 同上:这里只是复述 `build()` 的恒定行为,真正验证候选闸的测试在
-    // `tests/review_state.rs`(见上面的注释)。
-    assert!(row.review.is_none());
+    assert_eq!(row.section, Section::InstalledFrom, "贡献更改不搬区");
+    assert!(!row.local_modified, "推上去了,本地相对新基线不再算「改过」");
 
-    // ────────────── ⑤ 模拟 PR 被合并:库里现在是我贡献的那一版
+    // ────────────── ⑤ 库里也是这一版了:两侧指纹相等,行上什么都不用做
     mount_library_v2(&server, "我贡献的正文").await;
     let index = refresh_index(&server, &c).await;
     assert_eq!(index.commit_sha, "sha-v2", "第二版的 mock 没有盖住第一版的配额");
     let merged_hash = index.skills.iter().find(|s| s.dir_slug == SLUG).unwrap().content_hash.clone();
-    assert_eq!(merged_hash, edited_hash, "合并进主线的内容应当与我们贡献的完全一致");
+    assert_eq!(merged_hash, edited_hash, "进主线的内容应当与我们贡献的完全一致");
 
     let rows = c.rows(&env);
     let row = &rows[0];
     assert_eq!(row.relation, Relation::Installed);
-    assert_eq!(row.section, Section::InstalledFrom, "合并之后仍是「安装自」区的这一行");
-    // 见文件头偏离说明第 2 点:基线从未更新过,合并后 local_modified 与 remoteChanged
-    // 同时为真 —— 这不是缺陷,是"贡献更改不改基线"这个既定取舍的直接推论,真实终态是
-    // `RowAction::conflict`(库里有新版…三选一)而不是任务书写的 `update`。
-    assert!(row.local_modified, "基线仍是编辑前的旧值,本地相对基线仍算「改过」");
-    assert_ne!(
+    assert_eq!(row.section, Section::InstalledFrom);
+    assert!(!row.local_modified, "本地与基线一致");
+    assert_eq!(
         merged_hash, row.content_hash,
-        "库里内容相对基线也变了 = remoteChanged;两者同真 → 前端会渲染成冲突档,不是「有更新」"
+        "库里内容 == 基线 == 本地 —— 前端三个判据全为假,这一行不摆任何按钮"
     );
-    assert_eq!(row.content_hash, baseline_hash, "基线从始至终没被贡献流程动过");
 }

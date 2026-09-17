@@ -172,7 +172,7 @@ export const autoUpdateSet = (autoUpdate: AutoUpdate) =>
 export const agentsSetDisabled = (disabled: string[]) =>
   call<void>("agents_set_disabled", { args: { disabled } });
 
-/** 在系统浏览器打开技能库页面(评审链接)。非同源地址会被 core 拒绝。 */
+/** 在系统浏览器打开技能库页面(「在技能库里查看」)。非同源地址会被 core 拒绝。 */
 export const openLibraryUrl = (url: string) => call<void>("open_library_url", { args: { url } });
 
 /** 与 core::scheduler::CheckReport 的 serde 契约一一对应。 */
@@ -423,8 +423,8 @@ export type AcquireOutcome =
    * 最新版,覆盖它就是丢改动。下一步是「分享更新」,不是安装。
    *
    * `remoteChanged` 直接带上,免得调用方跨两次 IPC 记住上一轮 `needsDecision`
-   * 里的那个值——它为真时后续分享必须带 `forceReview`(前提就是"库里已有新版",
-   * 直推等于覆盖同事经审核改过的版本)。
+   * 里的那个值——它为真时"库里已有新版",分享会被 core 的远端变更检测挡下
+   * (v8 任务 3 删掉提交审核之后没有第二跳了;覆盖确认是任务 4 的事)。
    */
   | { outcome: "kept"; remoteChanged: boolean }
   | { outcome: "installed"; report: InstallReport; localKept: boolean; lock: string };
@@ -517,16 +517,6 @@ export interface InstalledSkillView {
    */
   section: Section;
   /**
-   * 「可分享到」区的审核态(v7)。有它就是"审核中"——界面据此隐藏「分享」按钮,
-   * 避免用户重复提交。`null` = 从没分享过,或这次查询失败又没有本地兜底证据,
-   * 两者在界面上是同一档"可以分享"。
-   *
-   * 🔴 `url` 本身可能是 `null`(直推进 main 留下的记录、或 v7 之前的存量记录都
-   * 没有 PR 链接可给,但记录本身仍然成立"审核中"这件事)——**不要用空串冒充
-   * 链接**,按 `null` 判断要不要显示可点的「查看审核」。
-   */
-  review: ReviewView | null;
-  /**
    * 「在技能库里查看」那颗按钮要打开的网页地址(v7.1 任务 3)。
    * `null` = 拼不出来(不在公司技能库里 / 编译期没注入内网地址 / 索引缓存里
    * 没有这个技能的路径),界面**不摆这颗按钮**——不摆比摆一个必然报错的按钮好。
@@ -557,11 +547,6 @@ export interface InstalledSkillView {
 
 /** 「我的技能」页按公司技能库分的三区(`core::ownership::Section`)。 */
 export type Section = "installedFrom" | "sharedTo" | "shareable";
-
-/** 「可分享到」区的审核态(`core::my_skills::ReviewView`)。 */
-export interface ReviewView {
-  url: string | null;
-}
 
 /**
  * 一个 AI 工具眼下能不能读到这个技能(`core::my_skills::ToolState`)。
@@ -760,36 +745,38 @@ export const skillAlignBaseline = (args: {
   repo: string;
 }) => call<void>("skill_align_baseline", { args });
 
-export type ShareMode = "pushed" | "reviewRequested";
+/**
+ * 分享走的路。**v8 任务 3 起只剩 `pushed` 一档**:提交审核与副本两条路整体
+ * 下线(内网实测:开出去的合并请求没人看,用户以为提交了、库里什么都没变)。
+ * 留着这个类型是因为 core 仍如实回报"这次到底做成了什么",而不是让调用方
+ * 从"没有报错"倒推。
+ */
+export type ShareMode = "pushed";
 
 /**
  * 分享的结果。**只剩 `shared` 一档**(v6 二期任务 6):库里同名且不是我分享的
  * 不再是"等用户三选一"的拍板档,而是 `REPO_NAME_TAKEN` 这个错误——覆盖别人的
  * 技能这条路整体取消,改名由用户在本地完成。
- *
- * ⚠️ `reviewUrl` 曾经是**收不到的**:core 那侧 `rename_all` 挂在枚举上只改
- * variant 名、不改 struct variant 的字段名,发过来的是 `review_url`,
- * 于是「查看审核」链接从来没渲染过。core 侧已补 `rename_all_fields` 并有
- * 断言完整键集合的测试钉住。
  */
 export type ShareOutcome = {
   outcome: "shared";
   mode: ShareMode;
   commitSha: string;
-  reviewUrl: string | null;
   shareName: string;
 };
 
 export interface Submitted {
   mode: ShareMode;
   commitSha: string;
-  reviewUrl: string | null;
 }
 
 /**
  * 回推的两种结局(M5 任务 1)。`remoteChanged` 不是错误:远端在获取之后被别人
- * 改过,core 一个字节都没动就退回来,由前端弹确认(提交审核 / 先不动),
- * 确认后带 `forceReview: true` 再来一次。
+ * 改过,core 一个字节都没动就退回来。
+ *
+ * ⚠️ **v8 任务 3 起这一档暂时没有"确认后继续"的第二跳**(旧的第二跳是强制
+ * 提交审核,已随审核链路一起下线)——前端把它如实说成一句"库里有新版本,
+ * 这次没有分享"。**覆盖确认是任务 4 的事**,别在这里重造一个弹窗。
  */
 export type ShareInstalledOutcome =
   | ({ kind: "submitted" } & Submitted)
@@ -814,21 +801,18 @@ export const skillCreate = (args: {
 }) => call<CreateReport>("skill_create", { args });
 
 /**
- * 分享会走哪条路的预告(M4 任务 2)。与 core 的 `share::SharePath` 一一对应。
+ * 分享会走哪条路的预告(M4 任务 2;v8 任务 3 收窄成三档)。
+ * 与 core 的 `share::SharePath` 一一对应。
  *
- * - `directPush` 改动立即生效;`reviewInRepo` 在技能库里开一份待审;
- * - `reviewViaCopy` 先复制一份到自己名下再提交审核;
- * - `maybeDirect` 有写权限但探不到审核规则(GitHub 的保护规则要管理员权限才读得到);
- * - `unknown` 探不到,界面不显示预告。
+ * - `directPush` 有写权限,改动立即生效;
+ * - `noAccess` **对这个技能库没有写权限**——分享族的按钮据此禁用并给一句说明
+ *   (v8/D8:此处刻意不套用「不摆比解释好」,用户需要知道为什么自己没有这个能力);
+ * - `unknown` 探不到(网络失败 / 旧版 Gitea 缺字段 / 有写权限但目标受保护),
+ *   界面不显示预告、也**不禁用**任何按钮——不假装知道。
  *
- * **它只是提示**:提交时刻的权限判定才是权威,预检失败绝不拦分享。
+ * **它只是提示**:提交时刻的权限判定才是权威,`unknown` 绝不拦分享。
  */
-export type SharePath =
-  | "directPush"
-  | "reviewInRepo"
-  | "reviewViaCopy"
-  | "maybeDirect"
-  | "unknown";
+export type SharePath = "directPush" | "noAccess" | "unknown";
 
 export const sharePreview = (args: { registryId?: string; repo?: string } = {}) =>
   call<SharePath>("share_preview", { args });
@@ -847,12 +831,8 @@ export const skillShare = (args: {
   repo?: string;
 }) => call<ShareOutcome>("skill_share", { args });
 
-export const skillShareChanges = (args: {
-  dirSlug: string;
-  registryId?: string;
-  /** 冲突确认后的第二跳:跳过远端变更检测,强制走提交审核。 */
-  forceReview?: boolean;
-}) => call<ShareInstalledOutcome>("skill_share_changes", { args });
+export const skillShareChanges = (args: { dirSlug: string; registryId?: string }) =>
+  call<ShareInstalledOutcome>("skill_share_changes", { args });
 
 /**
  * 内建源的固定 registryId(与 `core::registry::BUILTIN_REGISTRY_ID` 逐字对应)。

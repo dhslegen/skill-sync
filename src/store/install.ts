@@ -78,8 +78,7 @@ interface InstallState {
   localKept: boolean;
   /**
    * 走完 `AcquireOutcome::Kept` 的结果:core 什么都没写(不是一次真的安装),
-   * `remoteChanged` 原样带出——`keepLocalAndShareMine` 靠它决定分享要不要带
-   * `forceReview`。`null` = 这次「done」不是走的这条路,`DoneFooter` 据此不显示
+   * `remoteChanged` 原样带出。`null` = 这次「done」不是走的这条路,`DoneFooter` 据此不显示
    * 「已启用/已安装」这类对这一档是假话的完成文案。
    *
    * ⚠️ **名字里的 "mine" 只是它的第一个来路**:v6 二期起 `localDiffers` +
@@ -154,6 +153,14 @@ function toAppError(raw: unknown): AppError {
   return isAppError(raw)
     ? raw
     : { code: "IPC_FAILED", message: t("error.generic"), detail: String(raw) };
+}
+
+/**
+ * 「库里被别人改过,这一跳没分享出去」——与 `store/my-skills.ts::runShareChanges`
+ * 里那一句是同一件事、同一条文案(v8 任务 3)。**覆盖确认是任务 4 的事**。
+ */
+function remoteChangedError(): AppError {
+  return { code: "CONFLICT_REMOTE_CHANGED", message: t("mine.shareRemoteChanged") };
 }
 
 /** 每次安装一个独立频道,避免上一次的残余进度串到这一次。 */
@@ -448,19 +455,21 @@ export const useInstall = create<InstallState>((set, get) => ({
     const dirSlug = get().dirSlug;
     if (!dirSlug) return;
     try {
-      // 这条路的前提就是"远端有新版、你改过本体"(冲突弹窗只在那时出现),
-      // 用户点「保留并分享」已经拍过板——直接走提交审核(M5 任务 1)。
-      // 以前这里会直推:远端刚更新的版本被顶掉,正是冲突检测要防的静默覆盖。
+      // ⚠️ **v8 任务 3**:以前这里恒带 `forceReview`,把这一跳强制推去提交审核
+      // ——理由是"远端有新版,直推等于覆盖同事的版本"。提交审核整条链路已经
+      // 下线,而那条理由**一个字都没变**,所以这里**不能**退回直推:core 的
+      // 远端变更检测会如实把这一跳挡下来(`remoteChanged`),前端说一句
+      // "库里有新版本,这次没有分享"。**覆盖确认是任务 4 的事**,别在这里
+      // 提前造一个弹窗,更别为了"让它走通"把检测绕过去——那正是 D2 要防的。
       const outcome = await skillShareChanges({
         dirSlug,
         registryId: get().registryId ?? undefined,
-        forceReview: true,
       });
-      // forceReview 跳过检测,结果必然是 submitted;收窄只为让类型闭合
-      if (outcome.kind === "submitted") {
+      if (outcome.kind === "remoteChanged") {
+        set({ shareResult: { error: remoteChangedError() } });
+      } else {
         set({ shareResult: { mode: outcome.mode } });
       }
-      // 走了评审记账没动,「已改动」状态留着——改动确实还没进库
       await get().refreshInstalled();
     } catch (raw) {
       // 保留已经成功,分享失败只是"下一步没走成"——不能把整个结果画成失败
@@ -477,29 +486,18 @@ export const useInstall = create<InstallState>((set, get) => ({
     const dirSlug = get().dirSlug;
     if (!dirSlug) return;
     try {
-      // remoteChanged 直接读 `Kept` 携带的那份(比冲突弹窗打开那一刻更新一次
-      // precheck 的结果),为真时必须带 forceReview——前提是"库里已有新版",
-      // 直推等于覆盖同事经审核改过的版本(与 `keepLocalAndShare` 恒带 forceReview
-      // 同一个理由;这里区分开是因为"我分享的"有 remoteChanged 为假的正常一档,
-      // 那一档不该被强推进评审)。
-      let outcome = await skillShareChanges({
+      // ⚠️ **v8 任务 3**:`kept.remoteChanged` 为真时这一跳以前会带 `forceReview`
+      // 强制走评审,为假时才直推。评审下线之后只剩一条路,而"库里已有新版就不许
+      // 直推"这条约束**没变**——所以 `remoteChanged` 为真的那一档现在由 core 的
+      // 远端变更检测挡下,如实说一句;为假的那一档(「我分享的」的正常情形)
+      // 照常直推成功。覆盖确认见任务 4。
+      const outcome = await skillShareChanges({
         dirSlug,
         registryId: get().registryId ?? undefined,
-        ...(kept.remoteChanged ? { forceReview: true } : {}),
       });
       if (outcome.kind === "remoteChanged") {
-        // 点「以本地为准」时判定还是"没变",提交前的这一小段时间里被抢先了一次
-        // ——用户已经表达过"以本地为准"的意图,不必再问一遍,直接带 forceReview
-        // 重试一次即可(假设:与 M5 "远端变了先弹确认"的既有先例不同,这里区别
-        // 对待是因为用户刚点的按钮语义已经是"以本地为准",这一步只是把 core 的
-        // 判定补齐到与用户意图一致)。
-        outcome = await skillShareChanges({
-          dirSlug,
-          registryId: get().registryId ?? undefined,
-          forceReview: true,
-        });
-      }
-      if (outcome.kind === "submitted") {
+        set({ shareResult: { error: remoteChangedError() } });
+      } else {
         set({ shareResult: { mode: outcome.mode } });
       }
       await get().refreshInstalled();

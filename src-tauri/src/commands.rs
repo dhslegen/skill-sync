@@ -1567,10 +1567,6 @@ pub struct InstalledSkillView {
     /// `ownership::section(relation)` 的**唯一**填法,前端直接按它分区,
     /// 不再自己从 `relation` 推。
     pub section: ownership::Section,
-    /// 「可分享到」区的审核态(v7 任务 2):有它就是"审核中",前端据此隐藏分享
-    /// 按钮,避免重复提交。`None` = 从没分享过,或查询失败又没有本地兜底证据
-    /// ——两者在界面上是同一档"可以分享"。
-    pub review: Option<my_skills::ReviewView>,
     /// 「在技能库里查看」那颗按钮要打开的网页地址(v7.1 任务 3)。`null` = 拼不
     /// 出来,界面**不摆这颗按钮**。只有确实在公司技能库里的行(`section` 是
     /// `installedFrom`/`sharedTo`)才可能有值,判据与拼法见 [`my_skills::library_url`]。
@@ -1639,49 +1635,10 @@ impl From<my_skills::InstalledRow> for InstalledSkillView {
             versions: r.versions,
             share_blocked: r.share_blocked,
             section: r.section,
-            review: r.review,
             library_url: r.library_url,
             canonical_readers: r.canonical_readers,
         }
     }
-}
-
-/// 审核态(v7 任务 2)查询的超时:这次查询按设计只是锦上添花(查不到就是
-/// "可以分享"),而 `installed_list` 会被 `useLocalRefresh` 在窗口重获焦点/
-/// 切页/文件变更三处触发。用户不在内网(或撞上黑洞网关)时不能让整页数据
-/// 一直挂在一次无超时的请求上——`gitea::app_http_client()`/`app_http_client_proxied()`
-/// 默认无超时(修复轮 1 I1),这里改用专给这次查询准备的
-/// `app_http_client_with_timeout`,不影响其余调用方。
-const REVIEW_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// 审核态(v7 任务 2)的唯一网络查询:一次查询取回**公司库主仓**当前开放的
-/// 合并请求。内建源的读永远匿名(公开可读,gitea.rs 模块头);未配置内网
-/// (`SKILLSYNC_NO_INTRANET` 那一档)时直接报错,调用方按"查询失败"统一降级,
-/// 不额外区分原因。
-///
-/// 🔴 **"一次查询"不等于"一次 HTTP 请求"**:`GiteaClient::list_open_pulls`
-/// 翻页到空(修复轮 2),正常情况下这一次查询通常要发 **2 次**请求——有数据的
-/// 一页 + 确认到底的空页——而不是修复轮 1 及以前那版"一页装得下就只发 1 次"。
-/// 这是空页判据本身的代价(见 `list_open_pulls` 文档),换来的是不会在开放 PR
-/// 数量掉出第一页时静默截断;`REVIEW_QUERY_TIMEOUT` 管的是**单次**请求,两次
-/// 请求各自都有这个上限,`gitea::PULLS_QUERY_DEADLINE` 才是管总耗时的那道闸。
-///
-/// **只查公司库主仓**:`Section` 的整套语义就是相对公司技能库的三区,这里没有
-/// 必要(每个候选行各自查一遍来源仓库的代价更不划算)按每个候选行各自的来源
-/// 仓库分别查询——`my_skills::shared_record_of` 已经把候选收窄到只认
-/// **公司库主仓**(`registry_id` 与 `owner/repo` 都要对得上)的记录,追加仓
-/// (`config.builtinExtraRepos`)下的分享因此不会被误标(会漏标,这是已知边界,
-/// 不是缺陷——宁可漏报不误报)。
-async fn list_open_builtin_pulls(builtin: &registry::BuiltinSource) -> Result<Vec<crate::core::gitea::PullBrief>, AppError> {
-    let (owner, repo) = builtin
-        .repo
-        .ok_or_else(|| AppError::new("NET_UNREACHABLE", "尚未配置公司技能库").with_detail("builtin repo unset"))?;
-    let base_url = builtin.base_url.ok_or_else(|| {
-        AppError::new("NET_UNREACHABLE", "尚未配置公司技能库地址").with_detail("builtin base_url unset")
-    })?;
-    let http = crate::core::gitea::app_http_client_with_timeout(REVIEW_QUERY_TIMEOUT)?;
-    let client = GiteaClient::with_http(base_url, None, http);
-    client.list_open_pulls(owner, repo).await
 }
 
 /// 「我的技能」页的整行数据。**编排逻辑在 [`my_skills::build`]**(v6 任务 2 下沉,
@@ -1689,14 +1646,13 @@ async fn list_open_builtin_pulls(builtin: &registry::BuiltinSource) -> Result<Ve
 /// 保持 command 是薄壳(`local_modified` 要逐文件读盘算 hash,技能一多就是一次
 /// 不小的 IO,挪到阻塞线程池、IPC 立即返还)。
 ///
-/// v7 任务 2 在 `build` **之后**补一步:「可分享到」区里有走过评审的记录的行,
-/// 异步查一次公司库当前开放的合并请求,按分支名前缀把「审核中」标回去。
-/// **网络请求必须落在这里,不能进 `my_skills::build`**(那是同步、零网络的);
-/// 成功/失败怎么填由 `my_skills::apply_review` 统一分派(修复轮 1 M2)——
-/// 这里只负责发请求、把 `Result` 交出去,自己不带任何分支。
+/// 🔴 **v8 任务 3:这条 command 从此零网络**。v7 任务 2 曾在 `build` 之后补一步
+/// ——「可分享到」区里有走过评审记录的行,异步查一次公司库当前开放的合并请求,
+/// 按分支名前缀把「审核中」标回去。审核链路整体下线之后那一步一并删除,
+/// `my_skills::build` 的"同步、零网络"因此成为这条 command 的全部。
 #[tauri::command]
 pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
-    let (mut rows, state) = tauri::async_runtime::spawn_blocking(|| {
+    let rows = tauri::async_runtime::spawn_blocking(|| {
         let store = app_store()?;
         let registry = AgentRegistry::builtin();
         let installer = app_installer(&registry);
@@ -1712,16 +1668,10 @@ pub async fn installed_list() -> Result<Vec<InstalledSkillView>, AppError> {
             &config,
             &state,
         )?;
-        Ok::<_, AppError>((rows, state))
+        Ok::<_, AppError>(rows)
     })
     .await
     .map_err(|e| AppError::new("FS_TASK", "读取已安装列表失败,请重试").with_detail(e.to_string()))??;
-
-    let builtin = registry::BuiltinSource::from_build();
-    if my_skills::has_review_candidates(&rows, &state, builtin.repo) {
-        let result = list_open_builtin_pulls(&builtin).await;
-        my_skills::apply_review(&mut rows, &state, builtin.repo, result);
-    }
 
     Ok(rows.into_iter().map(InstalledSkillView::from).collect())
 }
@@ -1932,14 +1882,7 @@ pub async fn skill_claim_attribution(
                 .with_detail(format!("no identity for registry {registry_id}"))
         })?;
 
-    share::claim_attribution(
-        &source.as_share_client(),
-        &repo,
-        &args.dir_slug,
-        &me,
-        &now_iso8601(),
-    )
-    .await
+    share::claim_attribution(&source.as_share_client(), &repo, &args.dir_slug, &me).await
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1977,9 +1920,6 @@ pub struct ShareChangesArgs {
     #[serde(default)]
     pub registry_id: Option<String>,
     pub dir_slug: String,
-    /// 冲突档确认后的第二跳:跳过远端变更检测,强制走「开分支 + 提交审核」。
-    #[serde(default)]
-    pub force_review: bool,
 }
 
 /// 回推目标技能库的寻址键,取**账上**的来源坐标(M4 任务 1)。
@@ -2028,7 +1968,6 @@ pub async fn skill_share_changes(
         &store,
         &args.dir_slug,
         &repo.branch,
-        args.force_review,
         &now_iso8601(),
     )
     .await

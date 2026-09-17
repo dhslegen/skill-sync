@@ -8,6 +8,7 @@ import { buildRowMenuItems, rowAction } from "@/lib/ownership";
 import { SHARE_BLOCK_LABEL, SHARE_DONE_LABEL, SHARE_FAILED_LABEL } from "@/lib/share-block";
 import { localDiffersNoBaseline, useMySkills } from "@/store/my-skills";
 import { useInstall } from "@/store/install";
+import { useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
 
 /**
@@ -107,9 +108,8 @@ import { useStoreIndex } from "@/store/store-index";
  * # 「在技能库里查看」
  *
  * 照画布摆在页脚,数据是 core 新给的 `skill.libraryUrl`(v7.1 复审后用户裁定:
- * **改数据来源,不是接受现状**)。此前 `InstalledSkillView` 上唯一的库链接是
- * `review.url`,只有「审核中」那一档有值——那个限制已经由 core 侧的
- * `my_skills::library_url` 解掉:用内建源的编译期地址 + 索引里这个技能的真实
+ * **改数据来源,不是接受现状**)。它由 core 侧的
+ * `my_skills::library_url` 给出:用内建源的编译期地址 + 索引里这个技能的真实
  * `path` 拼出网页地址,只对确实在公司技能库里的行(`section` 是
  * `installedFrom`/`sharedTo`)给值。
  *
@@ -117,21 +117,10 @@ import { useStoreIndex } from "@/store/store-index";
  * 交给 `open_library_url`(带同源白名单守卫)。拼不出来 → `null` → **不摆**,
  * 而不是摆一颗点开是 404 的按钮。
  *
- * ## 🔴 「审核中」那一档改吃 `review.url`(终审 I-1)
- *
- * 上一版这里写着「与 `underReview` 档那颗同名按钮不会同屏」,并据此认为审核中的
- * 行在页脚不需要库链接——**推理对了一半、结论错了**:`review` 非空 ⟹ `section`
- * 是 `shareable` ⟹ `relation` 是 `Draft` ⟹ `my_skills::row_library_url` 第一句就
- * `return None`,所以 `libraryUrl` 对这一档**恒为 null**,页脚那颗按钮**根本渲染
- * 不出来**。同一期任务 5 把行上的链接删掉时,注释说"页脚还有一颗"——指的却是
- * 另一个字段,于是 `RowAction.underReview.url` 变成全仓零消费,审核中的技能唯一
- * 的库入口只剩**默认收起**的「在哪」折叠头里那一条。这正是 v7 任务 7 修复轮 1
- * 修过的「core 算出来了却没有渲染点」的编号回归。
- *
- * 所以这颗按钮的数据来源是 **`libraryUrl` 优先、退回 `review.url`**:两者不会
- * 同时有值(前者只给在库里的行、后者只给「可分享到」区),所以不存在"摆两颗"的
- * 问题;`review.url` 本身可以是 `null`(降级路 / 直推留下的记录没有链接),
- * 那一档仍然不摆——判据始终是"有没有一个能打开的地址",不是"是不是审核中"。
+ * ⚠️ **v8 任务 3**:这里曾经还有一路数据来源 `review.url`(「审核中」那一档,
+ * 那时 `libraryUrl` 对 `shareable` 区恒为 null)。提交审核整条链路下线之后,
+ * 库链接只剩 `skill.libraryUrl` 这一个来源,没有就不摆——判据始终是"有没有一个
+ * 能打开的地址"。
  *
  * # 挂载位置与全局对话框的关系
  *
@@ -298,11 +287,16 @@ export function SkillActionsBlock({
   const shareDone = rawShareDone?.dirSlug === skill.dirSlug ? rawShareDone : null;
 
   const noBaselineDiffers = localDiffersNoBaseline(skill, index);
-  const action = rowAction(skill, remoteChanged);
+  // 🔴 v8 任务 3 / D8:没有写权限时分享族主按钮禁用 + 一句说明。`unknown`
+  // (探不到)不禁——预检永远 fail-open。`host="store"` 下主按钮来自
+  // `cardState` 不来自这里,但次要动作(「…」里的贡献更改/分享)同样要拦,
+  // 所以这个判定在两个宿主下都参与。
+  const noWriteAccess = useShare((s) => s.preview) === "noAccess";
+  const action = rowAction(skill, remoteChanged, noWriteAccess);
   // 🔴 `reveal` **不再过滤**(Q3:打开文件夹只留页脚这一处,见组件文档)。
   // 「移除」单独摘出来靠右摆,其余按 `buildRowMenuItems` 的自然顺序排在左边
   // ——那个顺序本来就是「打开文件夹」在前、「移除」在末,与画布一致。
-  const allItems = buildRowMenuItems(skill, action, remoteChanged, noBaselineDiffers);
+  const allItems = buildRowMenuItems(skill, action, remoteChanged, noBaselineDiffers, noWriteAccess);
   // 🔴 `host="store"` 下只留 `reveal`(打开文件夹)——`contributeOrShareChanges`/
   // `update`/`share`/`useLibraryVersion` 都是"推"的动作(改库里的内容、或是
   // `rowAction` 语境下的取回),v7.4 已拍板"推"的动作不摆在"拉"的界面里,见组件
@@ -313,10 +307,7 @@ export function SkillActionsBlock({
   );
   const removeItem = allItems.find((spec) => spec.kind === "remove") ?? null;
 
-  // 🔴 终审 I-1:审核中那一档 `libraryUrl` 恒 null(见组件文档),库入口退回
-  // `review.url`。两者互斥,所以这不是"两个来源抢同一颗按钮",是同一颗按钮的
-  // 两种数据来源;都没有就不摆。
-  const libraryLink = skill.libraryUrl ?? (action.kind === "underReview" ? action.url : null);
+  const libraryLink = skill.libraryUrl;
 
   const [revealError, setRevealError] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -483,6 +474,14 @@ export function SkillActionsBlock({
       {caps.shareFeedback && action.kind === "shareBlocked" && (
         <p className="mt-1.5 basis-full rounded-card border border-[#b8860b]/40 px-2.5 py-1.5 text-[11.5px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
           {t(SHARE_BLOCK_LABEL[action.reason])}
+        </p>
+      )}
+      {/* 🔴 D8:「为什么这颗按钮点不动」。禁用态没有这句说明就是个哑按钮,
+          而 D8 明确要求**说清原因**(此处刻意不套用「不摆比解释好」)。
+          「打开文件夹」由上面的 `secondaryButtons` 恒摆着,出口不丢。 */}
+      {caps.shareFeedback && action.kind === "noWriteAccess" && (
+        <p className="mt-1.5 basis-full rounded-card border border-[#b8860b]/40 px-2.5 py-1.5 text-[11.5px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
+          {t("mine.shareNoAccess")}
         </p>
       )}
     </>
