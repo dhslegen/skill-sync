@@ -369,9 +369,11 @@ pub enum AcquireOutcome {
     /// (v6 任务 3)。下一步由调用方去走「分享更新」,不是安装。
     ///
     /// 带上 `remote_changed` 是为了让这一步自己把话说全——调用方不必跨两次 IPC 记住
-    /// 上一轮 `NeedsDecision` 里的那个值:**它为真时后续分享必须带 `force_review`**
-    /// (前提就是"库里已有新版",直推等于覆盖同事经审核改过的版本,与
-    /// `install.ts` 的 `keepLocalAndShare` 恒带 forceReview 是同一个理由)。
+    /// 上一轮 `NeedsDecision` 里的那个值:**它为真时后续分享会覆盖库里那一版**
+    /// (前提就是"库里已有新版")。
+    ///
+    /// ⚠️ 这里原先写的是"必须带 `force_review`"——v8 任务 3 把提交审核整条下线之后
+    /// 那个形参已经不存在了,那句话是假话。覆盖前的拍板确认是 v8 任务 4 的事。
     Kept { remote_changed: bool },
     Installed {
         report: InstallReport,
