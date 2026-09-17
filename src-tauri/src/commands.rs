@@ -1820,6 +1820,9 @@ pub struct SkillShareArgs {
     /// 技能标识。**没有 `sourcePath`**:本体在哪由 core 自己解析
     /// (`converge::locate`),前端不替它回答这个问题。
     pub dir_slug: String,
+    /// 用户已在覆盖确认屏上按过「仍然覆盖」(v8 任务 4)。缺省 false。
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 /// 分享一个本机技能。**零编辑**:名称、描述、文件夹名一律照原样推,
@@ -1828,11 +1831,13 @@ pub struct SkillShareArgs {
 pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
     let (source, repo) = share_source(registry_id, args.repo.as_deref()).await?;
+    let (read, _) = read_source(registry_id, args.repo.as_deref()).await?;
     let store = app_store()?;
     let registry = AgentRegistry::builtin();
 
     share::share(
         &source.as_share_client(),
+        &read,
         &registry,
         &SystemEnv,
         &store,
@@ -1841,6 +1846,7 @@ pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, Ap
             registry_id,
             repo: &repo,
             dir_slug: &args.dir_slug,
+            overwrite: args.overwrite,
         },
         &now_iso8601(),
     )
@@ -1920,6 +1926,9 @@ pub struct ShareChangesArgs {
     #[serde(default)]
     pub registry_id: Option<String>,
     pub dir_slug: String,
+    /// 用户已在覆盖确认屏上按过「仍然覆盖」(v8 任务 4)。缺省 false。
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 /// 回推目标技能库的寻址键,取**账上**的来源坐标(M4 任务 1)。
@@ -1968,6 +1977,7 @@ pub async fn skill_share_changes(
         &store,
         &args.dir_slug,
         &repo.branch,
+        args.overwrite,
         &now_iso8601(),
     )
     .await

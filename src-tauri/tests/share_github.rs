@@ -97,6 +97,7 @@ fn share_req<'a>(repo: &'a RepoRef, dir_slug: &'a str) -> share::ShareRequest<'a
         registry_id: "gh-src",
         repo,
         dir_slug,
+        overwrite: false,
     }
 }
 
@@ -170,6 +171,7 @@ async fn push_and_unprotected_saves_directly() {
     let repo = repo_ref();
     let outcome = share::share(
         &ShareClient::Github(&gh),
+        &gh,
         &c.registry,
         &env,
         &c.store,
@@ -180,7 +182,7 @@ async fn push_and_unprotected_saves_directly() {
     .await
     .unwrap();
 
-    let ShareOutcome::Shared { mode, commit_sha, .. } = outcome;
+    let ShareOutcome::Shared { mode, commit_sha, .. } = outcome else { panic!("应当分享成功,不该落进覆盖确认档") };
     assert_eq!(mode, ShareMode::Pushed);
     assert_eq!(commit_sha, "e0ecf23eea0efcc72f5cbb54a96150dfbe3efd36");
     // 记账落了 shared
@@ -215,6 +217,7 @@ async fn protection_violation_on_submit_is_reported_not_downgraded() {
     let repo = repo_ref();
     let err = share::share(
         &ShareClient::Github(&gh),
+        &gh,
         &c.registry,
         &env,
         &c.store,
@@ -250,6 +253,7 @@ async fn no_push_access_is_told_why_instead_of_getting_a_fork() {
     let repo = repo_ref();
     let err = share::share(
         &ShareClient::Github(&gh),
+        &gh,
         &c.registry,
         &env,
         &c.store,
@@ -293,6 +297,7 @@ async fn stale_head_becomes_human_readable_error() {
     let repo = repo_ref();
     let err = share::share(
         &ShareClient::Github(&gh),
+        &gh,
         &c.registry,
         &env,
         &c.store,

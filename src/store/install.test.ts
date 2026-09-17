@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { failedLinks, linkedAgents, useInstall } from "./install";
 import { useRegistries } from "./registries";
 import { useMySkills } from "@/store/my-skills";
+import { useOverwrite } from "@/store/overwrite";
 import { useUi } from "./ui";
 import type { AcquireOutcome, InstallReport } from "@/lib/ipc";
 
@@ -352,10 +353,9 @@ describe("获取流程状态机", () => {
     expect(useInstall.getState().localKept).toBe(true);
   });
 
-  // 🔴 **v8 任务 3**:这条路的前提就是"远端有新版",以前恒带 `forceReview` 推去
-  // 评审。评审下线之后**不能退回直推**——那正是 D2 要防的静默覆盖。所以这一跳
-  // 必然撞上 core 的远端变更检测,前端如实说一句「库里已经有更新的版本」。
-  // 「仍然覆盖」是任务 4 的事。
+  // 🔴 这条是「保留并贡献」(改**别人**的技能):v8 任务 4 的「仍然覆盖」只给
+  // 「我自己那一版」,顶掉别人的技能的出路是 v8 任务 6 的入口下线。所以这一跳
+  // 仍然撞上 core 的覆盖闸,前端如实说一句「库里已经有更新的版本」。
   it("保留并分享:先 keepLocal 落稳,再推改动 —— 库里有新版时如实报错,绝不直推", async () => {
     let installCalls = 0;
     invoke.mockImplementation(async (cmd) => {
@@ -421,13 +421,20 @@ describe("获取流程状态机", () => {
   });
 
   describe("keepLocalAndShareMine(v6 任务 5:「我分享的」冲突弹窗的「以本地为准」)", () => {
-    // v8 任务 3:`remoteChanged` 为真时以前带 `forceReview` 推去评审;现在由
-    // core 的远端变更检测挡下,前端如实说一句(理由同 `keepLocalAndShare`)。
-    it("remoteChanged 为真时,这一跳不带 forceReview,并如实报「库里已有更新的版本」", async () => {
+    // v8 任务 4:`remoteChanged` 是拍板档不是失败——摆覆盖确认屏,点名覆盖谁
+    // 与何时;用户按「仍然覆盖」就带 `overwrite` 重跑同一跳。
+    it("remoteChanged 为真时,摆覆盖确认屏而不是写一条失败", async () => {
+      useOverwrite.setState({ pending: null, busy: false });
       invoke.mockImplementation(async (cmd) => {
         if (cmd === "agents_detected") return AGENTS;
         if (cmd === "installed_list") return [];
-        if (cmd === "skill_share_changes") return { kind: "remoteChanged", historyUrl: null };
+        if (cmd === "skill_share_changes")
+          return {
+            kind: "remoteChanged",
+            lastAuthor: "李四",
+            lastAt: "2026-09-10T03:04:05Z",
+            historyUrl: "http://g/commits/x",
+          };
         if (cmd === "skill_install")
           return { outcome: "kept", remoteChanged: true } satisfies AcquireOutcome;
         throw new Error(`unexpected ${cmd}`);
@@ -441,11 +448,40 @@ describe("获取流程状态机", () => {
         dirSlug: "weekly-report",
         registryId: undefined,
       });
-      expect(useInstall.getState().shareResult).toMatchObject({
-        error: { code: "CONFLICT_REMOTE_CHANGED" },
-      });
+      const pending = useOverwrite.getState().pending;
+      expect(pending?.dirSlug).toBe("weekly-report");
+      expect(pending?.warning.lastAuthor).toBe("李四");
+      expect(pending?.warning.historyUrl).toBe("http://g/commits/x");
+      expect(useInstall.getState().shareResult).toBeNull();
       expect(useInstall.getState().phase).toBe("done");
       expect(useInstall.getState().mineKept).toEqual({ remoteChanged: true, kind: "mine" });
+    });
+
+    it("按「仍然覆盖」→ 带 overwrite 重来一次 → 分享成功", async () => {
+      useOverwrite.setState({ pending: null, busy: false });
+      const seen: unknown[] = [];
+      invoke.mockImplementation(async (cmd, payload) => {
+        if (cmd === "agents_detected") return AGENTS;
+        if (cmd === "installed_list") return [];
+        if (cmd === "skill_share_changes") {
+          const args = (payload as { args: { overwrite?: boolean } }).args;
+          seen.push(args.overwrite);
+          return args.overwrite
+            ? { kind: "submitted", mode: "pushed", commitSha: "new" }
+            : { kind: "remoteChanged", lastAuthor: null, lastAt: null, historyUrl: null };
+        }
+        if (cmd === "skill_install")
+          return { outcome: "kept", remoteChanged: true } satisfies AcquireOutcome;
+        throw new Error(`unexpected ${cmd}`);
+      });
+
+      await useInstall.getState().begin("weekly-report");
+      await useInstall.getState().keepLocalAndShareMine();
+      await useOverwrite.getState().confirmOverwrite();
+
+      expect(seen).toEqual([undefined, true]);
+      expect(useOverwrite.getState().pending).toBeNull();
+      expect(useInstall.getState().shareResult).toEqual({ mode: "pushed" });
     });
 
     it("remoteChanged 为假时照常直推成功(对照组,同样断言完整键集合)", async () => {

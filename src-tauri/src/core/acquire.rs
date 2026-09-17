@@ -373,7 +373,8 @@ pub enum AcquireOutcome {
     /// (前提就是"库里已有新版")。
     ///
     /// ⚠️ 这里原先写的是"必须带 `force_review`"——v8 任务 3 把提交审核整条下线之后
-    /// 那个形参已经不存在了,那句话是假话。覆盖前的拍板确认是 v8 任务 4 的事。
+    /// 那个形参已经不存在了,那句话是假话。v8 任务 4 起它换成了方向相反的
+    /// `overwrite`:后续分享会先被覆盖闸拦下,用户拍过板才带着它重推。
     Kept { remote_changed: bool },
     Installed {
         report: InstallReport,

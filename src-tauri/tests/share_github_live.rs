@@ -87,15 +87,16 @@ async fn share_fresh_then_update_against_real_github() {
         registry_id: "gh-live",
         repo: &repo,
         dir_slug: &share_name,
+        overwrite: false,
     };
     // 显式注入沙盒废纸篓,理由同 share_live.rs
     let trash = skillsync_lib::core::fsops::SandboxTrash::new(tmp.path().join("gh-live-trash"));
 
     // 第一步:Fresh → main 未保护 → 直接保存
-    let outcome = share::share(&client, &registry, &env, &store, &trash, req(), now)
+    let outcome = share::share(&client, &gh, &registry, &env, &store, &trash, req(), now)
         .await
         .expect("首次分享失败");
-    let ShareOutcome::Shared { mode, commit_sha, .. } = outcome;
+    let ShareOutcome::Shared { mode, commit_sha, .. } = outcome else { panic!("应当分享成功,不该落进覆盖确认档") };
     assert_eq!(mode, ShareMode::Pushed);
     eprintln!("首次分享已保存:{commit_sha}");
 
@@ -105,10 +106,10 @@ async fn share_fresh_then_update_against_real_github() {
         format!("---\nname: {share_name}\ndescription: 5b 端到端联调\n---\n\n第二版\n"),
     )
     .unwrap();
-    let outcome = share::share(&client, &registry, &env, &store, &trash, req(), now)
+    let outcome = share::share(&client, &gh, &registry, &env, &store, &trash, req(), now)
         .await
         .expect("更新分享失败");
-    let ShareOutcome::Shared { mode, commit_sha: second_sha, .. } = outcome;
+    let ShareOutcome::Shared { mode, commit_sha: second_sha, .. } = outcome else { panic!("应当分享成功,不该落进覆盖确认档") };
     assert_eq!(mode, ShareMode::Pushed);
     assert_ne!(second_sha, commit_sha);
     eprintln!("更新分享已保存:{second_sha}");

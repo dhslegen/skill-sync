@@ -316,6 +316,7 @@ async fn author_develops_in_a_tool_dir_shares_gets_edited_pulls_back_and_keeps_e
     let repo = repo_ref();
     let outcome = share::share(
         &share::ShareClient::Gitea(&client),
+        &client,
         &c.registry,
         &env,
         &c.store,
@@ -324,12 +325,13 @@ async fn author_develops_in_a_tool_dir_shares_gets_edited_pulls_back_and_keeps_e
             registry_id: registry::BUILTIN_REGISTRY_ID,
             repo: &repo,
             dir_slug: SLUG,
+            overwrite: false,
         },
         NOW,
     )
     .await
     .unwrap();
-    let ShareOutcome::Shared { mode, commit_sha, .. } = outcome;
+    let ShareOutcome::Shared { mode, commit_sha, .. } = outcome else { panic!("应当分享成功,不该落进覆盖确认档") };
     assert_eq!(mode, ShareMode::Pushed);
     assert_eq!(commit_sha, "sha-v1");
 

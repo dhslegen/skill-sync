@@ -368,6 +368,7 @@ async fn a_skill_installed_from_the_company_library_can_be_edited_and_contribute
         &c.store,
         SLUG,
         &repo.branch,
+        false,
         NOW,
     )
     .await

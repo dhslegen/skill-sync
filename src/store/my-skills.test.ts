@@ -13,6 +13,7 @@ import {
 } from "./my-skills";
 import { t } from "@/i18n";
 import { useInstall } from "@/store/install";
+import { useOverwrite } from "@/store/overwrite";
 import { useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
 import type { InstalledSkillView, Section } from "@/lib/ipc";
@@ -795,31 +796,81 @@ describe("分享确认屏(零编辑)", () => {
   });
 });
 
-describe("分享改动撞上「库里已有更新的版本」(M5 任务 1;v8 任务 3 改成如实报错)", () => {
-  beforeEach(reset);
+describe("分享改动撞上「库里那一版与本地基线不符」(v8 任务 4:拦住,但给「仍然覆盖」)", () => {
+  beforeEach(() => {
+    reset();
+    useOverwrite.setState({ pending: null, busy: false });
+  });
 
   const modified = () => view({ localModified: true });
 
-  // ⚠️ v8 任务 3:旧的拍板弹窗只有「提交审核 / 先不动」两条路,提交审核已整体
-  // 下线,所以这一档暂时是一句如实的失败(带 dirSlug 归属,两处渲染点都认它)。
-  // **「仍然覆盖」是任务 4 的事**,别在这里提前造。
-  it("远端变过:如实报一句「库里已有更新的版本」,而不是静默无事发生", async () => {
+  it("库里那一版会被顶掉:摆覆盖确认屏,点名覆盖谁与何时,不落错误", async () => {
     useMySkills.setState({ list: [modified()] });
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "skill_share_changes")
-        return { kind: "remoteChanged", historyUrl: "http://g/skills/skills/commits/x" };
+        return {
+          kind: "remoteChanged",
+          lastAuthor: "李四",
+          lastAt: "2026-09-10T03:04:05Z",
+          historyUrl: "http://g/skills/skills/commits/x",
+        };
       if (cmd === "installed_list") return [modified()];
       return AGENTS;
     });
 
     await useMySkills.getState().shareChanges("weekly-report");
 
+    const pending = useOverwrite.getState().pending;
+    expect(pending?.dirSlug).toBe("weekly-report");
+    expect(pending?.warning.lastAuthor).toBe("李四");
+    expect(pending?.warning.lastAt).toBe("2026-09-10T03:04:05Z");
+    expect(pending?.warning.historyUrl).toBe("http://g/skills/skills/commits/x");
+    // 这一档不是失败:它是"要你先拍板"
     const s = useMySkills.getState();
-    expect(s.shareError?.dirSlug).toBe("weekly-report");
-    expect(s.shareError?.error.code).toBe("CONFLICT_REMOTE_CHANGED");
-    expect(s.shareError?.error.message).toContain("已经有更新的版本");
-    expect(s.shareError?.flow).toBe("changes");
+    expect(s.shareError).toBeNull();
     expect(s.shareDone).toBeNull();
+    expect(s.shareBusy).toBeNull();
+  });
+
+  it("按「仍然覆盖」→ 带 overwrite 重来一次 → 分享成功", async () => {
+    useMySkills.setState({ list: [modified()] });
+    const seen: unknown[] = [];
+    invoke.mockImplementation(async (cmd: string, payload: Record<string, unknown>) => {
+      if (cmd === "skill_share_changes") {
+        const args = payload.args as { overwrite?: boolean };
+        seen.push(args.overwrite);
+        return args.overwrite
+          ? { kind: "submitted", mode: "pushed", commitSha: "n" }
+          : { kind: "remoteChanged", lastAuthor: null, lastAt: null, historyUrl: null };
+      }
+      if (cmd === "installed_list") return [modified()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().shareChanges("weekly-report");
+    await useOverwrite.getState().confirmOverwrite();
+
+    expect(seen).toEqual([undefined, true]);
+    expect(useOverwrite.getState().pending).toBeNull();
+    expect(useMySkills.getState().shareDone?.dirSlug).toBe("weekly-report");
+  });
+
+  it("按「先不动」:零 IPC、零副作用", async () => {
+    useMySkills.setState({ list: [modified()] });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_share_changes")
+        return { kind: "remoteChanged", lastAuthor: null, lastAt: null, historyUrl: null };
+      if (cmd === "installed_list") return [modified()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().shareChanges("weekly-report");
+    const before = invoke.mock.calls.length;
+    useOverwrite.getState().cancel();
+
+    expect(invoke.mock.calls.length).toBe(before);
+    expect(useOverwrite.getState().pending).toBeNull();
+    expect(useMySkills.getState().shareDone).toBeNull();
   });
 
   it("v8 任务 3:这一跳不再带 forceReview(那个参数已随提交审核一起下线)", async () => {

@@ -45,6 +45,7 @@ import { useRegistries } from "@/store/registries";
 // 那种写法会在其中一侧的模块求值时读到还没初始化完的绑定)。不要重构去消掉这个环
 // (牵动一片),但往这两个文件里加新引用前,先确认新代码也遵守"只在函数体内用"这条。
 import { useMySkills } from "@/store/my-skills";
+import { useOverwrite } from "@/store/overwrite";
 import { useUi } from "@/store/ui";
 
 
@@ -156,8 +157,12 @@ function toAppError(raw: unknown): AppError {
 }
 
 /**
- * 「库里被别人改过,这一跳没分享出去」——与 `store/my-skills.ts::runShareChanges`
- * 里那一句是同一件事、同一条文案(v8 任务 3)。**覆盖确认是任务 4 的事**。
+ * 「库里被别人改过,这一跳没分享出去」。
+ *
+ * ⚠️ **v8 任务 4 之后它只剩两个用处**:①「保留并贡献」(改**别人**的技能,
+ * 那条路的出路是 v8 任务 6 的入口下线,不是给它一个覆盖按钮);
+ * ②`CONFLICT_STALE`(拍板与提交之间又被抢先)。自己那一版的覆盖走
+ * `useOverwrite` 的确认屏,不走这条。
  */
 function remoteChangedError(): AppError {
   return { code: "CONFLICT_REMOTE_CHANGED", message: t("mine.shareRemoteChanged") };
@@ -455,12 +460,11 @@ export const useInstall = create<InstallState>((set, get) => ({
     const dirSlug = get().dirSlug;
     if (!dirSlug) return;
     try {
-      // ⚠️ **v8 任务 3**:以前这里恒带 `forceReview`,把这一跳强制推去提交审核
-      // ——理由是"远端有新版,直推等于覆盖同事的版本"。提交审核整条链路已经
-      // 下线,而那条理由**一个字都没变**,所以这里**不能**退回直推:core 的
-      // 远端变更检测会如实把这一跳挡下来(`remoteChanged`),前端说一句
-      // "库里有新版本,这次没有分享"。**覆盖确认是任务 4 的事**,别在这里
-      // 提前造一个弹窗,更别为了"让它走通"把检测绕过去——那正是 D2 要防的。
+      // ⚠️ **这条是「保留并贡献」——改的是别人的技能,刻意不给「仍然覆盖」**。
+      // v8 任务 4 只给「我自己那一版」配了覆盖确认屏(`useOverwrite`);顶掉
+      // **别人**的技能这件事的出路是 v8 任务 6(D7:入口整条下线,改说「和库里
+      // 的不一样」+ 联系作者),不是在这里摆一个覆盖按钮。所以这一档仍然
+      // 如实说一句"库里有新版本,这次没有分享"。
       const outcome = await skillShareChanges({
         dirSlug,
         registryId: get().registryId ?? undefined,
@@ -485,33 +489,7 @@ export const useInstall = create<InstallState>((set, get) => ({
     if (!kept) return;
     const dirSlug = get().dirSlug;
     if (!dirSlug) return;
-    try {
-      // ⚠️ **v8 任务 3**:`kept.remoteChanged` 为真时这一跳以前会带 `forceReview`
-      // 强制走评审,为假时才直推。评审下线之后只剩一条路,而"库里已有新版就不许
-      // 直推"这条约束**没变**——所以 `remoteChanged` 为真的那一档现在由 core 的
-      // 远端变更检测挡下,如实说一句;为假的那一档(「我分享的」的正常情形)
-      // 照常直推成功。覆盖确认见任务 4。
-      const outcome = await skillShareChanges({
-        dirSlug,
-        registryId: get().registryId ?? undefined,
-      });
-      if (outcome.kind === "remoteChanged") {
-        set({ shareResult: { error: remoteChangedError() } });
-      } else {
-        set({ shareResult: { mode: outcome.mode } });
-      }
-      await get().refreshInstalled();
-    } catch (raw) {
-      const err = toAppError(raw);
-      if (err.code === "FS_NOT_INSTALLED") {
-        // 没有安装基线:`share_installed` 一进门就要求它存在,走不通(v6 任务 3
-        // 顾虑 1 记的真问题,典型场景:自己写的技能直接推进了库、或换电脑后重装 app)。
-        // 改走「分享」确认屏——它走的是 `skill_share`,不要求基线。
-        goToSharePage(dirSlug);
-        return;
-      }
-      set({ shareResult: { error: err } });
-    }
+    await pushMyChanges(dirSlug, false, set, get);
   },
 
   cancel: () =>
@@ -538,6 +516,56 @@ export const useInstall = create<InstallState>((set, get) => ({
     await runEnable(dir, set, get);
   },
 }));
+
+/**
+ * 「保留本地并把改动推回去」那一跳(获取冲突弹窗的「保留并分享」)。
+ *
+ * **v8 任务 4**:`remoteChanged` 是拍板档不是失败——库里那一版与本地基线不符,
+ * 推上去会顶掉它,摆覆盖确认屏(点名覆盖谁、什么时候推的、去哪找回);
+ * 用户按「仍然覆盖」就带 `overwrite: true` 重跑这同一个函数。
+ *
+ * 🔴 失败仍写进 `shareResult`(装完那一屏自己的渲染点),满足
+ * `useOverwrite` 对 `confirm` 的契约:它自己不设第二处错误状态。
+ */
+async function pushMyChanges(
+  dirSlug: string,
+  overwrite: boolean,
+  set: (partial: Partial<InstallState>) => void,
+  get: () => InstallState,
+) {
+  try {
+    const outcome = await skillShareChanges({
+      dirSlug,
+      registryId: get().registryId ?? undefined,
+      ...(overwrite ? { overwrite: true } : {}),
+    });
+    if (outcome.kind === "remoteChanged") {
+      useOverwrite.getState().ask({
+        dirSlug,
+        name: dirSlug,
+        warning: {
+          lastAuthor: outcome.lastAuthor,
+          lastAt: outcome.lastAt,
+          historyUrl: outcome.historyUrl,
+        },
+        confirm: () => pushMyChanges(dirSlug, true, set, get),
+      });
+      return;
+    }
+    set({ shareResult: { mode: outcome.mode } });
+    await get().refreshInstalled();
+  } catch (raw) {
+    const err = toAppError(raw);
+    if (err.code === "FS_NOT_INSTALLED") {
+      // 没有安装基线:`share_installed` 一进门就要求它存在,走不通(v6 任务 3
+      // 顾虑 1 记的真问题,典型场景:自己写的技能直接推进了库、或换电脑后重装 app)。
+      // 改走「分享」确认屏——它走的是 `skill_share`,不要求基线。
+      goToSharePage(dirSlug);
+      return;
+    }
+    set({ shareResult: { error: err } });
+  }
+}
 
 /**
  * 让这个技能在它期望的整组工具里启用一次(结果面板里那些没成的位置)。

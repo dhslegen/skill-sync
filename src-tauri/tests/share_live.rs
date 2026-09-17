@@ -124,6 +124,7 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
     );
     let outcome = share::share(
         &share::ShareClient::Gitea(&admin),
+        &admin,
         &registry,
         &env,
         &store,
@@ -132,12 +133,13 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
             registry_id: "fixture",
             repo: &repo,
             dir_slug: &name,
+            overwrite: false,
         },
         NOW,
     )
     .await
     .expect("Fresh 分享失败");
-    let ShareOutcome::Shared { mode, .. } = outcome;
+    let ShareOutcome::Shared { mode, .. } = outcome else { panic!("应当分享成功,不该落进覆盖确认档") };
     assert_eq!(mode, ShareMode::Pushed);
 
     // ② Mine:再推同名 → 认出是自己的,直接更新
@@ -155,6 +157,7 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
     );
     let outcome = share::share(
         &share::ShareClient::Gitea(&admin),
+        &admin,
         &registry,
         &env,
         &store,
@@ -163,6 +166,7 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
             registry_id: "fixture",
             repo: &repo,
             dir_slug: &name,
+            overwrite: false,
         },
         NOW,
     )
@@ -185,6 +189,7 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
     // 如实的错误,不是"等用户三选一"的拍板档。
     let err = share::share(
         &share::ShareClient::Gitea(&admin),
+        &admin,
         &registry,
         &env,
         &store,
@@ -193,6 +198,7 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
             registry_id: "fixture",
             repo: &repo,
             dir_slug: &name,
+            overwrite: false,
         },
         NOW,
     )
@@ -397,6 +403,35 @@ async fn remote_conflict_detection_against_a_real_gitea() {
         .await
         .expect("B 推 v3 失败");
 
+    // ③' 🔴 v8 任务 4 的核心修复:**没有基线也要弹**。换过电脑、或早年经别的
+    //     途径分享过的作者,本机根本没有记账——旧行为是跳过检测直接覆盖。
+    //     这里把基线抹成空串再跑一次,判据退化成"本地实时 vs 库里实时"。
+    let mut blanked = store.load_state().unwrap().value;
+    let idx = blanked.installed.iter().position(|s| s.name == name).unwrap();
+    let baseline = std::mem::take(&mut blanked.installed[idx].content_hash);
+    store.save_state(&blanked).unwrap();
+    let outcome = share::share_installed(
+        &share::ShareClient::Gitea(&admin),
+        &admin,
+        &registry,
+        &env,
+        &store,
+        &name,
+        "main",
+        false,
+        &now,
+    )
+    .await
+    .expect("空基线不该报错");
+    assert!(
+        matches!(outcome, share::ShareInstalledOutcome::RemoteChanged(_)),
+        "没有基线时本地 v2 与库里 v3 不同,照样要弹覆盖确认:{outcome:?}",
+    );
+    // 把基线放回去,下面几步测的是"有基线"那一档
+    let mut restored = store.load_state().unwrap().value;
+    restored.installed[idx].content_hash = baseline;
+    store.save_state(&restored).unwrap();
+
     // ④ 回推:必须认出远端变过,一个字节都不许写
     let outcome = share::share_installed(
         &share::ShareClient::Gitea(&admin),
@@ -406,14 +441,15 @@ async fn remote_conflict_detection_against_a_real_gitea() {
         &store,
         &name,
         "main",
+        false,
         &now,
     )
     .await
     .expect("冲突检测不该报错");
-    let share::ShareInstalledOutcome::RemoteChanged { history_url } = outcome else {
+    let share::ShareInstalledOutcome::RemoteChanged(warning) = outcome else {
         panic!("远端已是 v3,应进冲突档");
     };
-    let url = history_url.expect("Gitea 源应给出历史链接");
+    let url = warning.history_url.expect("Gitea 源应给出历史链接");
     let resp = reqwest::get(&url).await.expect("历史页请求失败");
     assert_eq!(resp.status().as_u16(), 200, "历史页路由变了: {url}");
 
@@ -421,6 +457,51 @@ async fn remote_conflict_detection_against_a_real_gitea() {
     let head = admin.branch_head(&repo).await.unwrap();
     let files = admin.tree_files(&repo.owner, &repo.repo, &head.sha).await.unwrap();
     assert!(files.iter().any(|f| f.path == format!("{remote_path}/SKILL.md")));
+
+    // ⑥ v8 任务 4:拍板信息要点名"最后由谁、什么时候改的"。这是真 Gitea 的
+    //    `commits?path=…&limit=1`,wiremock 上录不出"路径不存在返回 404"这类真实形状。
+    assert!(
+        warning.last_author.is_some(),
+        "真 Gitea 应当答得出这个技能目录最后由谁改的",
+    );
+    assert!(warning.last_at.is_some(), "以及什么时候");
+
+    // ⑦ 用户按了「仍然覆盖」:带 overwrite 重来一跳 → 直推成功 → **基线对齐**。
+    //    不对齐正是同事那个死循环的成因(推上去了,界面还说"库里有新版")。
+    let local_hash = fsops::dir_content_hash(&dir).unwrap();
+    let outcome = share::share_installed(
+        &share::ShareClient::Gitea(&admin),
+        &admin,
+        &registry,
+        &env,
+        &store,
+        &name,
+        "main",
+        true,
+        &now,
+    )
+    .await
+    .expect("拍过板的覆盖应当推得上去");
+    let share::ShareInstalledOutcome::Submitted(_) = outcome else {
+        panic!("带 overwrite 就不该再被拦下:{outcome:?}");
+    };
+    let after = store.load_state().unwrap().value;
+    let record = after
+        .installed
+        .iter()
+        .find(|s| s.name == name)
+        .expect("记账应当还在");
+    assert_eq!(record.content_hash, local_hash, "覆盖成功后基线必须对齐");
+    // 远端真的成了我的 v2
+    let head = admin.branch_head(&repo).await.unwrap();
+    let blob = admin
+        .tree_files(&repo.owner, &repo.repo, &head.sha)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|f| f.path == format!("{remote_path}/SKILL.md"))
+        .expect("远端应有这个技能");
+    assert!(!blob.sha.is_empty());
 
     // 清理:把灌进 main 的技能删掉。留着会污染别的 live 断言
     // (gitea_live 对技能清单的断言真被上一轮残留打红过)。
@@ -518,16 +599,17 @@ async fn author_loop_in_a_tool_dir_against_a_real_gitea() {
     // ① 分享:直推 main。本体留在原地,canonical 只多一条指向它的链接。
     let outcome = share::share(
         &share::ShareClient::Gitea(&admin),
+        &admin,
         &registry,
         &env,
         &store,
         &trash,
-        share::ShareRequest { registry_id: "fixture", repo: &repo, dir_slug: &name },
+        share::ShareRequest { registry_id: "fixture", repo: &repo, dir_slug: &name, overwrite: false },
         NOW,
     )
     .await
     .expect("分享失败");
-    let ShareOutcome::Shared { mode, .. } = outcome;
+    let ShareOutcome::Shared { mode, .. } = outcome else { panic!("应当分享成功,不该落进覆盖确认档") };
     assert_eq!(mode, ShareMode::Pushed);
     let canonical = home.join(".agents").join("skills").join(&name);
     assert_eq!(

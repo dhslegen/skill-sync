@@ -123,7 +123,7 @@ async fn claiming_writes_only_the_authors_file() {
     .unwrap();
 
     // `ShareOutcome` 现在只剩 `Shared` 一档,解构是不可反驳的
-    let ShareOutcome::Shared { mode, commit_sha, share_name, .. } = outcome;
+    let ShareOutcome::Shared { mode, commit_sha, share_name, .. } = outcome else { panic!("应当分享成功,不该落进覆盖确认档") };
     assert_eq!(mode, ShareMode::Pushed);
     assert_eq!(commit_sha, "newsha1");
     assert_eq!(share_name, SLUG);

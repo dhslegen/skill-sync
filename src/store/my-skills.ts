@@ -55,6 +55,7 @@ import { rowAction, type RowAction } from "@/lib/ownership";
 import type { ShareFlow } from "@/lib/share-block";
 import { remoteHashOf } from "@/lib/update";
 import { defaultSelectedAgents, useInstall } from "@/store/install";
+import { useOverwrite } from "@/store/overwrite";
 import { useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
 
@@ -720,33 +721,8 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   confirmShare: async () => {
     const target = get().shareTarget;
     if (!target) return;
-    const skill = get().list?.find((s) => s.dirSlug === target.dirSlug);
-    set({ shareBusy: target.dirSlug, shareError: null, shareDone: null });
-    try {
-      const repo = shareTargetRepo(skill, useShare.getState().targetRepo);
-      const registryId = shareTargetRegistryId(skill);
-      const result = await skillShare({
-        dirSlug: target.dirSlug,
-        ...(registryId ? { registryId } : {}),
-        ...(repo ? { repo } : {}),
-      });
-      set({
-        shareTarget: null,
-        shareDone: { dirSlug: target.dirSlug, mode: result.mode, flow: "share" },
-      });
-      // 分享成功后要刷新的不止这一页:商店索引(库里多了一个技能)、
-      // 已装记录(商店卡片的按钮档位据它决定)、本页(直推进库的技能会被 core
-      // 当场记进账,状态从「尚未分享」变成「已同步」)。
-      await get().load();
-      void useStoreIndex.getState().load(true);
-      void useInstall.getState().refreshInstalled();
-    } catch (raw) {
-      set({ shareError: { dirSlug: target.dirSlug, error: toAppError(raw), flow: "share" } });
-    } finally {
-      set({ shareBusy: null });
-    }
+    await runShare(target.dirSlug, false, set, get);
   },
-
   shareChanges: async (dirSlug) => {
     // ⚠️ **v8 任务 3**:这里曾经按 `section` 分流——「安装自」那一区的贡献更改
     // 恒带 `forceReview`(那不是我的技能,作者该先看一眼),其余走权限分流。
@@ -875,21 +851,78 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
 /**
  * 「贡献更改」/「分享改动」共用的那一跳。
  *
- * ⚠️ **v8 任务 3:「库里被别人改过」暂时是一句如实的失败,不是一个拍板弹窗。**
- * 旧的拍板只有两条路——提交审核 / 先不动,而提交审核整条链路已经下线
- * (内网实测:开出去的合并请求没人看)。这一版**不给"仍然覆盖"**:覆盖确认
- * (含"覆盖谁、什么时候推的、去哪找回")是 **v8 任务 4** 的事,在这里先造一个
- * 弹窗等于把它做两遍。
+ * **v8 任务 4:「库里那一版与本地基线不符」是一个拍板档,不是失败。**
+ * 走 `useOverwrite.ask` 摆覆盖确认屏(点名覆盖谁、什么时候推的、去哪找回),
+ * 用户按「仍然覆盖」就带 `overwrite: true` 重跑这同一个函数。
  *
  * 🔴 走 `shareError` 而不是静默返回,是因为本项目记着的「错误被写进状态却没有
  * 渲染点」那条:`shareError` 在「我的技能」页与详情面板动作区都有渲染点,
  * 且带 `dirSlug` 归属校验。静默返回的表现是"点了没反应",而"没反应"会诱发
  * 重复提交。
  */
+/**
+ * 「分享」那一跳(`skill_share`)。
+ *
+ * `overwrite` 为真 = 用户已在覆盖确认屏上按过「仍然覆盖」;为假时 core 可能
+ * 退回 `needsOverwrite`——**那不是错误**,是"库里已有我的另一版,推上去会顶掉
+ * 它",要用户先拍板(v8 任务 4 / 决策 D2)。
+ */
+async function runShare(
+  dirSlug: string,
+  overwrite: boolean,
+  set: (partial: Partial<MySkillsState>) => void,
+  get: () => MySkillsState,
+) {
+  const skill = get().list?.find((s) => s.dirSlug === dirSlug);
+  set({ shareBusy: dirSlug, shareError: null, shareDone: null });
+  try {
+    // 🔴 目标库按 `section` 分流,而且**确认屏的路径预告与这里调的是同一个
+    // 函数**——显示与提交分两处算就会出现"确认屏说推去 A、实际推去 B"。
+    const repo = shareTargetRepo(skill, useShare.getState().targetRepo);
+    const registryId = shareTargetRegistryId(skill);
+    const result = await skillShare({
+      dirSlug,
+      ...(registryId ? { registryId } : {}),
+      ...(repo ? { repo } : {}),
+      ...(overwrite ? { overwrite: true } : {}),
+    });
+    if (result.outcome === "needsOverwrite") {
+      // core 一个字节都没动就退回来了。关掉分享确认屏、摆覆盖确认屏。
+      set({ shareTarget: null });
+      useOverwrite.getState().ask({
+        dirSlug,
+        // 🔴 点名用**文件夹名**,不去索引里换展示名:文件夹名就是各个 AI 工具
+        // 里调用它的那个名字,界面本来就在展示它;而展示名要跨 store 现查一份
+        // 索引,等于为一句标题多接一条会失灵的依赖。
+        name: dirSlug,
+        warning: {
+          lastAuthor: result.lastAuthor,
+          lastAt: result.lastAt,
+          historyUrl: result.historyUrl,
+        },
+        confirm: () => runShare(dirSlug, true, set, get),
+      });
+      return;
+    }
+    set({ shareTarget: null, shareDone: { dirSlug, mode: result.mode, flow: "share" } });
+    // 分享成功后要刷新的不止这一页:商店索引(库里多了一个技能)、
+    // 已装记录(商店卡片的按钮档位据它决定)、本页(直推进库的技能会被 core
+    // 当场记进账,状态从「尚未分享」变成「已同步」)。
+    await get().load();
+    void useStoreIndex.getState().load(true);
+    void useInstall.getState().refreshInstalled();
+  } catch (raw) {
+    set({ shareError: { dirSlug, error: toAppError(raw), flow: "share" } });
+  } finally {
+    set({ shareBusy: null });
+  }
+}
+
 async function runShareChanges(
   dirSlug: string,
   set: (partial: Partial<MySkillsState>) => void,
   get: () => MySkillsState,
+  overwrite = false,
 ) {
   const remoteChangedError = (): AppError => ({
     code: "CONFLICT_REMOTE_CHANGED",
@@ -897,11 +930,29 @@ async function runShareChanges(
   });
   set({ shareBusy: dirSlug, shareDone: null, shareError: null });
   try {
-    const registryId = get().list?.find((s) => s.dirSlug === dirSlug)?.registryId;
-    const outcome = await skillShareChanges({ dirSlug, registryId });
+    const skill = get().list?.find((s) => s.dirSlug === dirSlug);
+    const registryId = skill?.registryId;
+    const outcome = await skillShareChanges({
+      dirSlug,
+      registryId,
+      ...(overwrite ? { overwrite: true } : {}),
+    });
     if (outcome.kind === "remoteChanged") {
-      // 别人改过:core 一个字节没动就退回来了,如实说一句(见函数文档)
-      set({ shareError: { dirSlug, error: remoteChangedError(), flow: "changes" } });
+      // 库里那一版与本地基线不符:core 一个字节没动就退回来了,
+      // 摆覆盖确认屏让用户拍板(v8 任务 4),而不是只说一句"没分享成"。
+      useOverwrite.getState().ask({
+        dirSlug,
+        // 🔴 点名用**文件夹名**,不去索引里换展示名:文件夹名就是各个 AI 工具
+        // 里调用它的那个名字,界面本来就在展示它;而展示名要跨 store 现查一份
+        // 索引,等于为一句标题多接一条会失灵的依赖。
+        name: dirSlug,
+        warning: {
+          lastAuthor: outcome.lastAuthor,
+          lastAt: outcome.lastAt,
+          historyUrl: outcome.historyUrl,
+        },
+        confirm: () => runShareChanges(dirSlug, set, get, true),
+      });
       return;
     }
     set({ shareDone: { dirSlug, mode: outcome.mode, flow: "changes" } });

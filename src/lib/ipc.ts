@@ -423,8 +423,8 @@ export type AcquireOutcome =
    * 最新版,覆盖它就是丢改动。下一步是「分享更新」,不是安装。
    *
    * `remoteChanged` 直接带上,免得调用方跨两次 IPC 记住上一轮 `needsDecision`
-   * 里的那个值——它为真时"库里已有新版",分享会被 core 的远端变更检测挡下
-   * (v8 任务 3 删掉提交审核之后没有第二跳了;覆盖确认是任务 4 的事)。
+   * 里的那个值——它为真时"库里已有新版",分享会先被 core 的覆盖闸拦下,
+   * 界面摆覆盖确认屏(v8 任务 4),用户拍板后带 `overwrite` 重推。
    */
   | { outcome: "kept"; remoteChanged: boolean }
   | { outcome: "installed"; report: InstallReport; localKept: boolean; lock: string };
@@ -754,16 +754,34 @@ export const skillAlignBaseline = (args: {
 export type ShareMode = "pushed";
 
 /**
- * 分享的结果。**只剩 `shared` 一档**(v6 二期任务 6):库里同名且不是我分享的
- * 不再是"等用户三选一"的拍板档,而是 `REPO_NAME_TAKEN` 这个错误——覆盖别人的
- * 技能这条路整体取消,改名由用户在本地完成。
+ * 覆盖确认屏要说清的三件事(v8 决策 D2):**覆盖谁、什么时候推的、去哪找回**。
+ *
+ * 三个字段都可能是 `null`,而且 core 侧**绝不用空串冒充**——界面按"有没有值"
+ * 决定那半句话摆不摆。`lastAuthor`/`lastAt` 是 best-effort(取不到不影响这道闸
+ * 照样拦);`historyUrl` 是"被替换的那一版仍能找回来"这句承诺的落点。
  */
-export type ShareOutcome = {
-  outcome: "shared";
-  mode: ShareMode;
-  commitSha: string;
-  shareName: string;
-};
+export interface OverwriteWarning {
+  lastAuthor: string | null;
+  lastAt: string | null;
+  historyUrl: string | null;
+}
+
+/**
+ * 分享的结果。**库里同名且不是我分享的**不是拍板档,而是 `REPO_NAME_TAKEN`
+ * 这个错误——覆盖**别人**的技能这条路整体取消,改名由用户在本地完成。
+ *
+ * `needsOverwrite`(v8 任务 4)是另一回事:库里已有**我自己**的同名技能,
+ * 而且它那一版与本地不符,推上去会顶掉它。core 一个字节都没动就退回来,
+ * 用户拍板后带 `overwrite: true` 重来。
+ */
+export type ShareOutcome =
+  | {
+      outcome: "shared";
+      mode: ShareMode;
+      commitSha: string;
+      shareName: string;
+    }
+  | ({ outcome: "needsOverwrite" } & OverwriteWarning);
 
 export interface Submitted {
   mode: ShareMode;
@@ -771,16 +789,12 @@ export interface Submitted {
 }
 
 /**
- * 回推的两种结局(M5 任务 1)。`remoteChanged` 不是错误:远端在获取之后被别人
- * 改过,core 一个字节都没动就退回来。
- *
- * ⚠️ **v8 任务 3 起这一档暂时没有"确认后继续"的第二跳**(旧的第二跳是强制
- * 提交审核,已随审核链路一起下线)——前端把它如实说成一句"库里有新版本,
- * 这次没有分享"。**覆盖确认是任务 4 的事**,别在这里重造一个弹窗。
+ * 回推的两种结局。`remoteChanged` 不是错误:库里这一版与本地基线不符,
+ * 推上去会顶掉它,core 一个字节都没动就退回来等用户拍板(v8 任务 4)。
  */
 export type ShareInstalledOutcome =
   | ({ kind: "submitted" } & Submitted)
-  | { kind: "remoteChanged"; historyUrl: string | null };
+  | ({ kind: "remoteChanged" } & OverwriteWarning);
 
 export interface CreateReport {
   dirSlug: string;
@@ -829,10 +843,16 @@ export const skillShare = (args: {
   registryId?: string;
   /** 分享目标技能库的寻址键,缺省 = 该源主库。 */
   repo?: string;
+  /** 用户已在覆盖确认屏上按过「仍然覆盖」。缺省 false。 */
+  overwrite?: boolean;
 }) => call<ShareOutcome>("skill_share", { args });
 
-export const skillShareChanges = (args: { dirSlug: string; registryId?: string }) =>
-  call<ShareInstalledOutcome>("skill_share_changes", { args });
+export const skillShareChanges = (args: {
+  dirSlug: string;
+  registryId?: string;
+  /** 用户已在覆盖确认屏上按过「仍然覆盖」。缺省 false。 */
+  overwrite?: boolean;
+}) => call<ShareInstalledOutcome>("skill_share_changes", { args });
 
 /**
  * 内建源的固定 registryId(与 `core::registry::BUILTIN_REGISTRY_ID` 逐字对应)。

@@ -394,6 +394,12 @@ pub struct ShareRequest<'a> {
     /// ——**调用方不传路径**(旧的 `source_path` 让前端替 core 回答"本体在哪",
     /// 而那正是 v6 二期要收进 core 的唯一判定)。
     pub dir_slug: &'a str,
+    /// 用户已在覆盖确认屏上拍过板:**知道库里已有我的同名技能、仍然要顶掉它**。
+    ///
+    /// ⚠️ 这个字段的名字与 v6 二期删掉的那个 `overwrite` 相同、**语义不同**:
+    /// 那个是"覆盖别人的同名技能"(整条路已取消,撞名一律报 `REPO_NAME_TAKEN`);
+    /// 这个只对 [`SharePrecheck::Mine`] 那一档生效,覆盖的是**我自己**上一版。
+    pub overwrite: bool,
 }
 
 /// 提交走的路径。
@@ -426,6 +432,9 @@ pub enum ShareOutcome {
         /// 库里这个技能的目录名(= 本体文件夹名 = frontmatter `name`,三者同一)。
         share_name: String,
     },
+    /// 库里已有我的同名技能,而且它那一版与本地基线不符——推上去会顶掉它。
+    /// **返回它时磁盘与远端一个字节都没动**,用户拍板后带 `overwrite: true` 重来。
+    NeedsOverwrite(OverwriteWarning),
 }
 
 /// 校验没过。`detail` 带 [`ShareBlock`] 的 camelCase 字面量,界面按它查文案表
@@ -467,6 +476,8 @@ fn skill_invalid_err(block: ShareBlock) -> AppError {
 #[allow(clippy::too_many_arguments)]
 pub async fn share(
     client: &ShareClient<'_>,
+    // 读链路:覆盖闸要拿库里的实时内容比一比(检测走读、提交走写,不能省成一个)。
+    read: &impl RepoSource,
     registry: &AgentRegistry,
     env: &dyn AgentEnv,
     store: &Store,
@@ -526,6 +537,30 @@ pub async fn share(
             "技能库里已经有一个同名技能,请先在本地给你的技能换个文件夹名",
         )
         .with_detail(format!("taken: {share_name}")));
+    }
+
+    // ③' 覆盖闸(D14)。只对 `Mine` 那一档有意义:`Fresh` 时库里还没有这个技能,
+    //    没有任何东西会被顶掉。基线取 `state.shared` 里对应那条记账的指纹——
+    //    🔴 换过电脑 / 从没经本 app 分享过的作者根本没有这条记账,基线为空,
+    //    [`overwrite_gate`] 会退回"本地实时 vs 库里实时"直接比,**不跳过检测**。
+    if checked == SharePrecheck::Mine && !req.overwrite {
+        let baseline = loaded
+            .value
+            .shared
+            .iter()
+            .find(|s| {
+                s.name == share_name
+                    && s.target.owner == req.repo.owner
+                    && s.target.repo == req.repo.repo
+            })
+            .map(|s| s.content_hash.as_str())
+            .unwrap_or("");
+        let remote_path = format!("skills/{share_name}");
+        if let Some(warning) =
+            overwrite_gate(read, client, req.repo, &remote_path, baseline, &body).await?
+        {
+            return Ok(ShareOutcome::NeedsOverwrite(warning));
+        }
     }
 
     // ④ 本体留在原地,canonical 只补一条指向它的链接。
@@ -655,25 +690,97 @@ fn record_pushed_skill(
     });
 }
 
+// ============================================================ 覆盖闸
+
+/// 「推上去会不会顶掉库里那一版」——两条分享通道共用的唯一判据(v8 决策 D14)。
+///
+/// 返回 `None` = 不会顶掉任何东西,照常提交;返回 `Some` = 要用户先拍板,
+/// 此刻磁盘与远端**一个字节都没动**。
+///
+/// 判据分两档,分界是**基线在不在**:
+/// - **基线非空**:`库里实时内容 ≠ 本地基线` 即拦。基线是"上次与库里对齐时的
+///   指纹",本地改动不动它——所以这一档**不看本地改没改**:本地没改时推上去的是
+///   旧版,照样顶掉对方。
+/// - 🔴 **基线为空:按「未知」处理,直接比 `库里实时 vs 本地实时`**,而不是像
+///   v8 之前那样**跳过检测**。换过电脑、或早年经别的途径分享过的作者,本机根本
+///   没有记账,沿用旧行为就是**不弹任何警告直接覆盖**。相同 → 放行(没什么可
+///   覆盖的);不同 → 照样拦。
+///
+/// `read` 走**读链路**、`client` 走**写链路**,两者不能省成一个(现役约束)。
+/// 拿不到"最后由谁改的"不影响这道闸拦不拦——那是 best-effort 的展示信息。
+async fn overwrite_gate(
+    read: &impl RepoSource,
+    client: &ShareClient<'_>,
+    repo: &RepoRef,
+    remote_path: &str,
+    baseline: &str,
+    local_dir: &Path,
+) -> Result<Option<OverwriteWarning>, AppError> {
+    let archive = read.download_archive(repo).await?;
+    // entries 的键保留压缩包顶层目录,技能路径必须拼上 archive.root 才剥得到条目
+    // (store.rs 建索引时的 s.dir 天然带着它,这里的记账路径没有)
+    let remote_dir = format!("{}/{}", archive.root, remote_path);
+    let remote_hash = crate::core::store::remote_content_hash(&archive, &remote_dir);
+    let differs = if baseline.is_empty() {
+        // 库里压根没有这个技能(指纹为空)= 没有任何东西会被顶掉,放行。
+        !remote_hash.is_empty() && remote_hash != fsops::dir_content_hash(local_dir)?
+    } else {
+        remote_hash != baseline
+    };
+    if !differs {
+        return Ok(None);
+    }
+    let (last_author, last_at) = match client {
+        ShareClient::Gitea(c) => match c.last_commit(repo, remote_path).await {
+            Some(lc) => (lc.author, lc.at),
+            None => (None, None),
+        },
+        // GitHub 臂本任务不新增请求:链接照给,"谁/什么时候"如实留空。
+        ShareClient::Github(_) => (None, None),
+    };
+    Ok(Some(OverwriteWarning {
+        last_author,
+        last_at,
+        history_url: Some(match client {
+            ShareClient::Gitea(c) => c.history_url(repo, remote_path),
+            ShareClient::Github(c) => c.history_url(repo, remote_path),
+        }),
+    }))
+}
+
 // ============================================================ 回推已装技能的改动
 
-/// 回推的两种结局:提交成功,或撞上"远端在获取之后被别人改过"的冲突档。
+/// 覆盖确认屏要说清的三件事:**覆盖谁、什么时候推的、去哪找回**(v8 决策 D2)。
 ///
-/// 冲突档**不是错误,是"这一跳没做成"**:返回它时磁盘与远端一个字节都没动。
+/// 三个字段都是 `Option`,而且**绝不用空串冒充**:界面按"有没有值"决定那半句
+/// 话摆不摆。`author`/`at` 来自单点的 [`gitea::Client::last_commit`]
+/// (best-effort,取不到不影响这道闸照样拦);`history_url` 是 web UI 的提交
+/// 历史页——"被替换的那一版仍能找回来"这句承诺的落点。
 ///
-/// ⚠️ **v8 任务 3:它暂时没有"确认后继续"的第二跳**——旧的第二跳是强制走提交
-/// 审核,已随审核链路一起下线。前端把它如实说成一句"库里已经有更新的版本"。
-/// **「仍然覆盖」(含覆盖谁、什么时候推的、去哪找回)是 v8 任务 4 的事**,
-/// 别在这里补一个只有"取消"的弹窗。
+/// ⚠️ **`rename_all` 必须写在这个 struct 自己身上**:外层枚举的
+/// `rename_all_fields` 管不到 newtype variant 内层 struct 的字段名。
+/// 这个坑在本项目真炸过一次(`review_url` 原样发成蛇形,链接从没渲染过),
+/// 下面 `share_outcome_serializes_every_field_in_camel_case` 正面钉住键集合。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverwriteWarning {
+    /// 库里这个技能最后由谁改的(展示名优先)。取不到就是 `None`。
+    pub last_author: Option<String>,
+    /// 最后一次改动的时间(原样 ISO-8601)。取不到就是 `None`。
+    pub last_at: Option<String>,
+    /// 该技能目录在目标分支上的提交历史页;给不出时前端降级为纯文案。
+    pub history_url: Option<String>,
+}
+
+/// 回推的两种结局:提交成功,或撞上"库里这一版与本地基线不符"的覆盖档。
+///
+/// 覆盖档**不是错误,是"要你先拍板"**:返回它时磁盘与远端一个字节都没动。
+/// 用户看过 [`OverwriteWarning`] 后仍要覆盖,就带 `overwrite: true` 再来一次。
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ShareInstalledOutcome {
     Submitted(Submitted),
-    #[serde(rename_all = "camelCase")]
-    RemoteChanged {
-        /// 该技能目录在目标分支上的提交历史页;给不出时前端降级为纯文案。
-        history_url: Option<String>,
-    },
+    RemoteChanged(OverwriteWarning),
 }
 
 /// 把本 app 安装、用户改过的技能推回它的来源仓库。
@@ -681,15 +788,10 @@ pub enum ShareInstalledOutcome {
 /// 这就是获取流程冲突弹窗里承诺的"分享功能开放后可以分享改动"那条路。
 /// 直推成功 → 更新 `contentHash`/`commitSha`,「已改动」标记消失。
 ///
-/// M5 任务 1 起,提交前先比对远端当前内容与账上 `content_hash`(`read` 走读链路):
-/// 不相等 = 远端在获取之后被别人改过,回推等于覆盖对方——进 [`ShareInstalledOutcome::RemoteChanged`],
-/// 与本地改没改无关(本地没改时回推的是旧版,照样覆盖)。乐观锁(CONFLICT_STALE)
-/// 只拦"拉 sha 与提交之间"的瞬间竞态,防不了这一档,两者是互补关系。
-///
-/// 🔴 **v8 任务 3:检测**本身**一个字没动,删掉的只是 `force_review` 那条旁路**
-/// ——那条旁路的语义是"跳过检测,强制走提交审核",而提交审核已经没了。把它改成
-/// "跳过检测直推"就等于静默覆盖同事的版本,正是这道检测存在的理由。覆盖确认
-/// 见 v8 任务 4。
+/// 提交前先过 [`overwrite_gate`](D14):库里这一版与本地基线不符就退回
+/// [`ShareInstalledOutcome::RemoteChanged`],**与本地改没改无关**(本地没改时
+/// 回推的是旧版,照样顶掉对方)。乐观锁(CONFLICT_STALE)只拦"拉 sha 与提交
+/// 之间"的瞬间竞态,防不了这一档,两者是互补关系。
 #[allow(clippy::too_many_arguments)]
 pub async fn share_installed(
     client: &ShareClient<'_>,
@@ -699,6 +801,11 @@ pub async fn share_installed(
     store: &Store,
     dir_slug: &str,
     branch: &str,
+    // 用户已在覆盖确认屏上拍过板:**知道会顶掉库里那一版,仍然要推**。
+    //
+    // 🔴 它与已下线的 `force_review` 只是形参位置相同,**语义方向完全相反**:
+    // 那个是"有权限也不许直推,强制开合并请求";这个是"检测到会覆盖,仍然直推"。
+    overwrite: bool,
     now: &str,
 ) -> Result<ShareInstalledOutcome, AppError> {
     // 显式 `.with_trasher(SYSTEM_TRASH)`:默认值本来就是它,这条路上的 installer
@@ -752,22 +859,20 @@ pub async fn share_installed(
     // 事就是 `download_archive`。`share()` 那侧有"请求条数 = 0"的硬断言,这侧同款。
     skills::validate_skill_dir(&source_dir).map_err(skill_invalid_err)?;
 
-    // 远端变更检测:账上 content_hash = 上次与远端对齐时的内容指纹(本地改动
-    // 不动它——现役不变量),远端当前指纹与它不等就是"别人改过"。
-    // 基线为空时跳过(拿不准基线就不冤枉远端,提交时刻的乐观锁仍在兜底)。
-    // ⚠️ **基线为空那一档是 v8 任务 4 要收掉的洞**,这里刻意维持现状不动。
-    if !record.content_hash.is_empty() {
-        let archive = read.download_archive(&repo).await?;
-        // entries 的键保留压缩包顶层目录,技能路径必须拼上 archive.root 才剥得到条目
-        // (store.rs 建索引时的 s.dir 天然带着它,这里的记账路径没有)
-        let remote_dir = format!("{}/{}", archive.root, record.source.path);
-        let remote_hash = crate::core::store::remote_content_hash(&archive, &remote_dir);
-        if remote_hash != record.content_hash {
-            let history_url = Some(match client {
-                ShareClient::Gitea(c) => c.history_url(&repo, &record.source.path),
-                ShareClient::Github(c) => c.history_url(&repo, &record.source.path),
-            });
-            return Ok(ShareInstalledOutcome::RemoteChanged { history_url });
+    // 覆盖闸(D14)。`overwrite == true` 表示用户已经在确认屏上看过
+    // 「覆盖谁、什么时候推的、去哪找回」并按了「仍然覆盖」,这一跳照推。
+    if !overwrite {
+        if let Some(warning) = overwrite_gate(
+            read,
+            client,
+            &repo,
+            &record.source.path,
+            &record.content_hash,
+            &source_dir,
+        )
+        .await?
+        {
+            return Ok(ShareInstalledOutcome::RemoteChanged(warning));
         }
     }
 
@@ -1280,8 +1385,8 @@ fn payload_files(dir: &Path, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, App
 #[cfg(test)]
 mod tests {
     use super::{
-        skill_invalid_err, upsert_attribution, AttributionUpsert, CandidateOrigin, ShareMode,
-        ShareOutcome,
+        skill_invalid_err, upsert_attribution, AttributionUpsert, CandidateOrigin,
+        OverwriteWarning, ShareInstalledOutcome, ShareMode, ShareOutcome,
     };
     use crate::core::skills::ShareBlock;
 
@@ -1318,6 +1423,43 @@ mod tests {
         assert_eq!(v["outcome"], "shared");
         assert_eq!(v["mode"], "pushed");
         assert_eq!(v["shareName"], "weekly-report");
+    }
+
+    /// 覆盖警告是 newtype variant 里的 struct——**外层枚举的 `rename_all_fields`
+    /// 管不到它**,`rename_all` 必须写在 `OverwriteWarning` 自己身上。两条通道
+    /// (首次分享与回推改动)共用同一个 struct,所以两边一起钉。
+    #[test]
+    fn overwrite_warning_serializes_every_field_in_camel_case() {
+        let warning = OverwriteWarning {
+            last_author: Some("李四".into()),
+            last_at: Some("2026-09-10T03:04:05Z".into()),
+            history_url: Some("http://x/commits".into()),
+        };
+        let v = serde_json::to_value(ShareOutcome::NeedsOverwrite(warning.clone())).unwrap();
+        assert_eq!(
+            keys(&v),
+            vec![
+                "historyUrl".to_string(),
+                "lastAt".to_string(),
+                "lastAuthor".to_string(),
+                "outcome".to_string(),
+            ]
+        );
+        assert_eq!(v["outcome"], "needsOverwrite");
+        assert_eq!(v["lastAuthor"], "李四");
+
+        let v = serde_json::to_value(ShareInstalledOutcome::RemoteChanged(warning)).unwrap();
+        assert_eq!(
+            keys(&v),
+            vec![
+                "historyUrl".to_string(),
+                "kind".to_string(),
+                "lastAt".to_string(),
+                "lastAuthor".to_string(),
+            ]
+        );
+        assert_eq!(v["kind"], "remoteChanged");
+        assert_eq!(v["lastAt"], "2026-09-10T03:04:05Z");
     }
 
     /// 同一个坑的第二处:`CandidateOrigin::NpxSkills { source }` 眼下是单词字段,

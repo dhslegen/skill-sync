@@ -182,6 +182,26 @@ pub struct CommitTouch {
     pub files: Vec<String>,
 }
 
+/// 某个路径上的最后一次提交:谁、什么时候。
+///
+/// 只给 v8 任务 4 的覆盖确认用——「库里这个技能最后由 X 在 Y 改过」。
+///
+/// 🔴 **与 [`CommitTouch`](自身) 那条批量历史遍历刻意不共用**:那边是"整库翻页、
+/// 逐条看 `files` 反推每个技能自己的时间",一次要 50 条;这边是单点、只要 1 条,
+/// 而且要的是提交者(那边一概不取)。合并会让两个需求互相拖累——批量路径被迫
+/// 带上作者字段与更大的响应,单点路径被迫翻页找自己那一条。
+///
+/// 两个字段都是 `Option`:Gitea 的 `author` 对"没有关联账号的提交"是 `null`,
+/// `full_name` 常常是空串。**取不到就是取不到,不拿空串冒充一个人名**。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastCommit {
+    /// 展示名优先(`author.full_name`),退到登录名(`author.login`),
+    /// 再退到提交里写的 `commit.author.name`。与 `authors.json` 的展示口径一致。
+    pub author: Option<String>,
+    /// 提交时间(原样 ISO-8601,取自顶层 `created`,与 `CommitTouch` 同一个字段)。
+    pub at: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FileOperation {
@@ -443,6 +463,67 @@ impl GiteaClient {
                 files: e.files.into_iter().map(|f| f.filename).collect(),
             })
             .collect())
+    }
+
+    /// 某个路径上的最后一次提交(`commits?path=…&limit=1`)。
+    ///
+    /// 🔴 **整条调用是 best-effort:任何失败都返回 `Ok(None)`,绝不 `Err`**。
+    /// 它唯一的用途是给覆盖确认屏补一句"最后由谁、什么时候改的"——把一个
+    /// **合法且必须弹出来**的覆盖警告变成一条错误,等于让用户连拍板的机会都没有。
+    /// 实测:路径不存在时 Gitea 1.25.3 返回 **404 `FileCommitsCount`**
+    /// (2026-09-17 对 docker fixture curl 核实),这正是最常见的失败形状。
+    pub async fn last_commit(&self, r: &RepoRef, path: &str) -> Option<LastCommit> {
+        #[derive(Deserialize)]
+        struct Entry {
+            #[serde(default)]
+            created: String,
+            #[serde(default)]
+            author: Option<Account>,
+            #[serde(default)]
+            commit: Option<Inner>,
+        }
+        #[derive(Deserialize)]
+        struct Account {
+            #[serde(default)]
+            full_name: String,
+            #[serde(default)]
+            login: String,
+        }
+        #[derive(Deserialize)]
+        struct Inner {
+            #[serde(default)]
+            author: Option<InnerAuthor>,
+        }
+        #[derive(Deserialize)]
+        struct InnerAuthor {
+            #[serde(default)]
+            name: String,
+        }
+        let resp = self
+            .send(self.request(
+                reqwest::Method::GET,
+                self.api(&format!(
+                    // path 不做百分号编码:走到这里的路径恒是 `skills/<标准名>`
+                    // (分享前的标准校验保证 slug 只含 a-z0-9 与连字符),而斜杠
+                    // 本来就要原样留着。与上面 `history_url` 同一个口径。
+                    "/repos/{}/{}/commits?sha={}&limit=1&path={}",
+                    r.owner, r.repo, r.branch, path
+                )),
+            ))
+            .await
+            .ok()?;
+        let entries: Vec<Entry> = parse_json(resp).await.ok()?;
+        let e = entries.into_iter().next()?;
+        let author = e
+            .author
+            .into_iter()
+            .flat_map(|a| [a.full_name, a.login])
+            .chain(e.commit.and_then(|c| c.author).map(|a| a.name))
+            .find(|s| !s.trim().is_empty());
+        Some(LastCommit {
+            author,
+            at: Some(e.created).filter(|s| !s.trim().is_empty()),
+        })
     }
 
     /// 下载并解开仓库压缩包。
