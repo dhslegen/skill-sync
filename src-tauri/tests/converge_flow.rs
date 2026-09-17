@@ -1339,3 +1339,167 @@ fn names_that_collapse_to_unnamed_skill_keep_their_literal_key() {
     keys.sort();
     assert_eq!(keys, vec!["周报", "测试"], "两个中文目录各占一个键,不许互相遮蔽");
 }
+
+// ============================================================ 基线对齐(v8 任务 2)
+
+/// 造一条**陈旧基线**的记账:本体内容是 `v`,而账上的 `content_hash` 记着别的值。
+///
+/// 这正是同事真机卡住的那个形状——走审核的分享不写基线,合并之后账上仍是旧值,
+/// 于是「库里有新版」恒成立、点分享又开一个空的合并请求。
+fn state_with_stale_baseline(name: &str, body: &Path) -> State {
+    let mut st = state_with_body(name, body);
+    st.installed[0].content_hash = "sha256:stale".into();
+    st
+}
+
+const LIB: (&str, &str, &str) = ("company", "skills", "skills");
+
+#[test]
+fn align_baseline_writes_the_live_hash_and_leaves_every_other_field_alone() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".agents/skills/s", "v1");
+    let live = fsops::dir_content_hash(&body).unwrap();
+    let before = state_with_stale_baseline("s", &body);
+    c.store.save_state(&before).unwrap();
+
+    converge::align_baseline(&inst, &c.store, "s", &live, LIB.0, LIB.1, LIB.2).unwrap();
+
+    // 落盘断言:重新读一遍 state.json,不是看内存里的副本
+    let after = c.store.load_state().unwrap().value;
+    assert_eq!(after.installed.len(), 1);
+    let rec = &after.installed[0];
+    assert_eq!(rec.content_hash, live, "基线必须对齐到本体此刻的实时指纹");
+    // 这条记录的其余部分一个字都不能动——尤其 `updated_at`:它是用户可见的
+    // 「上次更新」,而这次自愈磁盘上一个字节都没变,bump 它就是对用户撒谎。
+    let b = &before.installed[0];
+    assert_eq!(rec.updated_at, b.updated_at, "自愈不是内容变化,不许改更新时间");
+    assert_eq!(rec.installed_at, b.installed_at);
+    assert_eq!(rec.commit_sha, b.commit_sha);
+    assert_eq!(rec.agents, b.agents);
+    assert_eq!(rec.body, b.body);
+    assert_eq!(rec.source.path, b.source.path);
+}
+
+#[test]
+fn align_baseline_refuses_when_the_live_hash_is_not_what_the_caller_saw() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".agents/skills/s", "v1");
+    let before = state_with_stale_baseline("s", &body);
+    c.store.save_state(&before).unwrap();
+
+    let err = converge::align_baseline(&inst, &c.store, "s", "sha256:what-the-ui-saw", LIB.0, LIB.1, LIB.2)
+        .unwrap_err();
+    assert_eq!(err.code, "FS_BASELINE_STALE");
+    assert_eq!(
+        c.store.load_state().unwrap().value.installed[0].content_hash,
+        "sha256:stale",
+        "入参与实时指纹不符时一个字节都不写"
+    );
+}
+
+#[test]
+fn align_baseline_never_creates_a_record_out_of_thin_air() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".agents/skills/s", "v1");
+    let live = fsops::dir_content_hash(&body).unwrap();
+    c.store.save_state(&State::default()).unwrap();
+
+    let err =
+        converge::align_baseline(&inst, &c.store, "s", &live, LIB.0, LIB.1, LIB.2).unwrap_err();
+    assert_eq!(err.code, "FS_NOT_INSTALLED");
+    assert!(
+        c.store.load_state().unwrap().value.installed.is_empty(),
+        "无账的行绝不凭空建账(自动补账是本项目否决过的事)"
+    );
+}
+
+#[test]
+fn align_baseline_refuses_an_adopted_record_that_has_no_library_source() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".agents/skills/s", "v1");
+    let live = fsops::dir_content_hash(&body).unwrap();
+    let mut st = state_with_stale_baseline("s", &body);
+    // `converge::set_agents`/`keep_version` 给纯本地技能建的那种账:三个坐标全空。
+    st.installed[0].source.registry_id = String::new();
+    st.installed[0].source.owner = String::new();
+    st.installed[0].source.repo = String::new();
+    st.installed[0].origin = Some(state::ORIGIN_ADOPTED.to_string());
+    c.store.save_state(&st).unwrap();
+
+    let err =
+        converge::align_baseline(&inst, &c.store, "s", &live, LIB.0, LIB.1, LIB.2).unwrap_err();
+    assert_eq!(err.code, "FS_LIBRARY_MISMATCH");
+    assert_eq!(
+        err.detail.as_deref(),
+        Some("no library source: s"),
+        "空来源与坐标不符是两条不同的路,detail 要分得开"
+    );
+    assert_eq!(
+        c.store.load_state().unwrap().value.installed[0].content_hash,
+        "sha256:stale",
+        "给空来源的账填一个技能库的指纹 = 换个入口做自动补账"
+    );
+}
+
+/// 🔴 **`has_source()` 这道闸不是坐标比对的重复**:坐标比对只回答"账上记的与
+/// 入参说的是不是同一个技能库",调用方把三个坐标全传空串时,一条空来源的
+/// adopted 账**逐字段相等**——只有这道闸拦得住。这条用例就是那个唯一的差别现场
+/// (没有它,删掉 `has_source()` 那一整段仍然全绿,那道闸就是空转的)。
+#[test]
+fn align_baseline_refuses_an_empty_source_record_even_when_the_caller_also_says_nothing() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".agents/skills/s", "v1");
+    let live = fsops::dir_content_hash(&body).unwrap();
+    let mut st = state_with_stale_baseline("s", &body);
+    st.installed[0].source.registry_id = String::new();
+    st.installed[0].source.owner = String::new();
+    st.installed[0].source.repo = String::new();
+    c.store.save_state(&st).unwrap();
+
+    let err = converge::align_baseline(&inst, &c.store, "s", &live, "", "", "").unwrap_err();
+    assert_eq!(err.code, "FS_LIBRARY_MISMATCH");
+    assert_eq!(err.detail.as_deref(), Some("no library source: s"));
+    assert_eq!(
+        c.store.load_state().unwrap().value.installed[0].content_hash,
+        "sha256:stale"
+    );
+}
+
+#[test]
+fn align_baseline_refuses_when_the_caller_names_another_library() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".agents/skills/s", "v1");
+    let live = fsops::dir_content_hash(&body).unwrap();
+    c.store.save_state(&state_with_stale_baseline("s", &body)).unwrap();
+
+    let err = converge::align_baseline(&inst, &c.store, "s", &live, LIB.0, "design", "team-skills")
+        .unwrap_err();
+    assert_eq!(err.code, "FS_LIBRARY_MISMATCH");
+    assert_eq!(err.detail.as_deref(), Some("library mismatch: s"));
+    assert_eq!(
+        c.store.load_state().unwrap().value.installed[0].content_hash,
+        "sha256:stale",
+        "两个技能库的同名技能是两个东西,不许拿别人的指纹当基线"
+    );
+}
+
+/// 本体不在了(用户在文件管理器里删掉了那个文件夹):没有可对齐的实时指纹,
+/// 与「勾选工具」撞上同一档时给的是同一条错误。
+#[test]
+fn align_baseline_refuses_when_the_body_is_gone() {
+    let (c, env) = ctx();
+    let inst = c.installer(&env);
+    let body = skill_dir(&env.home, ".agents/skills/s", "v1");
+    c.store.save_state(&state_with_stale_baseline("s", &body)).unwrap();
+    std::fs::remove_dir_all(&body).unwrap();
+
+    let err = converge::align_baseline(&inst, &c.store, "s", "sha256:anything", LIB.0, LIB.1, LIB.2)
+        .unwrap_err();
+    assert_eq!(err.code, "FS_MISSING_SKILL");
+}

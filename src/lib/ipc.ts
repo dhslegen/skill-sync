@@ -740,6 +740,26 @@ export interface KeepReport {
 export const skillKeepVersion = (args: { dirSlug: string; keepPath: string }) =>
   call<KeepReport>("skill_keep_version", { args });
 
+/**
+ * 基线自愈(v8 任务 2):本地内容与技能库里那一版**逐字节相同**时,把账上的
+ * 安装基线({@link InstalledSkillView.contentHash})对齐到这个实时指纹。
+ *
+ * `contentHash` 传的是调用方此刻看到的 {@link InstalledSkillView.localHash}
+ * ——core 会自己重算一遍本体的指纹比对,不等就拒(防止拿陈旧数据把基线写歪)。
+ * 另外两道守卫:必须已有获取记录(绝不凭空建一条)、且它的来源坐标与这里传的
+ * 技能库一致。
+ *
+ * 🔴 **失败刻意不回报给界面**:这是静默自愈,用户没点任何东西。core 那侧记一行
+ * 日志,界面维持原状(与修之前一样,不会更糟)。别给它加错误横幅。
+ */
+export const skillAlignBaseline = (args: {
+  dirSlug: string;
+  contentHash: string;
+  registryId: string;
+  owner: string;
+  repo: string;
+}) => call<void>("skill_align_baseline", { args });
+
 export type ShareMode = "pushed" | "reviewRequested";
 
 /**

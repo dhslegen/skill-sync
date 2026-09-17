@@ -2114,6 +2114,53 @@ pub async fn skill_keep_version(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkillAlignBaselineArgs {
+    pub dir_slug: String,
+    /// 调用方**此刻看到的**本体指纹。core 会自己重算一遍比对,不等就拒——
+    /// 这个参数不是数据来源,是"你看到的还作不作数"的凭据。
+    pub content_hash: String,
+    /// 调用方据以判定"本地与库里一致"的那个技能库。必须与账上的坐标一致。
+    pub registry_id: String,
+    pub owner: String,
+    pub repo: String,
+}
+
+/// 基线自愈:本地内容与技能库里那一版逐字节相同时,把账上的安装基线对齐过去。
+///
+/// 🔴 **失败刻意不回报给界面**(见 `converge::align_baseline` 的文档末段):
+/// 这是静默自愈,用户没有点任何东西,摆错误横幅会让他去排查一件自己没做过的事。
+/// 失败的落点就是下面这行日志——**这不是漏了渲染点**。
+#[tauri::command]
+pub async fn skill_align_baseline(args: SkillAlignBaselineArgs) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app_store()?;
+        let registry = AgentRegistry::builtin();
+        let installer = app_installer(&registry);
+        let result = converge::align_baseline(
+            &installer,
+            &store,
+            &args.dir_slug,
+            &args.content_hash,
+            &args.registry_id,
+            &args.owner,
+            &args.repo,
+        );
+        if let Err(err) = &result {
+            tracing::warn!(
+                skill = %args.dir_slug,
+                code = %err.code,
+                detail = %err.detail.clone().unwrap_or_default(),
+                "跳过一次基线自动核对"
+            );
+        }
+        result
+    })
+    .await
+    .map_err(|e| AppError::new("FS_TASK", "自动核对未能完成,请重试").with_detail(e.to_string()))?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillRemoveArgs {
     pub dir_slug: String,
 }

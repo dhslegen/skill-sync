@@ -224,6 +224,7 @@ function resetStores() {
     updateAllBusy: false,
     updateAllError: null,
     updateAllFailures: null,
+    alignAttempted: new Set(),
   });
   useCreate.setState({ phase: "closed" });
   try {
@@ -1872,5 +1873,40 @@ describe("v7.3 需求 5:常态动作用轻形态,例外才用实心", () => {
     render(<MySkillsPage />);
     await userEvent.click(await screen.findByRole("tab", { name: /已分享到技能库/ }));
     expect(classes(screen.getByRole("button", { name: "分享改动" }))).toContain("bg-accent");
+  });
+});
+
+
+describe("基线自愈接线(v8 任务 2):挂载即对齐一次", () => {
+  /** 本地与库里逐字节相同、账上的基线却停在旧值——同事真机卡住的那个形状。 */
+  const staleRow = () =>
+    mk("weekly-report", "installedFrom", {
+      remote: "NEW",
+      localHash: "sha256:remote-new-weekly-report",
+    });
+
+  it("🔴 页面挂载后自己发一次对齐,参数是实时指纹 + 账上的库坐标", async () => {
+    seed([staleRow()]);
+    render(<MySkillsPage />);
+    await screen.findByTestId("row-weekly-report");
+
+    await waitFor(() => {
+      expect(invoke.mock.calls.filter(([c]) => c === "skill_align_baseline")).toHaveLength(1);
+    });
+    expect(lastInvoke("skill_align_baseline")?.args).toEqual({
+      dirSlug: "weekly-report",
+      contentHash: "sha256:remote-new-weekly-report",
+      registryId: "company",
+      owner: "skills",
+      repo: "skills",
+    });
+  });
+
+  it("本地与库里本来就一致的行不触发(否则每次翻开这一页都在白发请求)", async () => {
+    seed([mk("a", "installedFrom")]);
+    render(<MySkillsPage />);
+    await screen.findByTestId("row-a");
+
+    expect(invoke.mock.calls.filter(([c]) => c === "skill_align_baseline")).toHaveLength(0);
   });
 });

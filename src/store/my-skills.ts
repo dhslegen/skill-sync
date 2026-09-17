@@ -31,6 +31,7 @@ import {
   isAppError,
   skillInstallBatch,
   skillKeepVersion,
+  skillAlignBaseline,
   skillRemove,
   skillSetAgents,
   skillShare,
@@ -261,6 +262,27 @@ interface MySkillsState {
   dismissUpdateAllFailures: () => void;
 
   load: () => Promise<void>;
+
+  /**
+   * 已经发过对齐请求的行,键是 {@link alignKey}(库坐标 + 目录名 + 那一刻的实时
+   * 指纹)。**判据里带指纹**,所以本体内容真的变了之后还会再试一次,而"同一份
+   * 数据反复渲染"不会。
+   *
+   * 🔴 **必须活在 store(或模块级),不能是组件里的 state**:窗口重获焦点刷新、
+   * 5 分钟只读兜底、开发版 StrictMode 的双挂载都会让那个 effect 重跑一遍。
+   * 失败的行同样记进来——对一条 core 每次都会拒的行反复重试是纯粹的刷屏。
+   * 所以**失败的行不随刷新重试,只在本体内容真的再变一次时重试**(键里带着
+   * 那一刻的 `localHash`),或者重启应用——这份记录只存内存、不落盘。
+   */
+  alignAttempted: Set<string>;
+  /**
+   * 基线自愈:把「本地与技能库里已经一致、账上的基线却停在旧值」的那些行对齐一次
+   * (v8 任务 2,D3)。判定在前端是因为远端指纹在索引里、本体指纹在列表里,
+   * 两份数据都只在这一层齐全;core 那边只提供一个带三道守卫的写入口。
+   *
+   * @param index 当前浏览的公司技能库索引(与 {@link hasUpdate} 同一份)。
+   */
+  alignStaleBaselines: (index: Parameters<typeof hasUpdate>[1]) => Promise<void>;
 
   askRemove: (dirSlug: string) => void;
   cancelRemove: () => void;
@@ -514,6 +536,45 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   updateAllBusy: false,
   updateAllError: null,
   updateAllFailures: null,
+  alignAttempted: new Set(),
+
+  alignStaleBaselines: async (index) => {
+    const { list, alignAttempted } = get();
+    if (!list || !index) return;
+    const targets = list.filter(
+      (s) => baselineNeedsAlign(s, index) && !alignAttempted.has(alignKey(s)),
+    );
+    if (targets.length === 0) return;
+    // 🔴 先把这一批记进去、再发请求:标记与筛选之间**没有 await**,所以同一帧里
+    // 两次调用(StrictMode 双挂载是最容易撞上的一种)第二次会筛出空集合。
+    const next = new Set(alignAttempted);
+    for (const s of targets) next.add(alignKey(s));
+    set({ alignAttempted: next });
+
+    let aligned = false;
+    for (const s of targets) {
+      try {
+        await skillAlignBaseline({
+          dirSlug: s.dirSlug,
+          // 发**实时**指纹而不是基线:core 拿它与本体此刻的内容比对,这是
+          // "你看到的还作不作数"的凭据,不是要写进去的值。
+          contentHash: s.localHash,
+          registryId: s.registryId,
+          owner: s.sourceOwner,
+          repo: s.sourceRepo,
+        });
+        aligned = true;
+      } catch {
+        // 🔴 刻意静默,**不是忘了处理**:这是自愈,用户没有点任何东西。摆一条
+        // 错误横幅等于让他去排查一件自己没做过的事;失败的后果只是这一行维持
+        // 原状(与修之前一样),而 core 那侧已经记了一行日志。这条取舍与本项目
+        // 「每加一个错误出口都要问它失败时用户在哪看到」并不冲突——这里的答案
+        // 是"刻意哪儿都看不到",理由写在这里,别当成漏了渲染点去补。
+      }
+    }
+    // 一行都没成功就不必重读:什么都没变,白跑一趟还会闪一下 loading。
+    if (aligned) await get().load();
+  },
 
   load: async () => {
     set({ loading: true, loadError: null });
@@ -995,6 +1056,56 @@ export function localDiffersNoBaseline(
   // 拿不到任一侧指纹就是"不知道",不能猜——诚实地不摆这一项,不是摆错一项。
   if (!remote || !skill.localHash) return false;
   return remote !== skill.localHash;
+}
+
+/**
+ * 「这一行的安装基线陈旧了,可以自愈」的判据(v8 任务 2,D3)。
+ *
+ * # 它在回答什么
+ *
+ * 基线(`contentHash`)记的是"上一次本地与技能库里确认一致时的指纹",两个方向的
+ * 判定都靠它:本地 ≠ 基线 = 我改过;库里 ≠ 基线 = 库里有新版。走「提交审核」的
+ * 分享一个字节都不写基线,于是审核合并之后基线仍停在旧值——**本地与库里明明
+ * 逐字节相同,行上却永远写着「库里有新版」**,点分享又开一个内容为空的审核请求。
+ * 同事真机上卡死的四行就是这个形状(2026-09-16 服务端实证)。
+ *
+ * 所以判据是三方指纹的一个特定组合:`localHash === remote`(本地与库里已经一致,
+ * 这是唯一能确定基线**应该**是多少的时刻)且 `contentHash !== remote`(基线却不是
+ * 那个值)。
+ *
+ * 🔴 **三个量都必须非空**:任一为空就是"不知道",宁可漏报也不能拿一个猜出来的值
+ * 去写基线——基线写歪之后"我改过没有"这件事再也发现不了,比不自愈严重得多。
+ * `contentHash` 为空还额外意味着**这一行压根没有获取记录**,对齐入口会拒它
+ * (绝不凭空建账,那是本项目否决过的「自动补账」)。
+ *
+ * 坐标判据与 {@link hasUpdate}/{@link localDiffersNoBaseline} 同一套:索引必须是
+ * **这条记录自己那个技能库**的,两个库的同名技能是两个东西。
+ */
+export function baselineNeedsAlign(
+  skill: Pick<
+    InstalledSkillView,
+    "registryId" | "sourceOwner" | "sourceRepo" | "dirSlug" | "contentHash" | "localHash"
+  >,
+  index: Parameters<typeof hasUpdate>[1],
+): boolean {
+  if (!index) return false;
+  if (
+    skill.registryId !== index.registryId ||
+    skill.sourceOwner !== index.owner ||
+    skill.sourceRepo !== index.repo
+  ) {
+    return false;
+  }
+  const remote = remoteHashOf(index, skill.dirSlug);
+  if (!remote || !skill.localHash || !skill.contentHash) return false;
+  return skill.localHash === remote && skill.contentHash !== remote;
+}
+
+/** {@link MySkillsState.alignAttempted} 的键:库坐标 + 目录名 + 那一刻的实时指纹。 */
+function alignKey(
+  skill: Pick<InstalledSkillView, "registryId" | "sourceOwner" | "sourceRepo" | "dirSlug" | "localHash">,
+): string {
+  return `${skill.registryId}/${skill.sourceOwner}/${skill.sourceRepo}/${skill.dirSlug}@${skill.localHash}`;
 }
 
 /**

@@ -208,6 +208,7 @@ pub fn run() {
             commands::skill_share,
             commands::skill_set_agents,
             commands::skill_keep_version,
+            commands::skill_align_baseline,
             commands::skill_claim_attribution,
             commands::skill_share_changes,
             commands::plaza_search,

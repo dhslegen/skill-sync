@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  baselineNeedsAlign,
   groupBySource,
   hasUpdate,
   localDiffersNoBaseline,
@@ -100,6 +101,7 @@ function reset() {
     updateAllBusy: false,
     updateAllError: null,
     updateAllFailures: null,
+    alignAttempted: new Set(),
   });
 }
 
@@ -1847,5 +1849,143 @@ describe("groupBySource", () => {
 
   it("空输入给空数组(不是一个空组)", () => {
     expect(groupBySource([])).toEqual([]);
+  });
+});
+
+describe("基线自愈(v8 任务 2):本地与库里已经一致时把陈旧基线对齐", () => {
+  beforeEach(reset);
+
+  const index = (remoteHash: string) => ({
+    registryId: "company",
+    owner: "skills",
+    repo: "skills",
+    skills: [{ dirSlug: "weekly-report", contentHash: remoteHash }],
+  });
+
+  /** 同事真机卡住的那一行:本地与库里逐字节相同,基线却停在旧值。 */
+  const stale = (over: Partial<InstalledSkillView> = {}) =>
+    view({ contentHash: "sha256:old", localHash: "sha256:same", ...over });
+
+  it("三个量满足条件 → 判定为真", () => {
+    expect(baselineNeedsAlign(stale(), index("sha256:same"))).toBe(true);
+  });
+
+  it("本地与库里并不相同 → 假(那是真的「有新版」或「本地改过」,不是陈旧基线)", () => {
+    expect(baselineNeedsAlign(stale({ localHash: "sha256:mine" }), index("sha256:same"))).toBe(
+      false,
+    );
+  });
+
+  it("基线已经等于库里 → 假(没什么可对齐的)", () => {
+    expect(baselineNeedsAlign(stale({ contentHash: "sha256:same" }), index("sha256:same"))).toBe(
+      false,
+    );
+  });
+
+  it("🔴 三个量任一为空 → 假(宁可漏,不误)", () => {
+    // 没有基线的行(core 对无记账的行恒填空串):对齐入口会拒,判定这一层就不该放行
+    expect(baselineNeedsAlign(stale({ contentHash: "" }), index("sha256:same"))).toBe(false);
+    expect(baselineNeedsAlign(stale({ localHash: "" }), index(""))).toBe(false);
+    expect(baselineNeedsAlign(stale(), index(""))).toBe(false);
+  });
+
+  it("坐标对不上那份索引 → 假(两个技能库的同名技能是两个东西)", () => {
+    expect(baselineNeedsAlign(stale({ registryId: "custom-1" }), index("sha256:same"))).toBe(false);
+    expect(baselineNeedsAlign(stale({ sourceRepo: "team-skills" }), index("sha256:same"))).toBe(
+      false,
+    );
+    expect(baselineNeedsAlign(stale(), null)).toBe(false);
+  });
+
+  it("满足条件时调一次对齐,并带上实时指纹与库坐标,然后重新读一次列表", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "installed_list") return [stale()];
+      if (cmd === "agents_detected") return AGENTS;
+      return null;
+    });
+    useMySkills.setState({ list: [stale()] });
+
+    await useMySkills.getState().alignStaleBaselines(index("sha256:same"));
+
+    const calls = invoke.mock.calls.filter((c) => c[0] === "skill_align_baseline");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[1]).toEqual({
+      args: {
+        dirSlug: "weekly-report",
+        // 🔴 发的是**实时**指纹(localHash),不是基线:core 会用它比对本体此刻
+        // 的内容,发错的话那道守卫必拒
+        contentHash: "sha256:same",
+        registryId: "company",
+        owner: "skills",
+        repo: "skills",
+      },
+    });
+    // 对齐完要重新读一次,行上那句「库里有新版」才会自己消失
+    expect(invoke.mock.calls.some((c) => c[0] === "installed_list")).toBe(true);
+  });
+
+  it("🔴 同一份数据反复调用只发一次(刷新/重渲染/StrictMode 双挂载都会重跑)", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "installed_list") return [stale()];
+      if (cmd === "agents_detected") return AGENTS;
+      return null;
+    });
+    useMySkills.setState({ list: [stale()] });
+
+    await useMySkills.getState().alignStaleBaselines(index("sha256:same"));
+    useMySkills.setState({ list: [stale()] });
+    await useMySkills.getState().alignStaleBaselines(index("sha256:same"));
+
+    expect(invoke.mock.calls.filter((c) => c[0] === "skill_align_baseline")).toHaveLength(1);
+  });
+
+  it("多行同时满足 → 每行各一次,不重复也不漏", async () => {
+    const rows = [stale(), stale({ dirSlug: "ppi" })];
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "installed_list") return rows;
+      if (cmd === "agents_detected") return AGENTS;
+      return null;
+    });
+    useMySkills.setState({ list: rows });
+
+    await useMySkills.getState().alignStaleBaselines({
+      registryId: "company",
+      owner: "skills",
+      repo: "skills",
+      skills: [
+        { dirSlug: "weekly-report", contentHash: "sha256:same" },
+        { dirSlug: "ppi", contentHash: "sha256:same" },
+      ],
+    });
+
+    const slugs = invoke.mock.calls
+      .filter((c) => c[0] === "skill_align_baseline")
+      .map((c) => (c[1] as { args: { dirSlug: string } }).args.dirSlug);
+    expect(slugs).toEqual(["weekly-report", "ppi"]);
+  });
+
+  it("一行都不满足时一个请求都不发,也不重读列表", async () => {
+    invoke.mockImplementation(async () => null);
+    useMySkills.setState({ list: [view()] });
+
+    await useMySkills.getState().alignStaleBaselines(index("sha256:mine"));
+
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("🔴 对齐失败静默降级:不摆错误横幅、也不因为失败就不再刷新别的行", async () => {
+    invoke.mockImplementation(async (cmd) => {
+      if (cmd === "skill_align_baseline") throw { code: "FS_BASELINE_STALE", message: "…" };
+      if (cmd === "installed_list") return [stale()];
+      if (cmd === "agents_detected") return AGENTS;
+      return null;
+    });
+    useMySkills.setState({ list: [stale()] });
+
+    await useMySkills.getState().alignStaleBaselines(index("sha256:same"));
+
+    expect(useMySkills.getState().loadError).toBeNull();
+    // 全部失败时不必重读列表(什么都没变)
+    expect(invoke.mock.calls.some((c) => c[0] === "installed_list")).toBe(false);
   });
 });

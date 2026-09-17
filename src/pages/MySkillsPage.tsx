@@ -120,6 +120,7 @@ export function MySkillsPage() {
     updateAllError,
     updateAllFailures,
     dismissUpdateAllFailures,
+    alignStaleBaselines,
   } = useMySkills();
   const index = useStoreIndex((s) => s.index);
   const installPhase = useInstall((s) => s.phase);
@@ -148,6 +149,22 @@ export function MySkillsPage() {
   useEffect(() => {
     if (installPhase === "done") void load();
   }, [installPhase, load]);
+
+  // 基线自愈(v8 任务 2,D3):列表与索引都在手上时,把「本地与库里已经一致、
+  // 账上的基线却停在旧值」的那些行对齐一次——它们眼下永远显示「库里有新版」,
+  // 点分享还会一次次开出内容为空的审核请求,用户自己出不来。
+  //
+  // 重复触发是安全的:store 里按「库坐标 + 目录名 + 实时指纹」记着已经发过的行,
+  // 同一份数据不会重复发(窗口重获焦点刷新、5 分钟兜底、StrictMode 双挂载都会
+  // 让这个 effect 重跑)。失败静默,理由见 `alignStaleBaselines`。
+  //
+  // 🔴 那份去重记录是这条 effect 的**必要条件,不是优化**:对齐成功后
+  // `alignStaleBaselines` 会 `load()`,而 `list` 一换这个 effect 就重跑。
+  // 去掉去重之后本文件的测试直接**跑不完**(对齐 → load → 对齐 的死循环,
+  // 注入验证实测),真机上就是这一页一直在发请求。
+  useEffect(() => {
+    void alignStaleBaselines(index);
+  }, [list, index, alignStaleBaselines]);
 
   // 🔴 需求 3:搜索**穿透页签**(三栏一起搜)。同一条原则在 v7.1 分区折叠时就
   // 定过——"搜索必须穿透折叠,否则'搜到了但那区折着',用户看到的就是搜索坏了";

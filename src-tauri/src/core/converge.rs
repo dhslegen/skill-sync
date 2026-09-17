@@ -1002,3 +1002,120 @@ pub fn set_agents(
         unlink_failed,
     })
 }
+
+// ============================================================ 基线对齐(v8 任务 2)
+
+/// 把一条记账的**安装基线**(`InstalledSkill::content_hash`)对齐到本体此刻的
+/// 实时指纹。带三道守卫的**唯一**写入口,只改这一个字段。
+///
+/// # 它修的是什么
+///
+/// 基线记的是"上一次本地与技能库里确认一致时的指纹",两个方向的判定都靠它:
+/// 本地 ≠ 基线 = 我改过;库里 ≠ 基线 = 库里有新版。走「提交审核」的分享**一个
+/// 字节都不写基线**(`share.rs` 的 `ShareMode::Pushed` 那道闸),于是审核合并之后
+/// 基线仍是旧值 → 「库里有新版」恒成立 → 再点分享 → 检测到"库里变了" → 又强制
+/// 一次审核 → 又一个内容为空的审核请求。**闭环,用户自己出不来**(2026-09-16
+/// 真机 + 服务端实证,三个空请求)。
+///
+/// 本函数是那条闭环的出口:调用方(「我的技能」页)发现本地内容与库里那一版
+/// **逐字节相同**、而基线却与两者都不同时,调它一次把基线对齐——存量卡死的行
+/// 因此在用户零操作的情况下自己好。
+///
+/// # 三道守卫(缺一不可,它们是这条写入口不被滥用的全部保障)
+///
+/// 1. **记录必须已存在**。无账的行调它 → `FS_NOT_INSTALLED`,**绝不凭空建账**。
+///    "自动补账"是本项目明确否决过的事(Q48-B):凭空建出来的账基线 = 发现那一刻
+///    的本地指纹,下一次定时更新就会把一份用户从未交给本 app 管理的目录**静默
+///    覆盖**成库里的版本。"发现"这个零手势的动作不该有这种后果。
+/// 2. **记录必须有来源坐标且与入参的技能库一致**(`has_source()` 是全仓唯一判据)。
+///    给一条空来源的 adopted 账填上某个技能库的指纹,等于换个入口做同一件补账;
+///    坐标不一致则是拿另一个技能库里的同名技能的指纹当基线——两个库的同名技能
+///    是两个东西。
+/// 3. **core 自己重算一次本体的实时指纹**,与调用方声称看到的那个不等就拒。
+///    调用方手上的数据可能已经陈旧(列表加载之后用户又编辑了本体),照着它写
+///    就是把基线**写歪**——那比不对齐更糟:之后"我改过"这件事再也发现不了。
+///    这把尺子与 `my_skills::build` 第 1 源算 `local_hash` 的那条路**逐字相同**
+///    (`home_of` → `dir_content_hash(home.body)`),不是第二份实现。
+///
+/// # 刻意不动的东西
+///
+/// - **`updated_at` 不 bump**:它是用户可见的「上次更新」(详情面板的概览行读
+///   `InstalledSkillView.updatedAt`)。这次自愈磁盘上一个字节都没变,把它刷成
+///   此刻,用户看到的是一行"刚刚更新"——对用户撒谎。所以本函数连 `now` 都不收。
+/// - `commit_sha`/`body`/`agents`/`links`/`source` 一律不动:这条自愈只回答
+///   "基线该是多少",其余每一项都是别的路径的真相。
+/// - **不持 `watcher::app_write()` 守卫**:它只写 `~/.skillsync/state.json`,
+///   那个位置不在文件监听的任何一个根里(监听根是 canonical + 各工具技能目录)。
+///
+/// # 失败了用户在哪看到:刻意哪儿都看不到
+///
+/// 这是**静默自愈**,不是用户发起的动作——用户没点任何东西,摆一条错误横幅只会
+/// 让他去排查一件自己没做过的事。失败由调用方(`commands` 那层)记一行日志即可,
+/// 界面维持原状(那一行仍显示「库里有新版」,与修之前一样,不会更糟)。
+/// **这不是漏了渲染点**,别照本项目「每加一个错误出口就要有渲染点」那条去"补全"。
+pub fn align_baseline(
+    installer: &Installer<'_>,
+    store: &state::Store,
+    dir_slug: &str,
+    observed_hash: &str,
+    registry_id: &str,
+    owner: &str,
+    repo: &str,
+) -> Result<(), AppError> {
+    let mut next = store.load_state()?.value;
+    // 查账键走 `record_key`,不是调用方手上的 `dir_slug`——见该函数的文档。
+    let key = record_key(installer, dir_slug)?;
+    let Some(idx) = next.installed.iter().position(|s| s.name == key) else {
+        // code 与 message 与 `share.rs` 那条逐字相同:同一件事(账上没有这个技能)
+        // 不该有两句不同的中文。
+        return Err(AppError::new(
+            "FS_NOT_INSTALLED",
+            "这个技能不在已获取列表中,请刷新后再试",
+        )
+        .with_detail(format!("not installed: {dir_slug}")));
+    };
+
+    // 守卫 2:两条不同的路(压根没有来源 / 来源是另一个技能库),同一个错误码,
+    // 但 detail 分得开——排查时需要知道撞的是哪一条。
+    let record = &next.installed[idx];
+    if !record.has_source() {
+        return Err(library_mismatch_error(format!("no library source: {dir_slug}")));
+    }
+    if record.source.registry_id != registry_id
+        || record.source.owner != owner
+        || record.source.repo != repo
+    {
+        return Err(library_mismatch_error(format!("library mismatch: {dir_slug}")));
+    }
+
+    // 守卫 3:实时指纹。尺子与 `my_skills` 第 1 源算 `local_hash` 那条路相同。
+    let home = home_of(installer, &next, dir_slug)?;
+    if !home.body.is_dir() {
+        return Err(missing_skill_error(dir_slug));
+    }
+    let actual = fsops::dir_content_hash(&home.body)?;
+    if actual != observed_hash {
+        return Err(AppError::new(
+            "FS_BASELINE_STALE",
+            "本地内容刚刚变过,已跳过这次自动核对,请刷新后再试",
+        )
+        .with_detail(format!("live hash differs for {dir_slug}")));
+    }
+
+    // 已经对齐了就不写盘:这条路每次刷新列表都可能被走到,没有变化时白写一次
+    // `state.json` 只是无谓的磁盘动作(也会让"什么时候真的写过"难以排查)。
+    if next.installed[idx].content_hash == actual {
+        return Ok(());
+    }
+    next.installed[idx].content_hash = actual;
+    store.save_state(&next)?;
+    Ok(())
+}
+
+fn library_mismatch_error(detail: String) -> AppError {
+    AppError::new(
+        "FS_LIBRARY_MISMATCH",
+        "这个技能与所选技能库对不上,已跳过这次自动核对",
+    )
+    .with_detail(detail)
+}
