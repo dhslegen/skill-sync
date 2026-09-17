@@ -34,7 +34,7 @@ use skillsync_lib::core::ownership::{Identity, Section};
 use skillsync_lib::core::registry::{self, BUILTIN_REGISTRY_ID};
 use skillsync_lib::core::skill_lock::{self, LockEntry};
 use skillsync_lib::core::state::{Config, InstalledSkill, SkillSource, State, Store, ORIGIN_ADOPTED};
-use skillsync_lib::core::store::{self, IndexedSkill, SkillAttribution, SkillFile, StoreIndex};
+use skillsync_lib::core::store::{self, IndexedSkill, SkillAttribution, SkillFile, SkillUpdatedAt, StoreIndex};
 
 /// 把 `"a/b/c"` 这种**字面带斜杠**的相对路径按段 join 到 `base` 上。
 /// `Path::join` 会原样保留那个斜杠,Windows 上与 core 分段拼出来的路径字符串不等。
@@ -133,6 +133,7 @@ fn indexed_skill(dir_slug: &str, author: Option<&str>, content_hash: &str) -> In
         content_hash: content_hash.into(),
         tags: Vec::new(),
         attribution: author.map(|a| SkillAttribution { author: a.into(), contributors: Vec::new() }),
+        updated_at: SkillUpdatedAt::Unknown,
     }
 }
 

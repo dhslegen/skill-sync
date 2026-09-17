@@ -1437,6 +1437,7 @@ mod tests {
             content_hash: String::new(),
             tags: Vec::new(),
             attribution: None,
+            updated_at: crate::core::store::SkillUpdatedAt::Unknown,
         }
     }
 

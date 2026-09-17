@@ -876,6 +876,10 @@ fn detail_from_blob_files(
         has_scripts,
         commit_sha,
         committed_at,
+        // 广场算不出逐技能的更新时间(v8 设计 D15 不实现 GitHub 臂),界面据此
+        // **整行不摆**。⚠️ 不是 `LongAgo`——那会让每一张广场卡片都写「很久以前」,
+        // 而我们只是没查,不是查过了没有。
+        updated_at: store::SkillUpdatedAt::Unknown,
         tags: Vec::new(),
         attribution: None,
     })
@@ -1117,6 +1121,9 @@ pub(crate) fn finish_blob_install(
         content_hash: String::new(),
         tags: Vec::new(),
         attribution: None,
+        // 这条索引项只是安装取数的载体,不进商店列表也不展示时间;广场本来
+        // 也算不出(见 `blob_detail` 同款注释)。
+        updated_at: store::SkillUpdatedAt::Unknown,
     };
     (skill, payload)
 }

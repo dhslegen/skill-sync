@@ -80,6 +80,7 @@ const detail = (over: Partial<SkillDetail> = {}): SkillDetail => ({
   hasScripts: true,
   commitSha: "a1b2c3d4e5f6",
   committedAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+  updatedAt: { kind: "at", at: new Date(Date.now() - 3 * 86_400_000).toISOString() },
   tags: [],
   attribution: null,
   ...over,
@@ -277,7 +278,7 @@ describe("详情面板底部的获取区", () => {
     const d = open();
     useStoreIndex.setState({
       index: { ...useStoreIndex.getState().index!, skills: [
-        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:same", tags: [], author: null },
+        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:same", tags: [], author: null, updatedAt: { kind: "unknown" } },
       ] },
     });
     useInstall.setState({
@@ -297,7 +298,7 @@ describe("详情面板底部的获取区", () => {
     const d = open();
     useStoreIndex.setState({
       index: { ...useStoreIndex.getState().index!, skills: [
-        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:newer", tags: [], author: null },
+        { name: d.name, dirSlug: d.dirSlug, description: "", path: "", hasScripts: false, fileCount: 1, contentHash: "sha256:newer", tags: [], author: null, updatedAt: { kind: "unknown" } },
       ] },
     });
     useInstall.setState({
@@ -1192,6 +1193,8 @@ describe("DetailPanel(技能广场详情态)", () => {
     skillMd: "---\nname: React 最佳实践\n---\n\n## 说明\n\n正文内容\n",
     files: [{ path: "SKILL.md", size: 100 }],
     hasScripts: false,
+    // 广场算不出逐技能时间 → 详情面板整行不摆(v8 任务 1)
+    updatedAt: { kind: "unknown" } as const,
     commitSha: "def4567890",
     committedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
     tags: [],
@@ -1268,6 +1271,39 @@ describe("DetailPanel(技能广场详情态)", () => {
       screen.getByText("vercel-labs/skills/react-best-practices"),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "在浏览器中查看" })).toBeInTheDocument();
+  });
+
+  // 🔴 v8 任务 1:两种"没有时间"必须分得开。广场**算不出**逐技能的时间
+  // (D15 不实现 GitHub 臂)→ 整行不摆;绝不能退化成「很久以前」——那是
+  // 在编造"我们查过、它很久没动了"。压成同一档的后果是每一张广场详情都这么写。
+  it("广场详情算不出更新时间:整行不摆,不写「很久以前」", () => {
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailSlug: "vercel-labs/skills/react-best-practices",
+      detailSkills: [plazaSkill()],
+      detailStatus: "ready",
+    });
+    render(<DetailPanel />);
+
+    expect(screen.queryByText("很久以前")).not.toBeInTheDocument();
+    // 「更新」是那一列的标签(detail.metaUpdated),整行不摆就连标签也不该在
+    expect(screen.queryByText("更新")).not.toBeInTheDocument();
+  });
+
+  // 对照组:同一条渲染路径上,`longAgo` 要**照实显示**。没有它,上面那条
+  // 用"永远不渲染时间"的实现也能通过(空转)。
+  it("广场详情拿到 longAgo 时照实显示「很久以前」", () => {
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailSlug: "vercel-labs/skills/react-best-practices",
+      detailSkills: [plazaSkill({ updatedAt: { kind: "longAgo" } })],
+      detailStatus: "ready",
+    });
+    render(<DetailPanel />);
+
+    expect(screen.getByText("很久以前")).toBeInTheDocument();
   });
 
   it("广场详情态不出「这是我分享的」入口,哪怕已登录且 registryId 恰好等于内建源", () => {

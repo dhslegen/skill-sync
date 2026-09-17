@@ -235,6 +235,8 @@ describe("usePlaza 详情", () => {
     hasScripts: false,
     commitSha: "abc1234",
     committedAt: "2026-08-01T00:00:00Z",
+    // 广场算不出逐技能时间(v8 D15 不实现 GitHub 臂)
+    updatedAt: { kind: "unknown" },
     tags: [],
     attribution: null,
     ...over,
@@ -320,6 +322,7 @@ describe("locatePlazaSkill", () => {
     hasScripts: false,
     commitSha: "",
     committedAt: "",
+    updatedAt: { kind: "unknown" },
     tags: [],
     attribution: null,
   };

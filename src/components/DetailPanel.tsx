@@ -9,7 +9,7 @@ import { SkillIcon } from "@/components/SkillIcon";
 import { WhereBlocks } from "@/components/WhereBlocks";
 import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
-import { formatBytes, relativeTimeFromIso } from "@/lib/format";
+import { formatBytes, relativeTimeFromIso, updatedAtLabel } from "@/lib/format";
 import {
   BUILTIN_REGISTRY_ID,
   isAppError,
@@ -543,10 +543,13 @@ function PanelBody({
         {plaza && <PlazaBrowserLink slug={plaza.slug} />}
 
         {/* 作者/贡献者来自技能库的 authors.json(服务端维护);没有就整栏不摆,
-            换成「作者未登记 · 这是我分享的」这个入口(登录了、且是内建源才摆)。 */}
+            换成「作者未登记 · 这是我分享的」这个入口(登录了、且是内建源才摆)。
+            `updated` 是**逐技能**的时间(v8 任务 1);原先传 `detail.committedAt`
+            (整库分支头),于是每个技能的详情都显示同一个时间。`updatedAtLabel`
+            返回 null 时 OverviewRow 自己就不摆这一列(技能广场算不出,整行不摆)。 */}
         <OverviewRow
           author={detail.attribution?.author}
-          updated={relativeTimeFromIso(detail.committedAt)}
+          updated={updatedAtLabel(detail.updatedAt)}
           tags={detail.tags}
         >
           {!detail.attribution && canClaimAttribution && (

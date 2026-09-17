@@ -155,6 +155,7 @@
   "time.daysAgo": "{n} 天前",
   "time.weeksAgo": "{n} 周前",
   "time.monthsAgo": "{n} 个月前",
+  "time.longAgo": "很久以前",
   "error.ipcFailed": "应用内部通信失败,请重启应用后再试",
   "error.signInFailed": "登录没能完成,请重试",
   "error.generic": "操作没能完成,请稍后重试",

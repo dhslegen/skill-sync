@@ -7,7 +7,7 @@ import { PlazaCard } from "@/components/PlazaCard";
 import { SkillCard } from "@/components/SkillCard";
 import { t, type MessageKey } from "@/i18n";
 import { cn } from "@/lib/cn";
-import { relativeTimeFromIso, relativeTimeFromUnix } from "@/lib/format";
+import { relativeTimeFromUnix, updatedAtLabel } from "@/lib/format";
 import { PLAZA_REGISTRY_ID, type PlazaSkillCard } from "@/lib/ipc";
 import { filterSkills, type StoreFilter } from "@/lib/search";
 import { cardState, isMine } from "@/lib/update";
@@ -152,7 +152,6 @@ function StoreBody() {
   }
 
   if (!index) return null;
-  const updatedAt = relativeTimeFromIso(index.committedAt);
 
   return (
     <>
@@ -236,12 +235,16 @@ function StoreBody() {
         </p>
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(288px,1fr))] gap-2.5">
+          {/* v8 任务 1:`updatedAt` 是**逐技能**的。此处原先把整库分支头的时间
+              (`index.committedAt`)算一次、同一个值传给每张卡片——用户真机报障
+              "所有技能的更新时间都一样"正是这里。`index.committedAt` 仍被上面的
+              汇总行与索引新鲜度判断用着,没有删。 */}
           {visible.map((skill) => (
             <SkillCard
               key={skill.dirSlug}
               skill={skill}
               repo={index.repo}
-              updatedAt={updatedAt}
+              updatedAt={updatedAtLabel(skill.updatedAt)}
               mine={isMine(skill.author, me)}
               state={cardState(
                 records.get(skill.dirSlug),

@@ -1,4 +1,5 @@
 import { t } from "@/i18n";
+import type { SkillUpdatedAt } from "@/lib/ipc";
 
 /**
  * 相对时间。决策 C6:非研发用户只看"更新于 x 天前",不看版本号。
@@ -29,6 +30,29 @@ export function relativeTimeFromUnix(seconds: number, now?: number): string {
 export function relativeTimeFromIso(iso: string, now?: number): string {
   const ms = Date.parse(iso);
   return Number.isNaN(ms) ? "" : relativeTime(ms, now);
+}
+
+/**
+ * 「这个技能自己什么时候被改的」的展示文案(v8 任务 1)。
+ *
+ * 🔴 **返回 `null` 的意思是"整行不摆",不是"显示成空"**——调用方必须据此
+ * 不渲染那一行。三档各自的去处:
+ * - `at`:相对时间;ISO 解析不了时也返回 `null`,不让界面出现「更新于 」这种半句话;
+ * - `longAgo`:翻完提交历史都没见到它,**照实说**「很久以前」;
+ * - `unknown`:这个源根本算不出(技能广场 / GitHub 源)→ `null`。
+ *
+ * 后两档绝不能合并:合了以后广场的每一张卡片都会写「很久以前」,而我们
+ * 其实一次都没查过。同一个坑 `lib/update.ts` 的 `LocalProbe` 记过一次。
+ */
+export function updatedAtLabel(updated: SkillUpdatedAt): string | null {
+  switch (updated.kind) {
+    case "at":
+      return relativeTimeFromIso(updated.at) || null;
+    case "longAgo":
+      return t("time.longAgo");
+    case "unknown":
+      return null;
+  }
 }
 
 /** 文件大小。拿不到大小(二进制文件不进内存树)时给一个占位符而不是 "0 B"。 */

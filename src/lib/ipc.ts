@@ -41,6 +41,21 @@ export async function call<T>(cmd: string, args?: Record<string, unknown>): Prom
 // ============================================================ core 侧的返回类型
 // 与 src-tauri/src/core/store.rs 的 serde 契约一一对应(camelCase)。
 
+/**
+ * 这个技能自己最后一次被改动的时间(v8 任务 1,`core::store::SkillUpdatedAt`)。
+ *
+ * 🔴 **三档,不是 `string | null`**:两种"没有时间"必须分得开——
+ * - `longAgo`:翻完提交历史都没见到它,属实"很久以前",**照实显示**;
+ * - `unknown`:这个源根本算不出(技能广场 / GitHub 源),界面**整行不摆**。
+ *
+ * 压成同一个值的后果是广场每张卡片都写「很久以前」,那是编造。同一个坑在
+ * `lib/update.ts` 的 {@link LocalProbe}(「还没探到」vs「探过、没有」)记过一次。
+ */
+export type SkillUpdatedAt =
+  | { kind: "at"; at: string }
+  | { kind: "longAgo" }
+  | { kind: "unknown" };
+
 export interface StoreSkillCard {
   name: string;
   dirSlug: string;
@@ -54,6 +69,8 @@ export interface StoreSkillCard {
   tags: string[];
   /** 作者(技能库根 authors.json,服务端维护)。null = 库里没这条,整栏不摆。 */
   author: string | null;
+  /** 这个技能自己最后一次被改动的时间。见 {@link SkillUpdatedAt}。 */
+  updatedAt: SkillUpdatedAt;
 }
 
 /** 一个技能的作者与贡献者(技能库根 authors.json,服务端维护、客户端只读)。
@@ -98,7 +115,10 @@ export interface SkillDetail {
   files: SkillFile[];
   hasScripts: boolean;
   commitSha: string;
+  /** 整库分支头的提交时间。**不是**这个技能自己的更新时间(那是 `updatedAt`)。 */
   committedAt: string;
+  /** 这个技能自己最后一次被改动的时间。见 {@link SkillUpdatedAt}。 */
+  updatedAt: SkillUpdatedAt;
   /** 标签(tags.json)。详情面板元信息区展示。 */
   tags: string[];
   /** 作者与贡献者(authors.json)。null = 库里没这条,整栏不摆、不编造。 */

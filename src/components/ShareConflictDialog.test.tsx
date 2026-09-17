@@ -102,6 +102,7 @@ describe("分享改动的冲突弹窗", () => {
             contentHash: "h",
             tags: [],
             author: null,
+            updatedAt: { kind: "unknown" },
           },
         ],
       },

@@ -24,8 +24,18 @@ export function SkillCard({
 }: {
   skill: StoreSkillCard;
   repo: string;
-  /** 相对时间文案。C6:取技能库整体的更新时间,不逐技能归因(见 core/store.rs 的假设) */
-  updatedAt: string;
+  /**
+   * **这个技能自己**最后一次被改动的时间(v8 任务 1)。
+   *
+   * ⚠️ 此处原先写的是「C6:取技能库整体的更新时间,不逐技能归因」——那正是
+   * 用户真机报障"所有卡片的时间都一样"的根因,已改成逐技能
+   * (`StoreSkillCard.updatedAt`,core 侧从一次批量提交历史标出来)。
+   *
+   * `null` = **整行不摆**(这个源算不出,如技能广场 / GitHub 源),
+   * 不是显示成空串,也不是写「很久以前」。判定唯一实现在 `lib/format.ts`
+   * 的 `updatedAtLabel`。
+   */
+  updatedAt: string | null;
   state: InstallState;
   /** 技能库里记的分享者是不是我(v6)。判定唯一实现在 `lib/update.ts` 的 `isMine`。 */
   mine?: boolean;
@@ -77,14 +87,16 @@ export function SkillCard({
 
       <div className="mt-auto flex items-center gap-2 text-[11.5px] text-text-3">
         {/* 作者来自技能库的 authors.json(服务端维护);没有就不摆,不编造。
-            形态对齐 UI-Demo 卡片底部:作者名 + 2px 圆点分隔 + 更新时间 */}
-        {skill.author && (
-          <>
-            <span className="truncate">{skill.author}</span>
-            <span aria-hidden className="size-0.5 shrink-0 rounded-full bg-text-3" />
-          </>
+            形态对齐 UI-Demo 卡片底部:作者名 + 2px 圆点分隔 + 更新时间。
+            🔴 圆点是**分隔符**,只有两边都在时才摆:它原先长在作者那个片段里,
+            于是"有作者、时间算不出"会留下一颗孤零零的点。 */}
+        {skill.author && <span className="truncate">{skill.author}</span>}
+        {skill.author && updatedAt && (
+          <span aria-hidden className="size-0.5 shrink-0 rounded-full bg-text-3" />
         )}
-        <span className="shrink-0">{t("store.updatedAt", { when: updatedAt })}</span>
+        {updatedAt && (
+          <span className="shrink-0">{t("store.updatedAt", { when: updatedAt })}</span>
+        )}
         <div className="ml-auto">
           {/* 卡片上放不下 agent 多选,所以点这个按钮的归宿也是打开详情面板,
               在那儿看清会装到哪些工具再确认 —— 不做"点一下就动磁盘"。

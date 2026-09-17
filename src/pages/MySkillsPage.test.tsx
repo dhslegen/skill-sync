@@ -118,6 +118,7 @@ function companyIndex(list: Fixture[]): StoreIndexView {
         contentHash: s.remote === "NEW" ? `sha256:remote-new-${s.dirSlug}` : s.contentHash,
         tags: [],
         author: null,
+        updatedAt: { kind: "unknown" } as const,
       })),
   };
 }
@@ -1117,6 +1118,7 @@ describe("C3(v7 任务 7 修复轮 1):「改用库里的版本」——没有安
           contentHash: "sha256:library-now",
           tags: [],
           author: null,
+          updatedAt: { kind: "unknown" } as const,
         },
       ],
     };
@@ -1169,6 +1171,7 @@ describe("C3(v7 任务 7 修复轮 1):「改用库里的版本」——没有安
           contentHash: "sha256:same",
           tags: [],
           author: null,
+          updatedAt: { kind: "unknown" } as const,
         },
       ],
     };

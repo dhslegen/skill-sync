@@ -567,6 +567,7 @@ fn write_index_cache_with_author(c: &Ctx, dir_slug: &str, author: &str) {
                 author: author.into(),
                 contributors: Vec::new(),
             }),
+            updated_at: index_store::SkillUpdatedAt::Unknown,
         }],
         skipped: Vec::new(),
         curated: Vec::new(),

@@ -72,6 +72,9 @@ const card = (over: Partial<StoreSkillCard>): StoreSkillCard => ({
   contentHash: "sha256:weekly",
   tags: [],
   author: null,
+  // v8 任务 1:时间是**逐技能**的。默认给 3 天前,让既有那条"更新于 3 天前"
+  // 仍然成立——但它现在读的是卡片自己的字段,不再是整库分支头。
+  updatedAt: { kind: "at", at: new Date(Date.now() - 3 * 86_400_000).toISOString() },
   ...over,
 });
 
@@ -132,6 +135,49 @@ describe("StorePage", () => {
     expect(screen.getByText("skills/weekly-report")).toBeInTheDocument();
     // C6:非研发只看"更新于 x 天前"
     expect(screen.getAllByText("更新于 3 天前").length).toBeGreaterThan(0);
+  });
+
+  // 🔴 v8 任务 1 的核心回归护栏。用户真机报障:商店里**每一张**卡片的
+  // 「更新于 X 前」都是同一个时间——因为那个值是整库分支头(`index.committedAt`)
+  // 算一次、传给所有卡片的。只断言"有『更新于 3 天前』"抓不到它:三张卡片
+  // 全错成同一个值时那条断言照样通过。所以这里断言的是**三个不同的值**。
+  it("两个技能显示各自的更新时间,不是同一个值", () => {
+    const iso = (daysAgo: number) =>
+      new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+    seed({
+      index: index({
+        // 整库分支头故意设成 1 小时前:实现若退回用它,三张卡片会一起变成
+        // 「更新于 1 小时前」,下面三条断言同时红。
+        committedAt: new Date(Date.now() - 3_600_000).toISOString(),
+        skills: [
+          card({ updatedAt: { kind: "at", at: iso(2) } }),
+          card({ name: "合同审查助手", dirSlug: "contract-review", updatedAt: { kind: "at", at: iso(9) } }),
+          card({ name: "数据看板搭建", dirSlug: "data-dashboard", updatedAt: { kind: "longAgo" } }),
+        ],
+      }),
+    });
+    render(<StorePage />);
+
+    expect(screen.getByText("更新于 2 天前")).toBeInTheDocument();
+    expect(screen.getByText("更新于 1 周前")).toBeInTheDocument();
+    // 「翻完历史都没见到」照实说,不是藏起来
+    expect(screen.getByText("更新于 很久以前")).toBeInTheDocument();
+  });
+
+  // 与上一条配对:「翻完了没找到」(照实说「很久以前」)与「这个源根本算不出」
+  // (整行不摆)必须分得开。压成同一档的后果是广场每张卡片都写「很久以前」。
+  it("算不出更新时间的源:整行不摆,不写「很久以前」", () => {
+    seed({
+      index: index({
+        skills: [card({ author: "赵文浩", updatedAt: { kind: "unknown" } })],
+      }),
+    });
+    render(<StorePage />);
+
+    expect(screen.queryByText(/更新于/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/很久以前/)).not.toBeInTheDocument();
+    // 作者照常摆——不摆的只是时间那一段
+    expect(screen.getByText("赵文浩")).toBeInTheDocument();
   });
 
   it("含可执行脚本的技能有警示角标,其余没有", () => {

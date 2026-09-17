@@ -13,9 +13,14 @@
 //!
 //! ## 假设(文档未覆盖,按开发纪律显式标注)
 //!
-//! - **卡片上的"更新于"与版本标识取自技能库整体的分支头**,不是逐技能的最近提交。
-//!   逐技能归因要对每个技能目录发一次 commits 请求,50 个技能的首屏 <2s 预算撑不住。
-//!   决策 C6 只要求"更新于 x 天前 + 短码",技能库级别已满足。
+//! - **卡片上的"更新于"是逐技能的**([`IndexedSkill::updated_at`],v8 任务 1)。
+//!   ⚠️ 此处原先写的是"取自技能库整体的分支头;逐技能归因要对每个技能目录发一次
+//!   commits 请求,首屏 <2s 预算撑不住"——那条推理的前提("每个目录一次请求")
+//!   是错的:真正要发的是**一次带 `files` 的批量提交历史**。2026-09-16 实测公司
+//!   技能库 39 次提交覆盖全部 38 个技能,一页 `commits?limit=50` / 0.53 秒就够,
+//!   而且只在压缩包真的重新下载时才扫(sha 没变的缓存命中路径提前返回,零请求)。
+//!   [`StoreIndex::committed_at`](整库分支头的时间)**保留**:商店顶部的汇总与
+//!   索引新鲜度判断仍然用它,它只是不再冒充每个技能自己的时间。
 //! - **作者/贡献者来自库根 `authors.json`,不是现场归因**(M7):frontmatter 只有
 //!   name/description/metadata.internal,逐技能问 commits 接口又撑不住上面那条首屏预算。
 //!   M7 的解法是把归因做成 tags.json 同款的库侧静态文件(scripts/gen-authors.mjs 从
@@ -28,7 +33,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::core::fsops;
-use crate::core::gitea::{BranchHead, RepoArchive, RepoRef, RepoSource};
+use crate::core::gitea::{BranchHead, CommitTouch, RepoArchive, RepoRef, RepoSource};
 use crate::core::skills::{self, DiscoverOptions, SkillTree};
 use crate::error::AppError;
 
@@ -37,6 +42,11 @@ use crate::error::AppError;
 /// **加"从压缩包里解析出来的新字段"时必须升它**,哪怕该字段的数据源改动必然
 /// 伴随库提交。判据不是"数据会不会变",而是"**建这份缓存的代码有没有解析它的能力**"
 /// ——`refresh_index` 只比 `commit_sha == head.sha`,而 head 只反映数据新鲜度。
+/// 5 = v8 任务 1 的 [`IndexedSkill::updated_at`](逐技能最后改动时间)。
+/// 用户真机报障"所有卡片的更新时间都一样"正是因为此前根本没有这个字段,
+/// 卡片拿的是整库分支头的时间。不升版本的话,旧版本写的那份**缺字段缓存**
+/// 会被新版本一直命中(head 相同 → 不重建),时间永远不出现——与 M7 的
+/// `attribution` 2026-08-07 真机踩过的是同一个坑。
 /// 4 = v6 二期任务 1 给 [`fsops::is_excluded_rel`] 排除名单加了
 /// `.DS_Store`/`Thumbs.db`/`desktop.ini`(访达/资源管理器随手生成的系统元文件)。
 /// `content_hash` 字段的算法依赖这份名单,名单一变,同一个技能算出来的指纹跟着变——
@@ -47,7 +57,36 @@ use crate::error::AppError;
 /// head 比对相同 → 永远命中那份缺字段的缓存 → 作者栏永不出现,
 /// 而"重新获取"能出来正说明数据与解析都没问题、只是缓存挡着)。
 /// 2 = 逐技能内容指纹(同一个道理,当时的记载是"旧缓存没有指纹,判定会退化成未知")。
-pub const INDEX_SCHEMA_VERSION: u32 = 4;
+pub const INDEX_SCHEMA_VERSION: u32 = 5;
+
+/// 提交历史最多翻几页。5 × [`COMMIT_PAGE_LIMIT`] = 250 次提交
+/// ——公司技能库 2026-09-16 实测只用到第 1 页(39 次提交覆盖 38 个技能),
+/// 留 5 页是给历史更长的库兜底。翻满了还没见到的技能落 [`SkillUpdatedAt::LongAgo`]。
+pub const MAX_COMMIT_PAGES: u32 = 5;
+/// 每页要多少条提交。Gitea 的 `commits` 端点上限 50(与 `plaza` 的 limit 无关)。
+pub const COMMIT_PAGE_LIMIT: u32 = 50;
+
+/// 这个技能自己最后一次被改动的时间。
+///
+/// 🔴 **三档,不是 `Option`**:「翻完了没找到」与「这个源根本算不出」必须分得开。
+/// 压成同一个 `None`,广场/GitHub 源的每张卡片都会写「很久以前」——那是编造,
+/// 而且是本项目复盘过的 `LocalProbe`(「还没探到」vs「探过、没有」)同形坑。
+///
+/// ⚠️ [`Unknown`](Self::Unknown) 会**随缓存一起留着**,直到分支头变了重建索引、
+/// 或用户点「重新获取」(`force = true`)。也就是说一次网络抖动会让时间行在这个
+/// 技能库上消失一阵子——这是刻意接受的:显示不出来比显示一个编的时间强,
+/// 而逃生口(重新获取)本来就在界面上。**别把它记成缺陷。**
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SkillUpdatedAt {
+    /// 这个技能目录最后一次被碰到的提交时间(技能库返回的原样 ISO-8601)。
+    At { at: String },
+    /// 翻完了上限(或整个历史)都没见到它——属实"很久以前"。
+    LongAgo,
+    /// 这个源算不出:GitHub 源与技能广场(v8 设计 D15 不实现),
+    /// 以及提交历史取数失败的那一次。界面据此**整行不摆**。
+    Unknown,
+}
 
 // ============================================================ 缓存结构
 
@@ -83,7 +122,8 @@ pub struct IndexedSkill {
     ///
     /// 「有可用更新」只能靠它判定。**不能拿仓库 HEAD sha 比**——那是整库的,
     /// 别人分享任何一个技能都会让所有已装技能被判成有更新(2026-08-03 用户实测撞到)。
-    /// 逐技能问 commits 接口是另一条路,但那要每个目录一次请求,首屏撑不住(见模块头)。
+    /// 提交历史是另一条路,但它只能回答"什么时候改的"([`IndexedSkill::updated_at`]
+    /// 正是这么来的),回答不了"改成了什么",判"有没有更新"仍然只能靠这个指纹。
     #[serde(default)]
     pub content_hash: String,
     /// 技能库根 `tags.json` 里给这个技能打的标签(M5 任务 3,服务端管理、客户端只读)。
@@ -98,6 +138,15 @@ pub struct IndexedSkill {
     /// 旧缓存 serde default 补 None,同样**不升缓存版本**。
     #[serde(default)]
     pub attribution: Option<SkillAttribution>,
+    /// 这个技能自己最后一次被改动的时间(v8 任务 1)。
+    ///
+    /// [`build_index`] 一律填 [`SkillUpdatedAt::Unknown`]——它是纯函数、不碰网络,
+    /// 而这件事只有提交历史答得出。真正的取数在 [`fill_updated_at`],由
+    /// [`refresh_index`] 在建完索引、落盘之前调一次。
+    ///
+    /// **刻意不给 `serde(default)`**:缺这个字段的缓存必然是升版本之前写的,
+    /// 反序列化失败 → [`load_cache`] 返回 `None` → 重建,正是我们要的。
+    pub updated_at: SkillUpdatedAt,
 }
 
 /// 一个技能的作者与贡献者(库根 `authors.json`)。
@@ -181,6 +230,9 @@ pub struct StoreSkillCard {
     pub tags: Vec<String>,
     /// 作者(authors.json,服务端维护)。卡片只摆作者;没有条目就是 None,整栏不摆。
     pub author: Option<String>,
+    /// 这个技能自己最后一次被改动的时间。见 [`SkillUpdatedAt`]
+    /// ——`unknown` 时卡片上的时间**整行不摆**,不是显示「很久以前」。
+    pub updated_at: SkillUpdatedAt,
 }
 
 /// `store_index` 的返回。
@@ -217,7 +269,11 @@ pub struct SkillDetail {
     pub files: Vec<SkillFile>,
     pub has_scripts: bool,
     pub commit_sha: String,
+    /// 整库分支头的提交时间。**不再喂给详情面板的「更新于」**(那是 `updated_at`),
+    /// 保留是因为它是这份索引的版本标识之一,契约里删字段的代价大于留着。
     pub committed_at: String,
+    /// 这个技能自己最后一次被改动的时间。见 [`SkillUpdatedAt`]。
+    pub updated_at: SkillUpdatedAt,
     /// 标签(tags.json,服务端管理)。详情面板元信息区展示。
     pub tags: Vec<String>,
     /// 作者与贡献者(authors.json,服务端维护)。None = 库里没这条,整栏不摆、不编造。
@@ -359,6 +415,11 @@ pub fn save_cache(path: &Path, index: &StoreIndex) -> Result<(), AppError> {
 // ============================================================ 索引构建
 
 /// 从解开的压缩包构建索引。纯函数,不碰网络与磁盘。
+///
+/// 每个技能的 [`IndexedSkill::updated_at`] 一律是 [`SkillUpdatedAt::Unknown`]
+/// ——"这个技能什么时候被改的"只有提交历史答得出,而这里不发请求。
+/// 想要真实时间的调用方接一次 [`fill_updated_at`](目前只有 [`refresh_index`];
+/// 其余调用方要么是安装取数、要么是广场,都不展示这个时间)。
 pub fn build_index(
     registry_id: &str,
     r: &RepoRef,
@@ -393,6 +454,7 @@ pub fn build_index(
                 content_hash: remote_content_hash(archive, &s.dir),
                 files: collect_files(archive, &s.dir),
                 has_scripts: skills::has_executable_scripts(&s.dir, &archive.files),
+                updated_at: SkillUpdatedAt::Unknown,
             }
         })
         .collect();
@@ -579,6 +641,7 @@ impl StoreIndex {
                     content_hash: s.content_hash.clone(),
                     tags: s.tags.clone(),
                     author: s.attribution.as_ref().map(|a| a.author.clone()),
+                    updated_at: s.updated_at.clone(),
                 })
                 .collect(),
             skipped: self.skipped.clone(),
@@ -609,6 +672,7 @@ impl StoreIndex {
             has_scripts: s.has_scripts,
             commit_sha: self.commit_sha.clone(),
             committed_at: self.committed_at.clone(),
+            updated_at: s.updated_at.clone(),
             tags: s.tags.clone(),
             attribution: s.attribution.clone(),
         })
@@ -673,12 +737,91 @@ pub async fn refresh_index(
         }
     };
 
-    let index = build_index(registry_id, r, &head, &archive, fetched_at);
+    let mut index = build_index(registry_id, r, &head, &archive, fetched_at);
+    // 逐技能的更新时间(v8 任务 1)。接在这里而不是缓存命中那条路上:sha 没变就说明
+    // 谁都没改过,缓存里的时间还是对的,没有必要为它多发最多 5 个请求。
+    fill_updated_at(client, r, &mut index).await;
     // 写缓存失败只影响下次能否命中,不该拦住这一次的浏览。
     if let Err(err) = save_cache(cache_file, &index) {
         tracing_warn(&err);
     }
     Ok((index, IndexOutcome { from_cache: false, offline: false }))
+}
+
+/// 给索引里每个技能标上"它自己最后一次被改动的时间"(v8 任务 1)。
+///
+/// 做法:翻提交历史,**新 → 旧**,记每个技能目录前缀**首次**出现的那次提交时间
+/// (首次出现 = 最新那次),全部技能都找到即早退,最多翻 [`MAX_COMMIT_PAGES`] 页。
+///
+/// 三种出口分得很清,别合并:
+/// - 源不支持(`commit_page` 返回 `Ok(None)`,即 GitHub 与广场)→ 全部保持
+///   [`SkillUpdatedAt::Unknown`],界面整行不摆;
+/// - 取数失败(网络/权限)→ 已经标上的保留,**没标上的保持 `Unknown`**
+///   ——不能顺势写成「很久以前」,那是拿一次网络故障编造事实;
+/// - 翻到头或翻满上限 → 剩下的才是 [`SkillUpdatedAt::LongAgo`]。
+///
+/// 匹配用的是每个技能自己的 [`IndexedSkill::path`](如 `skills/weekly-report`),
+/// 不是写死的 `skills/` 前缀——技能发现规则允许别的优先目录。
+pub async fn fill_updated_at(client: &impl RepoSource, r: &RepoRef, index: &mut StoreIndex) {
+    // (技能在 index.skills 里的下标, 它的目录前缀)。找到一个就从这里摘掉,
+    // 空了就早退——公司技能库实测第 1 页就能清空。
+    let mut pending: Vec<(usize, String)> = index
+        .skills
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (i, format!("{}/", s.path)))
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+
+    for page in 1..=MAX_COMMIT_PAGES {
+        let commits = match client.commit_page(r, page, COMMIT_PAGE_LIMIT).await {
+            Ok(Some(commits)) => commits,
+            // 这个源算不出:一个字都不改,全部留在 Unknown。
+            Ok(None) => return,
+            Err(err) => {
+                tracing::warn!(
+                    owner = %r.owner, repo = %r.repo, page,
+                    error = %err,
+                    "取提交历史失败,这一批技能的更新时间显示不出来(不编造「很久以前」)"
+                );
+                return;
+            }
+        };
+        let exhausted = commits.len() < COMMIT_PAGE_LIMIT as usize;
+        for commit in &commits {
+            apply_commit(&mut pending, index, commit);
+            if pending.is_empty() {
+                return;
+            }
+        }
+        if exhausted {
+            break;
+        }
+    }
+
+    // 翻满上限(或整个历史翻完了)还没见到的:属实"很久以前"。
+    for (i, _) in pending {
+        index.skills[i].updated_at = SkillUpdatedAt::LongAgo;
+    }
+}
+
+/// 把一条提交碰过的文件落到还没有时间的技能上。
+///
+/// 合并提交的 `files` 实测是空数组(见 [`CommitTouch`]),这里天然什么都不做
+/// ——**关键是时间只从 `commit.files` 命中的技能上取**,绝不拿"这一页最新那条"
+/// 去代表任何技能,否则一个合并提交就会把全库的时间染成同一个值
+/// (那正是 v8 任务 1 要修的那个缺陷的形状)。
+fn apply_commit(pending: &mut Vec<(usize, String)>, index: &mut StoreIndex, commit: &CommitTouch) {
+    pending.retain(|(i, prefix)| {
+        if commit.files.iter().any(|f| f.starts_with(prefix.as_str())) {
+            index.skills[*i].updated_at = SkillUpdatedAt::At { at: commit.at.clone() };
+            false
+        } else {
+            true
+        }
+    });
 }
 
 /// tracing 到任务 13 才接;在那之前用 stderr,至少不静默吞掉。
@@ -900,11 +1043,33 @@ mod tests {
         let back: StoreIndex = serde_json::from_str(&json).unwrap();
         assert_eq!(back.skills[0].attribution, index.skills[0].attribution);
 
-        // 旧缓存(没有 attribution 字段)serde default 补 None,不升缓存版本的前提
+        // 没有 attribution 字段时 serde default 补 None(M7 当初"不升缓存版本"的前提)。
+        // ⚠️ v8 任务 1 起 `updatedAt` 是**必填**字段,所以这段样本要带上它——
+        // 缺 `updatedAt` 的 JSON 反序列化会直接失败,那正是升版本换来的行为
+        // (见下面 `a_cache_without_the_new_field_is_rebuilt_not_half_read`),
+        // 与这里要验的"attribution 可缺省"是两件事,别混在一个样本里。
         let old = r#"{"name":"技能","dirSlug":"weekly-report","description":"","path":"p",
-            "skillMd":"","files":[],"hasScripts":false}"#;
+            "skillMd":"","files":[],"hasScripts":false,"updatedAt":{"kind":"unknown"}}"#;
         let skill: IndexedSkill = serde_json::from_str(old).unwrap();
         assert_eq!(skill.attribution, None);
+    }
+
+    /// 升版本换来的那件事:缺 `updatedAt` 的旧缓存**读不回来**,于是整份丢弃重建。
+    ///
+    /// 这条是 M7 `attribution` 2026-08-07 真机教训的正面护栏:那次是数据先于代码
+    /// 到达,旧版本用最新 head 写了一份缺字段的缓存,新版本 head 比对相同 →
+    /// 永远命中那份缺字段的缓存 → 字段永不出现。
+    #[test]
+    fn a_cache_without_the_new_field_is_rebuilt_not_half_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = cache_path(tmp.path(), "company", &repo());
+        let index = build_index("company", &repo(), &head("abc"), &archive_with(&["a"]), 0);
+        let mut json: serde_json::Value = serde_json::to_value(&index).unwrap();
+        json["schemaVersion"] = (INDEX_SCHEMA_VERSION - 1).into();
+        json["skills"][0].as_object_mut().unwrap().remove("updatedAt");
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+
+        assert!(load_cache(&path).is_none(), "缺 updatedAt 的旧缓存必须丢弃重建,不能半读");
     }
 
     #[test]
@@ -1036,6 +1201,27 @@ mod tests {
     /// 这条断言红了说明你刚动了缓存的结构:**先判断要不要升版本**,再改这份键清单。
     /// 断言键的**完整集合**而不是"某个键存在"——后者放过新增字段,等于空转
     /// (CLAUDE.md 空转测试模式 #2)。
+    /// `SkillUpdatedAt` 的**线上形状**(serde 三档的字面量)。
+    ///
+    /// 前端 `lib/ipc.ts` 的 `SkillUpdatedAt` 是一份**手抄的镜像**,没有任何
+    /// 跨语言校验拦着它们漂移。`rename_all`/`tag` 一变,`updatedAtLabel` 的
+    /// switch 三条臂全不命中 → 返回 `undefined` → **每一行时间都静默消失**,
+    /// 而五道闸全绿——那正是本项目记的「错误被写进某个状态,但没有渲染点」
+    /// 那一类:只有真机点得出来。`changing_the_cached_skill_shape_...`
+    /// 钉的是 `IndexedSkill` 的键集合,钉不到这个嵌套结构里面。
+    ///
+    /// 改这里的期望值时,必须同一笔改动里改 `src/lib/ipc.ts` 的那份联合类型。
+    #[test]
+    fn the_updated_at_wire_shape_matches_the_frontend_mirror() {
+        let v = |x: &SkillUpdatedAt| serde_json::to_value(x).unwrap();
+        assert_eq!(
+            v(&SkillUpdatedAt::At { at: "2026-09-16T09:00:00Z".into() }),
+            serde_json::json!({ "kind": "at", "at": "2026-09-16T09:00:00Z" })
+        );
+        assert_eq!(v(&SkillUpdatedAt::LongAgo), serde_json::json!({ "kind": "longAgo" }));
+        assert_eq!(v(&SkillUpdatedAt::Unknown), serde_json::json!({ "kind": "unknown" }));
+    }
+
     #[test]
     fn changing_the_cached_skill_shape_forces_a_version_decision() {
         let index = build_index("company", &repo(), &head("abc"), &archive_with(&["a"]), 0);
@@ -1055,10 +1241,11 @@ mod tests {
                 "path",
                 "skillMd",
                 "tags",
+                "updatedAt",
             ],
             "缓存里每个技能的字段集合变了 —— 先决定 INDEX_SCHEMA_VERSION 要不要升(见它的文档注释),再更新这份清单"
         );
-        assert_eq!(INDEX_SCHEMA_VERSION, 4, "升过版本就同步这里,让下一个人看到当前值");
+        assert_eq!(INDEX_SCHEMA_VERSION, 5, "升过版本就同步这里,让下一个人看到当前值");
     }
 
     #[test]

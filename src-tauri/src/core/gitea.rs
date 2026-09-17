@@ -172,6 +172,24 @@ pub struct BranchHead {
     pub committed_at: String,
 }
 
+/// 提交历史里的一条:提交时间 + 这次改动碰过的文件(仓库相对路径)。
+///
+/// 只留"逐技能最后改动时间"要用的两样,提交信息/作者/sha 一概不取
+/// ——那些还没有任何界面要展示,取回来只是让这条路径更重。
+///
+/// ⚠️ **合并提交的 `files` 实测是空数组**(2026-09-16,公司技能库的
+/// `5cc14c2f`)。所以"这条提交碰了哪些文件"必须逐条看 `files`,
+/// 不能拿"这一页最新那条的时间"去代表任何技能。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitTouch {
+    /// 提交时间(技能库返回的原样 ISO-8601)。取自响应的**顶层 `created`**
+    /// ——2026-09-16 对 fixture Gitea 1.25.3 curl 核实过它与
+    /// `commit.committer.date` 同值,取一个就够,不做两处兜底。
+    pub at: String,
+    /// 这次提交碰过的文件,仓库相对路径(如 `skills/weekly-report/SKILL.md`)。
+    pub files: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FileOperation {
@@ -464,6 +482,48 @@ impl GiteaClient {
             sha: branch.commit.id,
             committed_at: branch.commit.timestamp,
         })
+    }
+
+    /// 一页提交历史(带每条提交碰过的文件)。分页是**新 → 旧**。
+    ///
+    /// 用途只有一个:给每个技能标上"它自己最后一次被改动的时间"
+    /// (v8 任务 1)。一次要 50 条,公司技能库实测 39 次提交 / 38 个技能
+    /// ——**一页 0.53 秒就覆盖全部技能**,所以这条路径承担得起。
+    pub async fn commit_page(
+        &self,
+        r: &RepoRef,
+        page: u32,
+        limit: u32,
+    ) -> Result<Vec<CommitTouch>, AppError> {
+        #[derive(Deserialize)]
+        struct Entry {
+            #[serde(default)]
+            created: String,
+            #[serde(default)]
+            files: Vec<AffectedFile>,
+        }
+        #[derive(Deserialize)]
+        struct AffectedFile {
+            #[serde(default)]
+            filename: String,
+        }
+        let resp = self
+            .send(self.request(
+                reqwest::Method::GET,
+                self.api(&format!(
+                    "/repos/{}/{}/commits?sha={}&limit={limit}&page={page}",
+                    r.owner, r.repo, r.branch
+                )),
+            ))
+            .await?;
+        let entries: Vec<Entry> = parse_json(resp).await?;
+        Ok(entries
+            .into_iter()
+            .map(|e| CommitTouch {
+                at: e.created,
+                files: e.files.into_iter().map(|f| f.filename).collect(),
+            })
+            .collect())
     }
 
     /// 下载并解开仓库压缩包。
@@ -812,6 +872,22 @@ pub trait RepoSource: Sync {
         &self,
         r: &RepoRef,
     ) -> impl std::future::Future<Output = Result<RepoArchive, AppError>> + Send;
+
+    /// 一页提交历史(新 → 旧),给「逐技能最后改动时间」用。
+    ///
+    /// **`Ok(None)` = 这个源根本算不出**(GitHub 臂按 v8 设计 D15 不实现,
+    /// 走这个默认实现)。它与 `Ok(Some(vec![]))`「翻到头了、没有更多提交」
+    /// 是两件事:前者让界面**整行不摆**,后者让剩下的技能落到「很久以前」。
+    /// 压成同一个值的后果是广场每张卡片都写「很久以前」——本项目
+    /// 复盘过的 `LocalProbe` 同形坑。
+    fn commit_page(
+        &self,
+        _r: &RepoRef,
+        _page: u32,
+        _limit: u32,
+    ) -> impl std::future::Future<Output = Result<Option<Vec<CommitTouch>>, AppError>> + Send {
+        std::future::ready(Ok(None))
+    }
 }
 
 impl RepoSource for GiteaClient {
@@ -820,6 +896,14 @@ impl RepoSource for GiteaClient {
     }
     async fn download_archive(&self, r: &RepoRef) -> Result<RepoArchive, AppError> {
         GiteaClient::download_archive(self, r).await
+    }
+    async fn commit_page(
+        &self,
+        r: &RepoRef,
+        page: u32,
+        limit: u32,
+    ) -> Result<Option<Vec<CommitTouch>>, AppError> {
+        GiteaClient::commit_page(self, r, page, limit).await.map(Some)
     }
 }
 

@@ -13,6 +13,7 @@ const card = (over: Partial<StoreSkillCard>): StoreSkillCard => ({
   contentHash: "sha256:x",
   tags: ["办公"],
   author: null,
+  updatedAt: { kind: "unknown" },
   ...over,
 });
 

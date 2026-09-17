@@ -31,7 +31,7 @@ use skillsync_lib::core::skill_lock::{self, LockEntry};
 use skillsync_lib::core::state::{
     Config, InstalledSkill, RegistryConfig, RepoConfig, SkillSource, State, Store,
 };
-use skillsync_lib::core::store::{self, IndexedSkill, SkillAttribution, SkillFile, StoreIndex};
+use skillsync_lib::core::store::{self, IndexedSkill, SkillAttribution, SkillFile, SkillUpdatedAt, StoreIndex};
 
 /// 这台机器上"建链成功"时 `LinkRecord.mode` / `Converged::Linked.mode` 的取值。
 ///
@@ -131,6 +131,7 @@ fn indexed_skill(dir_slug: &str, author: Option<&str>) -> IndexedSkill {
         content_hash: String::new(),
         tags: Vec::new(),
         attribution: author.map(|a| SkillAttribution { author: a.into(), contributors: Vec::new() }),
+        updated_at: SkillUpdatedAt::Unknown,
     }
 }
 
