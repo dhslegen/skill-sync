@@ -65,6 +65,7 @@ const SKILLS = [
   },
   {
     slug: "code-annotator",
+    updatedAt: { kind: "longAgo" },
     name: "代码注释向导",
     description: "为新接手的代码批量添加详细中文注释,让代码像读母语文章一样流畅。",
     tags: ["代码", "阅读"],
@@ -90,6 +91,7 @@ const SKILLS = [
   },
   {
     slug: "docx-to-markdown",
+    updatedAt: { kind: "unknown" },
     name: "Word 转 Markdown",
     description: "手工迁移与校准,保留标题编号、合并单元格与续表。",
     section: "installedFrom",
@@ -457,6 +459,9 @@ function card(s, hash) {
     contentHash: hash,
     tags: s.tags ?? [],
     author: s.section === "sharedTo" ? "赵文浩" : "李明",
+    // v8 任务 1:逐技能的最后改动时间。三档都要有样本——只喂 `at` 的话,
+    // 「很久以前」与「整行不摆」两条降级路在截图里一次都不会出现。
+    updatedAt: s.updatedAt ?? { kind: "at", at: "2026-09-14T03:12:00Z" },
   };
 }
 
@@ -506,6 +511,7 @@ export function buildFixtures() {
       committedAt: "2026-09-01T02:11:00Z",
       tags: s.tags ?? [],
       attribution: null,
+      updatedAt: s.updatedAt ?? { kind: "at", at: "2026-09-14T03:12:00Z" },
     };
   }
 
