@@ -2887,6 +2887,15 @@ universal 双切片、minos、动态库依赖、下载文件 sha256 全验过一
   Node 26 在 globalThis 上自带 localStorage accessor(getter 返回 undefined),曾让 45 个
   前端测试假红而 CI 全绿——`src/test/setup.ts` 已补内存级 shim 兜底,任何 Node 版本都能跑,
   但日常仍建议 `export PATH="$HOME/.nvm/versions/node/v22.21.1/bin:$PATH"` 与 CI 对齐。
+- 🔴 **真机走查前先退出已安装的正式版**(2026-09-18 实测,浪费了一轮排查):
+  `/Applications/SkillSync.app` 与 `pnpm dev` 的开发版**共用 `~/.skillsync/`**。
+  两边的 `INDEX_SCHEMA_VERSION` 不同时(v8 是 5,已发布的 0.6.3 是 4),
+  各自都把对方写的缓存判成"不认识"→ 丢弃重建 → 来回覆盖。表现极具迷惑性:
+  **「我的技能」的归属栏目来回乱跳**(读不到库里的作者 → 自己分享的技能掉进「安装自」)、
+  **卡片没有更新时间**、**「分享改动」菜单项凭空消失**——三条看起来都像新版的回归缺陷,
+  实际上一行代码都没错。判据:`ps aux | grep -i skillsync` 看有没有两个进程;
+  `python3 -c "import json;print(json.load(open('~/.skillsync/index-company-skills-skills.json'.replace('~','$HOME')))['schemaVersion'])"`
+  看缓存版本与当前代码是否一致。
 - 🔴 **跑 Rust 前先确认没有 `pnpm dev` 在跑**(2026-09-07 实测):tauri dev 会**持有
   `src-tauri/target` 的构建锁**,`cargo test` 会无限 `Blocking waiting for file lock`。
   那次跑到 22 分钟的全量根因就是它——当时怀疑过 docker、怀疑过进程被杀,
