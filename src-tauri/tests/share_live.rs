@@ -857,7 +857,7 @@ async fn deleting_a_local_file_removes_it_from_a_real_gitea() {
     .await
     .expect("第三轮失败");
     assert!(
-        matches!(again, share::ShareInstalledOutcome::AlreadyInSync { .. }),
+        matches!(again, share::ShareInstalledOutcome::AlreadyInSync),
         "两边已经一样,就该直说「已一致」而不是推一笔空提交:{again:?}"
     );
 
