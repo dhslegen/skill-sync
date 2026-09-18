@@ -715,6 +715,195 @@ async fn author_loop_in_a_tool_dir_against_a_real_gitea() {
     }
 }
 
+/// 🔴 **本期(v8)的病灶本身,只有真 Gitea 能证伪**:分享此前**只上传、从不删除**,
+/// 用户在本地删掉的文件会永远留在库里 → 两边指纹永不相等 → 行上恒显示"不一样"、
+/// 每次点分享都推一遍相同内容(同事真机上因此开出三个**空**合并请求)。
+///
+/// 这条用例跑完整一圈:分享两个文件 → 本地删掉其中一个 → 再分享 → 断言
+/// ①预览清单里**点名**了那个文件;②确认后**库里真的没有它了**(查真实的树,
+/// 不是查我们自己的返回值);③两边指纹相等(`AlreadyInSync` 这一档不再有活可干)。
+///
+/// wiremock 证明不了第 ②、③ 条:那要真实 Gitea 认下一笔带 `Delete` 操作的多文件提交。
+#[tokio::test]
+async fn deleting_a_local_file_removes_it_from_a_real_gitea() {
+    let _main = MAIN_BRANCH_LOCK.lock().await;
+    let Some(vars) = fixture_env() else {
+        eprintln!("跳过:未找到 fixtures/.env.local,先跑 ./fixtures/init.sh");
+        return;
+    };
+    let need = [
+        "SKILLSYNC_FIXTURE_GITEA_URL",
+        "SKILLSYNC_FIXTURE_ORG",
+        "SKILLSYNC_FIXTURE_REPO",
+        "SKILLSYNC_FIXTURE_ADMIN_TOKEN",
+    ];
+    if let Some(missing) = need.iter().find(|k| !vars.contains_key(**k)) {
+        eprintln!("跳过:fixtures/.env.local 缺 {missing}");
+        return;
+    }
+    let base_url = vars["SKILLSYNC_FIXTURE_GITEA_URL"].clone();
+    let repo = RepoRef {
+        owner: vars["SKILLSYNC_FIXTURE_ORG"].clone(),
+        repo: vars["SKILLSYNC_FIXTURE_REPO"].clone(),
+        branch: "main".into(),
+    };
+    let admin = GiteaClient::new(base_url.clone(), Some(vars["SKILLSYNC_FIXTURE_ADMIN_TOKEN"].clone())).unwrap();
+    if admin.branch_head(&repo).await.is_err() {
+        eprintln!("跳过:连不上 fixture Gitea");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().to_path_buf();
+    let env = TmpEnv { home: home.clone() };
+    let store = Store::new(home.join(".skillsync"));
+    let registry = AgentRegistry::builtin();
+    let trash = skillsync_lib::core::fsops::SandboxTrash::new(home.join("..").join("share-live-delete-trash"));
+
+    // 与同进程其他 live 用例错开名字:三条都直推同一个库
+    let name = format!("delete-live-{:x}", std::process::id());
+    let body = home.join(".agents").join("skills").join(&name);
+    write_skill(&body, &name, "两个文件的技能");
+    std::fs::write(body.join("extra.md"), "这个文件待会儿会被删掉\n").unwrap();
+
+    let user = admin.current_user().await.unwrap();
+    let mut config = store.load_config().unwrap().value;
+    config.identities.insert(
+        "fixture".into(),
+        skillsync_lib::core::ownership::Identity {
+            login: user.login.clone(),
+            display_name: if user.full_name.trim().is_empty() { user.login.clone() } else { user.full_name.clone() },
+        },
+    );
+    store.save_config(&config).unwrap();
+
+    // ① 首次分享:两个文件都上去
+    let first = confirmed_share(
+        &share::ShareClient::Gitea(&admin),
+        &admin,
+        &registry,
+        &env,
+        &store,
+        &trash,
+        "fixture",
+        &repo,
+        &name,
+        NOW,
+    )
+    .await
+    .expect("首次分享失败");
+    assert!(matches!(first, ShareOutcome::Shared { mode: ShareMode::Pushed, .. }), "首次分享应当直推:{first:?}");
+    assert!(
+        remote_paths(&admin, &repo, &name).await.contains(&format!("skills/{name}/extra.md")),
+        "第一步就该把两个文件都推上去"
+    );
+
+    // ② 本地删掉 extra.md —— 这正是同事那台机器上发生过的事
+    std::fs::remove_file(body.join("extra.md")).unwrap();
+
+    // ③ 预览轮:清单里必须**点名**那个文件
+    let preview = share::share_installed(
+        &share::ShareClient::Gitea(&admin),
+        &admin,
+        &registry,
+        &env,
+        &store,
+        &name,
+        "main",
+        None,
+        NOW,
+    )
+    .await
+    .expect("预览轮失败");
+    let share::ShareInstalledOutcome::NeedsConfirm { plan, remote_rev, .. } = preview else {
+        panic!("本地删过文件,预览轮就该回一份带删除的清单:{preview:?}");
+    };
+    assert_eq!(plan.deleted, vec!["extra.md".to_string()], "确认屏要点名这个文件:{plan:?}");
+
+    // ④ 确认后:库里真的没有它了(查真实的树,不是查我们自己的返回值)
+    let done = share::share_installed(
+        &share::ShareClient::Gitea(&admin),
+        &admin,
+        &registry,
+        &env,
+        &store,
+        &name,
+        "main",
+        Some(remote_rev.as_str()),
+        NOW,
+    )
+    .await
+    .expect("确认轮失败");
+    assert!(matches!(done, share::ShareInstalledOutcome::Submitted(_)), "确认后就该推上去:{done:?}");
+    let after = remote_paths(&admin, &repo, &name).await;
+    assert!(
+        !after.contains(&format!("skills/{name}/extra.md")),
+        "本地删掉的文件必须从库里一起删掉,否则两边指纹永不相等:{after:?}"
+    );
+    assert!(after.contains(&format!("skills/{name}/SKILL.md")), "只删该删的那个:{after:?}");
+
+    // ⑤ 两边一致之后再点一次分享:没有活可干,一个写请求都不该发
+    let again = share::share_installed(
+        &share::ShareClient::Gitea(&admin),
+        &admin,
+        &registry,
+        &env,
+        &store,
+        &name,
+        "main",
+        None,
+        NOW,
+    )
+    .await
+    .expect("第三轮失败");
+    assert!(
+        matches!(again, share::ShareInstalledOutcome::AlreadyInSync { .. }),
+        "两边已经一样,就该直说「已一致」而不是推一笔空提交:{again:?}"
+    );
+
+    cleanup_skill_dir(&admin, &repo, &name).await;
+}
+
+/// 库里这个技能目录当前有哪些文件(真实的树,不是我们自己的返回值)。
+async fn remote_paths(admin: &GiteaClient, repo: &RepoRef, name: &str) -> Vec<String> {
+    let head = admin.branch_head(repo).await.unwrap();
+    admin
+        .tree_files(&repo.owner, &repo.repo, &head.sha)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .filter(|p| p.starts_with(&format!("skills/{name}/")))
+        .collect()
+}
+
+/// 删掉本轮推上去的技能目录:残留会打红 `gitea_live` 的清单断言。
+async fn cleanup_skill_dir(admin: &GiteaClient, repo: &RepoRef, name: &str) {
+    let head = admin.branch_head(repo).await.unwrap();
+    let files: Vec<FileChange> = admin
+        .tree_files(&repo.owner, &repo.repo, &head.sha)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.path.starts_with(&format!("skills/{name}/")))
+        .map(|f| FileChange {
+            operation: skillsync_lib::core::gitea::FileOperation::Delete,
+            path: f.path,
+            content: None,
+            sha: Some(f.sha),
+        })
+        .collect();
+    if !files.is_empty() {
+        let req = ChangeFilesRequest {
+            branch: "main".into(),
+            new_branch: None,
+            message: format!("清理 live 测试目录 {name}"),
+            files,
+        };
+        admin.change_files(&repo.owner, &repo.repo, &req).await.expect("清理失败");
+    }
+}
+
 /// 「用户在确认屏上点了确认」的**完整两轮**(终审 C-1:执行轮必须带上"这份清单
 /// 基于库里哪一版"的凭据)。预览轮拿 `remote_rev`,执行轮原样带回去——这正是
 /// 界面走的路。预览轮就报错 / 直接给出终态时原样回,不硬凑第二跳。
