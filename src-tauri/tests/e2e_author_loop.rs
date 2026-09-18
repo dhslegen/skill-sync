@@ -314,19 +314,16 @@ async fn author_develops_in_a_tool_dir_shares_gets_edited_pulls_back_and_keeps_e
     // ────────────── ② 分享
     let client = GiteaClient::new(server.uri(), None).unwrap();
     let repo = repo_ref();
-    let outcome = share::share(
+    let outcome = confirmed_share(
         &share::ShareClient::Gitea(&client),
         &client,
         &c.registry,
         &env,
         &c.store,
         &c.trash,
-        share::ShareRequest {
-            registry_id: registry::BUILTIN_REGISTRY_ID,
-            repo: &repo,
-            dir_slug: SLUG,
-            confirmed: true,
-        },
+        registry::BUILTIN_REGISTRY_ID,
+        &repo,
+        SLUG,
         NOW,
     )
     .await
@@ -468,4 +465,46 @@ async fn author_develops_in_a_tool_dir_shares_gets_edited_pulls_back_and_keeps_e
         "库里没再变,所以 remoteChanged 为假——这一档才是 localAhead 而不是 both"
     );
     assert_eq!(Path::new(&row.body), c.body(), "一圈下来,本体始终是同一个文件夹");
+}
+
+/// 「用户在确认屏上点了确认」的**完整两轮**(终审 C-1:执行轮必须带上"这份清单
+/// 基于库里哪一版"的凭据)。预览轮拿 `remote_rev`,执行轮原样带回去——这正是
+/// 界面走的路。预览轮就报错 / 直接给出终态时原样回,不硬凑第二跳。
+#[allow(clippy::too_many_arguments)]
+async fn confirmed_share(
+    client: &share::ShareClient<'_>,
+    read: &impl skillsync_lib::core::gitea::RepoSource,
+    registry: &skillsync_lib::core::agents::AgentRegistry,
+    env: &dyn skillsync_lib::core::agents::AgentEnv,
+    store: &skillsync_lib::core::state::Store,
+    trash: &dyn skillsync_lib::core::fsops::Trasher,
+    registry_id: &str,
+    repo: &skillsync_lib::core::gitea::RepoRef,
+    dir_slug: &str,
+    now: &str,
+) -> Result<ShareOutcome, skillsync_lib::error::AppError> {
+    let first = share::share(
+        client,
+        read,
+        registry,
+        env,
+        store,
+        trash,
+        share::ShareRequest { registry_id, repo, dir_slug, confirm: None },
+        now,
+    )
+    .await?;
+    let ShareOutcome::NeedsConfirm { remote_rev, .. } = &first else { return Ok(first) };
+    let rev = remote_rev.clone();
+    share::share(
+        client,
+        read,
+        registry,
+        env,
+        store,
+        trash,
+        share::ShareRequest { registry_id, repo, dir_slug, confirm: Some(&rev) },
+        now,
+    )
+    .await
 }

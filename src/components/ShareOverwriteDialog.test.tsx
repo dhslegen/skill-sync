@@ -97,4 +97,39 @@ describe("覆盖确认屏(v8 任务 4)", () => {
 
     expect(document.activeElement?.textContent).toBe(t("overwrite.cancel"));
   });
+
+  it("🔴 终审 C-1:重算过的清单要如实说一句,不静默替换", () => {
+    useOverwrite.getState().ask({
+      dirSlug: "weekly-report",
+      name: "weekly-report",
+      plan: { added: [], modified: [], deleted: ["同事刚加的.md"] },
+      warning: null,
+      stale: true,
+      confirm: vi.fn(async () => {}),
+    });
+    render(<ShareOverwriteDialog />);
+    expect(screen.getByText(t("share.planChanged"))).toBeInTheDocument();
+    expect(screen.getByText("同事刚加的.md")).toBeInTheDocument();
+  });
+
+  it("🔴 只有删除、没有覆盖警告那一档(生产上更常见)照样摆得出清单,且措辞不说覆盖", () => {
+    useOverwrite.getState().ask({
+      dirSlug: "weekly-report",
+      name: "周报生成",
+      plan: { added: [], modified: [], deleted: ["旧的.md"] },
+      warning: null,
+      confirm: vi.fn(async () => {}),
+    });
+    render(<ShareOverwriteDialog />);
+    // 标题与主按钮跟着语义走:没人被顶掉,就不许出现"覆盖"
+    expect(screen.getByText(t("share.confirmTitle", { name: "周报生成" }))).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: t("share.confirmGo") })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: t("overwrite.confirm") })).toBeNull();
+    // 覆盖警告那一段整条不摆
+    expect(screen.queryByText(t("overwrite.body"))).toBeNull();
+    expect(screen.queryByRole("button", { name: t("overwrite.history") })).toBeNull();
+    // 但清单必须在——这一屏存在的主要理由就是"库里哪几个文件会没"
+    expect(screen.getByText("旧的.md")).toBeInTheDocument();
+    expect(screen.queryByText(t("share.planChanged"))).toBeNull();
+  });
 });

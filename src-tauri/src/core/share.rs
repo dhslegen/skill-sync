@@ -402,8 +402,17 @@ pub struct ShareRequest<'a> {
     /// ⚠️ 它取代了任务 4 的 `overwrite`,**不是改名**:那个只回答"知不知道会顶掉
     /// 我自己上一版",而删除能力上线后,同一次动作还要回答"知不知道库里哪几个文件
     /// 会没"。两件事拆成两个 bool 就是同一个动作两屏确认(D9 明确反对),所以合成
-    /// 一个:`false` = 预览轮(**一个写请求都不发**),`true` = 执行轮。
-    pub confirmed: bool,
+    /// 一个:`None` = 预览轮(**一个写请求都不发**),`Some(rev)` = 执行轮。
+    ///
+    /// 🔴 **它是 `Option<&str>` 而不是 `bool`(终审 C-1)**:执行轮必须带上
+    /// "用户看到的那份清单是基于库里哪一版算出来的"。两轮之间同事往那个技能目录里
+    /// 推了新文件的话,执行轮重算出的删除清单会多出一条**从未出现在用户看过的清单上
+    /// 的文件**,而它会被真的删掉——铁律 7 与本项目命名过的「确认屏说 A、实际做 B」。
+    /// 拆成两个形参(`confirmed: bool` + `rev: Option<..>`)就等于把这条不变量交给
+    /// 约定;合成一个 `Option` 之后,"确认了却没带凭据"在 Rust 侧根本写不出来。
+    ///
+    /// 凭据的取值见 [`remote_rev`]:**该技能目录的远端内容指纹**,不是分支头 sha。
+    pub confirm: Option<&'a str>,
 }
 
 /// 提交走的路径。
@@ -444,6 +453,13 @@ pub enum ShareOutcome {
     NeedsConfirm {
         plan: SharePlan,
         overwrite: Option<OverwriteWarning>,
+        /// 这份清单是基于库里哪一版算出来的([`remote_rev`])。执行轮原样带回来,
+        /// core 比不上就**不提交**,而是重新算一份再问一次(终审 C-1)。
+        remote_rev: String,
+        /// `true` = 用户确实按过确认,但技能库在他看清单的这段时间里又变了,
+        /// 这是**重新算出来的**第二份清单。界面必须如实说明发生了什么
+        /// ——静默换掉清单,用户会以为自己看花了眼。
+        stale: bool,
     },
     /// 库里这个技能已经与本地逐字节一致,**一个请求都没发**。
     ///
@@ -576,7 +592,16 @@ pub async fn share(
         return Ok(ShareOutcome::AlreadyInSync);
     }
 
-    if let (Some(archive), false) = (archive.as_ref(), req.confirmed) {
+    // 🔴 **预览轮与执行轮的绑定**(终审 C-1)。`rev` 是上面这份差集赖以算出的
+    //    远端快照;执行轮带回来的凭据与它逐字相等,才说明"用户看过的清单 = 现在
+    //    要做的事"。不等就**一个写请求都不发**,把重算出的清单(与重跑一次的覆盖闸)
+    //    带 `stale: true` 退回去再问一次。
+    //
+    //    等号成立时不再重跑覆盖闸,**不是省事**:闸的全部输入(远端指纹、基线、
+    //    技能路径)都没变,再跑一次必然得出同一个结论,而"同一条规则查两遍"是本项目
+    //    记着的空转模式 ①——那一遍永远不触发,却会吞掉注入信号。
+    let rev = archive.as_ref().map(|a| remote_rev(a, &remote_path)).unwrap_or_default();
+    if req.confirm != Some(rev.as_str()) {
         let baseline = loaded
             .value
             .shared
@@ -591,13 +616,18 @@ pub async fn share(
         // 🔴 覆盖闸的基线取 `state.shared` 那条记账的指纹;换过电脑 / 从没经本 app
         //    分享过的作者根本没有这条记账,基线为空——[`overwrite_gate`] 仍然检测,
         //    **不跳过**(任务 4 / D14)。
-        let overwrite = overwrite_gate(archive, client, req.repo, &remote_path, baseline).await?;
-        return Ok(ShareOutcome::NeedsConfirm { plan: changes.plan, overwrite });
-    }
-    if !req.confirmed {
-        // Fresh:库里还没有这个技能,没有覆盖警告可言,但清单照样要先给用户看一眼
-        //(D6 的理由是"绝不静默删除",D9 的理由是"同一个动作只有一屏")。
-        return Ok(ShareOutcome::NeedsConfirm { plan: changes.plan, overwrite: None });
+        //    Fresh(archive 为 None)那一档库里还没有这个技能,没有覆盖警告可言,
+        //    但清单照样要先给用户看一眼(D6「绝不静默删除」+ D9「一个动作一屏」)。
+        let overwrite = match archive.as_ref() {
+            Some(_) => overwrite_gate(&rev, client, req.repo, &remote_path, baseline).await?,
+            None => None,
+        };
+        return Ok(ShareOutcome::NeedsConfirm {
+            plan: changes.plan,
+            overwrite,
+            remote_rev: rev,
+            stale: req.confirm.is_some(),
+        });
     }
 
     // ④ 本体留在原地,canonical 只补一条指向它的链接。
@@ -779,17 +809,34 @@ fn record_pushed_skill(
 ///
 /// `read` 走**读链路**、`client` 走**写链路**,两者不能省成一个(现役约束)。
 /// 拿不到"最后由谁改的"不影响这道闸拦不拦——那是 best-effort 的展示信息。
+/// 「用户看到的清单是基于库里哪一版算出来的」这件事的凭据(终审 C-1)。
+///
+/// 取值是**这个技能目录的远端内容指纹**,不是分支头 sha。两个理由:
+///
+/// 1. **零新增请求**:压缩包已经在手里,这就是 [`overwrite_gate`] 本来就要算的
+///    那个值——两轮的指纹相等 ⇒ 差集与覆盖警告必然逐字相同,"执行轮复用同一份
+///    远端快照"这条语义因此在数据上成立,而不是靠注释承诺;
+/// 2. **不会被无关改动误伤**:分支头 sha 会因为别人分享**另一个**技能而变,
+///    那会把用户赶回确认屏重看一份一模一样的清单——假警报会训练人闭眼点确认。
+///
+/// 指纹含**路径**与长度前缀([`fsops::ContentHasher`]),所以"内容不变只改名"
+/// 也测得出来;排除名单与 [`plan_changes`] 的删除侧同走 `is_excluded_rel`,
+/// 两把尺子对齐,不会出现"指纹没变、清单变了"。
+///
+/// 库里还没有这个技能时是空串——那一档压根没有远端文件,删除清单恒空。
+fn remote_rev(archive: &RepoArchive, remote_path: &str) -> String {
+    // entries 的键保留压缩包顶层目录,技能路径必须拼上 archive.root 才剥得到条目
+    // (store.rs 建索引时的 s.dir 天然带着它,这里的记账路径没有)
+    crate::core::store::remote_content_hash(archive, &format!("{}/{remote_path}", archive.root))
+}
+
 async fn overwrite_gate(
-    archive: &RepoArchive,
+    remote_hash: &str,
     client: &ShareClient<'_>,
     repo: &RepoRef,
     remote_path: &str,
     baseline: &str,
 ) -> Result<Option<OverwriteWarning>, AppError> {
-    // entries 的键保留压缩包顶层目录,技能路径必须拼上 archive.root 才剥得到条目
-    // (store.rs 建索引时的 s.dir 天然带着它,这里的记账路径没有)
-    let remote_dir = format!("{}/{}", archive.root, remote_path);
-    let remote_hash = crate::core::store::remote_content_hash(archive, &remote_dir);
     let differs = if baseline.is_empty() {
         // 🔴 **不再在这里比"库里 vs 本地"**(v8 任务 5):两边逐字节相同的那一档
         // 已经被调用方的差集短路成 `AlreadyInSync` 了,再比一遍就是同一条规则查
@@ -849,7 +896,9 @@ pub struct OverwriteWarning {
 /// 覆盖档**不是错误,是"要你先拍板"**:返回它时磁盘与远端一个字节都没动。
 /// 用户看过 [`OverwriteWarning`] 后仍要覆盖,就带 `overwrite: true` 再来一次。
 #[derive(Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+// 🔴 `rename_all_fields` 不能漏(终审 C-1 加 `remote_rev` 时当场被守卫抓到):
+// 枚举上的 `rename_all` 只改 variant 名,struct variant 里的字段名归它管。
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ShareInstalledOutcome {
     Submitted(Submitted),
     /// 与 [`ShareOutcome::NeedsConfirm`] 同构:回推改动同样会删除库里的文件,
@@ -857,6 +906,10 @@ pub enum ShareInstalledOutcome {
     NeedsConfirm {
         plan: SharePlan,
         overwrite: Option<OverwriteWarning>,
+        /// 见 [`ShareOutcome::NeedsConfirm`] 的同名字段(终审 C-1)。
+        remote_rev: String,
+        /// 见 [`ShareOutcome::NeedsConfirm`] 的同名字段(终审 C-1)。
+        stale: bool,
     },
     /// 库里已与本地一致;顺手做一次基线对齐(T2 的 [`converge::align_baseline`])。
     AlreadyInSync,
@@ -885,7 +938,10 @@ pub async fn share_installed(
     //
     // 🔴 它与已下线的 `force_review` 只是形参位置相同,**语义方向完全相反**:
     // 那个是"有权限也不许直推,强制开合并请求";这个是"看过了,照推"。
-    confirmed: bool,
+    //
+    // 🔴 `Option<&str>` 而不是 `bool`(终审 C-1):执行轮必须带上"那份清单是基于
+    // 库里哪一版算出来的",见 [`ShareRequest::confirm`] 与 [`remote_rev`]。
+    confirm: Option<&str>,
     now: &str,
 ) -> Result<ShareInstalledOutcome, AppError> {
     // 显式 `.with_trasher(SYSTEM_TRASH)`:默认值本来就是它,这条路上的 installer
@@ -997,12 +1053,18 @@ pub async fn share_installed(
         return Ok(ShareInstalledOutcome::AlreadyInSync);
     }
 
-    // 确认屏(D6/D9):`confirmed == true` 表示用户已经看过这份清单(库里被改过时
-    // 还看过顶部那条覆盖警告)并按了确认,这一跳照推。
-    if !confirmed {
+    // 确认屏(D6/D9)+ 预览轮与执行轮的绑定(终审 C-1,完整原委见 [`remote_rev`]
+    // 与 [`share`] 里的同一段):凭据对得上才照推,对不上就重算一份再问一次。
+    let rev = remote_rev(&archive, &remote_path);
+    if confirm != Some(rev.as_str()) {
         let overwrite =
-            overwrite_gate(&archive, client, &repo, &remote_path, &record.content_hash).await?;
-        return Ok(ShareInstalledOutcome::NeedsConfirm { plan: changes.plan, overwrite });
+            overwrite_gate(&rev, client, &repo, &remote_path, &record.content_hash).await?;
+        return Ok(ShareInstalledOutcome::NeedsConfirm {
+            plan: changes.plan,
+            overwrite,
+            remote_rev: rev,
+            stale: confirm.is_some(),
+        });
     }
 
     let message = format!("更新技能:{dir_slug}");
@@ -1747,12 +1809,22 @@ mod tests {
         let v = serde_json::to_value(ShareOutcome::NeedsConfirm {
             plan: plan.clone(),
             overwrite: Some(warning.clone()),
+            remote_rev: "sha256:beef".into(),
+            stale: true,
         })
         .unwrap();
         assert_eq!(
             keys(&v),
-            vec!["outcome".to_string(), "overwrite".to_string(), "plan".to_string()]
+            vec![
+                "outcome".to_string(),
+                "overwrite".to_string(),
+                "plan".to_string(),
+                "remoteRev".to_string(),
+                "stale".to_string()
+            ]
         );
+        assert_eq!(v["remoteRev"], "sha256:beef");
+        assert_eq!(v["stale"], true);
         assert_eq!(v["outcome"], "needsConfirm");
         assert_eq!(keys(&v["plan"]), vec!["added", "deleted", "modified"]);
         assert_eq!(v["plan"]["deleted"][0], "old.md");
@@ -1768,12 +1840,22 @@ mod tests {
         let v = serde_json::to_value(ShareInstalledOutcome::NeedsConfirm {
             plan,
             overwrite: Some(warning),
+            remote_rev: "sha256:beef".into(),
+            stale: false,
         })
         .unwrap();
         assert_eq!(
             keys(&v),
-            vec!["kind".to_string(), "overwrite".to_string(), "plan".to_string()]
+            vec![
+                "kind".to_string(),
+                "overwrite".to_string(),
+                "plan".to_string(),
+                "remoteRev".to_string(),
+                "stale".to_string()
+            ]
         );
+        assert_eq!(v["remoteRev"], "sha256:beef");
+        assert_eq!(v["stale"], false);
         assert_eq!(v["kind"], "needsConfirm");
         assert_eq!(v["overwrite"]["lastAt"], "2026-09-10T03:04:05Z");
         assert_eq!(

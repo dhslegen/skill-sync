@@ -1821,10 +1821,15 @@ pub struct SkillShareArgs {
     /// (`converge::locate`),前端不替它回答这个问题。
     pub dir_slug: String,
     /// 用户已在**统一分享确认屏**上看过这次会新增/修改/删除哪些文件(库里被改过时
-    /// 还看过顶部那条覆盖警告)并按了确认(v8 任务 5 / D9)。缺省 false =
+    /// 还看过顶部那条覆盖警告)并按了确认(v8 任务 5 / D9)。缺省 `None` =
     /// **预览轮**,core 一个写请求都不发,只回一份 `NeedsConfirm`。
+    ///
+    /// 🔴 值是上一轮 `NeedsConfirm` 原样回来的 `remoteRev`(终审 C-1):
+    /// 它绑定"用户看的是库里哪一版"。core 比不上就不提交,重算一份再问一次。
+    /// 缺省成 `None`(= 预览轮)在方向上是安全的:漏带凭据最多多问一次,
+    /// 绝不会变成"没看过就提交"。
     #[serde(default)]
-    pub confirmed: bool,
+    pub confirm_rev: Option<String>,
 }
 
 /// 分享一个本机技能。**零编辑**:名称、描述、文件夹名一律照原样推,
@@ -1848,7 +1853,7 @@ pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, Ap
             registry_id,
             repo: &repo,
             dir_slug: &args.dir_slug,
-            confirmed: args.confirmed,
+            confirm: args.confirm_rev.as_deref(),
         },
         &now_iso8601(),
     )
@@ -1928,11 +1933,10 @@ pub struct ShareChangesArgs {
     #[serde(default)]
     pub registry_id: Option<String>,
     pub dir_slug: String,
-    /// 用户已在**统一分享确认屏**上看过这次会新增/修改/删除哪些文件(库里被改过时
-    /// 还看过顶部那条覆盖警告)并按了确认(v8 任务 5 / D9)。缺省 false =
-    /// **预览轮**,core 一个写请求都不发,只回一份 `NeedsConfirm`。
+    /// 同 [`SkillShareArgs::confirm_rev`](终审 C-1):`None` = 预览轮;
+    /// 有值时必须是上一轮 `NeedsConfirm` 原样回来的 `remoteRev`。
     #[serde(default)]
-    pub confirmed: bool,
+    pub confirm_rev: Option<String>,
 }
 
 /// 回推目标技能库的寻址键,取**账上**的来源坐标(M4 任务 1)。
@@ -1981,7 +1985,7 @@ pub async fn skill_share_changes(
         &store,
         &args.dir_slug,
         &repo.branch,
-        args.confirmed,
+        args.confirm_rev.as_deref(),
         &now_iso8601(),
     )
     .await

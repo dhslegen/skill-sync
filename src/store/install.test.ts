@@ -401,18 +401,24 @@ describe("获取流程状态机", () => {
       expect(useInstall.getState().mineKept).toEqual({ remoteChanged: true, kind: "mine" });
     });
 
-    it("按「仍然覆盖」→ 带 confirmed 重来一次 → 分享成功", async () => {
+    it("按「仍然覆盖」→ 带着**用户看过的那一版的凭据**重来一次 → 分享成功", async () => {
       useOverwrite.setState({ pending: null, busy: false });
       const seen: unknown[] = [];
       invoke.mockImplementation(async (cmd, payload) => {
         if (cmd === "agents_detected") return AGENTS;
         if (cmd === "installed_list") return [];
         if (cmd === "skill_share_changes") {
-          const args = (payload as { args: { confirmed?: boolean } }).args;
-          seen.push(args.confirmed);
-          return args.confirmed
+          const args = (payload as { args: { confirmRev?: string } }).args;
+          seen.push(args.confirmRev);
+          return args.confirmRev
             ? { kind: "submitted", mode: "pushed", commitSha: "new" }
-            : { kind: "needsConfirm", plan: { added: [], modified: ["SKILL.md"], deleted: [] }, overwrite: null };
+            : {
+                kind: "needsConfirm",
+                plan: { added: [], modified: ["SKILL.md"], deleted: [] },
+                overwrite: null,
+                remoteRev: "sha256:seen",
+                stale: false,
+              };
         }
         if (cmd === "skill_install")
           return { outcome: "kept", remoteChanged: true } satisfies AcquireOutcome;
@@ -423,7 +429,8 @@ describe("获取流程状态机", () => {
       await useInstall.getState().keepLocalAndShareMine();
       await useOverwrite.getState().confirmOverwrite();
 
-      expect(seen).toEqual([undefined, true]);
+      // 🔴 终审 C-1:确认那一跳带回去的是**预览轮那一份清单**的凭据,不是一个 true
+      expect(seen).toEqual([undefined, "sha256:seen"]);
       expect(useOverwrite.getState().pending).toBeNull();
       expect(useInstall.getState().shareResult).toEqual({ mode: "pushed" });
     });

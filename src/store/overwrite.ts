@@ -30,6 +30,12 @@ export interface OverwriteDecision {
    */
   warning: OverwriteWarning | null;
   /**
+   * `true` = 用户上一次按过确认,但技能库在他看清单的这段时间里又变了,这是
+   * **重新算出来的**第二份清单(终审 C-1)。界面据此如实说一句;静默换掉清单,
+   * 用户会以为自己看花了眼,而这一屏最重要的那一栏是"库里哪几个文件会没"。
+   */
+  stale?: boolean;
+  /**
    * 用户按「仍然覆盖」时重跑的那一跳。
    *
    * 🔴 **由发起方带着自己的上下文闭包进来**,不在这里重新拼参数:三个发起方
@@ -70,7 +76,13 @@ export const useOverwrite = create<OverwriteState>((set, get) => ({
       // 成功与失败都关掉:失败的那句话由发起方写进它自己那条渲染点
       // (见 `confirm` 的契约)。`finally` 而不是 `then`——发起方万一漏了
       // 一条 catch,弹窗也不能永远停在忙碌态。
-      set({ pending: null, busy: false });
+      //
+      // 🔴 **除非这一跳自己又 `ask` 了一次**(终审 C-1):技能库在用户看清单的
+      // 这会儿又变了,core 不提交、退回一份**重算过的**清单。无条件清空会把它
+      // 连同那句"这是重新算出来的"一起关掉,用户看到的就是"点了确认,弹窗没了,
+      // 什么也没发生"——而实际上什么都没推。按**身份**比,不是按有没有值。
+      const stillMine = get().pending === pending;
+      set(stillMine ? { pending: null, busy: false } : { busy: false });
     }
   },
 

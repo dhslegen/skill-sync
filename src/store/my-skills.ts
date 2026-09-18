@@ -183,7 +183,15 @@ interface MySkillsState {
    * 打开确认屏时,绝不能把上一个技能的删除清单摆给他看。
    */
   sharePreview:
-    | { dirSlug: string; plan: SharePlan; overwrite: OverwriteWarning | null }
+    | {
+        dirSlug: string;
+        plan: SharePlan;
+        overwrite: OverwriteWarning | null;
+        /** 这份清单基于库里哪一版算出来的;确认那一跳原样带回去(终审 C-1)。 */
+        remoteRev: string;
+        /** 按过确认、但库里又变了 → 这是重算出来的第二份清单,界面要如实说一句。 */
+        stale: boolean;
+      }
     | { dirSlug: string; inSync: true }
     | null;
 
@@ -735,7 +743,7 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     // 探不到就是 unknown,确认屏照常可提交——它只是提示,不是判据。
     void useShare.getState().refreshPreview();
     // 预览轮(v8 任务 5):问一次 core"这次会改动哪些文件",**零写请求**。
-    void runShare(dirSlug, false, set, get);
+    void runShare(dirSlug, undefined, set, get);
   },
 
   cancelShare: () => set({ shareTarget: null, sharePreview: null, shareError: null }),
@@ -743,7 +751,15 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
   confirmShare: async () => {
     const target = get().shareTarget;
     if (!target) return;
-    await runShare(target.dirSlug, true, set, get);
+    // 🔴 **带着用户看过的那一版的凭据去确认**(终审 C-1):清单还没到手
+    // (`sharePreview` 不是 plan 那一档)时凭据为空,core 会当预览轮处理
+    // ——方向安全:最多多问一次,绝不会变成"没看过就提交"。
+    const preview = get().sharePreview;
+    const rev =
+      preview && preview.dirSlug === target.dirSlug && "plan" in preview
+        ? preview.remoteRev
+        : undefined;
+    await runShare(target.dirSlug, rev, set, get);
   },
   shareChanges: async (dirSlug) => {
     // ⚠️ **v8 任务 3**:这里曾经按 `section` 分流——「安装自」那一区的贡献更改
@@ -896,7 +912,7 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
  */
 async function runShare(
   dirSlug: string,
-  confirmed: boolean,
+  confirmRev: string | undefined,
   set: (partial: Partial<MySkillsState>) => void,
   get: () => MySkillsState,
 ) {
@@ -911,19 +927,28 @@ async function runShare(
       dirSlug,
       ...(registryId ? { registryId } : {}),
       ...(repo ? { repo } : {}),
-      ...(confirmed ? { confirmed: true } : {}),
+      ...(confirmRev ? { confirmRev } : {}),
     });
     if (result.outcome === "needsConfirm") {
       // core 一个字节都没动。清单留在**当前这一屏**上(D9:一个动作只有一屏),
-      // 不另开一个覆盖框。
-      set({ sharePreview: { dirSlug, plan: result.plan, overwrite: result.overwrite } });
+      // 不另开一个覆盖框。`stale` 为真时这是**重算过的**第二份清单(库里在他看
+      // 的这段时间里又变了),同一屏上多一句说明——不静默换掉(终审 C-1)。
+      set({
+        sharePreview: {
+          dirSlug,
+          plan: result.plan,
+          overwrite: result.overwrite,
+          remoteRev: result.remoteRev,
+          stale: result.stale,
+        },
+      });
       return;
     }
     if (result.outcome === "alreadyInSync") {
       // 库里已经与本地一致。**这一档也要说话**:它"成功但什么都没变",
       // 不说的话用户看到的是"点了没反应",而"没反应"会诱发重复提交。
       set({ sharePreview: { dirSlug, inSync: true } });
-      if (confirmed) {
+      if (confirmRev) {
         set({ shareTarget: null, shareDone: { dirSlug, mode: "inSync", flow: "share" } });
       }
       await get().load();
@@ -947,7 +972,7 @@ async function runShareChanges(
   dirSlug: string,
   set: (partial: Partial<MySkillsState>) => void,
   get: () => MySkillsState,
-  confirmed = false,
+  confirmRev?: string,
 ) {
   const remoteChangedError = (): AppError => ({
     code: "CONFLICT_REMOTE_CHANGED",
@@ -960,20 +985,24 @@ async function runShareChanges(
     const outcome = await skillShareChanges({
       dirSlug,
       registryId,
-      ...(confirmed ? { confirmed: true } : {}),
+      ...(confirmRev ? { confirmRev } : {}),
     });
     if (outcome.kind === "needsConfirm") {
       // core 一个字节没动就退回来了:摆**统一确认屏**让用户拍板(v8 任务 5 / D9)
       // ——清单一定有(这次会新增/修改/删除哪些文件),覆盖警告可能有。
       useOverwrite.getState().ask({
         dirSlug,
+        // 库里在用户看清单的这段时间里又变了 → 这是重算过的第二份(终审 C-1)
+        stale: outcome.stale,
         // 🔴 点名用**文件夹名**,不去索引里换展示名:文件夹名就是各个 AI 工具
         // 里调用它的那个名字,界面本来就在展示它;而展示名要跨 store 现查一份
         // 索引,等于为一句标题多接一条会失灵的依赖。
         name: dirSlug,
         plan: outcome.plan,
         warning: outcome.overwrite,
-        confirm: () => runShareChanges(dirSlug, set, get, true),
+        // 🔴 闭包捕获**这一份清单**的凭据(终审 C-1):确认那一跳带着它回去,
+        // core 比不上就重新算一份再问一次,不会提交一份用户没看过的清单。
+        confirm: () => runShareChanges(dirSlug, set, get, outcome.remoteRev),
       });
       return;
     }

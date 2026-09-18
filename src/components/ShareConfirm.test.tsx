@@ -6,6 +6,7 @@ import { ShareConfirm } from "./ShareConfirm";
 import type { InstalledSkillView, Section, ShareBlock } from "@/lib/ipc";
 import { useMySkills } from "@/store/my-skills";
 import { useShare } from "@/store/share";
+import { t } from "@/i18n";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args: unknown) => invoke(cmd, args) }));
@@ -65,7 +66,7 @@ const PLAN = { added: [], modified: ["SKILL.md"], deleted: [] };
 
 function openWith(
   skill = view(),
-  sharePreview: Preview = { dirSlug: "weekly-report", plan: PLAN, overwrite: null },
+  sharePreview: Preview = { dirSlug: "weekly-report", plan: PLAN, overwrite: null, remoteRev: "sha256:seen", stale: false },
 ) {
   useMySkills.setState({
     list: [skill],
@@ -313,6 +314,8 @@ describe("改动清单(v8 任务 5 / D5、D6、D9)", () => {
       dirSlug: "weekly-report",
       plan: { added: ["新写的.md"], modified: ["SKILL.md"], deleted: ["踩过的坑.md"] },
       overwrite: null,
+      remoteRev: "sha256:seen",
+      stale: false,
     });
     await screen.findByText("周报生成");
     expect(screen.getByText("踩过的坑.md")).toBeInTheDocument();
@@ -330,6 +333,8 @@ describe("改动清单(v8 任务 5 / D5、D6、D9)", () => {
         lastAt: "2026-09-10T03:04:05Z",
         historyUrl: "http://g/commits/x",
       },
+      remoteRev: "sha256:seen",
+      stale: false,
     });
     await screen.findByText("周报生成");
     expect(screen.getByText(/李四/)).toBeInTheDocument();
@@ -351,9 +356,30 @@ describe("改动清单(v8 任务 5 / D5、D6、D9)", () => {
       dirSlug: "another-skill",
       plan: { added: [], modified: [], deleted: ["别的技能的.md"] },
       overwrite: null,
+      remoteRev: "sha256:seen",
+      stale: false,
     });
     await screen.findByText("周报生成");
     expect(screen.queryByText("别的技能的.md")).toBeNull();
     expect(screen.getByRole("button", { name: "分享" })).toBeDisabled();
+  });
+
+  it("🔴 终审 C-1:重算过的清单要如实说一句,不静默替换", async () => {
+    openWith(view(), {
+      dirSlug: "weekly-report",
+      plan: { added: [], modified: [], deleted: ["同事刚加的.md"] },
+      overwrite: null,
+      remoteRev: "sha256:second",
+      stale: true,
+    });
+    await screen.findByText("周报生成");
+    expect(screen.getByText(t("share.planChanged"))).toBeInTheDocument();
+    expect(screen.getByText("同事刚加的.md")).toBeInTheDocument();
+  });
+
+  it("寻常的预览轮不摆那句话(否则每次分享都在报一个不存在的警)", async () => {
+    openWith();
+    await screen.findByText("周报生成");
+    expect(screen.queryByText(t("share.planChanged"))).toBeNull();
   });
 });

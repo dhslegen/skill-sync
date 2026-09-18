@@ -450,7 +450,7 @@ export const useInstall = create<InstallState>((set, get) => ({
     if (!kept) return;
     const dirSlug = get().dirSlug;
     if (!dirSlug) return;
-    await pushMyChanges(dirSlug, false, set, get);
+    await pushMyChanges(dirSlug, undefined, set, get);
   },
 
   cancel: () =>
@@ -490,7 +490,7 @@ export const useInstall = create<InstallState>((set, get) => ({
  */
 async function pushMyChanges(
   dirSlug: string,
-  confirmed: boolean,
+  confirmRev: string | undefined,
   set: (partial: Partial<InstallState>) => void,
   get: () => InstallState,
 ) {
@@ -498,7 +498,7 @@ async function pushMyChanges(
     const outcome = await skillShareChanges({
       dirSlug,
       registryId: get().registryId ?? undefined,
-      ...(confirmed ? { confirmed: true } : {}),
+      ...(confirmRev ? { confirmRev } : {}),
     });
     if (outcome.kind === "needsConfirm") {
       useOverwrite.getState().ask({
@@ -506,7 +506,11 @@ async function pushMyChanges(
         name: dirSlug,
         plan: outcome.plan,
         warning: outcome.overwrite,
-        confirm: () => pushMyChanges(dirSlug, true, set, get),
+        // 库里在用户看清单的这段时间里又变了 → 这是重算过的第二份(终审 C-1)
+        stale: outcome.stale,
+        // 🔴 闭包捕获**这一份清单**的凭据:确认那一跳带着它回去,core 比不上
+        // 就重新算一份再问一次,不会提交一份用户没看过的清单(终审 C-1)。
+        confirm: () => pushMyChanges(dirSlug, outcome.remoteRev, set, get),
       });
       return;
     }

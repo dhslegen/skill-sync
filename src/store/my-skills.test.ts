@@ -45,6 +45,15 @@ function sectionOfRelation(relation: InstalledSkillView["relation"]): Section {
   }
 }
 
+/** 确认屏上「用户已经看过的那一份清单」(终审 C-1:确认那一跳要带着它的凭据)。 */
+const SEEN_PREVIEW = {
+  dirSlug: "weekly-report",
+  plan: { added: [], modified: ["SKILL.md"], deleted: [] },
+  overwrite: null,
+  remoteRev: "sha256:seen",
+  stale: false,
+};
+
 const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   dirSlug: "weekly-report",
   commitSha: "aaa1111",
@@ -647,7 +656,7 @@ describe("分享确认屏(零编辑)", () => {
     useMySkills.setState({ list: [view({ relation: "draft" })] });
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "skill_share")
-        return { outcome: "needsConfirm", plan: { added: ["SKILL.md"], modified: [], deleted: [] }, overwrite: null };
+        return { outcome: "needsConfirm", plan: { added: ["SKILL.md"], modified: [], deleted: [] }, overwrite: null, remoteRev: "sha256:seen", stale: false };
       return "unknown";
     });
 
@@ -661,16 +670,22 @@ describe("分享确认屏(零编辑)", () => {
     // 断言的是"没带那个开关",不是"没调过这个 command":后者在新流程里
     // 恒假,留着就是一条永远不触发的空转断言。
     const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share");
-    expect(call?.[1].args.confirmed).toBeUndefined();
+    expect(call?.[1].args.confirmRev).toBeUndefined();
     expect(useMySkills.getState().sharePreview).toEqual({
       dirSlug: "weekly-report",
       plan: { added: ["SKILL.md"], modified: [], deleted: [] },
       overwrite: null,
+      remoteRev: "sha256:seen",
+      stale: false,
     });
   });
 
   it("🔴 库里已与本地一致:如实说出来,并且不许再提交(那一笔就是空提交)", async () => {
-    useMySkills.setState({ list: [view({ relation: "shared" })], shareTarget: { dirSlug: "weekly-report" } });
+    useMySkills.setState({
+      list: [view({ relation: "shared" })],
+      shareTarget: { dirSlug: "weekly-report" },
+      sharePreview: SEEN_PREVIEW,
+    });
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "skill_share") return { outcome: "alreadyInSync" };
       if (cmd === "installed_list") return [view()];
@@ -691,6 +706,8 @@ describe("分享确认屏(零编辑)", () => {
     useMySkills.setState({
       list: [view({ relation: "shared", sourceOwner: "design", sourceRepo: "skills" })],
       shareTarget: { dirSlug: "weekly-report" },
+      // 🔴 终审 C-1:确认那一跳要带上预览轮回来的凭据,所以这一屏必须先有清单
+      sharePreview: SEEN_PREVIEW,
     });
     invoke.mockImplementation(async (cmd) => {
       if (cmd === "skill_share") return { outcome: "shared", mode: "pushed", url: null };
@@ -705,7 +722,7 @@ describe("分享确认屏(零编辑)", () => {
       dirSlug: "weekly-report",
       registryId: "company",
       repo: "design/skills",
-      confirmed: true,
+      confirmRev: "sha256:seen",
     });
     // flow 必须是 "share"(终审复审轮 1 #3):确认屏这条路是**首次分享**,
     // 界面据此说「已分享到公司技能库」而不是「**改动**已分享」——记错了就直接
@@ -735,6 +752,8 @@ describe("分享确认屏(零编辑)", () => {
         }),
       ],
       shareTarget: { dirSlug: "weekly-report" },
+      // 🔴 终审 C-1:确认那一跳要带上预览轮回来的凭据,所以这一屏必须先有清单
+      sharePreview: SEEN_PREVIEW,
     });
     // 确认屏上恰好选中的是**另一个**库:账上的坐标必须赢
     useShare.setState({ targetRepo: "skills/skills" });
@@ -751,7 +770,7 @@ describe("分享确认屏(零编辑)", () => {
       dirSlug: "weekly-report",
       registryId: "custom-1",
       repo: "design/design-skills",
-      confirmed: true,
+      confirmRev: "sha256:seen",
     });
   });
 
@@ -759,6 +778,8 @@ describe("分享确认屏(零编辑)", () => {
     useMySkills.setState({
       list: [view({ relation: "draft", sourceOwner: "", sourceRepo: "", registryId: "" })],
       shareTarget: { dirSlug: "weekly-report" },
+      // 🔴 终审 C-1:确认那一跳要带上预览轮回来的凭据,所以这一屏必须先有清单
+      sharePreview: SEEN_PREVIEW,
     });
     useShare.setState({ targetRepo: "skills/skills" });
     invoke.mockImplementation(async (cmd) => {
@@ -770,7 +791,7 @@ describe("分享确认屏(零编辑)", () => {
     await useMySkills.getState().confirmShare();
 
     const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share");
-    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", repo: "skills/skills", confirmed: true });
+    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", repo: "skills/skills", confirmRev: "sha256:seen" });
   });
 
   it("🔴 终审 C-1:「可分享到」区哪怕带着(它自己外部来源的)坐标,也恒推公司库", async () => {
@@ -795,6 +816,8 @@ describe("分享确认屏(零编辑)", () => {
         }),
       ],
       shareTarget: { dirSlug: "weekly-report" },
+      // 🔴 终审 C-1:确认那一跳要带上预览轮回来的凭据,所以这一屏必须先有清单
+      sharePreview: SEEN_PREVIEW,
     });
     invoke.mockImplementation(async (cmd) => {
       if (cmd === "skill_share") return { outcome: "shared", mode: "pushed", url: null };
@@ -807,13 +830,15 @@ describe("分享确认屏(零编辑)", () => {
     const call = invoke.mock.calls.find(([cmd]) => cmd === "skill_share");
     // 不带 registryId(缺省内建源)、repo 不是 vercel-labs/agent-skills
     // (没选过额外仓,缺省该源主库,IPC 层面就是不传 repo)
-    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", confirmed: true });
+    expect(call?.[1].args).toEqual({ dirSlug: "weekly-report", confirmRev: "sha256:seen" });
   });
 
   it("失败时确认屏留着、错误可读——关掉就等于失败被静默吞掉", async () => {
     useMySkills.setState({
       list: [view({ relation: "draft" })],
       shareTarget: { dirSlug: "weekly-report" },
+      // 🔴 终审 C-1:确认那一跳要带上预览轮回来的凭据,所以这一屏必须先有清单
+      sharePreview: SEEN_PREVIEW,
     });
     invoke.mockImplementation(async (cmd) => {
       if (cmd === "skill_share")
@@ -874,16 +899,22 @@ describe("分享改动撞上「库里那一版与本地基线不符」(v8 任务
     expect(s.shareBusy).toBeNull();
   });
 
-  it("按「仍然覆盖」→ 带 confirmed 重来一次 → 分享成功", async () => {
+  it("按「仍然覆盖」→ 带着**用户看过的那一版的凭据**重来一次 → 分享成功", async () => {
     useMySkills.setState({ list: [modified()] });
     const seen: unknown[] = [];
     invoke.mockImplementation(async (cmd: string, payload: Record<string, unknown>) => {
       if (cmd === "skill_share_changes") {
-        const args = payload.args as { confirmed?: boolean };
-        seen.push(args.confirmed);
-        return args.confirmed
+        const args = payload.args as { confirmRev?: string };
+        seen.push(args.confirmRev);
+        return args.confirmRev
           ? { kind: "submitted", mode: "pushed", commitSha: "n" }
-          : { kind: "needsConfirm", plan: { added: [], modified: ["SKILL.md"], deleted: [] }, overwrite: null };
+          : {
+              kind: "needsConfirm",
+              plan: { added: [], modified: ["SKILL.md"], deleted: [] },
+              overwrite: null,
+              remoteRev: "sha256:seen",
+              stale: false,
+            };
       }
       if (cmd === "installed_list") return [modified()];
       return AGENTS;
@@ -892,16 +923,55 @@ describe("分享改动撞上「库里那一版与本地基线不符」(v8 任务
     await useMySkills.getState().shareChanges("weekly-report");
     await useOverwrite.getState().confirmOverwrite();
 
-    expect(seen).toEqual([undefined, true]);
+    // 🔴 终审 C-1:确认那一跳带回去的必须是**预览轮那一份清单**的凭据,
+    // 不是一个 true。带错了(或不带)core 会重算一份再问一次,而那正是
+    // "确认屏说 A、实际做 B"唯一的拦法。
+    expect(seen).toEqual([undefined, "sha256:seen"]);
     expect(useOverwrite.getState().pending).toBeNull();
     expect(useMySkills.getState().shareDone?.dirSlug).toBe("weekly-report");
+  });
+
+  it("🔴 终审 C-1:库里在两轮之间又变了 → core 退回新清单,确认屏如实说一句并换成新的", async () => {
+    useMySkills.setState({ list: [modified()] });
+    invoke.mockImplementation(async (cmd: string, payload: Record<string, unknown>) => {
+      if (cmd === "skill_share_changes") {
+        const args = payload.args as { confirmRev?: string };
+        return args.confirmRev
+          ? {
+              kind: "needsConfirm",
+              plan: { added: [], modified: ["SKILL.md"], deleted: ["同事刚加的.md"] },
+              overwrite: null,
+              remoteRev: "sha256:second",
+              stale: true,
+            }
+          : {
+              kind: "needsConfirm",
+              plan: { added: [], modified: ["SKILL.md"], deleted: [] },
+              overwrite: null,
+              remoteRev: "sha256:first",
+              stale: false,
+            };
+      }
+      if (cmd === "installed_list") return [modified()];
+      return AGENTS;
+    });
+
+    await useMySkills.getState().shareChanges("weekly-report");
+    await useOverwrite.getState().confirmOverwrite();
+
+    // 那一屏又开着,列的是**重新算出来的**清单,并且带着"这是重算的"这句话
+    const pending = useOverwrite.getState().pending;
+    expect(pending?.stale).toBe(true);
+    expect(pending?.plan.deleted).toEqual(["同事刚加的.md"]);
+    // 没有假装成功
+    expect(useMySkills.getState().shareDone).toBeNull();
   });
 
   it("按「先不动」:零 IPC、零副作用", async () => {
     useMySkills.setState({ list: [modified()] });
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "skill_share_changes")
-        return { kind: "needsConfirm", plan: { added: [], modified: ["SKILL.md"], deleted: [] }, overwrite: null };
+        return { kind: "needsConfirm", plan: { added: [], modified: ["SKILL.md"], deleted: [] }, overwrite: null, remoteRev: "sha256:seen", stale: false };
       if (cmd === "installed_list") return [modified()];
       return AGENTS;
     });

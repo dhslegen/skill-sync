@@ -92,15 +92,6 @@ fn client(server: &MockServer) -> GithubClient {
     GithubClient::new(&server.uri(), Some("t0ken".into()), reqwest::Client::new())
 }
 
-fn share_req<'a>(repo: &'a RepoRef, dir_slug: &'a str) -> share::ShareRequest<'a> {
-    share::ShareRequest {
-        registry_id: "gh-src",
-        repo,
-        dir_slug,
-        confirmed: true,
-    }
-}
-
 /// 录制 01/02/03 形状的基础 mock:可写仓、未保护 main、精检查无同名。
 async fn mount_basics(server: &MockServer, push: bool, protected: bool) {
     Mock::given(method("GET"))
@@ -169,14 +160,16 @@ async fn push_and_unprotected_saves_directly() {
 
     let gh = client(&server);
     let repo = repo_ref();
-    let outcome = share::share(
+    let outcome = confirmed_share(
         &ShareClient::Github(&gh),
         &gh,
         &c.registry,
         &env,
         &c.store,
         &c.trash,
-        share_req(&repo, "my-notes"),
+        "gh-src",
+        &repo,
+        "my-notes",
         NOW,
     )
     .await
@@ -215,14 +208,16 @@ async fn protection_violation_on_submit_is_reported_not_downgraded() {
 
     let gh = client(&server);
     let repo = repo_ref();
-    let err = share::share(
+    let err = confirmed_share(
         &ShareClient::Github(&gh),
         &gh,
         &c.registry,
         &env,
         &c.store,
         &c.trash,
-        share_req(&repo, "my-notes"),
+        "gh-src",
+        &repo,
+        "my-notes",
         NOW,
     )
     .await
@@ -251,14 +246,16 @@ async fn no_push_access_is_told_why_instead_of_getting_a_fork() {
 
     let gh = client(&server);
     let repo = repo_ref();
-    let err = share::share(
+    let err = confirmed_share(
         &ShareClient::Github(&gh),
         &gh,
         &c.registry,
         &env,
         &c.store,
         &c.trash,
-        share_req(&repo, "my-notes"),
+        "gh-src",
+        &repo,
+        "my-notes",
         NOW,
     )
     .await
@@ -295,14 +292,16 @@ async fn stale_head_becomes_human_readable_error() {
 
     let gh = client(&server);
     let repo = repo_ref();
-    let err = share::share(
+    let err = confirmed_share(
         &ShareClient::Github(&gh),
         &gh,
         &c.registry,
         &env,
         &c.store,
         &c.trash,
-        share_req(&repo, "my-notes"),
+        "gh-src",
+        &repo,
+        "my-notes",
         NOW,
     )
     .await
@@ -365,4 +364,46 @@ async fn precheck_fresh_on_404() {
     .await
     .unwrap();
     assert_eq!(got, SharePrecheck::Fresh);
+}
+
+/// 「用户在确认屏上点了确认」的**完整两轮**(终审 C-1:执行轮必须带上"这份清单
+/// 基于库里哪一版"的凭据)。预览轮拿 `remote_rev`,执行轮原样带回去——这正是
+/// 界面走的路。预览轮就报错 / 直接给出终态时原样回,不硬凑第二跳。
+#[allow(clippy::too_many_arguments)]
+async fn confirmed_share(
+    client: &share::ShareClient<'_>,
+    read: &impl skillsync_lib::core::gitea::RepoSource,
+    registry: &skillsync_lib::core::agents::AgentRegistry,
+    env: &dyn skillsync_lib::core::agents::AgentEnv,
+    store: &skillsync_lib::core::state::Store,
+    trash: &dyn skillsync_lib::core::fsops::Trasher,
+    registry_id: &str,
+    repo: &skillsync_lib::core::gitea::RepoRef,
+    dir_slug: &str,
+    now: &str,
+) -> Result<ShareOutcome, skillsync_lib::error::AppError> {
+    let first = share::share(
+        client,
+        read,
+        registry,
+        env,
+        store,
+        trash,
+        share::ShareRequest { registry_id, repo, dir_slug, confirm: None },
+        now,
+    )
+    .await?;
+    let ShareOutcome::NeedsConfirm { remote_rev, .. } = &first else { return Ok(first) };
+    let rev = remote_rev.clone();
+    share::share(
+        client,
+        read,
+        registry,
+        env,
+        store,
+        trash,
+        share::ShareRequest { registry_id, repo, dir_slug, confirm: Some(&rev) },
+        now,
+    )
+    .await
 }

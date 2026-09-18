@@ -83,17 +83,11 @@ async fn share_fresh_then_update_against_real_github() {
     .unwrap();
     std::fs::write(dir.join("scripts/run.sh"), "#!/bin/sh\necho hi\n").unwrap();
 
-    let req = || share::ShareRequest {
-        registry_id: "gh-live",
-        repo: &repo,
-        dir_slug: &share_name,
-        confirmed: true,
-    };
     // 显式注入沙盒废纸篓,理由同 share_live.rs
     let trash = skillsync_lib::core::fsops::SandboxTrash::new(tmp.path().join("gh-live-trash"));
 
     // 第一步:Fresh → main 未保护 → 直接保存
-    let outcome = share::share(&client, &gh, &registry, &env, &store, &trash, req(), now)
+    let outcome = confirmed_share(&client, &gh, &registry, &env, &store, &trash, "gh-live", &repo, &share_name, now)
         .await
         .expect("首次分享失败");
     let ShareOutcome::Shared { mode, commit_sha, .. } = outcome else { panic!("应当分享成功,不该落进覆盖确认档") };
@@ -106,7 +100,7 @@ async fn share_fresh_then_update_against_real_github() {
         format!("---\nname: {share_name}\ndescription: 5b 端到端联调\n---\n\n第二版\n"),
     )
     .unwrap();
-    let outcome = share::share(&client, &gh, &registry, &env, &store, &trash, req(), now)
+    let outcome = confirmed_share(&client, &gh, &registry, &env, &store, &trash, "gh-live", &repo, &share_name, now)
         .await
         .expect("更新分享失败");
     let ShareOutcome::Shared { mode, commit_sha: second_sha, .. } = outcome else { panic!("应当分享成功,不该落进覆盖确认档") };
@@ -114,4 +108,46 @@ async fn share_fresh_then_update_against_real_github() {
     assert_ne!(second_sha, commit_sha);
     eprintln!("更新分享已保存:{second_sha}");
     eprintln!("(远端残留 skills/{share_name}/,测试仓本就是一次性的,不清理)");
+}
+
+/// 「用户在确认屏上点了确认」的**完整两轮**(终审 C-1:执行轮必须带上"这份清单
+/// 基于库里哪一版"的凭据)。预览轮拿 `remote_rev`,执行轮原样带回去——这正是
+/// 界面走的路。预览轮就报错 / 直接给出终态时原样回,不硬凑第二跳。
+#[allow(clippy::too_many_arguments)]
+async fn confirmed_share(
+    client: &share::ShareClient<'_>,
+    read: &impl skillsync_lib::core::gitea::RepoSource,
+    registry: &skillsync_lib::core::agents::AgentRegistry,
+    env: &dyn skillsync_lib::core::agents::AgentEnv,
+    store: &skillsync_lib::core::state::Store,
+    trash: &dyn skillsync_lib::core::fsops::Trasher,
+    registry_id: &str,
+    repo: &skillsync_lib::core::gitea::RepoRef,
+    dir_slug: &str,
+    now: &str,
+) -> Result<ShareOutcome, skillsync_lib::error::AppError> {
+    let first = share::share(
+        client,
+        read,
+        registry,
+        env,
+        store,
+        trash,
+        share::ShareRequest { registry_id, repo, dir_slug, confirm: None },
+        now,
+    )
+    .await?;
+    let ShareOutcome::NeedsConfirm { remote_rev, .. } = &first else { return Ok(first) };
+    let rev = remote_rev.clone();
+    share::share(
+        client,
+        read,
+        registry,
+        env,
+        store,
+        trash,
+        share::ShareRequest { registry_id, repo, dir_slug, confirm: Some(&rev) },
+        now,
+    )
+    .await
 }

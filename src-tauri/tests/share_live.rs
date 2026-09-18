@@ -122,19 +122,16 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
             .unwrap(),
         SharePrecheck::Fresh
     );
-    let outcome = share::share(
+    let outcome = confirmed_share(
         &share::ShareClient::Gitea(&admin),
         &admin,
         &registry,
         &env,
         &store,
         &trash,
-        share::ShareRequest {
-            registry_id: "fixture",
-            repo: &repo,
-            dir_slug: &name,
-            confirmed: true,
-        },
+        "fixture",
+        &repo,
+        &name,
         NOW,
     )
     .await
@@ -155,19 +152,16 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
             .unwrap(),
         SharePrecheck::Mine
     );
-    let outcome = share::share(
+    let outcome = confirmed_share(
         &share::ShareClient::Gitea(&admin),
         &admin,
         &registry,
         &env,
         &store,
         &trash,
-        share::ShareRequest {
-            registry_id: "fixture",
-            repo: &repo,
-            dir_slug: &name,
-            confirmed: true,
-        },
+        "fixture",
+        &repo,
+        &name,
         NOW,
     )
     .await
@@ -187,19 +181,16 @@ async fn share_three_branches_and_race_against_a_real_gitea() {
     );
     // 「覆盖别人的技能」这条路已整体取消(v6 二期 A-3),所以 Taken 现在是一个
     // 如实的错误,不是"等用户三选一"的拍板档。
-    let err = share::share(
+    let err = confirmed_share(
         &share::ShareClient::Gitea(&admin),
         &admin,
         &registry,
         &env,
         &store,
         &trash,
-        share::ShareRequest {
-            registry_id: "fixture",
-            repo: &repo,
-            dir_slug: &name,
-            confirmed: true,
-        },
+        "fixture",
+        &repo,
+        &name,
         NOW,
     )
     .await
@@ -418,7 +409,7 @@ async fn remote_conflict_detection_against_a_real_gitea() {
         &store,
         &name,
         "main",
-        false,
+        None,
         &now,
     )
     .await
@@ -441,12 +432,12 @@ async fn remote_conflict_detection_against_a_real_gitea() {
         &store,
         &name,
         "main",
-        false,
+        None,
         &now,
     )
     .await
     .expect("冲突检测不该报错");
-    let share::ShareInstalledOutcome::NeedsConfirm { overwrite: Some(warning), .. } = outcome else {
+    let share::ShareInstalledOutcome::NeedsConfirm { overwrite: Some(warning), remote_rev: seen_rev, .. } = outcome else {
         panic!("远端已是 v3,应进冲突档");
     };
     let url = warning.history_url.expect("Gitea 源应给出历史链接");
@@ -477,7 +468,8 @@ async fn remote_conflict_detection_against_a_real_gitea() {
         &store,
         &name,
         "main",
-        true,
+        // 终审 C-1:确认那一跳要带上一轮回来的凭据(界面就是这么做的)
+        Some(seen_rev.as_str()),
         &now,
     )
     .await
@@ -597,14 +589,16 @@ async fn author_loop_in_a_tool_dir_against_a_real_gitea() {
     store.save_config(&config).unwrap();
 
     // ① 分享:直推 main。本体留在原地,canonical 只多一条指向它的链接。
-    let outcome = share::share(
+    let outcome = confirmed_share(
         &share::ShareClient::Gitea(&admin),
         &admin,
         &registry,
         &env,
         &store,
         &trash,
-        share::ShareRequest { registry_id: "fixture", repo: &repo, dir_slug: &name, confirmed: true },
+        "fixture",
+        &repo,
+        &name,
         NOW,
     )
     .await
@@ -715,4 +709,46 @@ async fn author_loop_in_a_tool_dir_against_a_real_gitea() {
             .await
             .expect("清理失败——手动删掉 skills/author-loop-* 后再跑");
     }
+}
+
+/// 「用户在确认屏上点了确认」的**完整两轮**(终审 C-1:执行轮必须带上"这份清单
+/// 基于库里哪一版"的凭据)。预览轮拿 `remote_rev`,执行轮原样带回去——这正是
+/// 界面走的路。预览轮就报错 / 直接给出终态时原样回,不硬凑第二跳。
+#[allow(clippy::too_many_arguments)]
+async fn confirmed_share(
+    client: &share::ShareClient<'_>,
+    read: &impl skillsync_lib::core::gitea::RepoSource,
+    registry: &skillsync_lib::core::agents::AgentRegistry,
+    env: &dyn skillsync_lib::core::agents::AgentEnv,
+    store: &skillsync_lib::core::state::Store,
+    trash: &dyn skillsync_lib::core::fsops::Trasher,
+    registry_id: &str,
+    repo: &skillsync_lib::core::gitea::RepoRef,
+    dir_slug: &str,
+    now: &str,
+) -> Result<ShareOutcome, skillsync_lib::error::AppError> {
+    let first = share::share(
+        client,
+        read,
+        registry,
+        env,
+        store,
+        trash,
+        share::ShareRequest { registry_id, repo, dir_slug, confirm: None },
+        now,
+    )
+    .await?;
+    let ShareOutcome::NeedsConfirm { remote_rev, .. } = &first else { return Ok(first) };
+    let rev = remote_rev.clone();
+    share::share(
+        client,
+        read,
+        registry,
+        env,
+        store,
+        trash,
+        share::ShareRequest { registry_id, repo, dir_slug, confirm: Some(&rev) },
+        now,
+    )
+    .await
 }

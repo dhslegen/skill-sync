@@ -786,7 +786,7 @@ export interface SharePlan {
  * `needsConfirm`(v8 任务 5 / D9)是**预览轮**的结果:core 一个写请求都没发,
  * 只回一份"会改动哪些文件"的清单;`overwrite` 非空时库里那一版还会被顶掉,
  * 确认屏把它摆在清单**顶部**——同一个动作只有一屏(D9),不是先弹覆盖框再弹清单框。
- * 用户拍板后带 `confirmed: true` 重来。
+ * 用户拍板后带 `confirmRev`(上一轮回来的那个值)重来。
  *
  * `alreadyInSync`:库里已与本地逐字节一致,一个请求都没发。这不是"什么都没做",
  * 它是空提交的正解(此前这一档照样提交,Gitea 照样建一个零改动的 commit)。
@@ -798,7 +798,22 @@ export type ShareOutcome =
       commitSha: string;
       shareName: string;
     }
-  | { outcome: "needsConfirm"; plan: SharePlan; overwrite: OverwriteWarning | null }
+  | {
+      outcome: "needsConfirm";
+      plan: SharePlan;
+      overwrite: OverwriteWarning | null;
+      /**
+       * 这份清单是基于技能库里**哪一版**算出来的(终审 C-1)。确认那一跳原样带回去
+       * (`confirmRev`),core 比不上就不提交,重算一份再问一次。
+       */
+      remoteRev: string;
+      /**
+       * `true` = 你确实按过确认,但技能库在你看清单的这段时间里又变了,
+       * 这是**重新算出来的**第二份清单。界面必须如实说一句——静默换掉清单,
+       * 用户会以为自己看花了眼。
+       */
+      stale: boolean;
+    }
   | { outcome: "alreadyInSync" };
 
 export interface Submitted {
@@ -812,7 +827,15 @@ export interface Submitted {
  */
 export type ShareInstalledOutcome =
   | ({ kind: "submitted" } & Submitted)
-  | { kind: "needsConfirm"; plan: SharePlan; overwrite: OverwriteWarning | null }
+  | {
+      kind: "needsConfirm";
+      plan: SharePlan;
+      overwrite: OverwriteWarning | null;
+      /** 见 {@link ShareOutcome} 的同名字段(终审 C-1)。 */
+      remoteRev: string;
+      /** 见 {@link ShareOutcome} 的同名字段(终审 C-1)。 */
+      stale: boolean;
+    }
   | { kind: "alreadyInSync" };
 
 export interface CreateReport {
@@ -862,17 +885,21 @@ export const skillShare = (args: {
   registryId?: string;
   /** 分享目标技能库的寻址键,缺省 = 该源主库。 */
   repo?: string;
-  /** 用户已在覆盖确认屏上按过「仍然覆盖」。缺省 false。 */
-  /** 用户已在统一分享确认屏上拍过板。缺省 false = **预览轮**,core 零写请求。 */
-  confirmed?: boolean;
+  /**
+   * 用户已在统一分享确认屏上拍过板。缺省(不传)= **预览轮**,core 零写请求。
+   *
+   * 🔴 值必须是上一轮 `needsConfirm` 原样回来的 `remoteRev`(终审 C-1):
+   * 它绑定"用户看的是库里哪一版"。core 比不上就不提交,重算一份再问一次
+   * ——否则两轮之间同事新推的文件会进删除清单被删,而它从未出现在用户看过的清单上。
+   */
+  confirmRev?: string;
 }) => call<ShareOutcome>("skill_share", { args });
 
 export const skillShareChanges = (args: {
   dirSlug: string;
   registryId?: string;
-  /** 用户已在覆盖确认屏上按过「仍然覆盖」。缺省 false。 */
-  /** 同上。 */
-  confirmed?: boolean;
+  /** 同 {@link skillShare} 的 `confirmRev`(终审 C-1)。 */
+  confirmRev?: string;
 }) => call<ShareInstalledOutcome>("skill_share_changes", { args });
 
 /**

@@ -50,7 +50,7 @@ export function ShareOverwriteDialog() {
   }, [open, cancel]);
 
   if (!pending) return null;
-  const { name, warning, plan } = pending;
+  const { name, warning, plan, stale } = pending;
   // ISO 解析不了时 `relativeTimeFromIso` 返回空串——那等于"没有时间",
   // 与字段本身为 null 归同一档,不让界面出现「改于 」这种半句话。
   const at = warning?.lastAt ? relativeTimeFromIso(warning.lastAt) : "";
@@ -95,6 +95,13 @@ export function ShareOverwriteDialog() {
               </button>
             )}
           </>
+        )}
+
+        {/* 🔴 终审 C-1:重算过的第二份清单必须如实说一句,不静默替换。 */}
+        {stale && (
+          <p className="mt-2 rounded-card border border-[#b8860b]/40 px-2.5 py-2 text-[12px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
+            {t("share.planChanged")}
+          </p>
         )}
 
         <SharePlanList plan={plan} />
