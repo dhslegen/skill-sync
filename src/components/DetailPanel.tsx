@@ -9,7 +9,7 @@ import { SkillIcon } from "@/components/SkillIcon";
 import { WhereBlocks } from "@/components/WhereBlocks";
 import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
-import { formatBytes, relativeTimeFromIso, updatedAtLabel } from "@/lib/format";
+import { formatBytes, updatedAtLabel } from "@/lib/format";
 import {
   BUILTIN_REGISTRY_ID,
   isAppError,
@@ -253,9 +253,16 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
           </button>
         </div>
 
+        {/* 🔴 终审 I-5:这里原先传的是 `skill.updatedAt` —— **本地记账的写入时间**
+            (本 app 上一次动这条账的时刻),而商店那条路(v8 任务 1 / D4)传的是
+            **这个技能自己在技能库里的最后改动时间**。两个完全不同的事实,共用
+            「更新」这一个标签,同一个技能在两个入口会显示两个数,而用户无从分辨。
+            统一成后者:一个标签一个含义,两条渲染路径同一把尺子。
+            取不到(纯本地草稿、外源算不出 per-skill 时间 —— D15 明确不算)就整栏
+            不摆:少一行,好过显示一个含义不同的数。 */}
         <OverviewRow
           author={card?.author}
-          updated={skill ? relativeTimeFromIso(skill.updatedAt) : null}
+          updated={card ? updatedAtLabel(card.updatedAt) : null}
           tags={card?.tags}
         />
       </div>

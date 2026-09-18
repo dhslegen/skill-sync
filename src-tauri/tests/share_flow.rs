@@ -1467,7 +1467,16 @@ fn zip_of_weekly(md: &str) -> Vec<u8> {
 
 /// 同上,但库根多一份 `authors.json` 把 `weekly-report` 记在 `author` 名下
 /// (v8 任务 6:`share_installed` 的归属闸就是从这里读作者的,零新增请求)。
-fn zip_of_weekly_by(md: &str, author: &str) -> Vec<u8> {
+/// 库根带一份 `authors.json` 的压缩包(v8 任务 6:`share_installed` 的归属闸
+/// 就是从这里读作者的,零新增请求)。
+///
+/// 🔴 **`library_slug` 与本地那三个概念刻意不同名**(终审 I-8)。此前这份 fixture
+/// 让 **frontmatter `name` / `source.path` 末段 / 磁盘目录名 / 入参 `dir_slug`**
+/// 四个概念取同一个值 `weekly-report`,于是归属闸的查询键换成其中**任意**一个,
+/// 测试照样绿——本项目记着的空转模式 ③。闸真正的键是
+/// `InstalledSkill::library_dir_slug()`(= `source.path` 末段,**技能库里的**目录名),
+/// 只有让它单独取一个值,换键才会当场红。
+fn zip_of_weekly_by(md: &str, author: &str, library_slug: &str) -> Vec<u8> {
     use std::io::Write as _;
     let mut buf = Vec::new();
     {
@@ -1475,16 +1484,26 @@ fn zip_of_weekly_by(md: &str, author: &str) -> Vec<u8> {
         let opts = zip::write::SimpleFileOptions::default();
         w.start_file("repo/authors.json", opts).unwrap();
         w.write_all(
-            serde_json::json!({ "authors": { "weekly-report": { "author": author } } })
+            serde_json::json!({ "authors": { library_slug: { "author": author } } })
                 .to_string()
                 .as_bytes(),
         )
         .unwrap();
-        w.start_file("repo/skills/weekly-report/SKILL.md", opts).unwrap();
+        w.start_file(format!("repo/skills/{library_slug}/SKILL.md"), opts).unwrap();
         w.write_all(md.as_bytes()).unwrap();
         w.finish().unwrap();
     }
     buf
+}
+
+/// 归属闸那两条用例专用:本地叫 `weekly-report`,**库里叫 `zhoubao`**。
+/// 账上的 `source.path` 是唯一说得出"库里叫什么"的地方,把它单独摆开。
+const LIBRARY_SLUG: &str = "zhoubao";
+
+fn point_record_at_library_slug(c: &Ctx) {
+    let mut state = state_of(c);
+    state.installed[0].source.path = format!("skills/{LIBRARY_SLUG}");
+    c.store.save_state(&state).unwrap();
 }
 
 /// 这台机器上的登录身份(赵文浩 / zhaowh)落进 `config.identities["company"]`。
@@ -1516,12 +1535,13 @@ fn installed_and_edited(c: &Ctx) -> PathBuf {
 async fn contributing_to_someone_elses_skill_is_refused_without_writing_anything() {
     let (c, env) = ctx();
     installed_and_edited(&c);
+    point_record_at_library_slug(&c);
     login_as_me(&c);
 
     let server = MockServer::start().await;
     // 刻意**不挂**任何写端点:闸没生效的话,这条测试红在别的地方也照样是红的,
     // 而下面对错误码与"零 POST"的正面断言保证它只在该红的时候红成这个样子。
-    mount_archive(&server, zip_of_weekly_by(WEEKLY_PRISTINE, "李四")).await;
+    mount_archive(&server, zip_of_weekly_by(WEEKLY_PRISTINE, "李四", LIBRARY_SLUG)).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
     let err = confirmed_push(&client, &c, &env, "weekly-report")
@@ -1571,7 +1591,7 @@ async fn my_own_skill_still_pushes_when_the_library_records_me_as_the_author() {
         .mount(&server)
         .await;
     // 展示名那一种写法(`Identity::aliases` 两种都认)。
-    mount_archive(&server, zip_of_weekly_by(WEEKLY_PRISTINE, "赵文浩")).await;
+    mount_archive(&server, zip_of_weekly_by(WEEKLY_PRISTINE, "赵文浩", LIBRARY_SLUG)).await;
     let client = GiteaClient::new(server.uri(), None).unwrap();
 
     let outcome = confirmed_push(&client, &c, &env, "weekly-report")

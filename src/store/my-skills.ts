@@ -327,7 +327,14 @@ interface MySkillsState {
   cancelShare: () => void;
 
   /** 把改过的已装技能推回来源(「我安装的」区块与 `localAhead` 档共用一条编排)。 */
-  shareChanges: (dirSlug: string) => Promise<void>;
+  /**
+   * 「分享改动」。`displayName` 由**调用方**给(终审 I-2):确认屏要点名的是
+   * 用户认得的名字,而那一行手上本来就有它(`MySkillsPage.nameOf` /
+   * 详情面板的概览行)。在 store 里现查一份索引是给一句标题多接一条会失灵的
+   * 依赖——真失灵过:索引形状不全时 `cardFor` 直接抛,分享变成"分享失败"。
+   * 省略即退回文件夹名(今天的行为)。
+   */
+  shareChanges: (dirSlug: string, displayName?: string) => Promise<void>;
 
   /**
    * 取回这一版(`notHere`/`remoteAhead`/`both` 的主动作)。
@@ -739,9 +746,16 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     // `sharePreview: null` = 上一个技能的清单必须当场清掉,而不是留在屏上等新的
     // 覆盖它——留着的那一瞬间,用户看到的是**另一个技能**会删哪些文件。
     set({ shareTarget: { dirSlug }, sharePreview: null, shareError: null, shareDone: null });
-    // 路径预告(能不能直接保存进去)是**仓库级**的,探一次就够;
+    // 路径预告(能不能直接保存进去)是**「(源, 技能库)」级**的,同一副坐标探一次
+    // 就够(终审 I-4:此前探的是 `targetRepo`,而这一行很可能推去账上那个别的库)。
     // 探不到就是 unknown,确认屏照常可提交——它只是提示,不是判据。
-    void useShare.getState().refreshPreview();
+    const target = get().list?.find((s) => s.dirSlug === dirSlug);
+    useShare
+      .getState()
+      .ensurePreviewFor(
+        shareTargetRegistryId(target),
+        shareTargetRepo(target, useShare.getState().targetRepo),
+      );
     // 预览轮(v8 任务 5):问一次 core"这次会改动哪些文件",**零写请求**。
     void runShare(dirSlug, undefined, set, get);
   },
@@ -761,7 +775,7 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
         : undefined;
     await runShare(target.dirSlug, rev, set, get);
   },
-  shareChanges: async (dirSlug) => {
+  shareChanges: async (dirSlug, displayName) => {
     // ⚠️ **v8 任务 3**:这里曾经按 `section` 分流——「安装自」那一区的贡献更改
     // 恒带 `forceReview`(那不是我的技能,作者该先看一眼),其余走权限分流。
     // 提交审核整条链路下线之后**只剩一条路**,分流没有了,所以这个函数退化成
@@ -774,7 +788,7 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     // (界面按行渲染按钮)保证 `skill` 存在,这条闸是防将来的调用方(比如批量
     // 入口)传一个不在 `list` 里的 dirSlug ——那种情况下连"要推哪个库"都答不出。
     if (!get().list?.some((s) => s.dirSlug === dirSlug)) return;
-    await runShareChanges(dirSlug, set, get);
+    await runShareChanges(dirSlug, set, get, undefined, displayName);
   },
 
   pull: async (dirSlug) => {
@@ -973,6 +987,7 @@ async function runShareChanges(
   set: (partial: Partial<MySkillsState>) => void,
   get: () => MySkillsState,
   confirmRev?: string,
+  displayName?: string,
 ) {
   const remoteChangedError = (): AppError => ({
     code: "CONFLICT_REMOTE_CHANGED",
@@ -994,15 +1009,16 @@ async function runShareChanges(
         dirSlug,
         // 库里在用户看清单的这段时间里又变了 → 这是重算过的第二份(终审 C-1)
         stale: outcome.stale,
-        // 🔴 点名用**文件夹名**,不去索引里换展示名:文件夹名就是各个 AI 工具
-        // 里调用它的那个名字,界面本来就在展示它;而展示名要跨 store 现查一份
-        // 索引,等于为一句标题多接一条会失灵的依赖。
-        name: dirSlug,
+        // 🔴 **有展示名就用展示名**(终审 I-2)。内部标识不能露给用户是本项目
+        // 撞过两次的老坑,上一屏 `ConflictDialog` 正是为此特意换成展示名。
+        // 名字由**调用方**带进来(那一行手上本来就有),不在这里现查索引
+        // ——见 `shareChanges` 的文档。取不到退回文件夹名,不比今天更糟。
+        name: displayName || dirSlug,
         plan: outcome.plan,
         warning: outcome.overwrite,
         // 🔴 闭包捕获**这一份清单**的凭据(终审 C-1):确认那一跳带着它回去,
         // core 比不上就重新算一份再问一次,不会提交一份用户没看过的清单。
-        confirm: () => runShareChanges(dirSlug, set, get, outcome.remoteRev),
+        confirm: () => runShareChanges(dirSlug, set, get, outcome.remoteRev, displayName),
       });
       return;
     }

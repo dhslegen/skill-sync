@@ -2,8 +2,9 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { t } from "@/i18n";
 import { contributorsText, DetailPanel, revealLabel, stripFrontmatter } from "./DetailPanel";
-import type { InstalledSkillView, LocalSkillDetail, Section, SkillDetail } from "@/lib/ipc";
+import type { InstalledSkillView, LocalSkillDetail, Section, SkillDetail, SkillUpdatedAt } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { useMySkills } from "@/store/my-skills";
@@ -527,7 +528,7 @@ describe("DetailPanel(本地详情模式)", () => {
         commitSha: "zzz",
         committedAt: "2026-08-20T00:00:00.000Z",
         fetchedAt: 1,
-        skills: [{ dirSlug: "weekly-report", contentHash: "sha256:newer" } as never],
+        skills: [{ dirSlug: "weekly-report", contentHash: "sha256:newer", updatedAt: { kind: "unknown" } } as never],
         skipped: [],
         fromCache: false,
         offline: false,
@@ -557,7 +558,7 @@ describe("DetailPanel(本地详情模式)", () => {
         committedAt: "2026-08-20T00:00:00.000Z",
         fetchedAt: 1,
         skills: [
-          { dirSlug: "weekly-report", contentHash: "sha256:base", path: "skills/weekly-report", tags: [] } as never,
+          { dirSlug: "weekly-report", contentHash: "sha256:base", path: "skills/weekly-report", tags: [], updatedAt: { kind: "unknown" } } as never,
         ],
         skipped: [],
         fromCache: false,
@@ -615,7 +616,11 @@ describe("DetailPanel(本地详情模式)", () => {
 
   // 概览行(Q4A):有什么摆什么、缺的整列不摆、三列全缺整行不摆。
   describe("概览行", () => {
-    const withIndex = (over: { author?: string | null; tags?: string[] }) => {
+    const withIndex = (over: {
+      author?: string | null;
+      tags?: string[];
+      updatedAt?: SkillUpdatedAt;
+    }) => {
       useStoreIndex.setState({
         index: {
           registryId: "company",
@@ -631,6 +636,7 @@ describe("DetailPanel(本地详情模式)", () => {
               contentHash: "sha256:base",
               author: over.author ?? null,
               tags: over.tags ?? [],
+              updatedAt: over.updatedAt ?? { kind: "unknown" },
             } as never,
           ],
           skipped: [],
@@ -643,6 +649,20 @@ describe("DetailPanel(本地详情模式)", () => {
       openLocal();
       render(<DetailPanel />);
     };
+
+    it("🔴 终审 I-5:「更新」说的是**库里这个技能自己的**最后改动时间,不是本地记账写入时间", () => {
+      // `installedView()` 的 `updatedAt` 是本地记账(本 app 上一次动这条账的时刻)。
+      // 商店那条路(v8 任务 1 / D4)传的一直是库里的逐技能时间,两条路共用「更新」
+      // 这一个标签,不同源就是同一个技能在两个入口显示两个数。
+      withIndex({ author: "李雯", updatedAt: { kind: "longAgo" } });
+      expect(screen.getByText("更新")).toBeInTheDocument();
+      expect(screen.getByText(t("time.longAgo"))).toBeInTheDocument();
+    });
+
+    it("🔴 库里算不出这个技能的时间(纯本地草稿 / 外源,D15)→ 整列不摆,不拿别的数顶上", () => {
+      withIndex({ author: "李雯", updatedAt: { kind: "unknown" } });
+      expect(screen.queryByText("更新")).not.toBeInTheDocument();
+    });
 
     it("作者与标签都有:两列都摆", () => {
       withIndex({ author: "李雯", tags: ["测试", "文档"] });

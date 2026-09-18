@@ -135,7 +135,9 @@ interface InstallState {
    * (改**别人**的技能那一档)已随「贡献更改」整条下线(D7),core 侧
    * `share_installed` 对非本人技能直接拒。
    */
-  keepLocalAndShareMine: () => Promise<void>;
+  /** 「以本地为准」+ 把改动推回去。`displayName` 由调用方给(终审 I-2):
+   *  确认屏要点名的是用户认得的名字,而 `ConflictDialog` 手上已经算好了它。 */
+  keepLocalAndShareMine: (displayName?: string) => Promise<void>;
   cancel: () => void;
 
   /** 正在收敛的那个位置(结果面板里逐条「在工具里启用」)。 */
@@ -442,7 +444,7 @@ export const useInstall = create<InstallState>((set, get) => ({
     }
   },
 
-  keepLocalAndShareMine: async () => {
+  keepLocalAndShareMine: async (displayName) => {
     await get().run("keepLocal");
     // core 走的是 `AcquireOutcome::Kept`(见 run() 里的处理)才该继续往下分享——
     // 又冲突或出错时 `mineKept` 仍是 null,分享的前提(本地已经站稳)不成立。
@@ -450,7 +452,7 @@ export const useInstall = create<InstallState>((set, get) => ({
     if (!kept) return;
     const dirSlug = get().dirSlug;
     if (!dirSlug) return;
-    await pushMyChanges(dirSlug, undefined, set, get);
+    await pushMyChanges(dirSlug, undefined, set, get, displayName);
   },
 
   cancel: () =>
@@ -493,6 +495,7 @@ async function pushMyChanges(
   confirmRev: string | undefined,
   set: (partial: Partial<InstallState>) => void,
   get: () => InstallState,
+  displayName?: string,
 ) {
   try {
     const outcome = await skillShareChanges({
@@ -503,14 +506,19 @@ async function pushMyChanges(
     if (outcome.kind === "needsConfirm") {
       useOverwrite.getState().ask({
         dirSlug,
-        name: dirSlug,
+        // 🔴 **有展示名就用展示名**(终审 I-2)。名字由**调用方**给:这条路的
+        // 上一屏就是 `ConflictDialog`,它手上已经有那个展示名了——两屏各查一次
+        // 索引,用户会在同一个流程里先看到「周报生成」、再看到 `weekly-report`。
+        // 也刻意**不在这里现查索引**:与 `my-skills.ts` 同一个理由(索引形状不全
+        // 时 `.skills.find` 直接抛,分享会变成"分享失败",真发生过)。
+        name: displayName || dirSlug,
         plan: outcome.plan,
         warning: outcome.overwrite,
         // 库里在用户看清单的这段时间里又变了 → 这是重算过的第二份(终审 C-1)
         stale: outcome.stale,
         // 🔴 闭包捕获**这一份清单**的凭据:确认那一跳带着它回去,core 比不上
         // 就重新算一份再问一次,不会提交一份用户没看过的清单(终审 C-1)。
-        confirm: () => pushMyChanges(dirSlug, outcome.remoteRev, set, get),
+        confirm: () => pushMyChanges(dirSlug, outcome.remoteRev, set, get, displayName),
       });
       return;
     }

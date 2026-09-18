@@ -407,3 +407,120 @@ async fn confirmed_share(
     )
     .await
 }
+
+// ============================================================ 删除穿到 GitHub 的写请求里(终审 I-6)
+
+/// 🔴 **GitHub 臂的「删除」此前零覆盖**:把 `share.rs` 里 `&changes.delete` 换成
+/// `&[]`,全仓没有一条测试会红——也就是说"本地删掉的文件会从技能库里删掉"这条
+/// v8 的新承诺,在 GitHub 源上从来没有被证明过。Gitea 侧有同款
+/// (`share_flow.rs::a_plan_with_deletions_is_not_committed_until_confirmed` 那一组),
+/// 这里补上对称的一条:断言**发出去的那个写请求里真的带着那条删除路径**。
+#[tokio::test]
+async fn deletions_reach_the_github_write_request() {
+    let (c, env) = ctx();
+    let dir = c.home.join(".agents/skills/my-notes");
+    write_skill(&dir, "my-notes");
+    // 账上记着这个技能来自 team/skills;本地**没有**「旧的.md」,而库里有它
+    let mut state = c.store.load_state().unwrap().value;
+    state
+        .installed
+        .push(skillsync_lib::core::state::InstalledSkill {
+            name: "my-notes".into(),
+            source: skillsync_lib::core::state::SkillSource {
+                registry_id: "gh-src".into(),
+                owner: "team".into(),
+                repo: "skills".into(),
+                path: "skills/my-notes".into(),
+                git_ref: "aaa".into(),
+            },
+            commit_sha: "aaa".into(),
+            content_hash: skillsync_lib::core::fsops::dir_content_hash(&dir).unwrap(),
+            origin: None,
+            body: None,
+            agents: vec![],
+            links: vec![],
+            installed_at: NOW.into(),
+            updated_at: NOW.into(),
+        });
+    c.store.save_state(&state).unwrap();
+
+    let server = MockServer::start().await;
+    mount_basics(&server, true, false).await;
+    // zipball 顶层目录是 `{owner}-{repo}-{短sha}/`(见 core/github.rs 模块头实测)
+    let zip = {
+        use std::io::Write as _;
+        let mut buf = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            w.start_file("team-skills-abc1234/skills/my-notes/SKILL.md", opts)
+                .unwrap();
+            w.write_all(std::fs::read(dir.join("SKILL.md")).unwrap().as_slice())
+                .unwrap();
+            w.start_file("team-skills-abc1234/skills/my-notes/旧的.md", opts)
+                .unwrap();
+            w.write_all(
+                b"\xe8\xbf\x99\xe4\xbb\xbd\xe6\x9c\xac\xe5\x9c\xb0\xe5\xb7\xb2\xe5\x88\xa0",
+            )
+            .unwrap();
+            w.finish().unwrap();
+        }
+        buf
+    };
+    Mock::given(method("GET"))
+        .and(path("/api/v3/repos/team/skills/zipball/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(zip))
+        .mount(&server)
+        .await;
+    // 🔴 判据:GraphQL 请求体里必须带着那条删除路径
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .and(body_string_contains("skills/my-notes/旧的.md"))
+        .respond_with(gql_ok("d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let gh = client(&server);
+    let repo = repo_ref();
+    // 两轮:预览拿凭据,确认带回去(终审 C-1)
+    let first = share::share_installed(
+        &ShareClient::Github(&gh),
+        &gh,
+        &c.registry,
+        &env,
+        &c.store,
+        "my-notes",
+        &repo.branch,
+        None,
+        NOW,
+    )
+    .await
+    .unwrap();
+    let share::ShareInstalledOutcome::NeedsConfirm {
+        plan, remote_rev, ..
+    } = first
+    else {
+        panic!("有文件要删,必须先让用户看一眼:{first:?}");
+    };
+    assert_eq!(plan.deleted, vec!["旧的.md".to_string()]);
+
+    let second = share::share_installed(
+        &ShareClient::Github(&gh),
+        &gh,
+        &c.registry,
+        &env,
+        &c.store,
+        "my-notes",
+        &repo.branch,
+        Some(remote_rev.as_str()),
+        NOW,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(second, share::ShareInstalledOutcome::Submitted(_)),
+        "确认之后应当推上去:{second:?}"
+    );
+    // `expect(1)` 由 MockServer 在 drop 时校验:那一条删除路径真的进了写请求
+}

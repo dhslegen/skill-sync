@@ -76,10 +76,11 @@ export function ConflictDialog() {
   // `needs_decision` 判据),所以到这一层只需要按 `remoteChanged` 分两种说法
   // ——远端有没有变过是唯一还不确定的那件事,本地"确实改过"已经不需要再问。
   //
-  // 「以本地为准」的分流(有没有 `state.installed` 记账)与 `forceReview` 的
-  // 判定都在 `install.ts::keepLocalAndShareMine` 里,这里只负责触发它——
-  // 分流规则见那个函数的注释(v6 任务分解裁定 #4,task-3-report 顾虑 1 记的
-  // 真实缺口)。
+  // 「以本地为准」的分流(有没有 `state.installed` 记账)在
+  // `install.ts::keepLocalAndShareMine` 里,这里只负责触发它。
+  // ⚠️ 这段原先还提到一个 `forceReview` 判定——**那个形参已随提交审核整条链路
+  // 于 v8 任务 3(D1)删除**,现在只剩直推一条路;留着那句话就是指着一个不存在的
+  // 东西让人去找。
   const mine = precheck.status === "mine" ? precheck : null;
   // 这台电脑上已经有一份同名的、内容与库里不一样(v6 二期)。判据只有内容,
   // **不问"这个文件夹是谁建的"**——磁盘上回答不了那个问题,而上一版正是靠猜它
@@ -165,7 +166,7 @@ export function ConflictDialog() {
                 ref={keepRef}
                 primary
                 label={t("conflict.mineKeep")}
-                onClick={() => void keepLocalAndShareMine()}
+                onClick={() => void keepLocalAndShareMine(displayName)}
               />
               {/* hint 常驻且是真话:旧本体进系统废纸篓,可以找回(见上面撤销
                   二次确认的理由)。 */}

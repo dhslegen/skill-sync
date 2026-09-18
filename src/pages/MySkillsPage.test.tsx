@@ -187,7 +187,7 @@ function resetStores() {
   useSession.setState({ status: "unknown", user: null, error: null });
   useMineSearch.setState({ query: "" });
   useStoreIndex.setState({ index: null, activeRegistry: "company", activeRepo: "skills/skills" });
-  useShare.setState({ targetRepo: null, preview: "unknown" });
+  useShare.setState({ targetRepo: null, preview: "unknown", previews: {} });
   useLocalDetail.setState({ target: null, detail: null, error: null });
   useInstall.setState({
     phase: "idle",
@@ -601,6 +601,39 @@ describe("三区排列与判定表接线", () => {
     const row = screen.getByTestId("row-a");
     await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
     expect(screen.getByRole("menuitem", { name: "打开文件夹" })).toBeInTheDocument();
+  });
+
+  // 🔴 终审 I-4:**权限按行探**。`preview` 那一份探的是 `targetRepo`(全仓没有
+  // setter,恒 = 内建主库),而「已分享到」区的行推的是**账上那个库**。一份全局
+  // 结果套在所有行上,两种错法都是撒谎:该禁的没禁 / 不该禁的禁了。
+  // 这条用例同屏摆两行、让 core 只对其中一个库回 noAccess,是唯一能分辨
+  // "真的按行探"与"拿第一个探到的结果顶上"的形状。
+  it("🔴 I-4:两行推去两个不同的库 → 只有真的没权限的那一行被禁", async () => {
+    seed([
+      mk("mine-here", "sharedTo", {
+        sourceOwner: "design",
+        sourceRepo: "skills",
+        localModified: true,
+      }),
+      mk("mine-builtin", "sharedTo", { localModified: true }),
+    ]);
+    const base = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "share_preview") {
+        const repo = (args as { args?: { repo?: string } })?.args?.repo;
+        return repo === "design/skills" ? "noAccess" : "directPush";
+      }
+      return base(cmd, args);
+    });
+    await renderAtTab(/已分享到技能库/);
+
+    const bad = await screen.findByTestId("row-mine-here");
+    const good = screen.getByTestId("row-mine-builtin");
+    await waitFor(() => {
+      expect(within(bad).getByRole("button", { name: "分享改动" })).toBeDisabled();
+    });
+    // 公司主库那一行仍然能推——拿 design/skills 的结论去禁它就是撒谎
+    expect(within(good).getByRole("button", { name: "分享改动" })).toBeEnabled();
   });
 
   // 对照组同样走真实路径:`seed` 的默认 mock 就让 share_preview 回 unknown。

@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ShareConfirm } from "./ShareConfirm";
 import type { InstalledSkillView, Section, ShareBlock } from "@/lib/ipc";
 import { useMySkills } from "@/store/my-skills";
-import { useShare } from "@/store/share";
+import { shareTargetKey, useShare } from "@/store/share";
 import { t } from "@/i18n";
 
 const invoke = vi.fn();
@@ -102,7 +102,7 @@ beforeEach(() => {
     shareBusy: null,
     shareError: null,
   });
-  useShare.setState({ targetRepo: null, preview: "unknown" });
+  useShare.setState({ targetRepo: null, preview: "unknown", previews: {} });
 });
 
 describe("🔴 零编辑:这一屏没有任何输入框", () => {
@@ -124,7 +124,9 @@ describe("🔴 零编辑:这一屏没有任何输入框", () => {
 
 describe("摆出来的信息", () => {
   it("名称 / 描述 / 文件夹名 / 目标库 四样都在", async () => {
-    useShare.setState({ preview: "directPush" });
+    // 🔴 终审 I-4 起权限按**这一行自己的库坐标**探,所以这里喂 IPC 而不是直接
+    // 往 store 里塞一份全局结果——那条路已经不是生产代码走的那条了。
+    useShare.setState({ previews: { [shareTargetKey(undefined, undefined)]: "directPush" } });
     openWith();
 
     expect(await screen.findByText("周报生成")).toBeInTheDocument();
@@ -172,7 +174,7 @@ describe("摆出来的信息", () => {
   });
 
   it("路径预告探不到就整条不显示 —— 不假装知道", async () => {
-    useShare.setState({ preview: "unknown" });
+    useShare.setState({ previews: {} });
     openWith();
     await screen.findByText("周报生成");
     for (const s of ["直接生效", "写入权限"]) {
@@ -381,5 +383,43 @@ describe("改动清单(v8 任务 5 / D5、D6、D9)", () => {
     openWith();
     await screen.findByText("周报生成");
     expect(screen.queryByText(t("share.planChanged"))).toBeNull();
+  });
+
+  it("🔴 终审 I-1:覆盖档的按钮写「仍然覆盖」且是红色,与姊妹弹窗同一个说法", async () => {
+    openWith(view(), {
+      dirSlug: "weekly-report",
+      plan: { added: [], modified: ["SKILL.md"], deleted: [] },
+      overwrite: { lastAuthor: "李四", lastAt: null, historyUrl: null },
+      remoteRev: "sha256:seen",
+      stale: false,
+    });
+    await screen.findByText("周报生成");
+    const go = screen.getByRole("button", { name: t("overwrite.confirm") });
+    // 视觉也要跟着语义走:强调色的「分享」会让人以为自己在做一件无害的事
+    expect(go.className).toContain("#c0392b");
+    expect(screen.queryByRole("button", { name: t("mine.share") })).toBeNull();
+  });
+
+  it("没人被顶掉时仍然是普通的「分享」(否则每次分享都在吓唬人)", async () => {
+    openWith();
+    await screen.findByText("周报生成");
+    const go = screen.getByRole("button", { name: t("mine.share") });
+    expect(go.className).toContain("bg-accent");
+  });
+
+  it("🔴 终审 I-3:文件多时清单自己滚,别把确认/取消顶出视口", async () => {
+    openWith(view(), {
+      dirSlug: "weekly-report",
+      plan: { added: Array.from({ length: 40 }, (_, i) => `f${i}.md`), modified: [], deleted: [] },
+      overwrite: null,
+      remoteRev: "sha256:seen",
+      stale: false,
+    });
+    await screen.findByText("周报生成");
+    const box = screen.getByTestId("share-plan-files");
+    expect(box.className).toMatch(/max-h-\[\d+px\]/);
+    expect(box.className).toContain("overflow-y-auto");
+    // 两颗按钮仍在(它们不在滚动盒里)
+    expect(screen.getByRole("button", { name: t("conflict.cancel") })).toBeInTheDocument();
   });
 });

@@ -710,7 +710,7 @@ describe("分享确认屏(零编辑)", () => {
       sharePreview: SEEN_PREVIEW,
     });
     invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_share") return { outcome: "shared", mode: "pushed", url: null };
+      if (cmd === "skill_share") return { outcome: "shared", mode: "pushed" };
       if (cmd === "installed_list") return [view()];
       return AGENTS;
     });
@@ -758,7 +758,7 @@ describe("分享确认屏(零编辑)", () => {
     // 确认屏上恰好选中的是**另一个**库:账上的坐标必须赢
     useShare.setState({ targetRepo: "skills/skills" });
     invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_share") return { outcome: "shared", mode: "pushed", url: null };
+      if (cmd === "skill_share") return { outcome: "shared", mode: "pushed" };
       if (cmd === "installed_list") return [];
       return AGENTS;
     });
@@ -783,7 +783,8 @@ describe("分享确认屏(零编辑)", () => {
     });
     useShare.setState({ targetRepo: "skills/skills" });
     invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_share") return { outcome: "shared", mode: "reviewRequested", url: null };
+      // `ShareMode` 自 v8 任务 3 起只剩 `pushed`(`reviewRequested` 与 `url` 都已删除)
+      if (cmd === "skill_share") return { outcome: "shared", mode: "pushed" };
       if (cmd === "installed_list") return [];
       return AGENTS;
     });
@@ -820,7 +821,7 @@ describe("分享确认屏(零编辑)", () => {
       sharePreview: SEEN_PREVIEW,
     });
     invoke.mockImplementation(async (cmd) => {
-      if (cmd === "skill_share") return { outcome: "shared", mode: "pushed", url: null };
+      if (cmd === "skill_share") return { outcome: "shared", mode: "pushed" };
       if (cmd === "installed_list") return [];
       return AGENTS;
     });
@@ -882,10 +883,13 @@ describe("分享改动撞上「库里那一版与本地基线不符」(v8 任务
       return AGENTS;
     });
 
-    await useMySkills.getState().shareChanges("weekly-report");
+    await useMySkills.getState().shareChanges("weekly-report", "周报生成");
 
     const pending = useOverwrite.getState().pending;
     expect(pending?.dirSlug).toBe("weekly-report");
+    // 🔴 终审 I-2:点名用**展示名**,不是内部目录名——上一屏 `ConflictDialog`
+    // 就是这么做的,两屏两种叫法等于把内部标识露给用户。
+    expect(pending?.name).toBe("周报生成");
     expect(pending?.warning?.lastAuthor).toBe("李四");
     expect(pending?.warning?.lastAt).toBe("2026-09-10T03:04:05Z");
     expect(pending?.warning?.historyUrl).toBe("http://g/skills/skills/commits/x");

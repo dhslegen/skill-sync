@@ -18,14 +18,26 @@ import type { SharePlan } from "@/lib/ipc";
  * 交代后果,而不是与另外两栏并排成三个同色小标题。
  *
  * 空清单的那一栏整条不摆(不写「删除:无」)。
+ *
+ * # 文件多时清单本身要能滚(终审 I-3)
+ *
+ * 首次分享一个文件多的技能,这份清单会把「确认 / 取消」两颗按钮顶出视口——用户
+ * 看得到清单、却按不到确认,而这一屏是分享的唯一出口。照 `ChangelogCard` 的既有
+ * 做法限高 + 内部滚动:信息一条不少,超出的滚着看。
+ *
+ * 🔴 **限高的是三栏文件名,不是整块**:那句「这 N 个文件会从技能库里删掉」
+ * (`share.planDeleteHint`)必须一直在视野里——它是删除这件事唯一的后果交代,
+ * 滚进溢出区就等于没说。
  */
 export function SharePlanList({ plan }: { plan: SharePlan }) {
   return (
     <div className="mt-3 rounded-card border border-border bg-surface-2 px-2.5 py-2">
       <p className="text-[11.5px] text-text-3">{t("share.planTitle")}</p>
-      <Group label={t("share.planAdded")} files={plan.added} />
-      <Group label={t("share.planModified")} files={plan.modified} />
-      <Group label={t("share.planDeleted")} files={plan.deleted} danger />
+      <div data-testid="share-plan-files" className="max-h-[168px] overflow-y-auto pr-1">
+        <Group label={t("share.planAdded")} files={plan.added} />
+        <Group label={t("share.planModified")} files={plan.modified} />
+        <Group label={t("share.planDeleted")} files={plan.deleted} danger />
+      </div>
       {plan.deleted.length > 0 && (
         <p className="mt-1.5 text-[12px] leading-[1.6] text-[#c0392b] dark:text-[#e0705f]">
           {t("share.planDeleteHint", { count: String(plan.deleted.length) })}

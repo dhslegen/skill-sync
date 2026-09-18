@@ -20,11 +20,13 @@ import {
   localDiffersNoBaseline,
   remoteChangedForShareable,
   sections,
+  shareTargetRegistryId,
+  shareTargetRepo,
   updateCount,
   useMySkills,
 } from "@/store/my-skills";
 import { useSession } from "@/store/session";
-import { useShare } from "@/store/share";
+import { shareTargetKey, useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
 
@@ -48,7 +50,8 @@ import { useUi } from "@/store/ui";
  * 🔴 **折叠时定下的那条原则原样转移到页签上**:未选中的页签必须写出里面有几个
  * "要处理",否则切到一个页签,另外两个里等着你的事就整个看不见了。判据仍是
  * `lib/ownership.ts::needsAttention`(**不是**页头总览那两个数——它们漏掉
- * conflict/chooseVersion/shareBlocked/underReview 四档)。计数与总数都走**全量**
+ * conflict/chooseVersion/shareBlocked 三档;原先这里还写着第四档 `underReview`,
+ * 那一档已随提交审核于 v8 任务 3 删除)。计数与总数都走**全量**
  * `list`、不走 `filteredList`:搜索只影响展示,页签上写的是这个区的事实。
  *
  * # 每行至多一颗主按钮
@@ -171,12 +174,20 @@ export function MySkillsPage() {
   // 🔴 只读用户禁用态(v8 任务 3 / D8)要在**进这一页时**就知道,不能等到打开
   // 分享确认屏才探——行上的分享族按钮此刻就要画成禁用态。探一次就够(权限是
   // 仓库级的,不跟着"在看哪个技能"走),失败即 `unknown`、不禁任何按钮。
-  const refreshPreview = useShare((s) => s.refreshPreview);
+  // 🔴 **按这一行自己的库坐标探**(终审 I-4):权限是「(源, 技能库)」级的,
+  // 而三区的行分享目标并不相同——「可分享到」恒推公司库,其余推账上那个库。
+  // 一份全局结果套在所有行上,两种错法(该禁没禁 / 不该禁禁了)都是撒谎。
+  const ensurePreviewFor = useShare((s) => s.ensurePreviewFor);
+  const previews = useShare((s) => s.previews);
   useEffect(() => {
-    void refreshPreview();
-  }, [refreshPreview]);
+    for (const skill of list ?? []) {
+      ensurePreviewFor(shareTargetRegistryId(skill), shareTargetRepo(skill, null));
+    }
+  }, [list, ensurePreviewFor]);
   // `unknown` 一律当"不知道",不禁——预检永远 fail-open(见 `SharePath`)。
-  const noWriteAccess = useShare((s) => s.preview) === "noAccess";
+  const noAccessFor = (skill: InstalledSkillView) =>
+    previews[shareTargetKey(shareTargetRegistryId(skill), shareTargetRepo(skill, null))] ===
+    "noAccess";
 
   // 🔴 需求 3:搜索**穿透页签**(三栏一起搜)。同一条原则在 v7.1 分区折叠时就
   // 定过——"搜索必须穿透折叠,否则'搜到了但那区折着',用户看到的就是搜索坏了";
@@ -246,7 +257,7 @@ export function MySkillsPage() {
       skill.section === "shareable"
         ? remoteChangedForShareable(skill, shareableIndexes)
         : hasUpdate(skill, index);
-    return rowAction(skill, remoteChanged, noWriteAccess);
+    return rowAction(skill, remoteChanged, noAccessFor(skill));
   };
   // 🔴 v7.3 Q28-C:整页口径的那两段文字(「N 个有更新 · N 个有改动未分享」)已撤掉
   // ——页签角标**逐栏**报了"有几件事等你"且更精确(`needsAttention` 覆盖六档),
@@ -338,15 +349,15 @@ export function MySkillsPage() {
         skill={skill}
         name={nameOf(skill.dirSlug)}
         description={cardOf(skill)?.description ?? null}
-        action={rowAction(skill, remoteChanged, noWriteAccess)}
+        action={rowAction(skill, remoteChanged, noAccessFor(skill))}
         remoteChanged={remoteChanged}
         noBaselineDiffers={noBaselineDiffers}
-        noWriteAccess={noWriteAccess}
+        noWriteAccess={noAccessFor(skill)}
         libraryAuthor={libraryAuthorFor(skill, index)}
         pulling={activeSlug === skill.dirSlug && installPhase === "running"}
         sharing={shareBusy === skill.dirSlug}
         onPull={() => void pull(skill.dirSlug)}
-        onShareChanges={() => void shareChanges(skill.dirSlug)}
+        onShareChanges={() => void shareChanges(skill.dirSlug, nameOf(skill.dirSlug))}
         onShare={() => beginShare(skill.dirSlug)}
         onRemove={() => askRemove(skill.dirSlug)}
         onReveal={revealOrExplain}

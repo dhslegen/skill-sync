@@ -13,10 +13,12 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) })
  * (候选扫描、名称/描述表单、提交编排全部搬走或撤销,见模块头)。
  * 所以这份测试也只剩这两件事的用例。
  */
-beforeEach(() => {
+function reset() {
   invoke.mockReset();
-  useShare.setState({ targetRepo: null, preview: "unknown" });
-});
+  useShare.setState({ targetRepo: null, preview: "unknown", previews: {} });
+}
+
+beforeEach(reset);
 
 describe("路径预告", () => {
   it("探到什么就显示什么", async () => {
@@ -93,5 +95,43 @@ describe("切换目标库", () => {
 
     expect(useShare.getState().targetRepo).toBe("b/two");
     expect(useShare.getState().preview).toBe("reviewViaCopy");
+  });
+});
+
+describe("按行探权限(终审 I-4)", () => {
+
+  it("🔴 两行推去两个不同的库 → 各探各的,不共用一份结果", async () => {
+    invoke.mockImplementation(async (_cmd: string, payload: Record<string, unknown>) => {
+      const args = payload.args as { repo?: string };
+      return args.repo === "design/skills" ? "noAccess" : "directPush";
+    });
+
+    useShare.getState().ensurePreviewFor(undefined, undefined);
+    useShare.getState().ensurePreviewFor("company", "design/skills");
+    await vi.waitFor(() => {
+      expect(useShare.getState().previewFor("company", "design/skills")).toBe("noAccess");
+    });
+
+    // 公司主库那一行仍然能推——拿 design/skills 的结论去禁它就是撒谎
+    expect(useShare.getState().previewFor(undefined, undefined)).toBe("directPush");
+  });
+
+  it("同一个坐标只探一次(一页十几行不该发十几个一样的请求)", async () => {
+    invoke.mockResolvedValue("directPush");
+    useShare.getState().ensurePreviewFor("company", "skills/skills");
+    useShare.getState().ensurePreviewFor("company", "skills/skills");
+    await vi.waitFor(() => {
+      expect(useShare.getState().previewFor("company", "skills/skills")).toBe("directPush");
+    });
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "share_preview")).toHaveLength(1);
+  });
+
+  it("探不到就一直是 unknown —— 预检永远 fail-open,不禁任何按钮", async () => {
+    invoke.mockRejectedValue({ code: "NET_TIMEOUT", message: "超时" });
+    useShare.getState().ensurePreviewFor("company", "skills/skills");
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalled();
+    });
+    expect(useShare.getState().previewFor("company", "skills/skills")).toBe("unknown");
   });
 });

@@ -6,8 +6,8 @@ import { SHARE_BLOCK_LABEL } from "@/lib/share-block";
 import { SharePlanList } from "@/components/SharePlanList";
 import { relativeTimeFromIso } from "@/lib/format";
 import { openLibraryUrl } from "@/lib/ipc";
-import { shareTargetRepo, useMySkills } from "@/store/my-skills";
-import { useShare } from "@/store/share";
+import { shareTargetRegistryId, shareTargetRepo, useMySkills } from "@/store/my-skills";
+import { shareTargetKey, useShare } from "@/store/share";
 
 /**
  * 分享确认屏(v6 二期 A-1「分享环节零编辑」)。
@@ -47,7 +47,7 @@ export function ShareConfirm() {
   const confirmShare = useMySkills((s) => s.confirmShare);
   const rawPreview = useMySkills((s) => s.sharePreview);
   const cancelShare = useMySkills((s) => s.cancelShare);
-  const preview = useShare((s) => s.preview);
+  const ensurePreviewFor = useShare((s) => s.ensurePreviewFor);
   // 选择器只取原始值,不造新对象(否则 Object.is 永远判"变了" → 无限重渲染)
   const targetRepo = useShare((s) => s.targetRepo);
 
@@ -96,18 +96,30 @@ export function ShareConfirm() {
     };
   }, [open, skill?.body]);
 
+  // 🔴 **按这一屏真正要推的那个库探**(终审 I-4),而且必须排在下面那条早退
+  // **之前**——hooks 顺序不许跟着数据分支走。
+  const shareRepo = shareTargetRepo(skill, targetRepo);
+  const shareRegistryId = shareTargetRegistryId(skill);
+  useEffect(() => {
+    if (open && skill) ensurePreviewFor(shareRegistryId, shareRepo);
+  }, [open, skill, ensurePreviewFor, shareRegistryId, shareRepo]);
+  const preview = useShare((s) => s.previews[shareTargetKey(shareRegistryId, shareRepo)]) ?? "unknown";
+
   if (!shareTarget || !skill) return null;
 
   const blocked = skill.shareBlocked;
   // 🔴 终审 C-1:必须与 `confirmShare` 实际提交时用的**同一个判定**
   // (`shareTargetRepo`)——分开各写一份的话,这一行显示的目标库很容易与
   // 实际提交的目标库对不上(与 C-1 本身同一种缺陷,只是换了个地方)。
-  const library = shareTargetRepo(skill, targetRepo) ?? t("mine.shareTargetDefault");
+  const library = shareRepo ?? t("mine.shareTargetDefault");
   const pathHint = preview === "unknown" ? null : PATH_LABEL[preview];
   // 🔴 v8 任务 3 / D8:探明没有写权限时提交按钮禁用。行上与详情动作区已经把
   // 主按钮禁掉了,这里是第三个渲染点——漏一处就是"行上禁了、确认屏里能点"。
   // `unknown`(探不到)**不禁**:预检永远是 fail-open 的。
   const noWriteAccess = preview === "noAccess";
+  // 库里那一版会被顶掉(终审 I-1)。判据与顶部那条警告**同一个**——摆得出警告
+  // 却写着轻飘飘的「分享」,等于一屏之内自相矛盾。
+  const overwriting = changes !== null && "plan" in changes && changes.overwrite !== null;
 
   return (
     <div className="fixed inset-0 z-70 grid place-items-center bg-[rgba(15,14,12,.35)] backdrop-blur-[2px]">
@@ -153,6 +165,14 @@ export function ShareConfirm() {
         {/* 🔴 统一确认屏(v8 任务 5 / D9):覆盖警告在**顶部**,改动清单在下面,
             **同一屏**。分两屏问的话,用户要连点两次"确定"才能完成一个动作,
             而第二次点的时候他已经忘了第一屏说过什么。 */}
+        {/* 🔴 终审 C-1:这一份是**重新算出来的**(用户按过确认,但技能库在他看
+            清单的这会儿又变了)。静默换掉清单,用户会以为自己看花了眼,而这一屏
+            最要紧的那一栏正是"库里哪几个文件会没"。 */}
+        {changes && "plan" in changes && changes.stale && (
+          <p className="mt-2.5 rounded-card border border-[#b8860b]/40 px-2.5 py-2 text-[12px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
+            {t("share.planChanged")}
+          </p>
+        )}
         {changes && "plan" in changes && changes.overwrite && (
           <OverwriteNotice warning={changes.overwrite} />
         )}
@@ -217,13 +237,25 @@ export function ShareConfirm() {
               "inSync" in changes
             }
             onClick={() => void confirmShare()}
-            className="h-7 rounded-ctl bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+            // 🔴 终审 I-1:覆盖档的措辞与视觉必须跟着语义走,而且要与姊妹弹窗
+            // `ShareOverwriteDialog` 同一件事同一个说法——那边早就是红色的
+            // 「仍然覆盖」,这边却还写着强调色的「分享」。同一个动作在两个入口
+            // 两种面孔,轻的那一种会让人以为自己在做一件无害的事。
+            className={
+              overwriting
+                ? "h-7 rounded-ctl border border-[#c0392b] px-3 text-[12px] font-medium text-[#c0392b] hover:bg-[#c0392b] hover:text-white disabled:opacity-50 dark:border-[#e0705f] dark:text-[#e0705f] dark:hover:bg-[#e0705f] dark:hover:text-[#1c1917]"
+                : "h-7 rounded-ctl bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+            }
           >
             {/* 🔴 预览轮也占着 `shareBusy`(它走的是同一个函数),但那一刻**什么都
                 还没推**——按钮写「正在分享…」就是一句假话。清单到手(`changes`
                 非空)之后的忙碌才是真的在提交,上面那句「正在看技能库里现在是
                 什么样…」负责交代预览轮。 */}
-            {shareBusy && changes ? t("mine.sharing") : t("mine.share")}
+            {shareBusy && changes
+              ? t("mine.sharing")
+              : overwriting
+                ? t("overwrite.confirm")
+                : t("mine.share")}
           </button>
         </div>
       </div>

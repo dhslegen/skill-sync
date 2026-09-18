@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SkillActionsBlock } from "./SkillActionsBlock";
 import type { InstalledSkillView, Section } from "@/lib/ipc";
 import { useMySkills } from "@/store/my-skills";
-import { useShare } from "@/store/share";
+import { shareTargetKey, useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
 
 const invoke = vi.fn(async (cmd: string, args?: unknown): Promise<unknown> => {
@@ -64,7 +64,7 @@ beforeEach(() => {
   invoke.mockReset();
   invoke.mockImplementation(async () => null);
   useStoreIndex.setState({ index: null });
-  useShare.setState({ targetRepo: null, preview: "unknown" });
+  useShare.setState({ targetRepo: null, preview: "unknown", previews: {} });
   useMySkills.setState({
     list: null,
     shareBusy: null,
@@ -229,7 +229,7 @@ describe("页脚的「在技能库里查看」:core 拼得出地址才摆", () =
   // 🔴 v8 任务 3 / D8:没有写权限时,详情面板动作区这一处也要禁用 + 说明。
   // 三处渲染点(行 / 详情动作区 / 分享确认屏)漏一处就是"行上禁了、详情里能点"。
   it("没有写权限:分享族主按钮禁用,并说清为什么,「打开文件夹」仍在", () => {
-    useShare.setState({ preview: "noAccess" });
+    useShare.setState({ previews: { [shareTargetKey(undefined, undefined)]: "noAccess" } });
     render(
       <SkillActionsBlock
         skill={view({ relation: "draft", localModified: false })}
@@ -242,7 +242,7 @@ describe("页脚的「在技能库里查看」:core 拼得出地址才摆", () =
   });
 
   it("对照组:探不到(unknown)时照常可点——预检永远 fail-open", () => {
-    useShare.setState({ preview: "unknown" });
+    useShare.setState({ previews: {} });
     render(
       <SkillActionsBlock
         skill={view({ relation: "draft", localModified: false })}

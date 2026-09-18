@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { OutlineButton, PrimaryAction, rowMenuHandler } from "@/components/RowActionControls";
 import { SkillRowMenu, type SkillRowMenuItem } from "@/components/SkillRowMenu";
@@ -6,9 +6,15 @@ import { t } from "@/i18n";
 import { isAppError, openLibraryUrl, skillReveal, type InstalledSkillView } from "@/lib/ipc";
 import { buildRowMenuItems, rowAction } from "@/lib/ownership";
 import { SHARE_BLOCK_LABEL, SHARE_DONE_LABEL, SHARE_FAILED_LABEL } from "@/lib/share-block";
-import { libraryAuthorFor, localDiffersNoBaseline, useMySkills } from "@/store/my-skills";
+import {
+  libraryAuthorFor,
+  localDiffersNoBaseline,
+  shareTargetRegistryId,
+  shareTargetRepo,
+  useMySkills,
+} from "@/store/my-skills";
 import { useInstall } from "@/store/install";
-import { useShare } from "@/store/share";
+import { shareTargetKey, useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
 
 /**
@@ -293,7 +299,17 @@ export function SkillActionsBlock({
   // (探不到)不禁——预检永远 fail-open。`host="store"` 下主按钮来自
   // `cardState` 不来自这里,但次要动作(「…」里的分享改动/分享)同样要拦,
   // 所以这个判定在两个宿主下都参与。
-  const noWriteAccess = useShare((s) => s.preview) === "noAccess";
+  // 🔴 **按这一行自己的库坐标探**(终审 I-4):`useShare.preview` 探的是
+  // `targetRepo`(全仓没有 setter,恒 = 内建主库),而这一行的分享目标可能是
+  // 账上那个完全不同的库。拿错的库回答"能不能推"两个方向都是撒谎。
+  const ensurePreviewFor = useShare((s) => s.ensurePreviewFor);
+  const shareRepo = shareTargetRepo(skill, null);
+  const shareRegistryId = shareTargetRegistryId(skill);
+  useEffect(() => {
+    ensurePreviewFor(shareRegistryId, shareRepo);
+  }, [ensurePreviewFor, shareRegistryId, shareRepo]);
+  const noWriteAccess =
+    useShare((s) => s.previews[shareTargetKey(shareRegistryId, shareRepo)]) === "noAccess";
   const action = rowAction(skill, remoteChanged, noWriteAccess);
   // 🔴 `reveal` **不再过滤**(Q3:打开文件夹只留页脚这一处,见组件文档)。
   // 「移除」单独摘出来靠右摆,其余按 `buildRowMenuItems` 的自然顺序排在左边
@@ -323,7 +339,9 @@ export function SkillActionsBlock({
     );
   };
   const onPull = () => void useMySkills.getState().pull(skill.dirSlug);
-  const onShareChanges = () => void useMySkills.getState().shareChanges(skill.dirSlug);
+  // 展示名由这一侧给(终审 I-2):`card` 就是这个面板自己摆出来的那一行
+  const onShareChanges = () =>
+    void useMySkills.getState().shareChanges(skill.dirSlug, subject);
   const onShare = () => useMySkills.getState().beginShare(skill.dirSlug);
   const onRemove = () => useMySkills.getState().askRemove(skill.dirSlug);
   const onChooseVersion = () =>
