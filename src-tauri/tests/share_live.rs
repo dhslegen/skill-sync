@@ -834,13 +834,7 @@ async fn deleting_a_local_file_removes_it_from_a_real_gitea() {
     )
     .await
     .expect("确认轮失败");
-    assert!(matches!(done, share::ShareInstalledOutcome::Submitted(_)), "确认后就该推上去:{done:?}");
     let after = remote_paths(&admin, &repo, &name).await;
-    assert!(
-        !after.contains(&format!("skills/{name}/extra.md")),
-        "本地删掉的文件必须从库里一起删掉,否则两边指纹永不相等:{after:?}"
-    );
-    assert!(after.contains(&format!("skills/{name}/SKILL.md")), "只删该删的那个:{after:?}");
 
     // ⑤ 两边一致之后再点一次分享:没有活可干,一个写请求都不该发
     let again = share::share_installed(
@@ -856,12 +850,23 @@ async fn deleting_a_local_file_removes_it_from_a_real_gitea() {
     )
     .await
     .expect("第三轮失败");
+
+    // 🔴 **清理排在全部断言之前**:断言一 panic,后面的代码就不跑了,残留的技能目录
+    // 会打红 `gitea_live` 的库内清单断言——那是一条**与被测代码毫无关系**的红,
+    // 排查的人要绕一大圈才找得到源头(本条测试的注入验证当场制造过一次)。
+    // 事实都已经取到手上了(`after` / `done` / `again`),清理不会影响任何一条判断。
+    cleanup_skill_dir(&admin, &repo, &name).await;
+
+    assert!(matches!(done, share::ShareInstalledOutcome::Submitted(_)), "确认后就该推上去:{done:?}");
+    assert!(
+        !after.contains(&format!("skills/{name}/extra.md")),
+        "本地删掉的文件必须从库里一起删掉,否则两边指纹永不相等:{after:?}"
+    );
+    assert!(after.contains(&format!("skills/{name}/SKILL.md")), "只删该删的那个:{after:?}");
     assert!(
         matches!(again, share::ShareInstalledOutcome::AlreadyInSync),
         "两边已经一样,就该直说「已一致」而不是推一笔空提交:{again:?}"
     );
-
-    cleanup_skill_dir(&admin, &repo, &name).await;
 }
 
 /// 库里这个技能目录当前有哪些文件(真实的树,不是我们自己的返回值)。
