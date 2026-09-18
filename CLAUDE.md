@@ -124,7 +124,8 @@ src-tauri/src/
   core/builtin.rs    编译期注入的常量(内网地址/ClientID/仓库坐标/更新源+公钥)
   core/agents.rs     agent 注册表加载与探测 + disabled 标记(数据在 resources/agents.json)
   core/skills.rs     SKILL.md 解析 + 仓库发现规则 + SkillTree(MemTree/FsTree)
-  core/gitea.rs      Gitea API client(分支/压缩包/多文件提交/提交审核/fork)+ is_same_origin
+  core/gitea.rs      Gitea API client(分支/压缩包/多文件提交含删除/单点提交历史)+ is_same_origin
+                     ——提交审核与 fork 已随 v8 下线
   core/auth.rs       OAuth PKCE 原语 + 回环回调 + 凭证存储抽象(按 registryId 存)
   core/session.rs    登录态编排(登录/查状态/退出)
   core/installer.rs  **本体**落盘 + 按目录建链/解链编排(不碰 state);`SkillHome` 是
@@ -159,7 +160,7 @@ src-tauri/src/
                      add/remove/url_allowed/auth_config;内建源锁定不落 config
   core/github.rs     GitHub client:读链路(branches/zipball,RepoSource trait)+
                      device flow 原语 + current_user + 写链路(M3-5b:repo_view 权限、
-                     createCommitOnBranch、git/refs、pulls、fork+就绪轮询)
+                     createCommitOnBranch 含 deletions)——pulls/fork 已随 v8 下线
   core/plaza.rs      技能广场(M9):skills.sh 搜索原语(宽容解析)+ 挂仓预检
                      (default_branch,复用 github::fetch_repo_view)+ fetch_repo_skills
                      (详情面板不联网承诺的唯一破例,现拉 zipball 走既有 store::build_index)
@@ -400,8 +401,11 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
 - Gitea **1.25.3**;内建技能库坐标 **`skills/skills`**,默认分支 `main`
   ——设计文档里的 `ai-skills/team-skills` 只是示例,以此为准
 - 技能库**公开可匿名读**:商店浏览与详情预览可以先于登录,登录只是分享与个性化的前提
-- 普通员工对该库是**写权限 + main 受保护**:分享默认走「开分支 + 提交审核」(决策 C3 的正是这一档);
-  直推仅在 main 未保护时可用;纯只读用户走不通开分支,须 fork 后提交审核(见 core/gitea.rs 权限矩阵)
+- 🔴 **2026-09-16 curl 实测:`main` 其实没有开保护**(`protected: false`),普通员工写权限直推可用
+  ——上面那句「main 受保护」是更早的快照,已作废。**v8 起分享只剩直推**:有写权限直接生效,
+  没有写权限直说(按钮禁用 + 说明),不再有「开分支 + 提交审核」与 fork 两条路(决策 C3 随之作废)。
+  同期实测:4 个合并请求 3 个没人管、`authors.json` 的 contributors 字段**一个都没有**
+  ——"改别人的技能"这件事从未真正发生过,这是砍掉审核与「贡献更改」的实证依据
 - 真实布局 `skills/<slug>/SKILL.md`;**2026-07-30 实测为 20 个技能**(交接包写的 8 个是更早的快照),
   发现规则零跳过全部解析成功
 
@@ -1186,9 +1190,65 @@ v7 的契约变更(「我的技能」三区重设计):**新增** IPC `project_sk
 读入即为 `None`,不报错),不升 `schemaVersion`(与 M11 的 `lastSeenVersion`、
 v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
 
+v8 的契约变更(分享链路简化):**删除** `ReviewView`/`InstalledRow.review`、
+`SharedSkill` 的 `reviewUrl`/`reviewNumber`、错误码 `NET_PULLS_TIMEOUT`/`NET_PULLS_TOO_MANY`、
+`ShareMode::ReviewRequested` 与 `ShareOutcome` 的 `reviewUrl`/`reviewNumber`
+——`commands::installed_list` 因此**彻底零网络**(v7 那条"唯一的网络例外"没有了)。
+**新增** IPC `skill_align_baseline`(`{dirSlug, contentHash, registryId, owner, repo}` → `()`,
+三道守卫见现役约束);`ShareRequest`/`share_installed` 新增 `confirm: Option<&str>`
+(IPC 名 `confirmRev`,缺省 = 预览轮,方向安全);`ShareOutcome`/`ShareInstalledOutcome`
+新增 `NeedsConfirm{plan, overwrite, remoteRev, stale}` 与 `AlreadyInSync` 两档;
+新增错误码 `FS_EMPTY_PAYLOAD`/`FS_UNSAFE_PATH`/`FS_BASELINE_STALE`/`FS_LIBRARY_MISMATCH`/
+`REPO_NOT_AUTHOR`。`StoreSkillCard`/`SkillDetail`/`IndexedSkill` 新增
+`updatedAt: SkillUpdatedAt`(三档可辨联合),索引缓存版本 **4 → 5**。**没有**新增事件。
+
 ### 现役机制约束(动相关代码前必读)
 
 这些**都已实现**,列在这里是因为它们的不变量不看就会破坏。已完成的过程叙事在 git log。
+
+- 🔴 **分享就是「让技能库里的这个技能和我本地的一致」(v8,2026-09-17)**——动 `share.rs` /
+  `store/share.ts` / `ShareConfirm` / `ShareOverwriteDialog` 之前必读。设计与拍板在本地
+  `docs/设计-v8-分享链路简化.md`(D1–D15),任务分解 `docs/v8-任务分解.md`。
+  起因是同事真机:自己作为作者的技能点「分享改动」被要求提交审核,合并后行上仍显示
+  「库里有新版」,再点又开一个**空 PR**(Gitea 上实证:分支与 main 的 blob sha 逐字相同)。
+  - **提交审核与 fork 整条下线**,分享只剩直推。没有写权限 → 按钮禁用 + 说明(**这里刻意
+    不套用「不摆比解释好」**:用户需要知道为什么自己没有这个能力);直推被 403(将来 main
+    被保护)→ 一句人话错误,**不再降级开分支**。`preview_permission` 收窄成三档保留,
+    它是禁用态的唯一判据来源。⚠️ **「有写权限但目标受保护」不归「没有写权限」**
+    ——那个用户对这个库确实有写权限,说他没有是假话。
+  - 🔴 **分享会删除远端文件**(`share::plan_changes`,纯函数):四类差集(新增/修改/删除/相同),
+    **相同的一个都不发**。两道护栏都在它自己身上:本地 0 文件 → `FS_EMPTY_PAYLOAD` 拒绝整笔;
+    删除路径按**路径段**判越界(`..foo` 是正常文件名)→ `FS_UNSAFE_PATH`。
+    **展示用的相对路径与提交用的完整路径同一次算出**——分两处算就会出现"屏上列三个、实际删两个"。
+  - 🔴 **差集为空 → 一个写请求都不发**,返回「已一致」并顺手对齐基线。这是空 PR 的正解。
+  - 🔴 **预览轮与执行轮绑在同一份远端快照上**(终审 C1):预览回 `remote_rev`
+    (= 该技能目录的远端**内容指纹**,`overwrite_gate` 本来就要算,零新增请求),
+    确认轮必须带回来;对不上 → **不提交**,退回新清单让用户重看(`stale: true`)。
+    **刻意不用分支头 sha**:别人分享另一个技能也会让你的清单作废,白让你重看。
+    契约写进类型:`confirm: Option<&str>`,"确认了却没带凭据"在 Rust 侧写不出来。
+    没有这条绑定的后果:确认屏打开到点确认之间同事推的文件会**进删除清单被删,
+    而它从未出现在用户看过的清单上**。
+  - **覆盖档(D2,推翻旧拍板「不提供强行覆盖」)**:判据 = **库里内容 ≠ 本地基线**,
+    与本地改没改无关。🔴 **基线为空不许跳过检测**(旧行为),退化成比"本地实时 vs 库里实时"
+    ——换过电脑的作者本机没有记账,跳过就是不弹警告直接覆盖。确认屏点名**覆盖谁、何时、
+    去哪找回**(`gitea::last_commit` 单点取数,与 v8 任务 1 的批量遍历刻意不共用),
+    覆盖成功后**必须更新基线**。
+  - **「贡献更改」下线(D7)**:界面**不摆**(那一行只说「和库里的不一样」+「联系作者 X」,
+    作者名取不到就一个名字都不提),core **不许**(`share_installed` 按库根 authors.json 判,
+    非本人返回 `REPO_NOT_AUTHOR`)。**这两层不是同一条规则查两遍**:一层是不摆、一层是防
+    绕过界面的调用,注释里写明了,别当空转删掉。⚠️ core 比界面松一格:authors.json 里
+    **没登记作者**时 core 放行(那一刻并不知道"这不是你的"),经界面不可达。
+  - **基线的三处写入收敛到 `converge::align_baseline` 一个入口**(v8 任务 2),三道守卫:
+    重算实时指纹核对入参 / 记录必须已存在(**绝不凭空建账**)/ 必须有来源坐标且与入参一致。
+    自愈判定在前端(索引与本体指纹只在那一层齐全),**失败静默**(只记日志)——它不是用户
+    发起的动作,不该弹错误;注释里写明"不是漏了渲染点"。
+  - **逐技能的「更新于」**(v8 任务 1):一次带 `files` 的提交历史、**翻 5 页封顶**,
+    新→旧扫、记首次出现即最新那次,全找到即早退。`SkillUpdatedAt` **三档可辨联合**:
+    `at` / `longAgo`(翻完没找到,属实)/ `unknown`(这个源算不出,**整行不摆**;取数失败也落这档
+    ——拿一次网络故障编造"我们查过"是撒谎)。压成一个 `Option` 的后果是广场每张卡片都写
+    「很久以前」。索引缓存 `INDEX_SCHEMA_VERSION` **4 → 5**。
+  - ⚠️ **`cargo fmt -- <文件>` 不认文件参数**(v8 终审修复实测):它会格式化整个 workspace
+    ——误跑一次产生 85 文件 / 7291 行无关改动。要局部格式化就手改。
 
 - **我的技能三区模型(v7)**——「我的技能」整页重画,动 `ownership.rs::in_builtin_library` /
   `my_skills.rs` / `src/lib/ownership.ts` / `ToolPicker.tsx` / `project.rs::set_agents`
@@ -1205,24 +1265,10 @@ v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
     三支都不成立 → `Section::Shareable`(可分享到),不谎称"安装自"
     (名字撞上不代表内容对得上)。`relation`(`Shared`/`Installed`/`Draft`)与
     `Section` 仍是 v6 的一一对应,变的只是"在库里"这件事的判法。
-  - **审核态只在「可分享到」区生效,是"列表构建不发网络请求"这条铁律唯一的例外**
-    (`my_skills::has_review_candidates`/`fill_review_from_pulls`/
-    `fill_review_from_records`,三处都显式 `.filter(section == Shareable)`)。
-    `build()` 本身同步零网络;`commands::installed_list` 在 `build()` 之后,
-    只对"可分享到且挂着一条走过评审的 `state.shared` 记录"的行,异步查一次
-    公司库主仓当前开放的合并请求(**按分支名前缀匹配,不靠本地记的 PR 号**,
-    存量分享一样认得出),5 秒超时,**网络失败或未配置内网时按本地证据降级**
-    (有匹配的 `state.shared` 记录 ∧ 不在库里 → 仍显示「审核中」,不让整页报错)。
-    `ReviewView.url` 是 `Option<String>`——降级路 / 直推留下的记录可能没有链接,
-    `url: null` 是合法档,不是拿空串冒充一个链接。
-    🔴 **这套机制不覆盖「安装自」区的「贡献更改」**(`share_installed`/
-    `skill_share_changes`,`force_review` 恒 `true`):贡献更改走评审时**刻意不写
-    任何 `state.shared` 记录、也不更新 `content_hash` 基线**(`share.rs` 模块头
-    「记账一个字不动」),所以提交之后再读「我的技能」,这一行如实还是「本地改」,
-    不会变成「审核中」——设计决策 #4 与任务分解「贡献更改不新造路」都明确把
-    "审核中"限定在「可分享到」区,这不是遗漏,`tests/e2e_sections.rs` 的
-    文件头把证据链与后续推论(PR 合并后的终态是「库里有新版…」冲突档,不是
-    「有更新」——基线从未更新,本地与库内容相对基线同时"变了")写全了。
+  - ⚠️ **「审核态」整套机制已随 v8 删除**(`has_review_candidates`/`fill_review_from_*`/
+    `ReviewView`/`state.shared` 的 `reviewUrl`/`reviewNumber` 全部不在了),
+    `commands::installed_list` 因此**彻底零网络**——原先那条"唯一的网络例外"没有了。
+    「贡献更改」也一并下线,见下面「分享就是让库里与本地一致(v8)」一节。
     另有一条**不同的**网络例外只影响「可分享到」区**外源**行自己的更新状态
     (`ensureShareableIndexes`,任务 7):点击(打开详情/手动刷新)立即查那个源、
     不触发点击时按**每源每小时最多一次**的被动兜底(接在 `useLocalRefresh` 的
@@ -1928,11 +1974,12 @@ v5 的 `config.projects` 同一类——加可选字段是兼容变更)。
   - 指纹路径必须拼 `archive.root`(entries 键带压缩包顶层目录)——不拼会**恒判冲突**,
     而且冲突侧测试自己发现不了,要靠"远端一致应直通"的对照组;
   - 基线(`content_hash`)为空跳过检测:空串与任何指纹都不等,不跳会恒拦;
-  - 确认后的第二跳带 `force_review: true`:跳过检测 + submit 矩阵**砍掉直推**
-    (其余分流不变),记账照旧一个字不动;**没有「强行覆盖」入口**(用户拍板);
+  - ⚠️ **这两句已被 v8 推翻**:确认后的第二跳现在带 `confirmed`(仍然覆盖),
+    **有「强行覆盖」入口**(2026-09-16 用户重新拍板),且覆盖成功后**会更新基线**
+    ——旧写法"记账一个字不动"正是同事那个死循环的成因;
   - `CONFLICT_STALE`(检测与提交之间被抢先)在前端导入**同一个**冲突档;
-  - `install.ts` 的 `keepLocalAndShare` **恒带 forceReview**——那条路的前提就是
-    "远端有新版",直推等于覆盖对方,是同一缺陷的第三个入口;
+  - `install.ts` 的「保留并分享」在 v8 起走**覆盖确认**(不再是 forceReview):
+    前提仍是"远端有新版",但出路从"提交审核"换成了"看清是谁改的、再决定覆不覆盖";
   - 检测走**读链路**(`read_source`,内建源匿名),提交走**写链路**(实名),不能省成一个;
   - live 用例**直推 main 必须拿 `share_live.rs` 的 `MAIN_BRANCH_LOCK` 并自清理**:
     并发直推同分支在真 Gitea 上撞车、残留技能打红 gitea_live 清单断言,两个都真实发生过。
