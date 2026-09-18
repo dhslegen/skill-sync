@@ -1463,6 +1463,9 @@ pub async fn claim_attribution(
     let change = attribution_change(upstream.as_ref(), dir_slug, display, &aliases)?;
     let direct = ChangeFilesRequest {
         branch: repo.branch.clone(),
+        // v8 任务 3(D1)起恒 `None`:提交审核下线,分享只剩直推。字段本身留着
+        // ——它是 Gitea 请求体的一部分,`tests/gitea_live.rs` 仍用它探只读用户的
+        // 开分支权限(见 `gitea.rs` 那条守卫的文档)。
         new_branch: None,
         message,
         files: vec![change],
@@ -1538,6 +1541,9 @@ async fn submit_gitea(
     }
     let direct = ChangeFilesRequest {
         branch: repo.branch.clone(),
+        // v8 任务 3(D1)起恒 `None`:提交审核下线,分享只剩直推。字段本身留着
+        // ——它是 Gitea 请求体的一部分,`tests/gitea_live.rs` 仍用它探只读用户的
+        // 开分支权限(见 `gitea.rs` 那条守卫的文档)。
         new_branch: None,
         message: message.to_string(),
         files,

@@ -65,10 +65,14 @@ fn write_skill(dir: &Path, name: &str, desc: &str) {
     .unwrap();
 }
 
-/// 一次性跑完三分支与竞态:live 测试共享同一个 fixture 库,拆成多个 #[test]
-/// 会互相踩(并行跑、共享远端状态),串成一个用例反而各阶段边界最清楚。
+/// 一次性跑完 `precheck` 的三档(Fresh / Mine / Taken)与提交竞态:live 测试
+/// 共享同一个 fixture 库,拆成多个 #[test] 会互相踩(并行跑、共享远端状态),
+/// 串成一个用例反而各阶段边界最清楚。
+///
+/// ⚠️ 这里原先叫「三分支」,而 v8 任务 3(D1)之后**分享只剩直推一条路**,
+/// 那个名字会让人以为它在验三条提交路径。它验的一直是 `SharePrecheck` 的三档。
 #[tokio::test]
-async fn share_three_branches_and_race_against_a_real_gitea() {
+async fn share_precheck_three_cases_and_race_against_a_real_gitea() {
     let _main = MAIN_BRANCH_LOCK.lock().await;
     let Some(vars) = fixture_env() else {
         eprintln!("跳过:未找到 fixtures/.env.local,先跑 ./fixtures/init.sh");

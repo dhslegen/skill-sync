@@ -965,6 +965,12 @@ mod tests {
         assert_eq!(keys, vec!["branch", "message", "files"]);
     }
 
+    /// ⚠️ **守护对象还在,但已经不是分享链路了**(终审 M-7 复核):v8 任务 3(D1)
+    /// 之后 `share.rs` 的两处构造恒 `new_branch: None`,"开分支提交审核"整条路下线。
+    /// 这条守卫因此**不再**保护分享;它保护的是 `ChangeFilesRequest` 这个 Gitea
+    /// 请求体本身——`tests/gitea_live.rs` 仍拿 `Some(..)` 探"只读用户连分支都开不了"
+    /// 这条实证(那条断言一旦不红,说明 Gitea 行为变了)。字段与守卫都保留,
+    /// 但别再照着它去找"分享会开分支"的代码:那已经没有了。
     #[test]
     fn change_files_request_spells_new_branch_the_way_gitea_expects() {
         // 这条测试是补上来的:原先只有上面那句 `get("new_branch").is_none()`,

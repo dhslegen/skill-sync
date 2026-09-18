@@ -841,7 +841,7 @@ pub fn build(
             versions: versions_for(&home.body, literal_group(&all, &home.dir_name, &body_literal)),
             share_blocked: skills::validate_skill_dir(&home.body).err(),
             section: ownership::section(relation),
-            });
+        });
     }
 
     // ── 第 2+3 源:磁盘上有实体、但没有记账 ─────────────────────────────
@@ -929,7 +929,7 @@ pub fn build(
             versions: Vec::new(),
             share_blocked: None,
             section: ownership::section(relation),
-                // 这一档按定义就在公司技能库里,`entry` 就是它在库里的落点。
+            // 这一档按定义就在公司技能库里,`entry` 就是它在库里的落点。
             library_url: row_library_url(relation, builtin, Some(entry)),
             // 本地连本体都没有,谈不上"住在统一技能目录里",更没有谁在读它。
             canonical_readers: None,
