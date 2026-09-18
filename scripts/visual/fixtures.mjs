@@ -545,6 +545,23 @@ export function buildFixtures() {
         user: { login: "zhaowenhao", displayName: "赵文浩", avatarUrl: "" },
       },
       installed_list: SKILLS.filter((s) => !s.notInstalled).map(installedSkill),
+      // v8:分享现在是"让技能库和本地一致",预览轮回一份清单(可能带覆盖警告)。
+      // 两屏都要能截到——这是本期唯一会**删服务端文件**的界面。
+      skill_share_changes: {
+        kind: "needsConfirm",
+        plan: {
+          added: ["reference/新增示例.md"],
+          modified: ["SKILL.md"],
+          deleted: ["reference/旧模板.md", "scripts/legacy.md"],
+        },
+        overwrite: {
+          lastAuthor: "刘兴泽",
+          lastAt: "2026-09-16T08:15:00Z",
+          historyUrl: "http://gitea.internal.example/skills/skills/commits/branch/main/skills/api-test-expert",
+        },
+        remoteRev: "sha256:harness-preview-rev",
+        stale: false,
+      },
       agents_detected: {
         canonicalDir: CANONICAL,
         agents: AGENTS.map((a) => ({

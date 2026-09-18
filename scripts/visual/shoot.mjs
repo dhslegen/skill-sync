@@ -442,6 +442,25 @@ const SCREENS = [
       await page.waitForTimeout(300);
     },
   },
+  // ---------------------------------------------------------------- v8
+  // 本期唯一会**删服务端文件**的界面:分享前的统一确认屏。三栏清单(新增/修改/
+  // 删除)+ 顶部覆盖警告(库里那一版是谁、什么时候改的、去哪找回)。
+  // 送审截图必须覆盖"既有删除、又有覆盖警告"这一档——它是信息最密、最危险的那个。
+  {
+    id: "35-share-confirm-with-deletions",
+    title: "分享确认屏 · 带删除 + 覆盖警告(v8:这一屏是删服务端文件前的唯一一道人闸)",
+    viewport: { width: 1200, height: 900 },
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      await page.getByRole("tab", { name: /已分享到技能库/ }).click();
+      await page.waitForTimeout(200);
+      const row = page.locator('[data-testid^="row-"]').first();
+      await row.getByRole("button", { name: "更多操作", exact: false }).click();
+      await page.getByText("分享改动").click();
+      await page.waitForTimeout(500);
+    },
+  },
+
   // ---------------------------------------------------------------- 0.6.x 全屏
   // 用户真机全屏(~2000px)截图:内容列靠左封顶、顶栏全出血,右半边一大片空白。
   // 此前所有屏都是 1200 宽,**全屏这一档从来没人截过**——送审截图要覆盖最宽的窗口,
