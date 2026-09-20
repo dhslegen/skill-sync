@@ -869,6 +869,106 @@ async fn deleting_a_local_file_removes_it_from_a_real_gitea() {
     );
 }
 
+/// 🔴 **2026-09-20 真机验收抓到的第二条**:用户改了**自己早年分享过、但本机没有
+/// `state.installed` 记账**的技能(换过电脑、或当年走的是别的路),行上一颗按钮都没有
+/// ——`local_modified` 要安装基线才算得出,无基线时恒 false。
+///
+/// 修法是让这类行走**首次分享那条不要求记账的路**(`share`,它自己下快照、过覆盖闸、
+/// 推成功后补一条记账)。这条用例证明真 Gitea 上这条路确实走得通,并且**补出了基线**
+/// ——下一次就是正常的「分享改动」了。
+#[tokio::test]
+async fn a_shared_skill_without_a_local_record_can_still_push_changes() {
+    let _main = MAIN_BRANCH_LOCK.lock().await;
+    let Some(vars) = fixture_env() else {
+        eprintln!("跳过:未找到 fixtures/.env.local,先跑 ./fixtures/init.sh");
+        return;
+    };
+    let need = [
+        "SKILLSYNC_FIXTURE_GITEA_URL",
+        "SKILLSYNC_FIXTURE_ORG",
+        "SKILLSYNC_FIXTURE_REPO",
+        "SKILLSYNC_FIXTURE_ADMIN_TOKEN",
+    ];
+    if let Some(missing) = need.iter().find(|k| !vars.contains_key(**k)) {
+        eprintln!("跳过:fixtures/.env.local 缺 {missing}");
+        return;
+    }
+    let base_url = vars["SKILLSYNC_FIXTURE_GITEA_URL"].clone();
+    let repo = RepoRef {
+        owner: vars["SKILLSYNC_FIXTURE_ORG"].clone(),
+        repo: vars["SKILLSYNC_FIXTURE_REPO"].clone(),
+        branch: "main".into(),
+    };
+    let admin = GiteaClient::new(base_url, Some(vars["SKILLSYNC_FIXTURE_ADMIN_TOKEN"].clone())).unwrap();
+    if admin.branch_head(&repo).await.is_err() {
+        eprintln!("跳过:连不上 fixture Gitea");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().to_path_buf();
+    let env = TmpEnv { home: home.clone() };
+    let store = Store::new(home.join(".skillsync"));
+    let registry = AgentRegistry::builtin();
+    let trash = skillsync_lib::core::fsops::SandboxTrash::new(home.join("..").join("share-live-norecord-trash"));
+
+    let name = format!("norecord-live-{:x}", std::process::id());
+    let body = home.join(".agents").join("skills").join(&name);
+    write_skill(&body, &name, "第一版");
+
+    let user = admin.current_user().await.unwrap();
+    let mut config = store.load_config().unwrap().value;
+    config.identities.insert(
+        "fixture".into(),
+        skillsync_lib::core::ownership::Identity {
+            login: user.login.clone(),
+            display_name: if user.full_name.trim().is_empty() { user.login.clone() } else { user.full_name.clone() },
+        },
+    );
+    store.save_config(&config).unwrap();
+
+    // ① 先分享一次,让库里有这个技能
+    confirmed_share(
+        &share::ShareClient::Gitea(&admin), &admin, &registry, &env, &store, &trash,
+        "fixture", &repo, &name, NOW,
+    ).await.expect("首次分享失败");
+
+    // ② 抹掉本机记账 —— 这就是"换过电脑/早年分享"的等价现场
+    let mut state = store.load_state().unwrap().value;
+    state.installed.retain(|s| s.name != name);
+    store.save_state(&state).unwrap();
+    assert!(
+        store.load_state().unwrap().value.installed.iter().all(|s| s.name != name),
+        "现场没造对:记账还在"
+    );
+
+    // ③ 本地改一笔,再走同一条路(前端对无基线的行选的就是这条 IPC)
+    write_skill(&body, &name, "改过的第二版");
+    let out = confirmed_share(
+        &share::ShareClient::Gitea(&admin), &admin, &registry, &env, &store, &trash,
+        "fixture", &repo, &name, NOW,
+    ).await;
+
+    let remote = admin
+        .file_content(&repo, &format!("skills/{name}/SKILL.md"))
+        .await
+        .ok()
+        .flatten()
+        .map(|(_sha, bytes)| String::from_utf8_lossy(&bytes).into_owned());
+    let state_after = store.load_state().unwrap().value;
+    let baseline = state_after.installed.iter().find(|s| s.name == name).map(|s| s.content_hash.clone());
+    cleanup_skill_dir(&admin, &repo, &name).await;
+
+    let out = out.expect("无记账的技能也该推得上去");
+    assert!(matches!(out, ShareOutcome::Shared { mode: ShareMode::Pushed, .. }), "应当直推:{out:?}");
+    let remote = remote.expect("库里应当还有这个技能");
+    assert!(remote.contains("改过的第二版"), "库里拿到的应当是改过的那一版:{remote}");
+    assert!(
+        baseline.as_deref().is_some_and(|h| !h.is_empty()),
+        "推成功之后要补出安装基线,否则下一次仍然是「推不上去」那一档:{baseline:?}"
+    );
+}
+
 /// 库里这个技能目录当前有哪些文件(真实的树,不是我们自己的返回值)。
 async fn remote_paths(admin: &GiteaClient, repo: &RepoRef, name: &str) -> Vec<String> {
     let head = admin.branch_head(repo).await.unwrap();

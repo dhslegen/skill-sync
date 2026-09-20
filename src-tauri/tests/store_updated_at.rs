@@ -274,3 +274,41 @@ async fn an_exhausted_history_stops_early() {
     assert_eq!(at_of(&index, "never-touched"), SkillUpdatedAt::LongAgo);
     assert_eq!(requested_pages(&server).await, vec!["1"], "这一页没满就说明到头了,别再翻");
 }
+
+/// 🔴 **「算不出」不许粘着**(2026-09-20 真机):应用的读链路曾漏转发 `commit_page`,
+/// 于是整份索引写成了 `Unknown`。分支头不变就走缓存早退路,那些时间**再也不会出现**
+/// ——用户看到的是"这个功能根本没做"。所以命中缓存时要补一次,且只补还没有答案的。
+#[tokio::test]
+async fn a_cached_index_full_of_unknowns_gets_backfilled_on_the_next_refresh() {
+    let server = MockServer::start().await;
+    mount_repo(&server, &["weekly-report"]).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = store::cache_path(tmp.path(), REGISTRY, &repo_ref());
+
+    // ① 先造一份"全是算不出"的缓存:commits 端点没挂 → 取数失败
+    let first = refresh(&server, &cache).await;
+    assert_eq!(at_of(&first, "weekly-report"), SkillUpdatedAt::Unknown, "现场没造对");
+
+    // ② 分支头没变(走缓存命中那条早退路),但这次源答得上来了 → 必须补上
+    mount_commit_page(
+        &server,
+        1,
+        vec![commit("2026-09-14T03:12:00Z", &["skills/weekly-report/SKILL.md"])],
+    )
+    .await;
+    let second = refresh(&server, &cache).await;
+    assert!(
+        matches!(at_of(&second, "weekly-report"), SkillUpdatedAt::At { .. }),
+        "命中缓存时要把「算不出」补上,否则分支头不变就永远显示不出时间:{:?}",
+        at_of(&second, "weekly-report")
+    );
+
+    // ③ 补出来的要落盘,否则每次刷新都得重问一遍
+    assert!(
+        matches!(
+            at_of(&store::load_cache(&cache).expect("缓存还在"), "weekly-report"),
+            SkillUpdatedAt::At { .. }
+        ),
+        "补出来的时间要写回缓存"
+    );
+}

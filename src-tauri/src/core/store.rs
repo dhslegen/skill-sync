@@ -720,8 +720,24 @@ pub async fn refresh_index(
     if !force {
         // take/放回而不是 clone:命中缓存是最热的路径(DoD 要 <300ms),
         // 50 个技能连 SKILL.md 全文一起复制一遍纯属白花钱。
-        if let Some(index) = cached.take() {
+        if let Some(mut index) = cached.take() {
             if index.commit_sha == head.sha {
+                // 🔴 **「算不出」不许粘着**(2026-09-20 真机):这份缓存可能是在取数
+                // 失败、或调用方压根答不上来的时候写下的(真发生过:应用的读链路漏转发了
+                // `commit_page`,整份索引全是 `Unknown`)。分支头不变就永远走这条早退路,
+                // 那些技能的时间**再也不会出现**,除非库里有人提交或用户手动强制刷新。
+                // 所以命中缓存时补一次:只补 `Unknown` 的,全都有值就一个请求都不发;
+                // 源本来就答不上来(GitHub/广场,D15)时 `commit_page` 不发请求直接回
+                // `None`,也不会有额外开销。
+                if index.skills.iter().any(|s| s.updated_at == SkillUpdatedAt::Unknown) {
+                    fill_updated_at(client, r, &mut index).await;
+                    if index.skills.iter().any(|s| s.updated_at != SkillUpdatedAt::Unknown) {
+                        // 真补出来了才写回,免得每次刷新都白写一遍盘
+                        if let Err(err) = save_cache(cache_file, &index) {
+                            tracing_warn(&err);
+                        }
+                    }
+                }
                 // 刚确认过与技能库一致,就是"刚刷新过"——界面的「X 前刷新」读的是它。
                 // 不写回缓存文件:只是展示时间,每 5 分钟落一次盘不值;重启后首次检查就会再盖上。
                 let index = StoreIndex { fetched_at, ..index };
@@ -770,10 +786,12 @@ pub async fn refresh_index(
 pub async fn fill_updated_at(client: &impl RepoSource, r: &RepoRef, index: &mut StoreIndex) {
     // (技能在 index.skills 里的下标, 它的目录前缀)。找到一个就从这里摘掉,
     // 空了就早退——公司技能库实测第 1 页就能清空。
+    // 只补还没有答案的那些:缓存命中时的回补路径靠它做到"已经有值的不动"。
     let mut pending: Vec<(usize, String)> = index
         .skills
         .iter()
         .enumerate()
+        .filter(|(_, s)| s.updated_at == SkillUpdatedAt::Unknown)
         .map(|(i, s)| (i, format!("{}/", s.path)))
         .collect();
     if pending.is_empty() {
