@@ -404,6 +404,7 @@
   "share.planDeleteHint": "这 {count} 个文件会从技能库里删掉。它们仍留在技能库的历史里,可以找回。",
   "share.planLoading": "正在看技能库里现在是什么样…",
   "share.planChanged": "刚才这一下没有分享出去:技能库里的这个技能在你看清单的这会儿又变了。下面是重新算出来的清单,请再看一遍。",
+  "share.planChangedLocally": "刚才这一下没有分享出去:这个技能在你电脑上的内容在你看清单的这会儿又变了。下面是重新算出来的清单,请再看一遍。",
   "mine.shareRemoteChanged": "就在刚才,技能库里的这个技能被人改过了,这次没有分享出去。再点一次「分享改动」,会把新的改动清单摆出来给你过目。",
   "mine.shareBlocked.nameMissing": "分享前请在 SKILL.md 里补上 name,并让它与文件夹名一致。",
   "mine.shareBlocked.nameMismatch": "SKILL.md 里的 name 与文件夹名不一致。团队标准要求两者相同,改成一样才能分享。",

@@ -411,8 +411,77 @@ pub struct ShareRequest<'a> {
     /// 拆成两个形参(`confirmed: bool` + `rev: Option<..>`)就等于把这条不变量交给
     /// 约定;合成一个 `Option` 之后,"确认了却没带凭据"在 Rust 侧根本写不出来。
     ///
-    /// 凭据的取值见 [`remote_rev`]:**该技能目录的远端内容指纹**,不是分支头 sha。
-    pub confirm: Option<&'a str>,
+    /// 凭据的取值见 [`Confirmation`]。
+    pub confirm: Option<Confirmation<'a>>,
+}
+
+/// 用户按下确认时必须带回来的两条凭据。**两条,不是一条**(v8 任务 8 / 顾问①)。
+///
+/// 终审 C-1 只绑了库里那一版([`remote_rev`])。摆出内容级差异之后,我们等于向
+/// 用户承诺「**你看到的差异 = 我要推的差异**」——而执行轮是**重新读本地文件**的。
+/// 本地在两轮之间被改(这个项目里 Claude Code 正在编辑是常态)就会推走用户
+/// **没看过**的内容,而 `remote_rev` 照样对得上、**不触发重看**。
+///
+/// 🔴 **两个字段刻意不合并成一个复合 token**:两种失效对用户是**两句不同的话**
+/// ——「技能库里那一版被别人改过了」与「你本地又改过了」。合并之后界面只知道
+/// "凭据不对",说不清到底发生了什么。出口同一条([`StaleReason`] 两个成员),
+/// 措辞两句。
+///
+/// 🔴 **合成一个 struct 而不是两个 `Option` 形参**:与 T5 把 `confirmed: bool`
+/// 合成 `Option<&str>` 是同一条道理——"确认了却只带一条凭据"在 Rust 侧根本写不出来。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Confirmation<'a> {
+    /// 这份清单是基于**库里哪一版**算出来的,见 [`remote_rev`]。
+    pub remote_rev: &'a str,
+    /// 这份清单**自己**的指纹,见 [`PlannedChanges::plan_rev`]。
+    pub plan_rev: &'a str,
+}
+
+/// 用户看过的那份清单为什么作废了。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StaleReason {
+    /// 技能库里那一版变了(同事推了东西)。
+    RemoteChanged,
+    /// 本机这个技能变了(用户自己、或正开着的编辑器改的)。
+    LocalChanged,
+}
+
+/// 这一轮该出清单还是该提交。
+pub(crate) enum ConfirmGate {
+    /// 没带凭据 = 预览轮,出清单,一个写请求都不发。
+    Preview,
+    /// 带了凭据,但它绑的那份清单已经作废,**照样只出清单**。
+    Stale(StaleReason),
+    /// 凭据对得上,照推。
+    Go,
+}
+
+impl ConfirmGate {
+    fn stale_reason(&self) -> Option<StaleReason> {
+        match self {
+            ConfirmGate::Stale(r) => Some(*r),
+            _ => None,
+        }
+    }
+}
+
+/// 两条凭据**分别**比,而且顺序固定:先库里、后本地。
+///
+/// 两条都变时报 `RemoteChanged` 就够了,**不需要第三个"两边都变了"的成员**:
+/// 退回去的那份清单是**重算**的,它自带的新 `plan_rev` 已经把新的本地状态绑上了,
+/// 用户看的就是最新的两边。多一个成员只会多一句没人需要的话。
+pub(crate) fn confirm_gate(
+    confirm: Option<Confirmation<'_>>,
+    remote_rev: &str,
+    plan_rev: &str,
+) -> ConfirmGate {
+    match confirm {
+        None => ConfirmGate::Preview,
+        Some(c) if c.remote_rev != remote_rev => ConfirmGate::Stale(StaleReason::RemoteChanged),
+        Some(c) if c.plan_rev != plan_rev => ConfirmGate::Stale(StaleReason::LocalChanged),
+        Some(_) => ConfirmGate::Go,
+    }
 }
 
 /// 提交走的路径。
@@ -456,10 +525,17 @@ pub enum ShareOutcome {
         /// 这份清单是基于库里哪一版算出来的([`remote_rev`])。执行轮原样带回来,
         /// core 比不上就**不提交**,而是重新算一份再问一次(终审 C-1)。
         remote_rev: String,
-        /// `true` = 用户确实按过确认,但技能库在他看清单的这段时间里又变了,
+        /// 这份清单**自己**的指纹([`PlannedChanges::plan_rev`])。与上面那条一起
+        /// 原样带回来,见 [`Confirmation`]。
+        plan_rev: String,
+        /// `true` = 用户确实按过确认,但他看清单的这段时间里情况变了,
         /// 这是**重新算出来的**第二份清单。界面必须如实说明发生了什么
         /// ——静默换掉清单,用户会以为自己看花了眼。
         stale: bool,
+        /// 变的是哪一头([`StaleReason`])。`stale == stale_reason.is_some()`,
+        /// 两者在**同一处**赋值(`stale: reason.is_some()`),不会漂。
+        /// 留着 `stale` 是因为既有渲染点读它,这一条只是多告诉界面一句原因。
+        stale_reason: Option<StaleReason>,
     },
     /// 库里这个技能已经与本地逐字节一致,**一个请求都没发**。
     ///
@@ -600,8 +676,13 @@ pub async fn share(
     //    等号成立时不再重跑覆盖闸,**不是省事**:闸的全部输入(远端指纹、基线、
     //    技能路径)都没变,再跑一次必然得出同一个结论,而"同一条规则查两遍"是本项目
     //    记着的空转模式 ①——那一遍永远不触发,却会吞掉注入信号。
+    //
+    //    🔴 **凭据有两条**(v8 任务 8 / 顾问①):库里那一版 + 这份清单自己。
+    //    摆出内容级差异之后,"用户看过的 = 现在要做的"这句承诺也包含本地那一侧,
+    //    而执行轮是重新读本地文件的。完整原委见 [`Confirmation`]。
     let rev = archive.as_ref().map(|a| remote_rev(a, &remote_path)).unwrap_or_default();
-    if req.confirm != Some(rev.as_str()) {
+    let gate = confirm_gate(req.confirm, &rev, &changes.plan_rev);
+    if !matches!(gate, ConfirmGate::Go) {
         let baseline = loaded
             .value
             .shared
@@ -622,11 +703,15 @@ pub async fn share(
             Some(_) => overwrite_gate(&rev, client, req.repo, &remote_path, baseline).await?,
             None => None,
         };
+        // `stale` 与 `stale_reason` 在**同一处**赋值,两者不可能漂。
+        let reason = gate.stale_reason();
         return Ok(ShareOutcome::NeedsConfirm {
             plan: changes.plan,
             overwrite,
             remote_rev: rev,
-            stale: req.confirm.is_some(),
+            plan_rev: changes.plan_rev,
+            stale: reason.is_some(),
+            stale_reason: reason,
         });
     }
 
@@ -908,8 +993,12 @@ pub enum ShareInstalledOutcome {
         overwrite: Option<OverwriteWarning>,
         /// 见 [`ShareOutcome::NeedsConfirm`] 的同名字段(终审 C-1)。
         remote_rev: String,
+        /// 见 [`ShareOutcome::NeedsConfirm`] 的同名字段(v8 任务 8)。
+        plan_rev: String,
         /// 见 [`ShareOutcome::NeedsConfirm`] 的同名字段(终审 C-1)。
         stale: bool,
+        /// 见 [`ShareOutcome::NeedsConfirm`] 的同名字段(v8 任务 8)。
+        stale_reason: Option<StaleReason>,
     },
     /// 库里已与本地一致;顺手做一次基线对齐(T2 的 [`converge::align_baseline`])。
     AlreadyInSync,
@@ -939,9 +1028,10 @@ pub async fn share_installed(
     // 🔴 它与已下线的 `force_review` 只是形参位置相同,**语义方向完全相反**:
     // 那个是"有权限也不许直推,强制开合并请求";这个是"看过了,照推"。
     //
-    // 🔴 `Option<&str>` 而不是 `bool`(终审 C-1):执行轮必须带上"那份清单是基于
-    // 库里哪一版算出来的",见 [`ShareRequest::confirm`] 与 [`remote_rev`]。
-    confirm: Option<&str>,
+    // 🔴 `Option<Confirmation>` 而不是 `bool`(终审 C-1 + v8 任务 8):执行轮必须
+    // 带上"那份清单基于库里哪一版"与"那份清单自己长什么样"两条凭据,
+    // 见 [`ShareRequest::confirm`] 与 [`Confirmation`]。
+    confirm: Option<Confirmation<'_>>,
     now: &str,
 ) -> Result<ShareInstalledOutcome, AppError> {
     // 显式 `.with_trasher(SYSTEM_TRASH)`:默认值本来就是它,这条路上的 installer
@@ -1056,14 +1146,18 @@ pub async fn share_installed(
     // 确认屏(D6/D9)+ 预览轮与执行轮的绑定(终审 C-1,完整原委见 [`remote_rev`]
     // 与 [`share`] 里的同一段):凭据对得上才照推,对不上就重算一份再问一次。
     let rev = remote_rev(&archive, &remote_path);
-    if confirm != Some(rev.as_str()) {
+    let gate = confirm_gate(confirm, &rev, &changes.plan_rev);
+    if !matches!(gate, ConfirmGate::Go) {
         let overwrite =
             overwrite_gate(&rev, client, &repo, &remote_path, &record.content_hash).await?;
+        let reason = gate.stale_reason();
         return Ok(ShareInstalledOutcome::NeedsConfirm {
             plan: changes.plan,
             overwrite,
             remote_rev: rev,
-            stale: confirm.is_some(),
+            plan_rev: changes.plan_rev,
+            stale: reason.is_some(),
+            stale_reason: reason,
         });
     }
 
@@ -1601,12 +1695,144 @@ async fn submit_github(
 #[serde(rename_all = "camelCase")]
 pub struct SharePlan {
     /// 本地有、库里没有。
-    pub added: Vec<String>,
+    pub added: Vec<AddedFile>,
     /// 两边都有,但内容不同。
-    pub modified: Vec<String>,
+    pub modified: Vec<ModifiedFile>,
     /// 🔴 **库里有、本地没有——这次会把它们从技能库里删掉**。
-    pub deleted: Vec<String>,
+    pub deleted: Vec<DeletedFile>,
 }
+
+/// 新增的一个文件。🔴 **只带路径与标记,不带内容**(v8 任务 8 / 顾问②)。
+///
+/// 理由是 IPC 返回值的体量:首次分享一个 54 文件的技能,最坏十几 MB 全塞进一次
+/// 返回值里;而新增文件的内容**就在本地磁盘上**,任务 9 的「读本地单文件」通道
+/// 按需读即可,**零新增接口**。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddedFile {
+    pub path: String,
+    pub body: AddedBody,
+}
+
+/// 新增文件的内容标记。**可辨联合不是布尔**:界面据此决定"给不给点开看"。
+///
+/// **这里没有「超限」那一档,是有意的**(设计 Q11「不预告大小,直接拉」):
+/// 内容根本不随这一轮传,大小限额是**取数那一刻**的事——任务 9 从磁盘读回来时
+/// 再判。摆在这里就是拿预览轮的一个旧观测去预告另一次读取的结果,而两次之间
+/// 文件完全可能已经变了。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum AddedBody {
+    /// 文本,内容按需读(见 [`AddedFile`] 的文档)。
+    Text,
+    /// 非 UTF-8。文案只能说「这不是文本格式,看不了内容」——**不能说"这是图片"**,
+    /// UTF-16 文本也会落进这一档,那是在编造一个我们并不知道的事实。
+    Binary,
+}
+
+/// 修改的一个文件:路径 + 这两版之间的差异。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModifiedFile {
+    pub path: String,
+    pub diff: FileDiff,
+}
+
+/// 删除的一个文件:路径 + **库里那一版**的内容。
+///
+/// 内容取自这一轮的远端快照——它已经在手上了,用完即弃(不落盘、不缓存)。
+/// 本地那一侧根本没有这个文件,所以它是用户唯一能看到"要删掉的是什么"的地方。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedFile {
+    pub path: String,
+    pub body: DeletedBody,
+}
+
+/// 被删文件的远端内容。**超限那一档刻意不带正文**——它同时也是这一轮 IPC
+/// 返回值体量的上界:一个技能可以有很多个被删的大文件。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum DeletedBody {
+    Text { text: String },
+    /// 见 [`AddedBody::Binary`]。
+    Binary,
+    TooLarge { limit: SizeLimit, bytes: u64, lines: usize },
+}
+
+/// 两版之间的差异。四档**可辨联合,不是几个布尔**:每一档在界面上都是一句
+/// 不同的话,压成布尔就分不出"为什么看不了"。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum FileDiff {
+    /// 正常的逐行差异。`hidden_hunks` > 0 时只给了前 [`MAX_HUNKS`] 处。
+    Hunks { hunks: Vec<DiffHunk>, hidden_hunks: usize },
+    /// 🔴 正文逐字相同,**只有行尾的换行符不同**(设计 Q17)。
+    /// 不单列这一档的话,用户看到的是"全文都红"——因为 CRLF 让每一行都不等,
+    /// 而他明明一个字都没改。
+    LineEndingsOnly,
+    /// 任一侧非 UTF-8。见 [`AddedBody::Binary`]。
+    Binary,
+    /// 任一侧超限。`limit` 说清是哪条超了,`bytes`/`lines` 是两侧里较大的那个值。
+    TooLarge { limit: SizeLimit, bytes: u64, lines: usize },
+}
+
+/// 超的是哪一条。**与 hunk 上限是两把不同的尺子**:一个文件可以很小、却改了上千处。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SizeLimit {
+    Bytes,
+    Lines,
+    Both,
+}
+
+/// 一处改动及其上下文,与 `git diff` 的 `@@ -a,b +c,d @@` 同口径:行号 **1 基**,
+/// 而**空范围**(纯新增/纯删除那一侧)的起点是它前面那一行——`git` 对全空的旧文件
+/// 写的是 `-0,0` 而不是 `-1,0`。这一条不是细枝末节:界面要照这个数标行号,
+/// 差一行就是指着别处说"这里改了"。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffHunk {
+    pub old_start: usize,
+    pub old_lines: usize,
+    pub new_start: usize,
+    pub new_lines: usize,
+    pub lines: Vec<DiffLine>,
+}
+
+/// 差异里的一行。文本**不含行尾换行符**(渲染时由界面决定怎么断行)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffLine {
+    pub op: DiffOp,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffOp {
+    Context,
+    Insert,
+    Delete,
+}
+
+/// 上下文行数:上下各 3 行,与 `git diff -U3` 同口径(设计 Q9)。
+const CONTEXT_RADIUS: usize = 3;
+
+/// 内容超过它就不算差异了(设计 Q12)。
+const MAX_DIFF_BYTES: u64 = 256 * 1024;
+const MAX_DIFF_LINES: usize = 2000;
+
+/// 一个文件最多给出多少处改动。
+///
+/// **与 [`MAX_DIFF_BYTES`]/[`MAX_DIFF_LINES`] 是两把不同的尺子,不能合并**:
+/// 一个文件可以只有几 KB、几百行,却在里面改了上千处(批量替换一个词就是这样),
+/// 那两条闸一条都不触发,而逐处展开出来仍然是没人读得完的一屏。
+///
+/// 取 50 的理由:每一处最坏 7 行(上下各 3 行 + 改动),50 处 ≈ 350 行
+/// ——已经远超任何人会在一个确认屏上逐条读完的量;再多给不增加信息,
+/// 只增加"滚不到底就闭眼点确认"的概率。超出的部分如实报计数,不假装没有。
+const MAX_HUNKS: usize = 50;
 
 impl SharePlan {
     /// 一个字节都不用改。这正是"空提交"的判据:此前分享只上传不比对,
@@ -1626,6 +1852,13 @@ pub(crate) struct PlannedChanges {
     pub upload: Vec<(String, Vec<u8>)>,
     /// 要删除的文件,同样是完整远端路径。
     pub delete: Vec<String>,
+    /// 🔴 **这份清单本身的指纹**(v8 任务 8 / 顾问①)。见 [`ShareRequest::confirm`]。
+    ///
+    /// 由**这一次**算出的每一项 `(动作, 路径, 本地字节)` 求出,与
+    /// `upload`/`delete` 出自同一份数据——**刻意不另去磁盘上算一次
+    /// `dir_content_hash`**:那等于在"算指纹"与"读要推的字节"之间再开一个
+    /// 时间窗,而这个字段的全部意义正是关掉那个窗。
+    pub plan_rev: String,
 }
 
 /// 算出"让库里与本地一致"需要做的事。**纯函数,不发任何请求。**
@@ -1669,23 +1902,32 @@ fn plan_changes(
         plan: SharePlan::default(),
         upload: Vec::new(),
         delete: Vec::new(),
+        plan_rev: String::new(),
     };
+    // 清单指纹与清单本身同一次算出来(见 [`PlannedChanges::plan_rev`])。
+    // 动作进 hash:同一个路径"新增"与"修改"是两件不同的事,指纹必须分得开。
+    let mut rev = fsops::ContentHasher::new();
 
     for (path, bytes) in &local {
         let rel = strip_within(prefix, path)?;
         match remote.get(path) {
             Some(existing) if existing == bytes => {} // 一个都不发
-            Some(_) => {
-                out.plan.modified.push(rel);
+            Some(existing) => {
+                rev.push(&format!("~{rel}"), bytes);
+                out.plan.modified.push(ModifiedFile {
+                    path: rel,
+                    diff: diff_of(existing, bytes),
+                });
                 out.upload.push((path.clone(), bytes.clone()));
             }
             None => {
-                out.plan.added.push(rel);
+                rev.push(&format!("+{rel}"), bytes);
+                out.plan.added.push(AddedFile { path: rel, body: added_body(bytes) });
                 out.upload.push((path.clone(), bytes.clone()));
             }
         }
     }
-    for path in remote.keys() {
+    for (path, existing) in remote {
         if local.contains_key(path) {
             continue;
         }
@@ -1693,10 +1935,139 @@ fn plan_changes(
         if fsops::is_excluded_rel(&rel) {
             continue; // 不是本 app 管的文件,不碰
         }
-        out.plan.deleted.push(rel);
+        // 被删的那一侧本地没有字节可喂,喂空即可:远端内容变没变由 `remote_rev`
+        // 那条凭据负责,这一条只回答"我这次要动的东西还是不是那些"。
+        rev.push(&format!("-{rel}"), b"");
+        out.plan.deleted.push(DeletedFile { path: rel, body: deleted_body(existing) });
         out.delete.push(path.clone());
     }
+    out.plan_rev = rev.finish();
     Ok(out)
+}
+
+/// 新增文件只需要回答"点开看得了吗"。
+fn added_body(bytes: &[u8]) -> AddedBody {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => AddedBody::Text,
+        Err(_) => AddedBody::Binary,
+    }
+}
+
+/// 被删文件带上库里那一版的正文,超限与二进制两档只带标记。
+fn deleted_body(bytes: &[u8]) -> DeletedBody {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return DeletedBody::Binary;
+    };
+    match over_limit(bytes.len(), count_lines(text)) {
+        Some((limit, bytes_n, lines)) => DeletedBody::TooLarge { limit, bytes: bytes_n, lines },
+        None => DeletedBody::Text { text: text.to_string() },
+    }
+}
+
+/// 算两版之间的差异。**判定顺序就是判据**,换顺序会说假话:
+///
+/// 1. **二进制在最前**:`similar` 只吃 `&str`,非 UTF-8 在算 diff 之前就已经出局
+///    ——一处判定两处用(设计 Q14),不是我们另立的第二条规则;
+/// 2. **超限次之**:先量再算,免得为了一个根本不会显示的结果跑一遍 Myers;
+/// 3. 🔴 **归一化行尾,然后才比**:归一化后相同 = 只有行尾不同(Q17)。
+///    不归一化就直接 diff 的话,一个 CRLF 文件的每一行都带着 `\r`,
+///    **整屏都是红绿**——而"改了行尾又改了一句话"这种混合情形更糟:
+///    真正改的那一行会淹没在几百行假改动里。
+fn diff_of(old: &[u8], new: &[u8]) -> FileDiff {
+    let (Ok(old), Ok(new)) = (std::str::from_utf8(old), std::str::from_utf8(new)) else {
+        return FileDiff::Binary;
+    };
+    let bytes = old.len().max(new.len());
+    let lines = count_lines(old).max(count_lines(new));
+    if let Some((limit, bytes, lines)) = over_limit(bytes, lines) {
+        return FileDiff::TooLarge { limit, bytes, lines };
+    }
+    let (old, new) = (normalize_line_endings(old), normalize_line_endings(new));
+    if old == new {
+        // 走到这里说明原始字节确实不同(调用方已经比过),那就只能是行尾
+        return FileDiff::LineEndingsOnly;
+    }
+    hunks_of(&old, &new)
+}
+
+/// 超限判定。返回 `None` = 两条都没过线;`Some` 里带上**实测值**,
+/// 好让界面说得出"多大 / 多少行",而不是干巴巴一句"太大了"。
+fn over_limit(bytes: usize, lines: usize) -> Option<(SizeLimit, u64, usize)> {
+    let bytes = bytes as u64;
+    let limit = match (bytes > MAX_DIFF_BYTES, lines > MAX_DIFF_LINES) {
+        (true, true) => SizeLimit::Both,
+        (true, false) => SizeLimit::Bytes,
+        (false, true) => SizeLimit::Lines,
+        (false, false) => return None,
+    };
+    Some((limit, bytes, lines))
+}
+
+/// 只把 CRLF 折成 LF。**不碰单独的 `\r`**(老 Mac 行尾):那种文件在 `from_lines`
+/// 眼里本来就是一整行,折了反而会凭空造出一堆行。
+fn normalize_line_endings(s: &str) -> String {
+    s.replace("\r\n", "\n")
+}
+
+/// 行数。末尾那个换行符不算新的一行(与 `wc -l` 的口径刻意不同:
+/// 这里量的是"要显示多少行",空的末行不显示)。
+fn count_lines(s: &str) -> usize {
+    if s.is_empty() {
+        return 0;
+    }
+    s.lines().count()
+}
+
+/// 0 基半开区间 → `@@` 头里的那个起点。空范围往前退一行,见 [`DiffHunk`]
+/// (与 `similar` 自己 `Display` 那份实现同一条规则,我们只是要取值而它不给)。
+fn unified_start(range: &std::ops::Range<usize>) -> usize {
+    if range.is_empty() {
+        range.start
+    } else {
+        range.start + 1
+    }
+}
+
+/// 跑一遍统一视图的差异,取前 [`MAX_HUNKS`] 处。
+fn hunks_of(old: &str, new: &str) -> FileDiff {
+    let diff = similar::TextDiff::from_lines(old, new);
+    let mut hunks = Vec::new();
+    let mut hidden_hunks = 0usize;
+    for hunk in diff.unified_diff().context_radius(CONTEXT_RADIUS).iter_hunks() {
+        if hunks.len() >= MAX_HUNKS {
+            hidden_hunks += 1;
+            continue;
+        }
+        let ops = hunk.ops();
+        // `similar` 的 `UnifiedHunkHeader` 没有暴露取值的方法(字段私有),
+        // 这里按它自己的算法从首尾两个 op 还原:范围是 0 基半开区间,
+        // 展示用的行号是 1 基,所以 +1。
+        let (Some(first), Some(last)) = (ops.first(), ops.last()) else {
+            continue;
+        };
+        let old_range = first.old_range().start..last.old_range().end;
+        let new_range = first.new_range().start..last.new_range().end;
+        let lines = hunk
+            .iter_changes()
+            .map(|change| DiffLine {
+                op: match change.tag() {
+                    similar::ChangeTag::Equal => DiffOp::Context,
+                    similar::ChangeTag::Insert => DiffOp::Insert,
+                    similar::ChangeTag::Delete => DiffOp::Delete,
+                },
+                // `from_lines` 的每一项都带着行尾换行符,展示时不要它
+                text: change.value().trim_end_matches('\n').to_string(),
+            })
+            .collect();
+        hunks.push(DiffHunk {
+            old_start: unified_start(&old_range),
+            old_lines: old_range.len(),
+            new_start: unified_start(&new_range),
+            new_lines: new_range.len(),
+            lines,
+        });
+    }
+    FileDiff::Hunks { hunks, hidden_hunks }
 }
 
 /// 把完整远端路径剥成技能目录内的相对路径,越界就拒。
@@ -1755,8 +2126,10 @@ fn payload_files(dir: &Path, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, App
 #[cfg(test)]
 mod tests {
     use super::{
-        skill_invalid_err, upsert_attribution, AttributionUpsert, CandidateOrigin,
+        skill_invalid_err, upsert_attribution, AddedBody, AddedFile, AttributionUpsert,
+        CandidateOrigin, DeletedBody, DeletedFile, DiffOp, FileDiff, ModifiedFile,
         OverwriteWarning, ShareInstalledOutcome, ShareMode, ShareOutcome, SharePlan,
+        SizeLimit, StaleReason, MAX_DIFF_LINES, MAX_HUNKS,
     };
     use std::collections::BTreeMap;
     use crate::core::skills::ShareBlock;
@@ -1808,15 +2181,23 @@ mod tests {
             history_url: Some("http://x/commits".into()),
         };
         let plan = SharePlan {
-            added: vec!["a.md".into()],
-            modified: vec!["SKILL.md".into()],
-            deleted: vec!["old.md".into()],
+            added: vec![AddedFile { path: "a.md".into(), body: AddedBody::Text }],
+            modified: vec![ModifiedFile {
+                path: "SKILL.md".into(),
+                diff: FileDiff::TooLarge { limit: SizeLimit::Both, bytes: 999, lines: 9 },
+            }],
+            deleted: vec![DeletedFile {
+                path: "old.md".into(),
+                body: DeletedBody::Text { text: "库里那一版".into() },
+            }],
         };
         let v = serde_json::to_value(ShareOutcome::NeedsConfirm {
             plan: plan.clone(),
             overwrite: Some(warning.clone()),
             remote_rev: "sha256:beef".into(),
+            plan_rev: "sha256:plan".into(),
             stale: true,
+            stale_reason: Some(StaleReason::LocalChanged),
         })
         .unwrap();
         assert_eq!(
@@ -1825,15 +2206,60 @@ mod tests {
                 "outcome".to_string(),
                 "overwrite".to_string(),
                 "plan".to_string(),
+                "planRev".to_string(),
                 "remoteRev".to_string(),
-                "stale".to_string()
+                "stale".to_string(),
+                "staleReason".to_string()
             ]
         );
         assert_eq!(v["remoteRev"], "sha256:beef");
+        assert_eq!(v["planRev"], "sha256:plan");
         assert_eq!(v["stale"], true);
+        assert_eq!(v["staleReason"], "localChanged");
         assert_eq!(v["outcome"], "needsConfirm");
         assert_eq!(keys(&v["plan"]), vec!["added", "deleted", "modified"]);
-        assert_eq!(v["plan"]["deleted"][0], "old.md");
+        // 清单三档的内层 struct/enum 各有自己的 `rename_all`,外层管不到
+        assert_eq!(keys(&v["plan"]["added"][0]), vec!["body", "path"]);
+        assert_eq!(v["plan"]["added"][0]["body"]["kind"], "text");
+        assert_eq!(v["plan"]["deleted"][0]["path"], "old.md");
+        assert_eq!(v["plan"]["deleted"][0]["body"]["text"], "库里那一版");
+        assert_eq!(
+            keys(&v["plan"]["modified"][0]["diff"]),
+            vec!["bytes".to_string(), "kind".to_string(), "limit".to_string(), "lines".to_string()]
+        );
+        assert_eq!(v["plan"]["modified"][0]["diff"]["limit"], "both");
+        // `Hunks` 那一支的内层两级(DiffHunk / DiffLine)各有自己的 `rename_all`,
+        // 上面那个样本用的是 `TooLarge`,钉不到它们——少了这一段,下一个人把
+        // `FileDiff` 的 `rename_all_fields` 删掉,界面读到的就是 undefined。
+        let hunks = serde_json::to_value(FileDiff::Hunks {
+            hunks: vec![super::DiffHunk {
+                old_start: 2,
+                old_lines: 7,
+                new_start: 2,
+                new_lines: 7,
+                lines: vec![super::DiffLine { op: DiffOp::Delete, text: "第5行".into() }],
+            }],
+            hidden_hunks: 3,
+        })
+        .unwrap();
+        assert_eq!(
+            keys(&hunks),
+            vec!["hiddenHunks".to_string(), "hunks".to_string(), "kind".to_string()]
+        );
+        assert_eq!(hunks["kind"], "hunks");
+        assert_eq!(hunks["hiddenHunks"], 3);
+        assert_eq!(
+            keys(&hunks["hunks"][0]),
+            vec![
+                "lines".to_string(),
+                "newLines".to_string(),
+                "newStart".to_string(),
+                "oldLines".to_string(),
+                "oldStart".to_string()
+            ]
+        );
+        assert_eq!(keys(&hunks["hunks"][0]["lines"][0]), vec!["op".to_string(), "text".to_string()]);
+        assert_eq!(hunks["hunks"][0]["lines"][0]["op"], "delete");
         assert_eq!(
             keys(&v["overwrite"]),
             vec!["historyUrl".to_string(), "lastAt".to_string(), "lastAuthor".to_string()]
@@ -1847,7 +2273,9 @@ mod tests {
             plan,
             overwrite: Some(warning),
             remote_rev: "sha256:beef".into(),
+            plan_rev: "sha256:plan".into(),
             stale: false,
+            stale_reason: None,
         })
         .unwrap();
         assert_eq!(
@@ -1856,12 +2284,15 @@ mod tests {
                 "kind".to_string(),
                 "overwrite".to_string(),
                 "plan".to_string(),
+                "planRev".to_string(),
                 "remoteRev".to_string(),
-                "stale".to_string()
+                "stale".to_string(),
+                "staleReason".to_string()
             ]
         );
         assert_eq!(v["remoteRev"], "sha256:beef");
         assert_eq!(v["stale"], false);
+        assert_eq!(v["staleReason"], serde_json::Value::Null);
         assert_eq!(v["kind"], "needsConfirm");
         assert_eq!(v["overwrite"]["lastAt"], "2026-09-10T03:04:05Z");
         assert_eq!(
@@ -1880,6 +2311,17 @@ mod tests {
     }
     const PFX: &str = "skills/my-notes/";
 
+    // 三档清单现在每一项都带内容标记(v8 任务 8),而多数既有断言只关心"有哪些路径"。
+    fn added_paths(p: &SharePlan) -> Vec<String> {
+        p.added.iter().map(|f| f.path.clone()).collect()
+    }
+    fn modified_paths(p: &SharePlan) -> Vec<String> {
+        p.modified.iter().map(|f| f.path.clone()).collect()
+    }
+    fn deleted_paths(p: &SharePlan) -> Vec<String> {
+        p.deleted.iter().map(|f| f.path.clone()).collect()
+    }
+
     /// 四类各归各位,**内容相同的一个都不发**——今天那三个空的合并请求正是
     /// 漏了最后这一条判断。
     #[test]
@@ -1895,9 +2337,9 @@ mod tests {
             ("skills/my-notes/brand-new.md", "刚写的"),
         ]);
         let c = super::plan_changes(PFX, &remote, local).unwrap();
-        assert_eq!(c.plan.added, vec!["brand-new.md".to_string()]);
-        assert_eq!(c.plan.modified, vec!["SKILL.md".to_string()]);
-        assert_eq!(c.plan.deleted, vec!["gone.md".to_string()]);
+        assert_eq!(added_paths(&c.plan), vec!["brand-new.md".to_string()]);
+        assert_eq!(modified_paths(&c.plan), vec!["SKILL.md".to_string()]);
+        assert_eq!(deleted_paths(&c.plan), vec!["gone.md".to_string()]);
         let uploaded: Vec<&str> = c.upload.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(
             uploaded,
@@ -1925,7 +2367,7 @@ mod tests {
             local_of(&[("skills/my-notes/SKILL.md", "正文")]),
         )
         .unwrap();
-        assert_eq!(c.plan.added, vec!["SKILL.md".to_string()]);
+        assert_eq!(added_paths(&c.plan), vec!["SKILL.md".to_string()]);
         assert!(c.plan.deleted.is_empty());
     }
 
@@ -1953,7 +2395,7 @@ mod tests {
     fn a_file_named_with_leading_dots_is_not_a_traversal() {
         let local = local_of(&[("skills/my-notes/..gitkeep", "x")]);
         let c = super::plan_changes(PFX, &BTreeMap::new(), local).unwrap();
-        assert_eq!(c.plan.added, vec!["..gitkeep".to_string()]);
+        assert_eq!(added_paths(&c.plan), vec!["..gitkeep".to_string()]);
     }
 
     /// 🔴 **两侧排除清单必须是同一把尺子**:本地那侧 `fsops::list_files` 早就
@@ -1973,6 +2415,310 @@ mod tests {
         let local = local_of(&[("skills/my-notes/SKILL.md", "正文")]);
         let c = super::plan_changes(PFX, &remote, local).unwrap();
         assert!(c.plan.is_empty(), "这三个文件不该产生任何改动:{:?}", c.plan);
+    }
+
+    // ============================== 内容级差异(v8 任务 8 / 设计 Q1–Q17)
+
+    fn diff_one(old: &str, new: &str) -> FileDiff {
+        let c = super::plan_changes(
+            PFX,
+            &remote_of(&[("skills/my-notes/SKILL.md", old)]),
+            local_of(&[("skills/my-notes/SKILL.md", new)]),
+        )
+        .unwrap();
+        assert_eq!(c.plan.modified.len(), 1, "这组样本应当只有一个文件被改:{:?}", c.plan);
+        c.plan.modified.into_iter().next().unwrap().diff
+    }
+
+    fn ops(hunk: &super::DiffHunk) -> Vec<DiffOp> {
+        hunk.lines.iter().map(|l| l.op).collect()
+    }
+
+    /// 1. 改一行 → 一处改动,上下文**恰好各 3 行**(与 `git diff -U3` 同口径)。
+    #[test]
+    fn a_modified_file_comes_back_with_three_lines_of_context_on_each_side() {
+        let old: String = (1..=10).map(|i| format!("第{i}行\n")).collect();
+        let new = old.replace("第5行", "第五行改过了");
+        let FileDiff::Hunks { hunks, hidden_hunks } = diff_one(&old, &new) else {
+            panic!("普通文本应当给出逐行差异");
+        };
+        assert_eq!(hidden_hunks, 0);
+        assert_eq!(hunks.len(), 1, "只改了一处");
+        let h = &hunks[0];
+        // 第 2..8 行(1 基):3 行上文 + 改动的那一行(删+增)+ 3 行下文
+        assert_eq!((h.old_start, h.old_lines), (2, 7));
+        assert_eq!((h.new_start, h.new_lines), (2, 7));
+        assert_eq!(
+            ops(h),
+            vec![
+                DiffOp::Context,
+                DiffOp::Context,
+                DiffOp::Context,
+                DiffOp::Delete,
+                DiffOp::Insert,
+                DiffOp::Context,
+                DiffOp::Context,
+                DiffOp::Context,
+            ],
+            "上下各 3 行,不多不少"
+        );
+        assert_eq!(h.lines[0].text, "第2行", "文本不带行尾换行符");
+        assert_eq!(h.lines[3].text, "第5行");
+        assert_eq!(h.lines[4].text, "第五行改过了");
+    }
+
+    /// 1'. 空范围的起点跟 `git` 走:旧文件是空的,`@@` 里写的是 `-0,0`。
+    ///     差一行的后果是界面指着别处说"这里改了"。
+    #[test]
+    fn an_empty_side_starts_at_zero_like_git_does() {
+        let FileDiff::Hunks { hunks, .. } = diff_one("", "第一行\n第二行\n") else {
+            panic!("旧文件为空也该给出逐行差异");
+        };
+        assert_eq!((hunks[0].old_start, hunks[0].old_lines), (0, 0));
+        assert_eq!((hunks[0].new_start, hunks[0].new_lines), (1, 2));
+    }
+
+    /// 2. 🔴 新增文件**只带路径与标记,不带内容**(顾问②)。
+    ///
+    /// 正面断言那个标记本身的完整形状——断言"没崩"是零信息量的,而
+    /// "字段为空"也分不出"省略了"与"拼错了名字"。
+    #[test]
+    fn an_added_file_carries_no_content_at_all() {
+        let c = super::plan_changes(
+            PFX,
+            &BTreeMap::new(),
+            local_of(&[("skills/my-notes/SKILL.md", "一段不该出现在返回值里的正文")]),
+        )
+        .unwrap();
+        assert_eq!(
+            c.plan.added,
+            vec![AddedFile { path: "SKILL.md".into(), body: AddedBody::Text }],
+            "新增项的全部内容就是这两个字段"
+        );
+        let json = serde_json::to_string(&c.plan).unwrap();
+        assert!(
+            !json.contains("一段不该出现在返回值里的正文"),
+            "新增文件的正文一个字都不该进这一轮返回值:{json}"
+        );
+    }
+
+    /// 2'. 二进制的新增文件同样只给标记——界面据此**不给点**。
+    #[test]
+    fn an_added_binary_file_is_marked_as_such() {
+        let local = vec![("skills/my-notes/x.bin".to_string(), vec![0xff, 0xfe, 0x00, 0x01])];
+        let c = super::plan_changes(PFX, &BTreeMap::new(), local).unwrap();
+        assert_eq!(c.plan.added[0].body, AddedBody::Binary);
+    }
+
+    /// 3. 删除的文件带**库里那一版**的内容——本地根本没有它,这是用户唯一
+    ///    能看到"要删掉的是什么"的地方。
+    #[test]
+    fn a_deleted_file_carries_the_library_side_content() {
+        let c = super::plan_changes(
+            PFX,
+            &remote_of(&[
+                ("skills/my-notes/SKILL.md", "正文"),
+                ("skills/my-notes/旧的.md", "库里这一版的内容"),
+            ]),
+            local_of(&[("skills/my-notes/SKILL.md", "正文")]),
+        )
+        .unwrap();
+        assert_eq!(
+            c.plan.deleted,
+            vec![DeletedFile {
+                path: "旧的.md".into(),
+                body: DeletedBody::Text { text: "库里这一版的内容".into() },
+            }]
+        );
+    }
+
+    /// 3'. 被删的二进制文件不带字节;超限的也不带正文(它同时是这一轮返回值
+    ///     体量的上界)。
+    #[test]
+    fn a_deleted_file_that_cannot_be_shown_carries_only_a_marker() {
+        let remote: BTreeMap<String, Vec<u8>> = [
+            ("skills/my-notes/x.bin".to_string(), vec![0xff, 0xfe]),
+            (
+                "skills/my-notes/big.md".to_string(),
+                "x\n".repeat(MAX_DIFF_LINES + 1).into_bytes(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let c =
+            super::plan_changes(PFX, &remote, local_of(&[("skills/my-notes/SKILL.md", "正文")]))
+                .unwrap();
+        let body_of = |name: &str| {
+            c.plan.deleted.iter().find(|f| f.path == name).unwrap_or_else(|| panic!("{name} 不在删除清单里:{:?}", c.plan.deleted)).body.clone()
+        };
+        assert_eq!(body_of("x.bin"), DeletedBody::Binary);
+        assert!(
+            matches!(body_of("big.md"), DeletedBody::TooLarge { limit: SizeLimit::Lines, .. }),
+            "{:?}",
+            body_of("big.md")
+        );
+    }
+
+    /// 4. 🔴 非 UTF-8 → 二进制档,**根本不进 diff 计算**(设计 Q14:
+    ///    `similar` 只吃 `&str`,一处判定两处用)。
+    #[test]
+    fn a_non_utf8_file_is_binary_and_never_reaches_the_diff() {
+        let c = super::plan_changes(
+            PFX,
+            &remote_of(&[("skills/my-notes/SKILL.md", "正文")]),
+            vec![("skills/my-notes/SKILL.md".to_string(), vec![0xff, 0xfe, 0x00])],
+        )
+        .unwrap();
+        assert_eq!(c.plan.modified[0].diff, FileDiff::Binary);
+    }
+
+    /// 5a. 字节数超限(行数没超)→ 截断档,`limit` 说清是**哪条**超了。
+    #[test]
+    fn a_file_over_the_byte_limit_says_so_by_bytes() {
+        // 100 行 × 4000 字节 = 40 万字节:过了 256KB,没过 2000 行
+        let big: String = (0..100).map(|_| format!("{}\n", "x".repeat(3999))).collect();
+        let diff = diff_one("原来很短\n", &big);
+        let FileDiff::TooLarge { limit, bytes, lines } = diff else {
+            panic!("超限的文件不该给出逐行差异:{diff:?}");
+        };
+        assert_eq!(limit, SizeLimit::Bytes);
+        assert!(bytes > 256 * 1024, "{bytes}");
+        assert_eq!(lines, 100);
+    }
+
+    /// 5b. 行数超限(字节数没超)→ 同一档,但 `limit` 是另一个值。
+    ///     **两条分别测**:只测一条的话,把判定写成"永远报 Bytes"也能过。
+    #[test]
+    fn a_file_over_the_line_limit_says_so_by_lines() {
+        let many = "x\n".repeat(MAX_DIFF_LINES + 1);
+        let diff = diff_one("原来很短\n", &many);
+        let FileDiff::TooLarge { limit, bytes, lines } = diff else {
+            panic!("超限的文件不该给出逐行差异:{diff:?}");
+        };
+        assert_eq!(limit, SizeLimit::Lines);
+        assert!(bytes < 256 * 1024, "字节数这一条不该触发:{bytes}");
+        assert_eq!(lines, MAX_DIFF_LINES + 1);
+    }
+
+    /// 6. 🔴 只有行尾不同 → 单独一档(设计 Q17)。
+    ///    落不进这一档的表现是**整屏都红**:CRLF 让每一行都不等,而用户
+    ///    明明一个字都没改。
+    #[test]
+    fn a_file_that_only_changed_line_endings_says_exactly_that() {
+        let lf = "第一行\n第二行\n第三行\n";
+        let crlf = "第一行\r\n第二行\r\n第三行\r\n";
+        assert_eq!(diff_one(crlf, lf), FileDiff::LineEndingsOnly);
+        assert_eq!(diff_one(lf, crlf), FileDiff::LineEndingsOnly);
+    }
+
+    /// 6'. 对照组:行尾**和**正文都变了 → 仍然是逐行差异,而且只有真改的那一行
+    ///     进差异。少了它,上面那条用"CRLF 一律判 LineEndingsOnly"的实现也能过。
+    #[test]
+    fn a_line_ending_change_does_not_swallow_a_real_edit() {
+        let crlf = "第一行\r\n第二行\r\n第三行\r\n";
+        let lf_edited = "第一行\n第二行改了\n第三行\n";
+        let FileDiff::Hunks { hunks, .. } = diff_one(crlf, lf_edited) else {
+            panic!("正文也变了就该给出逐行差异");
+        };
+        assert_eq!(
+            ops(&hunks[0]),
+            vec![DiffOp::Context, DiffOp::Delete, DiffOp::Insert, DiffOp::Context],
+            "只有真改的那一行进差异,其余两行是上下文"
+        );
+    }
+
+    /// 7. 改动处超过上限 → 只给前 N 处 + **如实报出还有多少处没显示**。
+    ///    这把尺子与 256KB/2000 行无关:这个样本又小又短,却改了 55 处。
+    #[test]
+    fn too_many_changed_spots_are_capped_and_the_rest_is_counted() {
+        let blocks = MAX_HUNKS + 5;
+        let old: String =
+            (0..blocks).flat_map(|b| (0..10).map(move |i| format!("块{b}行{i}\n"))).collect();
+        let new = old.replace("行0\n", "行零改过\n");
+        let diff = diff_one(&old, &new);
+        let FileDiff::Hunks { hunks, hidden_hunks } = diff else {
+            panic!("这个文件既不大也不长:{diff:?}");
+        };
+        assert_eq!(hunks.len(), MAX_HUNKS);
+        assert_eq!(hidden_hunks, 5, "没显示的那几处要如实报出来");
+    }
+
+    /// 🔴 清单指纹(顾问①):**本地内容变一个字,指纹就得变**。
+    /// 它是"你看到的差异 = 我要推的差异"这句承诺的全部落点。
+    #[test]
+    fn the_plan_fingerprint_follows_the_local_bytes() {
+        let remote = remote_of(&[("skills/my-notes/SKILL.md", "库里那一版")]);
+        let a = super::plan_changes(PFX, &remote, local_of(&[("skills/my-notes/SKILL.md", "我这一版")]))
+            .unwrap();
+        let again =
+            super::plan_changes(PFX, &remote, local_of(&[("skills/my-notes/SKILL.md", "我这一版")]))
+                .unwrap();
+        assert_eq!(a.plan_rev, again.plan_rev, "本地没变就该是同一个值");
+        let edited = super::plan_changes(
+            PFX,
+            &remote,
+            local_of(&[("skills/my-notes/SKILL.md", "我这一版,又改了一个字")]),
+        )
+        .unwrap();
+        assert_ne!(a.plan_rev, edited.plan_rev, "本地改过就必须是另一个值");
+    }
+
+    /// 🔴 **动作也进指纹**:同一个路径、同样的字节,"新增"与"修改"是两件事。
+    /// 不把动作喂进去的话,用户看着"新增 a.md"点了确认,而这一刻库里已经有了
+    /// 同名文件,真正发生的是覆盖。
+    #[test]
+    fn the_plan_fingerprint_distinguishes_adding_from_modifying() {
+        let local = local_of(&[("skills/my-notes/SKILL.md", "同样的字节")]);
+        let as_added = super::plan_changes(PFX, &BTreeMap::new(), local.clone()).unwrap();
+        let as_modified = super::plan_changes(
+            PFX,
+            &remote_of(&[("skills/my-notes/SKILL.md", "库里是别的东西")]),
+            local,
+        )
+        .unwrap();
+        assert_ne!(as_added.plan_rev, as_modified.plan_rev);
+    }
+
+    /// 🔴 删除清单也进指纹:本地删掉一个文件,要推的事就变了。
+    #[test]
+    fn the_plan_fingerprint_follows_the_deletions_too() {
+        let remote = remote_of(&[
+            ("skills/my-notes/SKILL.md", "正文"),
+            ("skills/my-notes/旧的.md", "库里还留着"),
+        ]);
+        let with_delete =
+            super::plan_changes(PFX, &remote, local_of(&[("skills/my-notes/SKILL.md", "改过")]))
+                .unwrap();
+        let without_delete = super::plan_changes(
+            PFX,
+            &remote,
+            local_of(&[("skills/my-notes/SKILL.md", "改过"), ("skills/my-notes/旧的.md", "库里还留着")]),
+        )
+        .unwrap();
+        assert_ne!(with_delete.plan_rev, without_delete.plan_rev);
+    }
+
+    /// 两条凭据**分别**比,失效原因分得开(顾问①:对用户是两句不同的话)。
+    #[test]
+    fn the_confirm_gate_tells_the_two_kinds_of_staleness_apart() {
+        use super::{confirm_gate, ConfirmGate, Confirmation};
+        let ok = Confirmation { remote_rev: "R", plan_rev: "P" };
+        assert!(matches!(confirm_gate(None, "R", "P"), ConfirmGate::Preview));
+        assert!(matches!(confirm_gate(Some(ok), "R", "P"), ConfirmGate::Go));
+        assert!(matches!(
+            confirm_gate(Some(ok), "R2", "P"),
+            ConfirmGate::Stale(StaleReason::RemoteChanged)
+        ));
+        assert!(matches!(
+            confirm_gate(Some(ok), "R", "P2"),
+            ConfirmGate::Stale(StaleReason::LocalChanged)
+        ));
+        // 两边都变了只报 RemoteChanged:退回去那份清单是重算的,新的 planRev
+        // 已经把新的本地状态绑上了,不需要第三个成员。
+        assert!(matches!(
+            confirm_gate(Some(ok), "R2", "P2"),
+            ConfirmGate::Stale(StaleReason::RemoteChanged)
+        ));
     }
 
     /// 同一个坑的第二处:`CandidateOrigin::NpxSkills { source }` 眼下是单词字段,

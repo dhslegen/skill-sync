@@ -7,6 +7,7 @@ import type { InstalledSkillView, Section, ShareBlock } from "@/lib/ipc";
 import { useMySkills } from "@/store/my-skills";
 import { shareTargetKey, useShare } from "@/store/share";
 import { t } from "@/i18n";
+import { planOf } from "@/test/share-plan";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args: unknown) => invoke(cmd, args) }));
@@ -62,11 +63,18 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
  * 这些用例测的是别的命题,所以给一份已经到手的清单。
  */
 type Preview = ReturnType<typeof useMySkills.getState>["sharePreview"];
-const PLAN = { added: [], modified: ["SKILL.md"], deleted: [] };
+const PLAN = planOf({ modified: ["SKILL.md"] });
 
 function openWith(
   skill = view(),
-  sharePreview: Preview = { dirSlug: "weekly-report", plan: PLAN, overwrite: null, remoteRev: "sha256:seen", stale: false },
+  sharePreview: Preview = {
+    dirSlug: "weekly-report",
+    plan: PLAN,
+    overwrite: null,
+    confirm: { remoteRev: "sha256:seen", planRev: "sha256:plan" },
+    stale: false,
+    staleReason: null,
+  },
 ) {
   useMySkills.setState({
     list: [skill],
@@ -314,10 +322,11 @@ describe("改动清单(v8 任务 5 / D5、D6、D9)", () => {
   it("🔴 会从技能库里删掉的文件必须逐个列出来,并说清后果", async () => {
     openWith(view(), {
       dirSlug: "weekly-report",
-      plan: { added: ["新写的.md"], modified: ["SKILL.md"], deleted: ["踩过的坑.md"] },
+      plan: planOf({ added: ["新写的.md"], modified: ["SKILL.md"], deleted: ["踩过的坑.md"] }),
       overwrite: null,
-      remoteRev: "sha256:seen",
+      confirm: { remoteRev: "sha256:seen", planRev: "sha256:plan" },
       stale: false,
+      staleReason: null,
     });
     await screen.findByText("周报生成");
     expect(screen.getByText("踩过的坑.md")).toBeInTheDocument();
@@ -329,14 +338,15 @@ describe("改动清单(v8 任务 5 / D5、D6、D9)", () => {
   it("🔴 D9:库里被别人改过时,覆盖警告与清单在**同一屏**上,不另开一个框", async () => {
     openWith(view(), {
       dirSlug: "weekly-report",
-      plan: { added: [], modified: ["SKILL.md"], deleted: [] },
+      plan: planOf({ modified: ["SKILL.md"] }),
       overwrite: {
         lastAuthor: "李四",
         lastAt: "2026-09-10T03:04:05Z",
         historyUrl: "http://g/commits/x",
       },
-      remoteRev: "sha256:seen",
+      confirm: { remoteRev: "sha256:seen", planRev: "sha256:plan" },
       stale: false,
+      staleReason: null,
     });
     await screen.findByText("周报生成");
     expect(screen.getByText(/李四/)).toBeInTheDocument();
@@ -356,10 +366,11 @@ describe("改动清单(v8 任务 5 / D5、D6、D9)", () => {
   it("换技能时不把上一个技能的删除清单摆给他看(归属过滤)", async () => {
     openWith(view(), {
       dirSlug: "another-skill",
-      plan: { added: [], modified: [], deleted: ["别的技能的.md"] },
+      plan: planOf({ deleted: ["别的技能的.md"] }),
       overwrite: null,
-      remoteRev: "sha256:seen",
+      confirm: { remoteRev: "sha256:seen", planRev: "sha256:plan" },
       stale: false,
+      staleReason: null,
     });
     await screen.findByText("周报生成");
     expect(screen.queryByText("别的技能的.md")).toBeNull();
@@ -369,14 +380,31 @@ describe("改动清单(v8 任务 5 / D5、D6、D9)", () => {
   it("🔴 终审 C-1:重算过的清单要如实说一句,不静默替换", async () => {
     openWith(view(), {
       dirSlug: "weekly-report",
-      plan: { added: [], modified: [], deleted: ["同事刚加的.md"] },
+      plan: planOf({ deleted: ["同事刚加的.md"] }),
       overwrite: null,
-      remoteRev: "sha256:second",
+      confirm: { remoteRev: "sha256:second", planRev: "sha256:plan2" },
       stale: true,
+      staleReason: "remoteChanged",
     });
     await screen.findByText("周报生成");
     expect(screen.getByText(t("share.planChanged"))).toBeInTheDocument();
     expect(screen.getByText("同事刚加的.md")).toBeInTheDocument();
+  });
+
+  it("🔴 v8 任务 8:变的是**本地**那一头时说另一句话,不冤枉同事", async () => {
+    openWith(view(), {
+      dirSlug: "weekly-report",
+      plan: planOf({ added: ["刚写的.md"] }),
+      overwrite: null,
+      confirm: { remoteRev: "sha256:seen", planRev: "sha256:plan2" },
+      stale: true,
+      staleReason: "localChanged",
+    });
+    await screen.findByText("周报生成");
+    // 断言的是**那句话本身**:两种原因共用一句的话,这里会摆出"技能库里…又变了"
+    // ——而库里一个字都没动,是他自己的编辑器改的。
+    expect(screen.getByText(t("share.planChangedLocally"))).toBeInTheDocument();
+    expect(screen.queryByText(t("share.planChanged"))).toBeNull();
   });
 
   it("寻常的预览轮不摆那句话(否则每次分享都在报一个不存在的警)", async () => {
@@ -388,10 +416,11 @@ describe("改动清单(v8 任务 5 / D5、D6、D9)", () => {
   it("🔴 终审 I-1:覆盖档的按钮写「仍然覆盖」且是红色,与姊妹弹窗同一个说法", async () => {
     openWith(view(), {
       dirSlug: "weekly-report",
-      plan: { added: [], modified: ["SKILL.md"], deleted: [] },
+      plan: planOf({ modified: ["SKILL.md"] }),
       overwrite: { lastAuthor: "李四", lastAt: null, historyUrl: null },
-      remoteRev: "sha256:seen",
+      confirm: { remoteRev: "sha256:seen", planRev: "sha256:plan" },
       stale: false,
+      staleReason: null,
     });
     await screen.findByText("周报生成");
     const go = screen.getByRole("button", { name: t("overwrite.confirm") });
@@ -410,10 +439,11 @@ describe("改动清单(v8 任务 5 / D5、D6、D9)", () => {
   it("🔴 终审 I-3:文件多时清单自己滚,别把确认/取消顶出视口", async () => {
     openWith(view(), {
       dirSlug: "weekly-report",
-      plan: { added: Array.from({ length: 40 }, (_, i) => `f${i}.md`), modified: [], deleted: [] },
+      plan: planOf({ added: Array.from({ length: 40 }, (_, i) => `f${i}.md`) }),
       overwrite: null,
-      remoteRev: "sha256:seen",
+      confirm: { remoteRev: "sha256:seen", planRev: "sha256:plan" },
       stale: false,
+      staleReason: null,
     });
     await screen.findByText("周报生成");
     const box = screen.getByTestId("share-plan-files");

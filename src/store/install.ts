@@ -31,6 +31,7 @@ import {
   type InstallStage,
   type Precheck,
   type Resolution,
+  type ShareConfirmToken,
   type SkillVersion,
 } from "@/lib/ipc";
 import type { ShareResultKind } from "@/lib/share-block";
@@ -492,7 +493,7 @@ export const useInstall = create<InstallState>((set, get) => ({
  */
 async function pushMyChanges(
   dirSlug: string,
-  confirmRev: string | undefined,
+  confirm: ShareConfirmToken | undefined,
   set: (partial: Partial<InstallState>) => void,
   get: () => InstallState,
   displayName?: string,
@@ -501,7 +502,7 @@ async function pushMyChanges(
     const outcome = await skillShareChanges({
       dirSlug,
       registryId: get().registryId ?? undefined,
-      ...(confirmRev ? { confirmRev } : {}),
+      ...(confirm ? { confirm } : {}),
     });
     if (outcome.kind === "needsConfirm") {
       useOverwrite.getState().ask({
@@ -514,11 +515,20 @@ async function pushMyChanges(
         name: displayName || dirSlug,
         plan: outcome.plan,
         warning: outcome.overwrite,
-        // 库里在用户看清单的这段时间里又变了 → 这是重算过的第二份(终审 C-1)
+        // 用户看清单的这段时间里情况又变了 → 这是重算过的第二份(终审 C-1);
+        // 变的是哪一头要一起带过去,那是两句不同的话(v8 任务 8)
         stale: outcome.stale,
+        staleReason: outcome.staleReason,
         // 🔴 闭包捕获**这一份清单**的凭据:确认那一跳带着它回去,core 比不上
         // 就重新算一份再问一次,不会提交一份用户没看过的清单(终审 C-1)。
-        confirm: () => pushMyChanges(dirSlug, outcome.remoteRev, set, get, displayName),
+        confirm: () =>
+          pushMyChanges(
+            dirSlug,
+            { remoteRev: outcome.remoteRev, planRev: outcome.planRev },
+            set,
+            get,
+            displayName,
+          ),
       });
       return;
     }

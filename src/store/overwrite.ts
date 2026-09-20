@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { OverwriteWarning, SharePlan } from "@/lib/ipc";
+import type { OverwriteWarning, SharePlan, StaleReason } from "@/lib/ipc";
 
 /**
  * 一次待拍板的分享(v8 任务 4 / 决策 D2,任务 5 / D9 扩成统一确认屏)。
@@ -35,6 +35,12 @@ export interface OverwriteDecision {
    * 用户会以为自己看花了眼,而这一屏最重要的那一栏是"库里哪几个文件会没"。
    */
   stale?: boolean;
+  /**
+   * 变的是库里那一头(别人推了东西)还是本地这一头(编辑器/用户自己改的)。
+   * 🔴 **两种原因是两句不同的话**,指向的下一步也不同——合成一句就是对其中
+   * 一半用户说假话(v8 任务 8 / 顾问①)。
+   */
+  staleReason?: StaleReason | null;
   /**
    * 用户按「仍然覆盖」时重跑的那一跳。
    *

@@ -6,6 +6,7 @@ import { useMySkills } from "@/store/my-skills";
 import { useOverwrite } from "@/store/overwrite";
 import { useUi } from "./ui";
 import type { AcquireOutcome, InstallReport } from "@/lib/ipc";
+import { planOf } from "@/test/share-plan";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args: unknown) => invoke(cmd, args) }));
@@ -370,7 +371,7 @@ describe("获取流程状态机", () => {
         if (cmd === "skill_share_changes")
           return {
             kind: "needsConfirm",
-            plan: { added: [], modified: ["SKILL.md"], deleted: [] },
+            plan: planOf({ modified: ["SKILL.md"] }),
             overwrite: {
               lastAuthor: "李四",
               lastAt: "2026-09-10T03:04:05Z",
@@ -395,7 +396,7 @@ describe("获取流程状态机", () => {
       expect(pending?.warning?.lastAuthor).toBe("李四");
       expect(pending?.warning?.historyUrl).toBe("http://g/commits/x");
       // v8 任务 5:清单也要一起带过去——这一屏的主要理由是"库里哪几个文件会没"。
-      expect(pending?.plan.modified).toEqual(["SKILL.md"]);
+      expect(pending?.plan.modified.map((f) => f.path)).toEqual(["SKILL.md"]);
       expect(useInstall.getState().shareResult).toBeNull();
       expect(useInstall.getState().phase).toBe("done");
       expect(useInstall.getState().mineKept).toEqual({ remoteChanged: true, kind: "mine" });
@@ -408,16 +409,20 @@ describe("获取流程状态机", () => {
         if (cmd === "agents_detected") return AGENTS;
         if (cmd === "installed_list") return [];
         if (cmd === "skill_share_changes") {
-          const args = (payload as { args: { confirmRev?: string } }).args;
-          seen.push(args.confirmRev);
-          return args.confirmRev
+          const args = (payload as {
+            args: { confirm?: { remoteRev: string; planRev: string } };
+          }).args;
+          seen.push(args.confirm);
+          return args.confirm
             ? { kind: "submitted", mode: "pushed", commitSha: "new" }
             : {
                 kind: "needsConfirm",
-                plan: { added: [], modified: ["SKILL.md"], deleted: [] },
+                plan: planOf({ modified: ["SKILL.md"] }),
                 overwrite: null,
                 remoteRev: "sha256:seen",
+                planRev: "sha256:plan",
                 stale: false,
+                staleReason: null,
               };
         }
         if (cmd === "skill_install")
@@ -430,7 +435,9 @@ describe("获取流程状态机", () => {
       await useOverwrite.getState().confirmOverwrite();
 
       // 🔴 终审 C-1:确认那一跳带回去的是**预览轮那一份清单**的凭据,不是一个 true
-      expect(seen).toEqual([undefined, "sha256:seen"]);
+      // 🔴 **两条凭据都要带回去**(v8 任务 8):只绑库里那一版的话,本地在两轮
+      // 之间被改过照样会推上去,而那份内容用户没在确认屏上见过。
+      expect(seen).toEqual([undefined, { remoteRev: "sha256:seen", planRev: "sha256:plan" }]);
       expect(useOverwrite.getState().pending).toBeNull();
       expect(useInstall.getState().shareResult).toEqual({ mode: "pushed" });
     });

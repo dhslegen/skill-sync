@@ -1843,12 +1843,30 @@ pub struct SkillShareArgs {
     /// 还看过顶部那条覆盖警告)并按了确认(v8 任务 5 / D9)。缺省 `None` =
     /// **预览轮**,core 一个写请求都不发,只回一份 `NeedsConfirm`。
     ///
-    /// 🔴 值是上一轮 `NeedsConfirm` 原样回来的 `remoteRev`(终审 C-1):
-    /// 它绑定"用户看的是库里哪一版"。core 比不上就不提交,重算一份再问一次。
+    /// 🔴 值是上一轮 `NeedsConfirm` 原样回来的那**两条**凭据(终审 C-1 +
+    /// v8 任务 8):`remoteRev` 绑定"用户看的是库里哪一版",`planRev` 绑定
+    /// "用户看的是哪一份清单"。任一条比不上就不提交,重算一份再问一次。
     /// 缺省成 `None`(= 预览轮)在方向上是安全的:漏带凭据最多多问一次,
     /// 绝不会变成"没看过就提交"。
     #[serde(default)]
-    pub confirm_rev: Option<String>,
+    pub confirm: Option<ShareConfirmArgs>,
+}
+
+/// 🔴 **嵌成一个对象,不是两个平级的可选字段**(v8 任务 8):平级的话
+/// `(Some, None)` 在 IPC 边界上是写得出来的,而最自然的处理(当成没确认)
+/// 会把用户点过的确认**静默降级成又一轮预览**——他看到同一份清单再来一遍,
+/// 没有任何解释。嵌套之后 serde 对"半个对象"直接报错,这条不变量不用靠约定守。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareConfirmArgs {
+    pub remote_rev: String,
+    pub plan_rev: String,
+}
+
+impl ShareConfirmArgs {
+    fn as_confirmation(&self) -> share::Confirmation<'_> {
+        share::Confirmation { remote_rev: &self.remote_rev, plan_rev: &self.plan_rev }
+    }
 }
 
 /// 分享一个本机技能。**零编辑**:名称、描述、文件夹名一律照原样推,
@@ -1872,7 +1890,7 @@ pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, Ap
             registry_id,
             repo: &repo,
             dir_slug: &args.dir_slug,
-            confirm: args.confirm_rev.as_deref(),
+            confirm: args.confirm.as_ref().map(ShareConfirmArgs::as_confirmation),
         },
         &now_iso8601(),
     )
@@ -1952,10 +1970,10 @@ pub struct ShareChangesArgs {
     #[serde(default)]
     pub registry_id: Option<String>,
     pub dir_slug: String,
-    /// 同 [`SkillShareArgs::confirm_rev`](终审 C-1):`None` = 预览轮;
-    /// 有值时必须是上一轮 `NeedsConfirm` 原样回来的 `remoteRev`。
+    /// 同 [`SkillShareArgs::confirm`](终审 C-1 + v8 任务 8):`None` = 预览轮;
+    /// 有值时必须是上一轮 `NeedsConfirm` 原样回来的两条凭据。
     #[serde(default)]
-    pub confirm_rev: Option<String>,
+    pub confirm: Option<ShareConfirmArgs>,
 }
 
 /// 回推目标技能库的寻址键,取**账上**的来源坐标(M4 任务 1)。
@@ -2004,7 +2022,7 @@ pub async fn skill_share_changes(
         &store,
         &args.dir_slug,
         &repo.branch,
-        args.confirm_rev.as_deref(),
+        args.confirm.as_ref().map(ShareConfirmArgs::as_confirmation),
         &now_iso8601(),
     )
     .await

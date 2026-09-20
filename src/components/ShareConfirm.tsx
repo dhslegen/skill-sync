@@ -165,12 +165,17 @@ export function ShareConfirm() {
         {/* 🔴 统一确认屏(v8 任务 5 / D9):覆盖警告在**顶部**,改动清单在下面,
             **同一屏**。分两屏问的话,用户要连点两次"确定"才能完成一个动作,
             而第二次点的时候他已经忘了第一屏说过什么。 */}
-        {/* 🔴 终审 C-1:这一份是**重新算出来的**(用户按过确认,但技能库在他看
-            清单的这会儿又变了)。静默换掉清单,用户会以为自己看花了眼,而这一屏
-            最要紧的那一栏正是"库里哪几个文件会没"。 */}
+        {/* 🔴 终审 C-1:这一份是**重新算出来的**。静默换掉清单,用户会以为自己
+            看花了眼,而这一屏最要紧的那一栏正是"库里哪几个文件会没"。
+            v8 任务 8 起**两种原因说两句话**:库里被别人改过 vs 你本地又改过。
+            合成一句就是对其中一半用户说假话——而这两句指向的下一步完全不同。 */}
         {changes && "plan" in changes && changes.stale && (
           <p className="mt-2.5 rounded-card border border-[#b8860b]/40 px-2.5 py-2 text-[12px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
-            {t("share.planChanged")}
+            {t(
+              changes.staleReason === "localChanged"
+                ? "share.planChangedLocally"
+                : "share.planChanged",
+            )}
           </p>
         )}
         {changes && "plan" in changes && changes.overwrite && (

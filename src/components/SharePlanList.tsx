@@ -34,9 +34,11 @@ export function SharePlanList({ plan }: { plan: SharePlan }) {
     <div className="mt-3 rounded-card border border-border bg-surface-2 px-2.5 py-2">
       <p className="text-[11.5px] text-text-3">{t("share.planTitle")}</p>
       <div data-testid="share-plan-files" className="max-h-[168px] overflow-y-auto pr-1">
-        <Group label={t("share.planAdded")} files={plan.added} />
-        <Group label={t("share.planModified")} files={plan.modified} />
-        <Group label={t("share.planDeleted")} files={plan.deleted} danger />
+        {/* v8 任务 8 起每一项带内容标记(diff / 二进制 / 超限);这一版仍只摆
+            文件名——**点开看内容是任务 10 的事**,那时这三行各自换成查看器宿主。 */}
+        <Group label={t("share.planAdded")} files={plan.added.map((f) => f.path)} />
+        <Group label={t("share.planModified")} files={plan.modified.map((f) => f.path)} />
+        <Group label={t("share.planDeleted")} files={plan.deleted.map((f) => f.path)} danger />
       </div>
       {plan.deleted.length > 0 && (
         <p className="mt-1.5 text-[12px] leading-[1.6] text-[#c0392b] dark:text-[#e0705f]">

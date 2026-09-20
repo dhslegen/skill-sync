@@ -69,6 +69,15 @@ tauri-plugin-dialog = "2"
 # (macOS Finder.app AppleScript / Windows Shell API / Linux XDG trash 规范),
 # 不引入任何需要网络访问的能力。
 trash = "5.2.6"
+# 分享确认屏的内容级差异(v8 任务 8 / 设计 Q6)。
+# **为什么选它**:成熟的 Myers/Patience 实现(mitsuhiko 维护,insta 快照库的同一套底座)、
+# 零 unsafe、默认特性只要 std + text 不拉任何传递依赖;关键是它**只吃 `&str`**
+# ——所以"非 UTF-8 即二进制"(Q14)这条判定在算 diff 之前就已经成立,
+# **一处判定两处用**,不是我们另立的第二条规则。
+# **为什么不手搓**:LCS 本身不难,难的是折叠与上下文窗口的边界条件(相邻改动处该合并
+# 还是分开、文件头尾不足 3 行、末行无换行),写错的表现是"diff 看着对、其实漏了一段"
+# ——而我们正是拿这份 diff 向用户承诺"你看到的差异 = 我要推的差异"。
+similar = "3.2.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "4.1.5", default-features = false, features = [

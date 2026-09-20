@@ -393,8 +393,8 @@ async fn confirmed_share(
         now,
     )
     .await?;
-    let ShareOutcome::NeedsConfirm { remote_rev, .. } = &first else { return Ok(first) };
-    let rev = remote_rev.clone();
+    let ShareOutcome::NeedsConfirm { remote_rev, plan_rev, .. } = &first else { return Ok(first) };
+    let (rev, plan) = (remote_rev.clone(), plan_rev.clone());
     share::share(
         client,
         read,
@@ -402,7 +402,12 @@ async fn confirmed_share(
         env,
         store,
         trash,
-        share::ShareRequest { registry_id, repo, dir_slug, confirm: Some(&rev) },
+        share::ShareRequest {
+            registry_id,
+            repo,
+            dir_slug,
+            confirm: Some(share::Confirmation { remote_rev: &rev, plan_rev: &plan }),
+        },
         now,
     )
     .await
@@ -498,12 +503,13 @@ async fn deletions_reach_the_github_write_request() {
     .await
     .unwrap();
     let share::ShareInstalledOutcome::NeedsConfirm {
-        plan, remote_rev, ..
+        plan, remote_rev, plan_rev, ..
     } = first
     else {
         panic!("有文件要删,必须先让用户看一眼:{first:?}");
     };
-    assert_eq!(plan.deleted, vec!["旧的.md".to_string()]);
+    let deleted: Vec<String> = plan.deleted.iter().map(|f| f.path.clone()).collect();
+    assert_eq!(deleted, vec!["旧的.md".to_string()]);
 
     let second = share::share_installed(
         &ShareClient::Github(&gh),
@@ -513,7 +519,7 @@ async fn deletions_reach_the_github_write_request() {
         &c.store,
         "my-notes",
         &repo.branch,
-        Some(remote_rev.as_str()),
+        Some(share::Confirmation { remote_rev: &remote_rev, plan_rev: &plan_rev }),
         NOW,
     )
     .await

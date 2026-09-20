@@ -137,8 +137,8 @@ async fn confirmed_share(
         now,
     )
     .await?;
-    let ShareOutcome::NeedsConfirm { remote_rev, .. } = &first else { return Ok(first) };
-    let rev = remote_rev.clone();
+    let ShareOutcome::NeedsConfirm { remote_rev, plan_rev, .. } = &first else { return Ok(first) };
+    let (rev, plan) = (remote_rev.clone(), plan_rev.clone());
     share::share(
         client,
         read,
@@ -146,7 +146,12 @@ async fn confirmed_share(
         env,
         store,
         trash,
-        share::ShareRequest { registry_id, repo, dir_slug, confirm: Some(&rev) },
+        share::ShareRequest {
+            registry_id,
+            repo,
+            dir_slug,
+            confirm: Some(share::Confirmation { remote_rev: &rev, plan_rev: &plan }),
+        },
         now,
     )
     .await

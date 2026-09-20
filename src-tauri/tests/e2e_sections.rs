@@ -303,7 +303,10 @@ async fn a_skill_installed_from_the_company_library_cannot_be_pushed_back_by_a_n
         // 作者闸排在确认凭据之前,所以这里给什么值都一样;给 `Some` 而不是 `None`
         // 是为了保住这条用例的鉴别力——闸被拿掉时它必须真的走到"要提交"那一侧
         // (那时 `expect_err` 会当场红,因为拿到的是 `NeedsConfirm`)。
-        Some("sha256:the-user-saw-this"),
+        Some(share::Confirmation {
+            remote_rev: "sha256:the-user-saw-this",
+            plan_rev: "sha256:and-this-plan",
+        }),
         NOW,
     )
     .await

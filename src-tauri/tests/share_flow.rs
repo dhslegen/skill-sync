@@ -569,6 +569,22 @@ fn write_index_cache_with_author(c: &Ctx, dir_slug: &str, author: &str) {
     index_store::save_cache(&path, &index).unwrap();
 }
 
+/// 执行轮要带的两条凭据(v8 任务 8:库里那一版 + 这份清单自己)。
+fn confirmation<'a>(remote_rev: &'a str, plan_rev: &'a str) -> share::Confirmation<'a> {
+    share::Confirmation { remote_rev, plan_rev }
+}
+
+// 清单三档每一项现在带内容标记,而多数断言只关心"有哪些文件"。
+fn added_paths(p: &share::SharePlan) -> Vec<String> {
+    p.added.iter().map(|f| f.path.clone()).collect()
+}
+fn modified_paths(p: &share::SharePlan) -> Vec<String> {
+    p.modified.iter().map(|f| f.path.clone()).collect()
+}
+fn deleted_paths(p: &share::SharePlan) -> Vec<String> {
+    p.deleted.iter().map(|f| f.path.clone()).collect()
+}
+
 fn share_req<'a>(repo: &'a RepoRef, dir_slug: &'a str) -> share::ShareRequest<'a> {
     share::ShareRequest {
         registry_id: "company",
@@ -591,8 +607,8 @@ async fn confirmed_share(
     dir_slug: &str,
 ) -> Result<ShareOutcome, skillsync_lib::error::AppError> {
     let first = share::share(&share::ShareClient::Gitea(client), client, &c.registry, env, &c.store, &c.trash, share_req(repo, dir_slug), NOW).await?;
-    let ShareOutcome::NeedsConfirm { remote_rev, .. } = &first else { return Ok(first) };
-    let rev = remote_rev.clone();
+    let ShareOutcome::NeedsConfirm { remote_rev, plan_rev, .. } = &first else { return Ok(first) };
+    let (rev, plan) = (remote_rev.clone(), plan_rev.clone());
     share::share(
         &share::ShareClient::Gitea(client),
         client,
@@ -600,7 +616,7 @@ async fn confirmed_share(
         env,
         &c.store,
         &c.trash,
-        share::ShareRequest { registry_id: "company", repo, dir_slug, confirm: Some(&rev) },
+        share::ShareRequest { registry_id: "company", repo, dir_slug, confirm: Some(confirmation(&rev, &plan)) },
         NOW,
     )
     .await
@@ -614,9 +630,9 @@ async fn confirmed_push(
     dir_slug: &str,
 ) -> Result<share::ShareInstalledOutcome, skillsync_lib::error::AppError> {
     let first = share::share_installed(&share::ShareClient::Gitea(client), client, &c.registry, env, &c.store, dir_slug, "main", None, NOW).await?;
-    let share::ShareInstalledOutcome::NeedsConfirm { remote_rev, .. } = &first else { return Ok(first) };
-    let rev = remote_rev.clone();
-    share::share_installed(&share::ShareClient::Gitea(client), client, &c.registry, env, &c.store, dir_slug, "main", Some(&rev), NOW).await
+    let share::ShareInstalledOutcome::NeedsConfirm { remote_rev, plan_rev, .. } = &first else { return Ok(first) };
+    let (rev, plan) = (remote_rev.clone(), plan_rev.clone());
+    share::share_installed(&share::ShareClient::Gitea(client), client, &c.registry, env, &c.store, dir_slug, "main", Some(confirmation(&rev, &plan)), NOW).await
 }
 
 #[tokio::test]
@@ -2404,7 +2420,7 @@ async fn a_plan_with_deletions_is_not_committed_until_confirmed() {
     let share::ShareInstalledOutcome::NeedsConfirm { plan, overwrite, .. } = outcome else {
         panic!("有文件要删,必须先让用户看一眼:{outcome:?}");
     };
-    assert_eq!(plan.deleted, vec!["踩过的坑.md".to_string()]);
+    assert_eq!(deleted_paths(&plan), vec!["踩过的坑.md".to_string()]);
     assert!(plan.added.is_empty() && plan.modified.is_empty(), "SKILL.md 两边一样:{plan:?}");
     // 库里那一版与账上基线一致 → 没有人顶掉谁,顶部不摆覆盖警告
     assert!(overwrite.is_none(), "没被别人改过就不该摆覆盖警告");
@@ -2447,7 +2463,7 @@ async fn the_first_channel_also_previews_before_it_commits() {
         panic!("预览轮应当回一份清单:{outcome:?}");
     };
     // 首次分享:删除清单**恒空**,确认屏只列新增
-    assert_eq!(plan.added, vec!["SKILL.md".to_string()]);
+    assert_eq!(added_paths(&plan), vec!["SKILL.md".to_string()]);
     assert!(plan.deleted.is_empty() && plan.modified.is_empty());
     assert!(overwrite.is_none(), "库里还没有这个技能,没有谁会被顶掉");
     let posts = server
@@ -2539,7 +2555,8 @@ async fn share_changes_refuses_to_commit_a_plan_the_user_never_saw() {
     let first = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", None, NOW)
         .await
         .unwrap();
-    let share::ShareInstalledOutcome::NeedsConfirm { plan, remote_rev, stale, .. } = first else {
+    let share::ShareInstalledOutcome::NeedsConfirm { plan, remote_rev, plan_rev, stale, .. } = first
+    else {
         panic!("预览轮应当回一份清单:{first:?}");
     };
     assert!(!stale, "第一轮不是重算出来的");
@@ -2559,17 +2576,25 @@ async fn share_changes_refuses_to_commit_a_plan_the_user_never_saw() {
     mount_tree(&server, &[("skills/weekly-report/SKILL.md", "sha-md")]).await;
 
     // 用户点确认,带的是他看过的那一版的凭据
-    let second = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", Some(remote_rev.as_str()), NOW)
+    let second = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", Some(confirmation(&remote_rev, &plan_rev)), NOW)
         .await
         .unwrap();
 
-    let share::ShareInstalledOutcome::NeedsConfirm { plan, stale, remote_rev: rev2, .. } = second else {
+    let share::ShareInstalledOutcome::NeedsConfirm {
+        plan, stale, stale_reason, remote_rev: rev2, ..
+    } = second
+    else {
         panic!("库里变了就不许提交,应当退回重看:{second:?}");
     };
     assert!(stale, "要如实告诉用户这是重新算出来的清单");
+    assert_eq!(
+        stale_reason,
+        Some(share::StaleReason::RemoteChanged),
+        "变的是库里那一头,对用户是与「你本地又改过了」完全不同的一句话"
+    );
     assert_ne!(rev2, remote_rev, "凭据要跟着库里那一版走");
     // 正是那份"从未出现在用户看过的清单上却会被删掉"的文件
-    assert_eq!(plan.deleted, vec!["同事刚加的.md".to_string()]);
+    assert_eq!(deleted_paths(&plan), vec!["同事刚加的.md".to_string()]);
     let posts = server
         .received_requests()
         .await
@@ -2602,17 +2627,166 @@ async fn share_changes_commits_when_the_library_is_still_what_the_user_saw() {
     let first = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", None, NOW)
         .await
         .unwrap();
-    let share::ShareInstalledOutcome::NeedsConfirm { remote_rev, .. } = first else {
+    let share::ShareInstalledOutcome::NeedsConfirm { remote_rev, plan_rev, .. } = first else {
         panic!("预览轮应当回一份清单:{first:?}");
     };
 
-    let second = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", Some(remote_rev.as_str()), NOW)
+    let second = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", Some(confirmation(&remote_rev, &plan_rev)), NOW)
         .await
         .unwrap();
     assert!(
         matches!(second, share::ShareInstalledOutcome::Submitted(_)),
         "库里没变、凭据对得上,就该照推:{second:?}"
     );
+}
+
+// ============================================================ 本地那一侧的绑定(v8 任务 8 / 顾问①)
+//
+// 终审 C-1 只绑了库里那一版。摆出**内容级差异**之后,我们等于向用户承诺
+// 「你看到的差异 = 我要推的差异」——而执行轮是**重新读本地文件**的。
+// 这个项目里 Claude Code 正开着编辑技能是常态,两轮之间本地被改一笔,
+// `remote_rev` 照样对得上、**不触发重看**,推走的就是用户没看过的内容。
+//
+// 判据同 C-1:**请求条数**。返回值好看证明不了"没动手"。
+
+/// 🔴 两轮之间**本地**变了 → 不提交,退回新清单,失效原因是「你本地又改过了」。
+#[tokio::test]
+async fn share_changes_refuses_to_push_local_bytes_the_user_never_saw() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("weekly-report");
+    write_skill(&dir, "weekly-report", "原版");
+    let mut state = state_of(&c);
+    state.installed.push(install_record(&c, &dir));
+    c.store.save_state(&state).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: weekly-report\ndescription: 我改过\n---\n").unwrap();
+
+    // 库里从头到尾**没变**——这条测试要单独验本地那一侧的绑定
+    let server = MockServer::start().await;
+    mount_archive(&server, zip_with("weekly-report", &[("SKILL.md", WEEKLY_PRISTINE)])).await;
+    mount_submit_chain(&server).await;
+    mount_tree(&server, &[("skills/weekly-report/SKILL.md", "sha-md")]).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+
+    let first = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", None, NOW)
+        .await
+        .unwrap();
+    let share::ShareInstalledOutcome::NeedsConfirm { plan, remote_rev, plan_rev, .. } = first else {
+        panic!("预览轮应当回一份清单:{first:?}");
+    };
+    assert_eq!(modified_paths(&plan), vec!["SKILL.md".to_string()]);
+    assert!(plan.added.is_empty(), "用户看到的清单里没有任何新增:{plan:?}");
+
+    // 🔴 两轮之间:编辑器(或用户自己)又动了一笔,还多写了一个文件
+    std::fs::write(dir.join("SKILL.md"), "---\nname: weekly-report\ndescription: 我又改了一次\n---\n").unwrap();
+    std::fs::write(dir.join("刚写的.md"), "这一份用户没在确认屏上见过").unwrap();
+
+    // 用户点确认,带的是他看过的那份清单的凭据
+    let second = share::share_installed(&share::ShareClient::Gitea(&client), &client, &c.registry, &env, &c.store, "weekly-report", "main", Some(confirmation(&remote_rev, &plan_rev)), NOW)
+        .await
+        .unwrap();
+
+    let share::ShareInstalledOutcome::NeedsConfirm {
+        plan, stale, stale_reason, plan_rev: plan_rev2, remote_rev: rev2, ..
+    } = second
+    else {
+        panic!("本地变了就不许提交,应当退回重看:{second:?}");
+    };
+    assert!(stale, "要如实告诉用户这是重新算出来的清单");
+    assert_eq!(
+        stale_reason,
+        Some(share::StaleReason::LocalChanged),
+        "变的是本地这一头,不是库里"
+    );
+    assert_eq!(rev2, remote_rev, "库里根本没变,这条凭据不该跟着动");
+    assert_ne!(plan_rev2, plan_rev, "清单变了,它自己的指纹就得跟着变");
+    // 正是那份"从未出现在用户看过的清单上却会被推上去"的文件
+    assert_eq!(added_paths(&plan), vec!["刚写的.md".to_string()]);
+    let posts = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .count();
+    assert_eq!(posts, 0, "用户没看过这份清单,一个写请求都不许发");
+    assert_eq!(state_of(&c).installed[0].commit_sha, "aaa", "记账也不许动");
+}
+
+/// 「分享」通道(`share()`)同款:两轮之间本地多写了一个文件 → 不提交,重看。
+#[tokio::test]
+async fn share_refuses_to_push_local_bytes_the_user_never_saw() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "my-notes", "本地这一版");
+
+    let mut config = skillsync_lib::core::state::Config::default();
+    config.identities.insert(
+        "company".into(),
+        Identity { login: "zhaowh".into(), display_name: "赵文浩".into() },
+    );
+    c.store.save_config(&config).unwrap();
+    write_index_cache_with_author(&c, "my-notes", "赵文浩");
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", true).await;
+    mount_archive(&server, zip_with("my-notes", &[("SKILL.md", "---\nname: my-notes\ndescription: 库里那一版\n---\n正文\n")])).await;
+    mount_last_commit(&server, "赵文浩", "zhaowh", "2026-08-01T00:00:00Z").await;
+    mount_submit_chain(&server).await;
+    mount_tree(&server, &[("skills/my-notes/SKILL.md", "sha-md")]).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    let repo = repo_ref();
+
+    let first = share::share(
+        &share::ShareClient::Gitea(&client),
+        &client,
+        &c.registry,
+        &env,
+        &c.store,
+        &c.trash,
+        share_req(&repo, "my-notes"),
+        NOW,
+    )
+    .await
+    .unwrap();
+    let ShareOutcome::NeedsConfirm { plan, remote_rev, plan_rev, .. } = first else {
+        panic!("预览轮应当回一份清单:{first:?}");
+    };
+    assert!(plan.added.is_empty(), "用户看到的清单里没有任何新增:{plan:?}");
+
+    std::fs::write(dir.join("刚写的.md"), "这一份用户没在确认屏上见过").unwrap();
+
+    let second = share::share(
+        &share::ShareClient::Gitea(&client),
+        &client,
+        &c.registry,
+        &env,
+        &c.store,
+        &c.trash,
+        share::ShareRequest {
+            registry_id: "company",
+            repo: &repo,
+            dir_slug: "my-notes",
+            confirm: Some(confirmation(&remote_rev, &plan_rev)),
+        },
+        NOW,
+    )
+    .await
+    .unwrap();
+
+    let ShareOutcome::NeedsConfirm { plan, stale, stale_reason, .. } = second else {
+        panic!("本地变了就不许提交,应当退回重看:{second:?}");
+    };
+    assert!(stale);
+    assert_eq!(stale_reason, Some(share::StaleReason::LocalChanged));
+    assert_eq!(added_paths(&plan), vec!["刚写的.md".to_string()]);
+    let posts = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .count();
+    assert_eq!(posts, 0, "用户没看过这份清单,一个写请求都不许发");
 }
 
 /// 「分享」通道(`share()`)同款:两轮之间库里多了一份文件 → 不提交,重看。
@@ -2649,7 +2823,7 @@ async fn share_refuses_to_commit_a_plan_the_user_never_saw() {
     )
     .await
     .unwrap();
-    let ShareOutcome::NeedsConfirm { plan, remote_rev, .. } = first else {
+    let ShareOutcome::NeedsConfirm { plan, remote_rev, plan_rev, .. } = first else {
         panic!("预览轮应当回一份清单:{first:?}");
     };
     assert!(plan.deleted.is_empty(), "用户看到的清单里没有任何删除:{plan:?}");
@@ -2682,7 +2856,7 @@ async fn share_refuses_to_commit_a_plan_the_user_never_saw() {
             registry_id: "company",
             repo: &repo,
             dir_slug: "my-notes",
-            confirm: Some(remote_rev.as_str()),
+            confirm: Some(confirmation(&remote_rev, &plan_rev)),
         },
         NOW,
     )
@@ -2693,7 +2867,7 @@ async fn share_refuses_to_commit_a_plan_the_user_never_saw() {
         panic!("库里变了就不许提交,应当退回重看:{second:?}");
     };
     assert!(stale, "要如实告诉用户这是重新算出来的清单");
-    assert_eq!(plan.deleted, vec!["同事刚加的.md".to_string()]);
+    assert_eq!(deleted_paths(&plan), vec!["同事刚加的.md".to_string()]);
     let posts = server
         .received_requests()
         .await

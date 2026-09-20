@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ShareOverwriteDialog } from "./ShareOverwriteDialog";
 import { useOverwrite } from "@/store/overwrite";
 import { t } from "@/i18n";
+import { planOf } from "@/test/share-plan";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -20,7 +21,7 @@ const ask = (over: Partial<{ lastAuthor: string | null; lastAt: string | null; h
   useOverwrite.getState().ask({
     dirSlug: "weekly-report",
     name: "weekly-report",
-    plan: { added: [], modified: ["SKILL.md"], deleted: [] },
+    plan: planOf({ modified: ["SKILL.md"] }),
     warning: {
       lastAuthor: "李四",
       lastAt: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(),
@@ -102,9 +103,10 @@ describe("覆盖确认屏(v8 任务 4)", () => {
     useOverwrite.getState().ask({
       dirSlug: "weekly-report",
       name: "weekly-report",
-      plan: { added: [], modified: [], deleted: ["同事刚加的.md"] },
+      plan: planOf({ deleted: ["同事刚加的.md"] }),
       warning: null,
       stale: true,
+      staleReason: "remoteChanged",
       confirm: vi.fn(async () => {}),
     });
     render(<ShareOverwriteDialog />);
@@ -112,11 +114,26 @@ describe("覆盖确认屏(v8 任务 4)", () => {
     expect(screen.getByText("同事刚加的.md")).toBeInTheDocument();
   });
 
+  it("🔴 v8 任务 8:变的是**本地**那一头时说另一句话,不冤枉同事", () => {
+    useOverwrite.getState().ask({
+      dirSlug: "weekly-report",
+      name: "weekly-report",
+      plan: planOf({ added: ["刚写的.md"] }),
+      warning: null,
+      stale: true,
+      staleReason: "localChanged",
+      confirm: vi.fn(async () => {}),
+    });
+    render(<ShareOverwriteDialog />);
+    expect(screen.getByText(t("share.planChangedLocally"))).toBeInTheDocument();
+    expect(screen.queryByText(t("share.planChanged"))).toBeNull();
+  });
+
   it("🔴 只有删除、没有覆盖警告那一档(生产上更常见)照样摆得出清单,且措辞不说覆盖", () => {
     useOverwrite.getState().ask({
       dirSlug: "weekly-report",
       name: "周报生成",
-      plan: { added: [], modified: [], deleted: ["旧的.md"] },
+      plan: planOf({ deleted: ["旧的.md"] }),
       warning: null,
       confirm: vi.fn(async () => {}),
     });

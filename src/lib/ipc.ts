@@ -774,10 +774,104 @@ export interface OverwriteWarning {
  * 同样适用,所以它必须先摆在用户眼前(D6)。
  */
 export interface SharePlan {
-  added: string[];
-  modified: string[];
-  deleted: string[];
+  added: AddedFile[];
+  modified: ModifiedFile[];
+  deleted: DeletedFile[];
 }
+
+/**
+ * 新增的一个文件。🔴 **只带路径与标记,不带内容**(v8 任务 8):首次分享一个
+ * 54 文件的技能,最坏十几 MB 全塞进一次 IPC 返回值;而新增文件的内容就在本地
+ * 磁盘上,按需读即可(任务 9 的「读本地单文件」通道)。
+ */
+export interface AddedFile {
+  path: string;
+  body: AddedBody;
+}
+
+/**
+ * 这里**没有「超限」那一档**,是有意的(设计 Q11「不预告大小,直接拉」):
+ * 内容根本不随这一轮传,大小限额是取数那一刻的事。
+ */
+export type AddedBody =
+  /** 文本,内容按需读。 */
+  | { kind: "text" }
+  /**
+   * 非 UTF-8。文案只能说「这不是文本格式,看不了内容」——**不能说"这是图片"**,
+   * UTF-16 文本也会落进这一档,那是在编造一个我们并不知道的事实。
+   */
+  | { kind: "binary" };
+
+/** 修改的一个文件:路径 + 这两版之间的差异。 */
+export interface ModifiedFile {
+  path: string;
+  diff: FileDiff;
+}
+
+/** 删除的一个文件:路径 + **库里那一版**的内容(本地根本没有它)。 */
+export interface DeletedFile {
+  path: string;
+  body: DeletedBody;
+}
+
+export type DeletedBody =
+  | { kind: "text"; text: string }
+  | { kind: "binary" }
+  /** 超限那一档刻意不带正文——它同时是这一轮返回值体量的上界。 */
+  | { kind: "tooLarge"; limit: SizeLimit; bytes: number; lines: number };
+
+/**
+ * 两版之间的差异。四档**可辨联合,不是几个布尔**:每一档在界面上都是一句
+ * 不同的话,压成布尔就分不出"为什么看不了"。
+ */
+export type FileDiff
+  /** `hiddenHunks` > 0 时只给了前 50 处,其余如实报计数。 */
+  = | { kind: "hunks"; hunks: DiffHunk[]; hiddenHunks: number }
+  /**
+   * 🔴 正文逐字相同,**只有行尾的换行符不同**(设计 Q17)。不单列这一档的话,
+   * 用户看到的是"全文都红"——而他明明一个字都没改。
+   */
+  | { kind: "lineEndingsOnly" }
+  | { kind: "binary" }
+  /** `limit` 说清是哪条超了(256KB / 2000 行),界面据此分流文案。 */
+  | { kind: "tooLarge"; limit: SizeLimit; bytes: number; lines: number };
+
+export type SizeLimit = "bytes" | "lines" | "both";
+
+/** 一处改动及其上下文。行号是 **1 基**,与 `git diff` 的 `@@` 同口径。 */
+export interface DiffHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: DiffLine[];
+}
+
+/** 差异里的一行。文本**不含行尾换行符**。 */
+export interface DiffLine {
+  op: "context" | "insert" | "delete";
+  text: string;
+}
+
+/**
+ * 用户按下确认时必须带回来的两条凭据(终审 C-1 + v8 任务 8 / 顾问①)。
+ *
+ * 🔴 **嵌成一个对象,不是两个平级的可选字段**:平级的话"只带一条"是写得出来的,
+ * 而最自然的处理(当成没确认)会把用户点过的确认静默降级成又一轮预览。
+ * 嵌套之后 Rust 侧 serde 对半个对象直接报错。
+ *
+ * 🔴 **两条凭据也不合并成一个复合 token**:两种失效对用户是两句不同的话
+ * ——「技能库里那一版被别人改过了」与「你本地又改过了」。
+ */
+export interface ShareConfirmToken {
+  /** 这份清单基于技能库里哪一版算出来的。 */
+  remoteRev: string;
+  /** 这份清单**自己**的指纹:本地在两轮之间被改过,它就对不上。 */
+  planRev: string;
+}
+
+/** 用户看过的那份清单为什么作废了。 */
+export type StaleReason = "remoteChanged" | "localChanged";
 
 /**
  * 分享的结果。**库里同名且不是我分享的**不是拍板档,而是 `REPO_NAME_TAKEN`
@@ -807,12 +901,16 @@ export type ShareOutcome =
        * (`confirmRev`),core 比不上就不提交,重算一份再问一次。
        */
       remoteRev: string;
+      /** 这份清单**自己**的指纹;与上面那条一起原样带回去(见 {@link ShareConfirmToken})。 */
+      planRev: string;
       /**
-       * `true` = 你确实按过确认,但技能库在你看清单的这段时间里又变了,
+       * `true` = 你确实按过确认,但你看清单的这段时间里情况变了,
        * 这是**重新算出来的**第二份清单。界面必须如实说一句——静默换掉清单,
        * 用户会以为自己看花了眼。
        */
       stale: boolean;
+      /** 变的是哪一头。`stale === (staleReason !== null)`,两者在 core 同一处赋值。 */
+      staleReason: StaleReason | null;
     }
   | { outcome: "alreadyInSync" };
 
@@ -833,8 +931,12 @@ export type ShareInstalledOutcome =
       overwrite: OverwriteWarning | null;
       /** 见 {@link ShareOutcome} 的同名字段(终审 C-1)。 */
       remoteRev: string;
+      /** 见 {@link ShareOutcome} 的同名字段(v8 任务 8)。 */
+      planRev: string;
       /** 见 {@link ShareOutcome} 的同名字段(终审 C-1)。 */
       stale: boolean;
+      /** 见 {@link ShareOutcome} 的同名字段(v8 任务 8)。 */
+      staleReason: StaleReason | null;
     }
   | { kind: "alreadyInSync" };
 
@@ -888,18 +990,19 @@ export const skillShare = (args: {
   /**
    * 用户已在统一分享确认屏上拍过板。缺省(不传)= **预览轮**,core 零写请求。
    *
-   * 🔴 值必须是上一轮 `needsConfirm` 原样回来的 `remoteRev`(终审 C-1):
-   * 它绑定"用户看的是库里哪一版"。core 比不上就不提交,重算一份再问一次
-   * ——否则两轮之间同事新推的文件会进删除清单被删,而它从未出现在用户看过的清单上。
+   * 🔴 值必须是上一轮 `needsConfirm` 原样回来的那**两条**凭据
+   * (见 {@link ShareConfirmToken})。任一条比不上,core 就不提交、重算一份
+   * 再问一次——否则两轮之间同事新推的文件会进删除清单被删、或者本地被编辑器
+   * 改过的内容被推上去,而它们都从未出现在用户看过的清单上。
    */
-  confirmRev?: string;
+  confirm?: ShareConfirmToken;
 }) => call<ShareOutcome>("skill_share", { args });
 
 export const skillShareChanges = (args: {
   dirSlug: string;
   registryId?: string;
-  /** 同 {@link skillShare} 的 `confirmRev`(终审 C-1)。 */
-  confirmRev?: string;
+  /** 同 {@link skillShare} 的 `confirm`(终审 C-1 + v8 任务 8)。 */
+  confirm?: ShareConfirmToken;
 }) => call<ShareInstalledOutcome>("skill_share_changes", { args });
 
 /**

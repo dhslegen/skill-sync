@@ -441,7 +441,10 @@ async fn remote_conflict_detection_against_a_real_gitea() {
     )
     .await
     .expect("冲突检测不该报错");
-    let share::ShareInstalledOutcome::NeedsConfirm { overwrite: Some(warning), remote_rev: seen_rev, .. } = outcome else {
+    let share::ShareInstalledOutcome::NeedsConfirm {
+        overwrite: Some(warning), remote_rev: seen_rev, plan_rev: seen_plan, ..
+    } = outcome
+    else {
         panic!("远端已是 v3,应进冲突档");
     };
     let url = warning.history_url.expect("Gitea 源应给出历史链接");
@@ -473,7 +476,7 @@ async fn remote_conflict_detection_against_a_real_gitea() {
         &name,
         "main",
         // 终审 C-1:确认那一跳要带上一轮回来的凭据(界面就是这么做的)
-        Some(seen_rev.as_str()),
+        Some(share::Confirmation { remote_rev: &seen_rev, plan_rev: &seen_plan }),
         &now,
     )
     .await
@@ -815,10 +818,12 @@ async fn deleting_a_local_file_removes_it_from_a_real_gitea() {
     )
     .await
     .expect("预览轮失败");
-    let share::ShareInstalledOutcome::NeedsConfirm { plan, remote_rev, .. } = preview else {
+    let share::ShareInstalledOutcome::NeedsConfirm { plan, remote_rev, plan_rev, .. } = preview
+    else {
         panic!("本地删过文件,预览轮就该回一份带删除的清单:{preview:?}");
     };
-    assert_eq!(plan.deleted, vec!["extra.md".to_string()], "确认屏要点名这个文件:{plan:?}");
+    let deleted: Vec<String> = plan.deleted.iter().map(|f| f.path.clone()).collect();
+    assert_eq!(deleted, vec!["extra.md".to_string()], "确认屏要点名这个文件:{plan:?}");
 
     // ④ 确认后:库里真的没有它了(查真实的树,不是查我们自己的返回值)
     let done = share::share_installed(
@@ -829,7 +834,7 @@ async fn deleting_a_local_file_removes_it_from_a_real_gitea() {
         &store,
         &name,
         "main",
-        Some(remote_rev.as_str()),
+        Some(share::Confirmation { remote_rev: &remote_rev, plan_rev: &plan_rev }),
         NOW,
     )
     .await
@@ -1036,8 +1041,8 @@ async fn confirmed_share(
         now,
     )
     .await?;
-    let ShareOutcome::NeedsConfirm { remote_rev, .. } = &first else { return Ok(first) };
-    let rev = remote_rev.clone();
+    let ShareOutcome::NeedsConfirm { remote_rev, plan_rev, .. } = &first else { return Ok(first) };
+    let (rev, plan) = (remote_rev.clone(), plan_rev.clone());
     share::share(
         client,
         read,
@@ -1045,7 +1050,12 @@ async fn confirmed_share(
         env,
         store,
         trash,
-        share::ShareRequest { registry_id, repo, dir_slug, confirm: Some(&rev) },
+        share::ShareRequest {
+            registry_id,
+            repo,
+            dir_slug,
+            confirm: Some(share::Confirmation { remote_rev: &rev, plan_rev: &plan }),
+        },
         now,
     )
     .await
