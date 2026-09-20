@@ -257,7 +257,15 @@ export function MySkillsPage() {
       skill.section === "shareable"
         ? remoteChangedForShareable(skill, shareableIndexes)
         : hasUpdate(skill, index);
-    return rowAction(skill, remoteChanged, noAccessFor(skill));
+    // 无基线时判定表改信"两方实时指纹对不对得上"(2026-09-20 真机),
+    // 所以这一项也要喂给它——两个调用点口径必须一致,否则页签角标与行上
+    // 摆的按钮会对不上。
+    return rowAction(
+      skill,
+      remoteChanged,
+      noAccessFor(skill),
+      localDiffersNoBaseline(skill, index),
+    );
   };
   // 🔴 v7.3 Q28-C:整页口径的那两段文字(「N 个有更新 · N 个有改动未分享」)已撤掉
   // ——页签角标**逐栏**报了"有几件事等你"且更精确(`needsAttention` 覆盖六档),
@@ -340,8 +348,9 @@ export function MySkillsPage() {
         ? remoteChangedForShareable(skill, shareableIndexes)
         : hasUpdate(skill, index);
     // 🔴 C3 修复(v7 任务 7 修复轮 1):没有安装基线的行,`rowAction` 从不读
-    // `localHash`——两方指纹直接比,只影响「更多」菜单要不要多一条
-    // 「改用库里的版本」,不进判定表。
+    // `localHash`——两方指纹直接比。它喂两处:「更多」菜单要不要多一条
+    // 「改用库里的版本」,以及**无基线时判定表拿什么当"我改过"的判据**
+    // (2026-09-20 真机:早年分享、本机没记账的技能,`localModified` 恒 false)。
     const noBaselineDiffers = localDiffersNoBaseline(skill, index);
     return (
       <Row
@@ -349,7 +358,7 @@ export function MySkillsPage() {
         skill={skill}
         name={nameOf(skill.dirSlug)}
         description={cardOf(skill)?.description ?? null}
-        action={rowAction(skill, remoteChanged, noAccessFor(skill))}
+        action={rowAction(skill, remoteChanged, noAccessFor(skill), noBaselineDiffers)}
         remoteChanged={remoteChanged}
         noBaselineDiffers={noBaselineDiffers}
         noWriteAccess={noAccessFor(skill)}

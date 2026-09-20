@@ -121,12 +121,15 @@ export type RowAction =
 export function rowAction(
   skill: Pick<
     InstalledSkillView,
-    "section" | "versions" | "shareBlocked" | "localModified" | "localPresent"
+    "section" | "versions" | "shareBlocked" | "localModified" | "localPresent" | "contentHash"
   >,
   remoteChanged: boolean,
   noWriteAccess = false,
+  /** 「没有安装基线,但本地与库里的实时指纹对不上」——调用方算好传进来,
+   *  它手上才有那份索引(与 `remoteChanged` 同一个姿势)。 */
+  localDiffersNoBaseline = false,
 ): RowAction {
-  const action = rowActionIgnoringAccess(skill, remoteChanged);
+  const action = rowActionIgnoringAccess(skill, remoteChanged, localDiffersNoBaseline);
   if (!noWriteAccess) return action;
   switch (action.kind) {
     case "share":
@@ -140,9 +143,10 @@ export function rowAction(
 function rowActionIgnoringAccess(
   skill: Pick<
     InstalledSkillView,
-    "section" | "versions" | "shareBlocked" | "localModified" | "localPresent"
+    "section" | "versions" | "shareBlocked" | "localModified" | "localPresent" | "contentHash"
   >,
   remoteChanged: boolean,
+  localDiffersNoBaseline: boolean,
 ): RowAction {
   if (skill.versions.length > 1) return { kind: "chooseVersion" };
   if (!skill.localPresent) return { kind: "pull" };
@@ -168,7 +172,12 @@ function rowActionIgnoringAccess(
 
   // sharedTo
   if (remoteChanged) return { kind: "conflict" };
-  if (skill.localModified) {
+  // 🔴 **没有安装基线时按"实时指纹对不对得上"判**(2026-09-20 真机):早年分享的
+  // 技能本机没有记账,`localModified` 恒 false(它要基线才算得出),于是用户改了
+  // 自己分享过的技能,行上一颗按钮都没有——只有「…」里那条「改用库里的版本」,
+  // 方向还是反的。判据交给调用方算好传进来(它手上才有库里那份索引),
+  // 与 `remoteChanged` 同一个姿势。
+  if (skill.localModified || (!skill.contentHash && localDiffersNoBaseline)) {
     // 🔴 C1:分享改动同样要过标准校验这道闸。
     if (skill.shareBlocked) {
       return { kind: "shareBlocked", reason: skill.shareBlocked, blockedAction: "shareChanges" };

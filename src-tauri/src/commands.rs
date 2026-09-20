@@ -1167,6 +1167,25 @@ impl crate::core::gitea::RepoSource for SourceClient {
             Self::Github(c) => c.download_archive(r).await,
         }
     }
+    /// 🔴 **这一条漏转发过一次,而且编译器拦不住**(2026-09-20 真机):
+    /// `commit_page` 当时在 trait 上带默认实现(`Ok(None)` = 这个源算不出),
+    /// 于是这个包装枚举没转发它也照样编译,结果公司技能库的每张卡片都不摆更新时间。
+    /// 默认实现已删,现在漏写是编译错误。GitHub 臂按 D15 如实回 `None`。
+    async fn commit_page(
+        &self,
+        r: &RepoRef,
+        page: u32,
+        limit: u32,
+    ) -> Result<Option<Vec<crate::core::gitea::CommitTouch>>, AppError> {
+        match self {
+            // 具体类型上的同名方法返回 `Vec`(拿得到就一定拿得到),
+            // trait 这一层要回答的是"这个源算不算得出",所以包成 `Some`。
+            Self::Gitea(c) => Ok(Some(c.commit_page(r, page, limit).await?)),
+            Self::Github(c) => {
+                crate::core::gitea::RepoSource::commit_page(c, r, page, limit).await
+            }
+        }
+    }
 }
 
 /// GitHub 源的凭证加载:取 keyring 里存的 access token,取不到就降级匿名。
@@ -3540,7 +3559,43 @@ mod tests {
         CountingSource { calls: Default::default(), slug, name }
     }
 
+    /// 🔴 **应用真正走的读链路是 `SourceClient` 这个包装枚举,不是裸 `GiteaClient`**。
+    /// 2026-09-20 真机缺陷:`commit_page` 当时在 trait 上有默认实现(`Ok(None)`),
+    /// 这个枚举漏转发它 → 编译器一声不吭 → 公司技能库每张卡片都不摆更新时间,
+    /// 而直接拿 `GiteaClient` 跑的探针一切正常。默认实现已删(漏写现在是编译错误),
+    /// 这条测试是第二道:它走**包装层**要数据,断言真的落到了 Gitea 客户端身上。
+    #[tokio::test]
+    async fn the_read_wrapper_forwards_commit_history_to_the_gitea_arm() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/v1/repos/o/r/commits"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_raw(
+                r#"[{"commit":{"author":{"date":"2026-09-01T10:00:00+08:00"}},"files":[{"filename":"skills/x/SKILL.md"}]}]"#,
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+        let client = crate::core::gitea::GiteaClient::new(server.uri(), None).unwrap();
+        let wrapped = SourceClient::Gitea(client);
+        let r = RepoRef { owner: "o".into(), repo: "r".into(), branch: "main".into() };
+        let got = crate::core::gitea::RepoSource::commit_page(&wrapped, &r, 1, 50)
+            .await
+            .expect("包装层应当把这一问转给 Gitea 客户端");
+        let commits = got.expect("Gitea 源算得出提交历史,不该回「这个源算不出」");
+        assert_eq!(commits.len(), 1, "拿到的应当是真实响应,不是空壳:{commits:?}");
+    }
+
     impl crate::core::gitea::RepoSource for CountingSource {
+        /// 这个替身只服务"下了几次压缩包"那条计数断言,提交历史与它无关:
+        /// 如实回「这个源算不出」,不编数据。
+        async fn commit_page(
+            &self,
+            _r: &RepoRef,
+            _page: u32,
+            _limit: u32,
+        ) -> Result<Option<Vec<crate::core::gitea::CommitTouch>>, AppError> {
+            Ok(None)
+        }
         async fn branch_head(
             &self,
             _r: &RepoRef,

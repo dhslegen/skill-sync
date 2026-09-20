@@ -734,19 +734,23 @@ pub trait RepoSource: Sync {
 
     /// 一页提交历史(新 → 旧),给「逐技能最后改动时间」用。
     ///
-    /// **`Ok(None)` = 这个源根本算不出**(GitHub 臂按 v8 设计 D15 不实现,
-    /// 走这个默认实现)。它与 `Ok(Some(vec![]))`「翻到头了、没有更多提交」
-    /// 是两件事:前者让界面**整行不摆**,后者让剩下的技能落到「很久以前」。
-    /// 压成同一个值的后果是广场每张卡片都写「很久以前」——本项目
-    /// 复盘过的 `LocalProbe` 同形坑。
+    /// **`Ok(None)` = 这个源根本算不出**(GitHub 臂按 v8 设计 D15 就是这一档)。
+    /// 它与 `Ok(Some(vec![]))`「翻到头了、没有更多提交」是两件事:前者让界面
+    /// **整行不摆**,后者让剩下的技能落到「很久以前」。压成同一个值的后果是
+    /// 广场每张卡片都写「很久以前」——本项目复盘过的 `LocalProbe` 同形坑。
+    ///
+    /// 🔴 **刻意没有默认实现**(2026-09-20 真机缺陷):它原先默认返回 `Ok(None)`,
+    /// 于是 `commands::SourceClient`(应用真正走的读链路,包着两臂的枚举)**漏转发
+    /// 这一个方法**时编译器一声不吭,公司技能库的 38 个技能全落进「算不出」、
+    /// 卡片整行不摆时间——而直接拿 `GiteaClient` 跑的探针一切正常,查了半天才发现
+    /// 差在包装层。**新增实现者必须显式表态**,这正是本项目记的
+    /// 「约定会被下一个人无声打破,类型不会」。
     fn commit_page(
         &self,
-        _r: &RepoRef,
-        _page: u32,
-        _limit: u32,
-    ) -> impl std::future::Future<Output = Result<Option<Vec<CommitTouch>>, AppError>> + Send {
-        std::future::ready(Ok(None))
-    }
+        r: &RepoRef,
+        page: u32,
+        limit: u32,
+    ) -> impl std::future::Future<Output = Result<Option<Vec<CommitTouch>>, AppError>> + Send;
 }
 
 impl RepoSource for GiteaClient {

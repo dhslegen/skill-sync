@@ -24,16 +24,19 @@ function v(path: string): SkillVersion {
 
 type RowSkill = Pick<
   InstalledSkillView,
-  "section" | "versions" | "shareBlocked" | "localModified" | "localPresent"
+  "section" | "versions" | "shareBlocked" | "localModified" | "localPresent" | "contentHash"
 >;
 
-/** 默认形状:本体在,没改过,没有分歧版本,校验合格。 */
+/** 默认形状:本体在,没改过,没有分歧版本,校验合格,**有安装基线**
+ *  ——无基线是另一档(2026-09-20 真机:早年分享、本机没记账的技能),
+ *  它的判据不是 `localModified` 而是调用方传进来的实时指纹比对结果。 */
 const rowBase: RowSkill = {
   section: "installedFrom" as Section,
   versions: [],
   shareBlocked: null,
   localModified: false,
   localPresent: true,
+  contentHash: "sha256:baseline",
 };
 
 describe("rowAction(判定表)", () => {
@@ -205,6 +208,41 @@ describe("rowAction(判定表)", () => {
 // ---------------------------------------------------------------------------
 // 分区折叠头的「N 个要处理」判据
 // ---------------------------------------------------------------------------
+
+describe("rowAction:没有安装基线的「已分享到」行(2026-09-20 真机)", () => {
+  // 🔴 现场:用户改了自己早年分享的技能(本机没有 `state.installed` 记账),
+  // 行上一颗按钮都没有——只有「…」里那条方向相反的「改用库里的版本」。
+  // 根因是 `localModified` 要基线才算得出,无基线时它恒 false。
+  const noBaseline = { ...rowBase, section: "sharedTo" as Section, contentHash: "" };
+
+  it("本地与库里的实时指纹对不上 → 摆「分享改动」", () => {
+    expect(rowAction(noBaseline, false, false, true)).toEqual({ kind: "shareChanges" });
+  });
+
+  it("实时指纹对得上 → 什么都不摆(没有活可干)", () => {
+    expect(rowAction(noBaseline, false, false, false)).toEqual({ kind: "none" });
+  });
+
+  it("没有写权限时仍然降级成禁用态,不是凭空给一颗点不动的按钮", () => {
+    expect(rowAction(noBaseline, false, true, true)).toEqual({
+      kind: "noWriteAccess",
+      blockedAction: "shareChanges",
+    });
+  });
+
+  it("校验不合格时说清哪不合格,而不是直接摆分享", () => {
+    const blocked = { ...noBaseline, shareBlocked: { reason: "nameMismatch" } as never };
+    expect(rowAction(blocked, false, false, true)).toMatchObject({
+      kind: "shareBlocked",
+      blockedAction: "shareChanges",
+    });
+  });
+
+  it("有基线的行不受这个开关影响——它该信 localModified", () => {
+    const withBaseline = { ...rowBase, section: "sharedTo" as Section };
+    expect(rowAction(withBaseline, false, false, true)).toEqual({ kind: "none" });
+  });
+});
 
 describe("needsAttention:折起来会不会藏掉一件事", () => {
   // 逐档钉住,而不是只测两三个代表——这个函数的全部价值就在"一档都不能漏"

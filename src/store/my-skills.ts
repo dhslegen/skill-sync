@@ -982,6 +982,24 @@ async function runShare(
   }
 }
 
+/** 把「首次分享」的三档翻成「分享改动」那一套的形状——两条 IPC 语义同构,
+ *  差别只在 core 要不要记账。归一在这里,`runShareChanges` 下游零分支。 */
+function normalizeShareOutcome(
+  outcome: Awaited<ReturnType<typeof skillShare>>,
+): Awaited<ReturnType<typeof skillShareChanges>> {
+  if (outcome.outcome === "needsConfirm") {
+    return {
+      kind: "needsConfirm",
+      plan: outcome.plan,
+      overwrite: outcome.overwrite,
+      remoteRev: outcome.remoteRev,
+      stale: outcome.stale,
+    };
+  }
+  if (outcome.outcome === "alreadyInSync") return { kind: "alreadyInSync" };
+  return { kind: "submitted", mode: outcome.mode, commitSha: outcome.commitSha };
+}
+
 async function runShareChanges(
   dirSlug: string,
   set: (partial: Partial<MySkillsState>) => void,
@@ -997,11 +1015,29 @@ async function runShareChanges(
   try {
     const skill = get().list?.find((s) => s.dirSlug === dirSlug);
     const registryId = skill?.registryId;
-    const outcome = await skillShareChanges({
-      dirSlug,
-      registryId,
-      ...(confirmRev ? { confirmRev } : {}),
-    });
+    // 🔴 **没有安装基线的行走「首次分享」那条路**(2026-09-20 真机:早年分享的技能
+    // 本机没有 `state.installed` 记账,`share_installed` 会以「不在已获取列表中」
+    // 拒掉——用户看到的是自己改了技能却推不上去,而那正是他分享过的技能)。
+    // `skill_share` 不要求记账:它自己下快照、过覆盖闸、推成功后补一条记账
+    // (于是下一次就有基线了)。两条 IPC 的 needsConfirm/已一致/成功三档同构,
+    // 在这里归一成一种形状,下游一个分支都不用改。
+    const viaFirstShare = !skill?.contentHash;
+    const outcome = viaFirstShare
+      ? normalizeShareOutcome(
+          await skillShare({
+            dirSlug,
+            ...(registryId ? { registryId } : {}),
+            ...(skill?.sourceOwner && skill?.sourceRepo
+              ? { repo: `${skill.sourceOwner}/${skill.sourceRepo}` }
+              : {}),
+            ...(confirmRev ? { confirmRev } : {}),
+          }),
+        )
+      : await skillShareChanges({
+          dirSlug,
+          registryId,
+          ...(confirmRev ? { confirmRev } : {}),
+        });
     if (outcome.kind === "needsConfirm") {
       // core 一个字节没动就退回来了:摆**统一确认屏**让用户拍板(v8 任务 5 / D9)
       // ——清单一定有(这次会新增/修改/删除哪些文件),覆盖警告可能有。

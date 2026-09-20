@@ -310,7 +310,7 @@ export function SkillActionsBlock({
   }, [ensurePreviewFor, shareRegistryId, shareRepo]);
   const noWriteAccess =
     useShare((s) => s.previews[shareTargetKey(shareRegistryId, shareRepo)]) === "noAccess";
-  const action = rowAction(skill, remoteChanged, noWriteAccess);
+  const action = rowAction(skill, remoteChanged, noWriteAccess, noBaselineDiffers);
   // 🔴 `reveal` **不再过滤**(Q3:打开文件夹只留页脚这一处,见组件文档)。
   // 「移除」单独摘出来靠右摆,其余按 `buildRowMenuItems` 的自然顺序排在左边
   // ——那个顺序本来就是「打开文件夹」在前、「移除」在末,与画布一致。

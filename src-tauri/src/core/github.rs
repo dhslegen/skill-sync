@@ -345,6 +345,17 @@ pub async fn poll_device_token(
 }
 
 impl RepoSource for GithubClient {
+    /// GitHub 源算不出逐技能的最后改动时间(v8 设计 D15):一次遍历要拉整个仓的
+    /// 提交历史,大仓几千次提交;逐技能查一次则匿名配额 60 次/时,一页广场就耗光。
+    /// **如实回 `None`**(界面整行不摆),不编一个「很久以前」。
+    async fn commit_page(
+        &self,
+        _r: &RepoRef,
+        _page: u32,
+        _limit: u32,
+    ) -> Result<Option<Vec<crate::core::gitea::CommitTouch>>, AppError> {
+        Ok(None)
+    }
     async fn branch_head(&self, r: &RepoRef) -> Result<BranchHead, AppError> {
         GithubClient::branch_head(self, r).await
     }
