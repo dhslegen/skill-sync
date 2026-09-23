@@ -499,10 +499,22 @@ export function buildFixtures() {
       description: s.description,
       path: `skills/${s.slug}`,
       skillMd: skillMd(s.name, s.description),
-      files: [
-        { path: "SKILL.md", size: 4210 },
-        { path: "reference/template.md", size: 1180 },
-      ],
+      // v8 任务 11a:「Word 转 Markdown」这一行额外挂三个文件,专门给「文件」
+      // 页签的三档截图用(原文预览 / 二进制 / 超限)——这个技能已经在 21/23/29
+      // 三屏里开过详情但都没点进「文件」页签,加这三条不会动那几屏的画面。
+      files:
+        s.slug === "docx-to-markdown"
+          ? [
+              { path: "SKILL.md", size: 4210 },
+              { path: "reference/template.md", size: 1180 },
+              { path: "scripts/convert.sh", size: 860 },
+              { path: "assets/sample-cover.png", size: 204800 },
+              { path: "reference/full-corpus-dump.txt", size: 512000 },
+            ]
+          : [
+              { path: "SKILL.md", size: 4210 },
+              { path: "reference/template.md", size: 1180 },
+            ],
       hasScripts: false,
       commitSha: "9a8b7c6d5e4f30291827364554637281900abcde",
       committedAt: "2026-09-01T02:11:00Z",
@@ -529,12 +541,42 @@ export function buildFixtures() {
     };
   }
 
+  // v8 任务 11a:单文件预览(详情页「文件」页签)要看的三档,键是文件路径
+  // (`store_skill_file_read`/`skill_local_file_read` 的 `file` 参数),在这份
+  // fixture 集里全局唯一——见 mock.mjs 里按 `args.file` 查这张表的那一段。
+  // 「Word 转 Markdown」的 storeDetails.files 已经挂了这三个路径(见上面的
+  // `storeDetails` 构造),这里只补它们各自的内容。
+  const fileContents = {
+    "scripts/convert.sh": {
+      kind: "text",
+      text: [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "",
+        "# 逐段迁移 Word 标题编号,遇到合并单元格先标记再人工核对。",
+        'src="$1"',
+        'dst="${src%.docx}.md"',
+        'pandoc "$src" -o "$dst" --wrap=none',
+        'echo "已转出: $dst,请人工核对表格与编号"',
+        "",
+      ].join("\n"),
+    },
+    "assets/sample-cover.png": { kind: "binary" },
+    "reference/full-corpus-dump.txt": {
+      kind: "tooLarge",
+      limit: "both",
+      bytes: 512000,
+      lines: 8400,
+    },
+  };
+
   return {
     // 截图脚本要按名字点行,所以把这张表也带过去(只读,页面不用)
     roster: SKILLS.map((s) => ({ slug: s.slug, name: s.name, section: s.section })),
     indexes,
     storeDetails,
     localDetails,
+    fileContents,
     defaultIndexKey: "company::skills/skills",
     responses: {
       app_info: { version: "0.6.0", builtinConfigured: true },
@@ -547,12 +589,69 @@ export function buildFixtures() {
       installed_list: SKILLS.filter((s) => !s.notInstalled).map(installedSkill),
       // v8:分享现在是"让技能库和本地一致",预览轮回一份清单(可能带覆盖警告)。
       // 两屏都要能截到——这是本期唯一会**删服务端文件**的界面。
+      // 🔴 v8 任务 11a 顺带修的一处漂移:三档从 T8 起就是带内容标记的对象
+      // (`AddedFile`/`ModifiedFile`/`DeletedFile`,见 src/lib/ipc.ts),这里此前
+      // 还是 T7 时代的裸路径字符串——`SharePlanList` 读 `f.path`/`f.diff` 会
+      // 拿到 `undefined`,35 屏这半年截的其实是一份文件名残缺的清单。顺手配上
+      // 折叠差异需要的 `modified` hunks(两处可见改动 + `hiddenHunks: 4`,
+      // 一屏同时覆盖"折叠差异"与"还有几处没显示"两件事)。
       skill_share_changes: {
         kind: "needsConfirm",
         plan: {
-          added: ["reference/新增示例.md"],
-          modified: ["SKILL.md"],
-          deleted: ["reference/旧模板.md", "scripts/legacy.md"],
+          added: [{ path: "reference/新增示例.md", body: { kind: "text" } }],
+          modified: [
+            {
+              path: "SKILL.md",
+              diff: {
+                kind: "hunks",
+                hunks: [
+                  {
+                    oldStart: 3,
+                    oldLines: 7,
+                    newStart: 3,
+                    newLines: 8,
+                    lines: [
+                      { op: "context", text: "# 接口测试专家" },
+                      { op: "context", text: "" },
+                      { op: "context", text: "设计接口测试用例并执行接口测试,输出测试文档。" },
+                      { op: "delete", text: "仅支持 REST 接口。" },
+                      { op: "insert", text: "支持 REST 与 GraphQL 接口。" },
+                      { op: "insert", text: "覆盖鉴权失败与限流两类异常场景。" },
+                      { op: "context", text: "" },
+                      { op: "context", text: "## 步骤" },
+                      { op: "context", text: "" },
+                    ],
+                  },
+                  {
+                    oldStart: 20,
+                    oldLines: 4,
+                    newStart: 21,
+                    newLines: 5,
+                    lines: [
+                      { op: "context", text: "3. 产出交给使用者过目。" },
+                      { op: "context", text: "" },
+                      { op: "delete", text: "## 附注" },
+                      { op: "insert", text: "## 变更记录" },
+                      { op: "insert", text: "- 2026-09 补充 GraphQL 用例模板" },
+                      { op: "context", text: "" },
+                      { op: "context", text: "更多说明见团队内网文档。" },
+                    ],
+                  },
+                ],
+                hiddenHunks: 4,
+              },
+            },
+          ],
+          deleted: [
+            {
+              path: "reference/旧模板.md",
+              body: { kind: "text", text: "# 旧版模板\n\n此文件已被 reference/新增示例.md 取代,仅作归档参考。" },
+            },
+            {
+              path: "scripts/legacy.md",
+              body: { kind: "text", text: "# 遗留脚本说明\n\n已停用,不再维护。" },
+            },
+          ],
         },
         overwrite: {
           lastAuthor: "刘兴泽",

@@ -461,6 +461,94 @@ const SCREENS = [
     },
   },
 
+  // ---------------------------------------------------------------- v8 任务 11a
+  // T8/T10 分别给分享确认屏(就地展开、看内容级差异)与详情页「文件」页签
+  // (点开单个文件、替换整栏预览)装上了能力,但截图 harness 一直停在 T7 的
+  // 形状:`fixtures.mjs` 里 `skill_share_changes.plan` 直到这一笔还是裸路径
+  // 字符串(T8 就已经改成带内容标记的对象),`SharePlanList` 读 `f.path`/`f.diff`
+  // 全是 `undefined`——35 屏这半年截的其实是一份文件名残缺的清单,而"展开看
+  // 差异""看原文""二进制/超限"四档一次都没被截过。这一笔顺手把 fixture 补对,
+  // 再补四种情况共五屏(折叠差异分光/深色两屏,凑「深色浅色各一屏差异态」)。
+  {
+    id: "36-share-diff-expanded",
+    title: "分享确认屏 · 修改文件就地展开(折叠差异,上下各 3 行 + 还有 4 处未显示)",
+    viewport: { width: 1200, height: 900 },
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      await page.getByRole("tab", { name: /已分享到技能库/ }).click();
+      await page.waitForTimeout(200);
+      const row = page.locator('[data-testid^="row-"]').first();
+      await row.getByRole("button", { name: "更多操作", exact: false }).click();
+      await page.getByText("分享改动").click();
+      await page.waitForTimeout(500);
+      // 展开清单里唯一的「修改」项:core 的 hunks 恒非空,默认态就是「改动」
+      // 那一档,不用先切模式
+      await page.getByRole("button", { name: "SKILL.md", exact: true }).click();
+      const hint = page.getByText("还有 4 处改动没有显示。");
+      await hint.waitFor({ state: "visible" });
+      // 🔴 那句话在 DOM 里"可见"不等于截图里看得到:它挂在
+      // `share-plan-files` 这个 `max-h` 限高的滚动盒里,展开态默认停在顶部,
+      // 折叠差异展开后这句提示天然滚出了截图外(第一版截图漏了它)。滚到底,
+      // 让最后一处 hunk 的尾巴 + 这句提示一起入镜。
+      await ctx.scrollSharePlanToBottom(page);
+    },
+  },
+  {
+    id: "37-share-diff-expanded-dark",
+    title: "分享确认屏 · 修改文件就地展开 · 深色(新 token --diff-add / --diff-del)",
+    viewport: { width: 1200, height: 900 },
+    async run(page, ctx) {
+      // 顶栏「切换主题」默认浅色 → 点一次就是深色(store/appearance.ts::toggleTheme),
+      // 是全局按钮,导航到哪一页之前点都行。
+      await ctx.toggleDark(page);
+      await ctx.gotoMine(page);
+      await page.getByRole("tab", { name: /已分享到技能库/ }).click();
+      await page.waitForTimeout(200);
+      const row = page.locator('[data-testid^="row-"]').first();
+      await row.getByRole("button", { name: "更多操作", exact: false }).click();
+      await page.getByText("分享改动").click();
+      await page.waitForTimeout(500);
+      await page.getByRole("button", { name: "SKILL.md", exact: true }).click();
+      await page.getByText("还有 4 处改动没有显示。").waitFor({ state: "visible" });
+      await ctx.scrollSharePlanToBottom(page);
+    },
+  },
+  {
+    id: "38-detail-file-preview-plain",
+    title: "详情页 ·「文件」页签点开非 Markdown 文件(.sh,原文替换整栏 + 无切换开关)",
+    async run(page, ctx) {
+      await ctx.openStoreDetail(page, "Word 转 Markdown");
+      await page.getByRole("tab", { name: /文件 \(/ }).click();
+      await page.getByRole("button", { name: /scripts\/convert\.sh/ }).click();
+      await page.getByRole("button", { name: "返回文件列表" }).waitFor({ state: "visible" });
+      // 顺便证明:非 Markdown 不出现「渲染/原文」切换开关(设计 Q8/FileViewer 文档)
+      const modeGroupCount = await page.getByRole("group", { name: "查看方式" }).count();
+      if (modeGroupCount > 0) {
+        throw new Error("非 Markdown 文件不该出现「查看方式」切换开关,但截到了它");
+      }
+    },
+  },
+  {
+    id: "39-detail-file-binary",
+    title: "详情页 · 文件预览 · 二进制档(「这不是文本格式,看不了内容」)",
+    async run(page, ctx) {
+      await ctx.openStoreDetail(page, "Word 转 Markdown");
+      await page.getByRole("tab", { name: /文件 \(/ }).click();
+      await page.getByRole("button", { name: /assets\/sample-cover\.png/ }).click();
+      await page.getByText("这不是文本格式,看不了内容。").waitFor({ state: "visible" });
+    },
+  },
+  {
+    id: "40-detail-file-too-large",
+    title: "详情页 · 文件预览 · 超限档(说清是哪一条超了,并带实际数字)",
+    async run(page, ctx) {
+      await ctx.openStoreDetail(page, "Word 转 Markdown");
+      await page.getByRole("tab", { name: /文件 \(/ }).click();
+      await page.getByRole("button", { name: /reference\/full-corpus-dump\.txt/ }).click();
+      await page.getByText(/超过了 256 KB 与 2000 行的显示上限/).waitFor({ state: "visible" });
+    },
+  },
+
   // ---------------------------------------------------------------- 0.6.x 全屏
   // 用户真机全屏(~2000px)截图:内容列靠左封顶、顶栏全出血,右半边一大片空白。
   // 此前所有屏都是 1200 宽,**全屏这一档从来没人截过**——送审截图要覆盖最宽的窗口,
@@ -515,6 +603,23 @@ const ctx = {
     await page.getByRole("button", { name }).first().click();
     await page.getByRole("heading", { name, level: 2 }).waitFor({ state: "visible" });
     await page.waitForTimeout(400);
+  },
+  /** 顶栏「切换主题」是全局按钮,默认浅色 → 点一次即深色(不进「跟随系统」那一档,
+   *  见 store/appearance.ts::toggleTheme)。截图只要能稳定拿到深色,不需要模拟
+   *  系统偏好。 */
+  async toggleDark(page) {
+    await page.getByRole("button", { name: "切换主题" }).click();
+    await page.waitForTimeout(150);
+  },
+  /** 滚动分享确认屏那个限高的文件清单盒(`data-testid="share-plan-files"`)到底部。
+   *  展开一个差异之后,`hiddenHunks` 那句提示常常在盒子的可视区域之外
+   *  ——它在 DOM 里"visible",但截图看不到,得真的把它滚进视口。 */
+  async scrollSharePlanToBottom(page) {
+    await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="share-plan-files"]');
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+    await page.waitForTimeout(150);
   },
   /** 滚动详情面板自己的滚动容器(不是页面 body——body 是 overflow:hidden)。 */
   async scrollPanelToBottom(page) {

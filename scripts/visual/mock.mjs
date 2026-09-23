@@ -58,6 +58,17 @@ export async function installTauriMock(page, fixtures) {
         if (hit) return hit;
         throw { code: "FS_NOT_FOUND", message: "harness 没有为这个技能准备本地详情" };
       }
+      // v8 任务 11a:单文件预览(详情页「文件」页签 / 分享确认屏就地展开)。
+      // 两条通道(本地盘 / 技能库那一版)在真 core 里走不同 IPC,但对截图来说
+      // "读哪个文件"才是要区分的维度——按 `args.file` 查同一张表,键在这个
+      // fixture 集里全局唯一,够用。查不到就吵(与其余分支同一个姿势),
+      // 免得漏配的文件安静地画出一屏空白。
+      if (cmd === "store_skill_file_read" || cmd === "skill_local_file_read") {
+        const a = (args && args.args) || {};
+        const hit = data.fileContents[a.file];
+        if (hit) return hit;
+        throw { code: "FS_NOT_FOUND", message: `harness 没有为这个文件准备内容:${a.file}` };
+      }
 
       if (Object.prototype.hasOwnProperty.call(data.responses, cmd)) {
         return data.responses[cmd];
