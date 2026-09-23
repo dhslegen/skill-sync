@@ -235,7 +235,7 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
 - **别靠 `drop(MockServer)` 空出端口来模拟"连不上"**(M4 任务 4 的 macOS CI 教训):
   测试是并发跑的,另一个 MockServer 完全可能立刻绑上刚空出来的随机端口,请求打到别人
   身上拿到正常响应。用保留域名 `.invalid`(DNS 必然解析失败)——与 `proxy_bypass.rs`
-  绕开 loopback 豁免是同一个套路。这条测试之前一直绿**只是运气好**。
+  用 `.invalid` 做目标是同一个套路。这条测试之前一直绿**只是运气好**。
 - **动 `tauri::Builder` 的插件/setup/窗口配置后,必做一次 `pnpm dev` 启动冒烟**
   (M2 任务 6 的教训):cargo test 与 vitest **都不启动 Tauri runtime**,插件初始化、
   托盘构建、窗口事件这些路径一行都没覆盖。任务 5 加 updater 插件时 Rust 309 +
@@ -255,8 +255,9 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
   3. **fixture 让两个不同概念取了同值** → 它们的差别就测没了
      (`name: weekly-report` + 目录名 `weekly-report`,让"安装目录名取目录名而非 name"失去保护)。
   4. **测试环境有隐性豁免,把被测行为整个短路** → 怎么写都是绿的
-     (reqwest 对 loopback 目标默认豁免代理,拿 wiremock 当目标测代理策略必然空转;
-     `tests/proxy_bypass.rs` 用 `.invalid` 保留域名 + 对照组绕开)。
+     (原先这里举的例子是「reqwest 对 loopback 默认豁免代理」——**这个例子本身是错的**,
+     见下面「系统代理」一条的 2026-09-23 订正;`tests/proxy_bypass.rs` 用 `.invalid`
+     保留域名 + 对照组的做法仍然正确,只是理由要换成真的)。
   注入脚本自身的判定也会骗人:删 match 分支的注入被**编译器**拦下,只 grep "FAILED" 会误判
   "没抓到"——判定要分三态(测试红/编译拦下/真没抓到),编译拦下的换成可编译的坏实现重验。
 - **注入脚本恢复现场必须用"先备份、后回拷",禁用 `git checkout <file>`**:
@@ -1199,7 +1200,11 @@ v8 的契约变更(分享链路简化):**删除** `ReviewView`/`InstalledRow.rev
 (IPC 名 `confirmRev`,缺省 = 预览轮,方向安全);`ShareOutcome`/`ShareInstalledOutcome`
 新增 `NeedsConfirm{plan, overwrite, remoteRev, stale}` 与 `AlreadyInSync` 两档;
 新增错误码 `FS_EMPTY_PAYLOAD`/`FS_UNSAFE_PATH`/`FS_BASELINE_STALE`/`FS_LIBRARY_MISMATCH`/
-`REPO_NOT_AUTHOR`。`StoreSkillCard`/`SkillDetail`/`IndexedSkill` 新增
+`REPO_NOT_AUTHOR`。**v8 追加(T8–T11)**:新增 IPC `skill_local_file_read`(`{dirSlug|path, file}`)与
+`store_skill_file_read`(`{registryId?, repo?, dirSlug, skillPath, commitSha, file}`),均返回
+`FileContent = Text | Binary | TooLarge | Unavailable`;确认凭据从单个 `confirmRev` 改成
+`{remoteRev, planRev}` 对象;`NeedsConfirm` 新增 `planRev` 与 `staleReason`;`SharePlan` 各项
+从裸路径改成带 `diff`/`body` 的对象。新增错误码 `REPO_FILE_NO_VERSION`。`StoreSkillCard`/`SkillDetail`/`IndexedSkill` 新增
 `updatedAt: SkillUpdatedAt`(三档可辨联合),索引缓存版本 **4 → 5**。**没有**新增事件。
 
 ### 现役机制约束(动相关代码前必读)
@@ -1249,6 +1254,42 @@ v8 的契约变更(分享链路简化):**删除** `ReviewView`/`InstalledRow.rev
     「很久以前」。索引缓存 `INDEX_SCHEMA_VERSION` **4 → 5**。
   - ⚠️ **`cargo fmt -- <文件>` 不认文件参数**(v8 终审修复实测):它会格式化整个 workspace
     ——误跑一次产生 85 文件 / 7291 行无关改动。要局部格式化就手改。
+  - 🔴 **文件级差异与文件预览(v8 追加,T8–T11,2026-09-23)**——动 `share::plan_changes` /
+    `core/file_preview.rs` / `FileViewer` / `SharePlanList` 之前必读。拍板 Q1–Q20 在本地
+    `docs/设计-v8-分享链路简化.md`「v8 追加」一节。
+    - **「你看到的差异 = 要推的差异」靠两把凭据,缺一不可**:`remote_rev`(库里那一版,终审 C1)
+      + `plan_rev`(对每项 `(路径, 动作, 本地字节)` 求的清单指纹,与 upload/delete **同一次**算出)。
+      契约是 `share::Confirmation{remote_rev, plan_rev}`,IPC 侧嵌成一个对象——平级两个 `Option`
+      的 `(Some, None)` 会被最自然的处理静默降级成又一轮预览。闸在 `share::confirm_gate`,
+      两条通道共用。**两种失效是两句话**(`StaleReason::RemoteChanged | LocalChanged`,
+      文案 `share.planChanged` / `share.planChangedLocally`)——说「库里又变了」而其实是本地变了,
+      就是在冤枉同事。
+    - 🔴 **新增文件的内容不随清单传**:`AddedBody::Text` **没有内容字段**(不是"内容为空"),
+      展开时才调 `skill_local_file_read` 读。首次分享一个几十文件的技能,全塞进一次 IPC 会有十几 MB。
+    - 🔴 **分享成功后的基线按"推出去的字节"算,不再提交后重读盘**(`plan_changes` 的 `local_hash`,
+      复用 `store::files_content_hash`):提交那几秒里 Claude Code 再改一个字,旧写法会把**没推出去**
+      的内容记进基线。等式测试钉住它与 `dir_content_hash` 相等。
+    - **确认屏读本地文件的目录由发起方给**(`useOverwrite.pending.localTarget`,必填):无记账那一支
+      走 `share()` → `converge::locate`,读文件必须用 `{path: skill.body}`;按 `{dirSlug}` 读会走
+      `home_of`,无记账时直接返回 canonical——**本体住在工具目录时新增文件一个都读不出**
+      (定向复审 I-1,旗舰场景,测试曾把错误形状钉成正确)。
+    - **读单文件三条通道**(`core/file_preview.rs`):本地**不缓存**(缓存就是在清单指纹旁边重新
+      开窗);Gitea **必须按索引的 `commit_sha` 取**(`gitea::file_content_at`;旧的 `file_content`
+      给 authors.json 用,按分支头取,语义不变);广场复用 blob 快照;自定义 GitHub 源返回
+      `Unavailable`,界面**点之前**按 registry kind 判不给点(`sourceCanShowFiles`)。
+      缓存进程内、不落盘,键带版本。广场 `dirSlug` 拼 URL 前过 `check_slug`。
+    - **二进制按内容判**(非 UTF-8),与 `similar` 只吃 `&str` 天然同源;文案说「不是文本格式」,
+      **不说"图片/压缩包"**——UTF-16 文本也落这一档。上限 256KB / 2000 行 / 50 处改动,三把尺子分开。
+    - **Esc 分层**:命令面板 → 文件预览 → 面板,接在 `useDesktopChrome` 同一条链上
+      (确认屏也在 document 捕获阶段接 Esc,同节点两个监听器互相拦不住,所以不另挂)。
+    - 🔴 **远端指纹按 `Path` 逐段序喂入,排序收进 `store::files_content_hash` 内部**(2026-09-23):
+      此前远端按 `BTreeMap<String>` 字符串序、本地 `dir_content_hash` 按 `PathBuf` 逐段序,
+      同时有 `reference/` 目录与 `reference.md` 这类兄弟名时(`.`/`-` 等小于 `/` 的字符)两边
+      **永远不等** → 永久误报「有更新」+ 每次分享都弹覆盖警告。本机 284 个技能实测命中 0,
+      修在 0.7.0 发版前,**随同一次 `INDEX_SCHEMA_VERSION` 4→5 走,没有再升**。本地那把尺子
+      不能动(用户 `state.json` 里的基线都是按它算的),只能让远端迁就。
+    - ⚠️ **截图 harness 的 mock 是手写的,契约一变就静默过期**:T8 改清单形状后,35 号屏截了三天的
+      "undefined 文件名清单",截图上看不出来。改 IPC 返回形状时同一笔里改 `scripts/visual/fixtures.mjs`。
 
 - **我的技能三区模型(v7)**——「我的技能」整页重画,动 `ownership.rs::in_builtin_library` /
   `my_skills.rs` / `src/lib/ownership.ts` / `ToolPicker.tsx` / `project.rs::set_agents`
@@ -2394,8 +2435,17 @@ v8 的契约变更(分享链路简化):**删除** `ReviewView`/`InstalledRow.rev
   覆盖真数据)。agent 开关记在 `disabledAgents`(禁用名单而非启用白名单——注册表会新增 agent)。
 - **系统代理:一律直连**(任务 13):`gitea::app_http_client` 对全部请求 `.no_proxy()`
   ——M1 只有内建源且必在内网,直连即正确语义。**M3 接外网源时必须按 registry 重新决定**。
-  测试坑:reqwest 对 loopback 目标**默认豁免代理**,拿 wiremock 当目标测代理行为必然空转;
-  `tests/proxy_bypass.rs` 用 `.invalid` 域名 + 对照组绕开。
+  🔴 **订正(2026-09-23,v8 任务 11 复审核实)**:此前这里写「reqwest 对 loopback 目标
+  **默认豁免代理**」——**是错的**。reqwest 0.13.4 走 hyper-util 的 `Matcher::intercept`,
+  **唯一的豁免来源是 `NO_PROXY`**,loopback 没有特判。复审者用最小 probe 实测:
+  127.0.0.1 与 localhost 的请求都被假代理收到。本机 shell 设了
+  `http_proxy=http://127.0.0.1:7890`(Clash)且**没有 `NO_PROXY`**,所以
+  **用 `Client::new()` 打 wiremock 的测试,请求其实都经过了 Clash**,一直绿是因为 Clash
+  把本机请求直连转发了——换一个不这么转发的代理(或代理没起)就会成片假红,看着像代码回归。
+  判据:红的请求头里出现 `user-agent: Go-http-client/1.1` 就是代理在中间。
+  **新写的 wiremock 测试一律用 `.no_proxy()` 的 client**(v8 任务 9 起的新测试已照做;
+  既有用例未批量改,是潜在的假红来源)。`tests/proxy_bypass.rs` 用 `.invalid` 域名 +
+  对照组的做法**仍然正确**,只是理由不是"loopback 被豁免",而是"目标要不经代理就必然失败"。
 - **`open_library_url` 只放行与内建 Gitea 同源的地址**(scheme+host+port 全等),
   `javascript:`/`file:` 一律拒绝——那是从 webview 通往系统的通道。多源之后要按 registry 放行,
   但别放宽成"任意 URL"。
