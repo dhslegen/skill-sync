@@ -47,6 +47,11 @@ use crate::error::AppError;
 /// 卡片拿的是整库分支头的时间。不升版本的话,旧版本写的那份**缺字段缓存**
 /// 会被新版本一直命中(head 相同 → 不重建),时间永远不出现——与 M7 的
 /// `attribution` 2026-08-07 真机踩过的是同一个坑。
+/// **同一个版本号(5,2026-09-23 补,v8 尚未发版就随这次升级一起走)还捎带了
+/// [`files_content_hash`] 的排序口径修正**:`remote_content_hash` 此前按字符串序
+/// 喂入,与本地 `fsops::dir_content_hash` 的 `Path` 逐段序在 `a-b.md`/`a/b.md`
+/// 这类兄弟名上会分叉,已改成两侧统一走 `Path` 逐段序。缓存里的 `content_hash`
+/// 因此也可能变化,版本号已经因为 `updated_at` 升过了,不需要为这条再升一次。
 /// 4 = v6 二期任务 1 给 [`fsops::is_excluded_rel`] 排除名单加了
 /// `.DS_Store`/`Thumbs.db`/`desktop.ini`(访达/资源管理器随手生成的系统元文件)。
 /// `content_hash` 字段的算法依赖这份名单,名单一变,同一个技能算出来的指纹跟着变——
@@ -586,12 +591,14 @@ fn parse_curated(archive: &RepoArchive) -> Vec<String> {
 /// 必须与安装后 `fsops::dir_content_hash(canonical)` 得到的值**完全相等**——
 /// installer 把 `archive.entries` 里该目录下的字节原样落盘,所以只要:
 /// ①同一个 [`fsops::ContentHasher`];②同一份排除清单([`fsops::is_excluded_rel`]);
-/// ③同样按相对路径字典序喂入(entries 是 BTreeMap,天然有序),两边就一定一致。
-/// 有测试逐字节钉住这条等式——它一旦不成立,界面会永远显示"有更新"。
+/// ③同样的喂入顺序,两边就一定一致。有测试逐字节钉住这条等式——它一旦不成立,
+/// 界面会永远显示"有更新"。
 ///
-/// ⚠️ ③ 这句**并不总成立**:字符串字典序与 `dir_content_hash` 用的 `Path` 逐段序在
-/// `a-b.md` 与 `a/b.md` 这类兄弟名上不同,那样的技能两侧指纹不等(既有缺口,
-/// 原委与实测见 [`files_content_hash`])。
+/// ③ 由 [`files_content_hash`] 内部统一按 `Path` 逐段比较序重排,这里不需要
+/// 自己操心顺序(`archive.entries` 本身是 `BTreeMap<String,_>`,只有字符串序,
+/// 直接喂进去也没关系)。2026-09-23 之前这里按字符串序喂,与 `dir_content_hash`
+/// 用的 `Path` 逐段序在 `a-b.md`/`a/b.md` 这类兄弟名上会分叉,已修(见
+/// [`files_content_hash`] 与 [`INDEX_SCHEMA_VERSION`] 的说明)。
 pub(crate) fn remote_content_hash(archive: &RepoArchive, dir: &str) -> String {
     let prefix = format!("{dir}/");
     files_content_hash(archive.entries.iter().filter_map(|(full, entry)| {
@@ -603,22 +610,29 @@ pub(crate) fn remote_content_hash(archive: &RepoArchive, dir: &str) -> String {
 /// 从**内存里的** `(相对路径, 字节)` 算技能指纹——[`remote_content_hash`] 与分享成功后
 /// 记基线(`share::plan_changes` 的 `local_hash`)共用的那一份实现。
 ///
-/// 这里共用的只是**哈希器与排除清单**(同一个 [`fsops::ContentHasher`]、同一份
-/// [`fsops::is_excluded_rel`],空相对路径跳过)。🔴 **喂入顺序由调用方负责,这里不重排**,
-/// 而两个调用方的顺序并不相同:
-/// - 分享基线(`share::plan_changes`)按 [`fsops::list_files`] 的顺序喂,即 `Path` 的
-///   逐段比较序,与 `dir_content_hash` 相同,有等式测试钉住;
-/// - ⚠️ [`remote_content_hash`] 按 `archive.entries`(`BTreeMap<String,_>`)的**字符串序**喂。
-///   同一技能里有 `a-b.md` 与 `a/b.md` 这类兄弟名时两种顺序不同(`-` 0x2D < `/` 0x2F,
-///   而 `Path` 先比段),远端指纹与 `dir_content_hash` **不相等**(2026-09-23 一次性 probe
-///   实测:`SKILL.md`/`a-b.md`/`a/b.md` 三个文件,两侧结果不同)。这是**既有缺口**,
-///   不是这个函数引入的;修它会改变缓存里的指纹,要随 `INDEX_SCHEMA_VERSION` 一起拍板。
+/// 🔴 **喂入顺序在这里统一处理,调用方不必自己排序**:内部按 `Path` 逐段比较序
+/// (与 [`fsops::dir_content_hash`]/[`fsops::list_files`] 同一把尺子)重排后再喂哈希器,
+/// 排除清单([`fsops::is_excluded_rel`])与空相对路径的过滤也在排序之前做掉。
+///
+/// ⚠️ 这修的是一个真实存在过的缺口(2026-09-23,该日期同时写在
+/// [`INDEX_SCHEMA_VERSION`] 的文档里):同一技能里有 `a-b.md` 与 `a/b.md` 这类
+/// 兄弟名时,字符串字典序(`-` 0x2D < `/` 0x2F)与 `Path` 逐段序(先比 `a-b.md`
+/// 与目录段 `a` 的完整比较,`a` 是 `a-b.md` 的前缀,`a` 排前面,于是 `a/b.md`
+/// 排在 `a-b.md` 之前)结果相反——按字符串序喂时,[`remote_content_hash`] 算出的
+/// 指纹与本地 [`fsops::dir_content_hash`] 永不相等,界面会永远误报"有更新"、
+/// 分享时的覆盖警告也会误触发。本机 284 个已装技能实测命中 0 个,是潜在缺陷,
+/// 不是已发生的故障。别再往这个函数的调用方加排序逻辑——两个调用方
+/// (`remote_content_hash` 与 `share::plan_changes` 的 `local_hash`)现在共用
+/// 同一份排序,新增第三个调用方时也不需要另写一份。
 pub(crate) fn files_content_hash<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> String {
+    let mut items: Vec<(&str, &[u8])> = files
+        .into_iter()
+        .filter(|(rel, _)| !rel.is_empty() && !fsops::is_excluded_rel(rel))
+        .collect();
+    items.sort_by(|a, b| Path::new(a.0).cmp(Path::new(b.0)));
+
     let mut hasher = fsops::ContentHasher::new();
-    for (rel, bytes) in files {
-        if rel.is_empty() || fsops::is_excluded_rel(rel) {
-            continue;
-        }
+    for (rel, bytes) in items {
         hasher.push(rel, bytes);
     }
     hasher.finish()
@@ -1428,6 +1442,54 @@ mod content_hash_tests {
 
         assert_eq!(remote, local, "远端与本地哈希必须一致,否则装完就会永远提示有更新");
         assert!(remote.starts_with("sha256:"));
+    }
+
+    /// 🔴 **兄弟名护栏**(v8 任务 11 补丁,2026-09-23):字符串字典序与 `Path` 逐段序
+    /// 在"目录名是另一个文件名前缀"这类兄弟名上会分叉——`reference/` 目录与
+    /// `reference.md` 文件、`a-b.md` 与 `a/b.md` 都是这种形状(字符串序把
+    /// `reference.md` 排在 `reference/x.md` 前面,`-` 0x2D < `/` 0x2F 把 `a-b.md`
+    /// 排在 `a/b.md` 前面;`Path` 逐段序两处都相反,因为 `reference`/`a` 作为一个
+    /// 完整的路径段,是 `reference.md`/`a-b.md` 的字符串前缀,排在前面)。
+    /// `remote_content_hash` 此前按 `archive.entries`(`BTreeMap<String,_>`)的字符串序
+    /// 喂入,与 `dir_content_hash` 用的 `Path` 逐段序在这种名字上不等——本机 284 个
+    /// 已装技能实测命中 0 个,是潜在缺陷。现在 [`files_content_hash`] 统一按
+    /// `Path` 逐段序重排,这条测试断言两侧相等。
+    #[test]
+    fn remote_hash_matches_local_for_sibling_names_that_diverge_by_ordering() {
+        let mut a = RepoArchive {
+            root: "skills".to_string(),
+            tree: MemTree::new(),
+            files: Vec::new(),
+            entries: Default::default(),
+        };
+        let files: [(&str, &[u8]); 5] = [
+            ("skills/skills/sibling/SKILL.md", b"---\nname: sibling\ndescription: d\n---\n"),
+            ("skills/skills/sibling/reference.md", b"reference file"),
+            ("skills/skills/sibling/reference/x.md", b"reference dir"),
+            ("skills/skills/sibling/a-b.md", b"a-b file"),
+            ("skills/skills/sibling/a/b.md", b"a dir b"),
+        ];
+        for (path, bytes) in files {
+            a.files.push(path.to_string());
+            a.entries.insert(
+                path.to_string(),
+                crate::core::gitea::ArchiveEntry { bytes: bytes.to_vec(), unix_mode: None },
+            );
+        }
+        let remote = remote_content_hash(&a, "skills/skills/sibling");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("sibling");
+        let prefix = "skills/skills/sibling/";
+        for (full, entry) in &a.entries {
+            let Some(rel) = full.strip_prefix(prefix) else { continue };
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, &entry.bytes).unwrap();
+        }
+        let local = fsops::dir_content_hash(&dir).unwrap();
+
+        assert_eq!(remote, local, "兄弟名(目录名是另一文件名前缀)不该让远端与本地指纹分叉");
     }
 
     /// 改一个技能的内容只影响它自己 —— 这正是"分享一个技能导致全部提示更新"的反面。

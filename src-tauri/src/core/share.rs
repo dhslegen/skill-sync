@@ -1921,9 +1921,9 @@ fn plan_changes(
         )
         .with_detail(format!("empty payload for {prefix}")));
     }
-    // 基线指纹按**入参的顺序**喂(调用方 [`payload_files`] 给的是 `fsops::list_files`
-    // 的顺序,与 `dir_content_hash` 同一个排序);下面转成 `BTreeMap` 之后是字符串序,
-    // 两者在 `a-b` 与 `a/b` 这类名字上不同,所以必须在转换之前算。
+    // 2026-09-23 起 `files_content_hash` 自己按 `Path` 逐段序重排,喂入顺序不再
+    // 影响结果(下面转成 `BTreeMap` 是字符串序也无妨)。这里仍在转换之前先算 `rels`,
+    // 只是为了在借用 `local` 的同时拿到每个文件相对这个技能目录的路径。
     let rels = local
         .iter()
         .map(|(path, _)| strip_within(prefix, path))
@@ -2954,5 +2954,48 @@ mod tests {
             crate::core::fsops::dir_content_hash(&dir).unwrap(),
             "基线指纹与界面比对用的那把尺子必须逐字节相等",
         );
+    }
+
+    /// 🔴 **`remote_rev` 与本地基线的等式护栏**(v8 任务 11 补丁,2026-09-23):
+    /// `remote_rev` 是 `overwrite_gate` 判"库里是不是已经变了"唯一凭据的来源。
+    /// 它必须与用户本地实际算出的基线([`crate::core::fsops::dir_content_hash`])
+    /// 用同一把尺子——不然内容其实没变,分享时也会误判成"库里已经变了"、
+    /// 每次都弹一次多余的覆盖警告。
+    ///
+    /// fixture 用 `reference/` 目录与 `reference.md` 文件这对兄弟名:字符串序把
+    /// `reference.md` 排在 `reference/x.md` 前面,`Path` 逐段序相反。
+    #[test]
+    fn remote_rev_matches_the_local_baseline_for_sibling_names() {
+        let remote_path = "sibling-names";
+        let files: [(&str, &[u8]); 3] = [
+            ("SKILL.md", b"---\nname: sibling-names\ndescription: d\n---\n"),
+            ("reference.md", b"reference file"),
+            ("reference/x.md", b"reference dir"),
+        ];
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(remote_path);
+        let mut archive = crate::core::gitea::RepoArchive {
+            root: "skills".to_string(),
+            tree: crate::core::skills::MemTree::new(),
+            files: Vec::new(),
+            entries: BTreeMap::new(),
+        };
+        for (rel, bytes) in files {
+            let full = format!("skills/{remote_path}/{rel}");
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, bytes).unwrap();
+            archive.files.push(full.clone());
+            archive.entries.insert(
+                full,
+                crate::core::gitea::ArchiveEntry { bytes: bytes.to_vec(), unix_mode: None },
+            );
+        }
+
+        let local = crate::core::fsops::dir_content_hash(&dir).unwrap();
+        let remote = super::remote_rev(&archive, remote_path);
+
+        assert_eq!(remote, local, "remote_rev 必须与本地基线一致,否则分享会误报「库里已经变了」");
     }
 }
