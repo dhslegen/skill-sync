@@ -13,6 +13,7 @@ use crate::core::app_update::{self, AppUpdateStatus, ReadyState};
 use crate::core::auth::{self, CredentialStore, KeyringStore, OAuthConfig};
 use crate::core::builtin;
 use crate::core::create;
+use crate::core::file_preview;
 use crate::core::converge;
 use crate::core::watcher;
 use crate::core::gitea::{GiteaClient, RepoRef};
@@ -2401,10 +2402,28 @@ async fn plaza_detail_for_client(
         (blob.skill_id, blob.wanted_name, blob.prefetched)
     {
         let http = crate::core::gitea::app_http_client_proxied()?;
-        if let Ok(detail) =
-            plaza::fetch_skill_detail_via_blob(repo_ref, &http, blob.api_base, id, name, head, tree)
-                .await
+        if let Ok((detail, files)) = plaza::fetch_skill_detail_and_files_via_blob(
+            repo_ref,
+            &http,
+            blob.api_base,
+            id,
+            name,
+            head,
+            tree,
+        )
+        .await
         {
+            // 记下这次拿全的整个目录:之后点开其中的文件零新请求(v8 任务 9)。
+            // 键与界面回传的一致——`dir_slug`/`commit_sha` 都取自这份 detail 本身。
+            file_preview::stash_plaza_files(
+                blob.stash,
+                file_preview::PlazaFileKey {
+                    repo_key: registry::repo_key(&repo_ref.owner, &repo_ref.repo),
+                    commit_sha: detail.commit_sha.clone(),
+                    dir_slug: detail.dir_slug.clone(),
+                },
+                &files,
+            );
             return Ok(vec![detail]);
         }
     }
@@ -2416,6 +2435,9 @@ async fn plaza_detail_for_client(
 /// 缺任何一样都退回整仓 zipball 路径。
 struct PlazaBlobDetail<'a> {
     api_base: &'a str,
+    /// blob 命中时把整个目录的文件记进这里,之后点开文件零新请求(v8 任务 9)。
+    /// 与 `cache` 同理是参数而不是直接取进程单例:测试之间不脏读。
+    stash: &'a file_preview::PlazaFileCache,
     /// skills.sh 的 `id`(`owner/repo/skill-name`),点开的那条搜索结果自带。
     skill_id: Option<&'a str>,
     /// 点开的那条搜索结果的技能名,用于"名字对不上就显示列表"这条既有判据。
@@ -2494,6 +2516,7 @@ pub async fn plaza_detail(args: PlazaDetailArgs) -> Result<Vec<SkillDetail>, App
                 &cache_key,
                 PlazaBlobDetail {
                     api_base: plaza::PLAZA_API_BASE,
+                    stash: plaza_file_cache(),
                     skill_id,
                     wanted_name,
                     prefetched: prefetched.as_ref().map(|(h, t)| (h, t)),
@@ -2520,6 +2543,7 @@ pub async fn plaza_detail(args: PlazaDetailArgs) -> Result<Vec<SkillDetail>, App
                 &cache_key,
                 PlazaBlobDetail {
                     api_base: plaza::PLAZA_API_BASE,
+                    stash: plaza_file_cache(),
                     skill_id,
                     wanted_name,
                     prefetched: prefetched.as_ref().map(|(h, t)| (h, t)),
@@ -2529,6 +2553,130 @@ pub async fn plaza_detail(args: PlazaDetailArgs) -> Result<Vec<SkillDetail>, App
         }
         Err(err) => Err(err),
     }
+}
+
+// ============================================================ 读单文件(v8 任务 9)
+
+fn plaza_file_cache() -> &'static file_preview::PlazaFileCache {
+    static CACHE: OnceLock<file_preview::PlazaFileCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+async fn store_file_for_client(
+    client: &SourceClient,
+    cache: &file_preview::GiteaFileCache,
+    registry_id: &str,
+    repo: &RepoRef,
+    commit_sha: &str,
+    skill_path: &str,
+    rel: &str,
+) -> Result<file_preview::FileContent, AppError> {
+    match client {
+        SourceClient::Gitea(c) => {
+            file_preview::read_gitea(c, cache, registry_id, repo, commit_sha, skill_path, rel)
+                .await
+        }
+        // 设计 Q15:自定义 GitHub 源拿不到单文件内容。**一个请求都不发**,返回明确的
+        // 那一档——不是错误(界面会去猜要不要重试),也不是空内容(那是假话)。
+        SourceClient::Github(_) => Ok(file_preview::FileContent::Unavailable),
+    }
+}
+
+/// `skill_local_file_read` 的参数:定位技能与 `skill_local_detail` 同一套
+/// (`dirSlug` 或扫描回传的 `path`),外加相对技能目录的 `file`。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalFileArgs {
+    #[serde(flatten)]
+    pub skill: LocalSkillArgs,
+    pub file: String,
+}
+
+/// 读本机某个技能本体目录下的一个文件(v8 任务 9)。
+///
+/// 两处用:详情面板(「我的技能」)的文件预览;分享确认屏里「新增文件」的按需读
+/// ——v8 任务 8 刻意没把新增文件的内容随清单一起传,**零新增接口**,走的就是这一条。
+/// 🔴 **不缓存**:见 `core::file_preview` 模块头。
+#[tauri::command]
+pub async fn skill_local_file_read(
+    args: LocalFileArgs,
+) -> Result<file_preview::FileContent, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = resolve_local_skill_dir(&args.skill)?;
+        file_preview::read_local(&dir, &args.file)
+    })
+    .await
+    .map_err(|e| AppError::new("FS_TASK", "读取这个文件失败,请重试").with_detail(e.to_string()))?
+}
+
+/// `store_skill_file_read` 的参数。`skillPath`/`commitSha`/`dirSlug` 都原样取自
+/// 界面手上那份 `SkillDetail`——文件列表就是从它来的,按同一个版本取才对得上。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreFileArgs {
+    #[serde(default)]
+    pub registry_id: Option<String>,
+    /// 仓库寻址键 `owner/repo`,缺省 = 该源主仓。**广场必填**(广场没有主仓)。
+    #[serde(default)]
+    pub repo: Option<String>,
+    pub dir_slug: String,
+    /// `SkillDetail.path`,相对技能库根,如 `skills/weekly-report`。
+    pub skill_path: String,
+    /// `SkillDetail.commitSha`。
+    pub commit_sha: String,
+    /// 相对技能目录的路径,如 `templates/dept.md`。
+    pub file: String,
+}
+
+/// 读技能库 / 技能广场里某个技能的一个文件(v8 任务 9)。
+///
+/// - 公司 Gitea(及自定义 Gitea)→ contents API,🔴 **按 `commitSha` 取**;
+/// - 技能广场 → 复用详情那次拉到的 blob 快照,未命中才按目录发一次 blob 请求。
+///   **不走 `resolve_registry`**:没挂过的广场仓(只看过详情、没装)在那里会报未知仓,
+///   而这里只需要 `owner/repo` 坐标;
+/// - 自定义 GitHub 源 → `unavailable`,一个请求都不发(设计 Q15)。
+///
+/// 结果在进程内缓存(键带版本),不落盘。
+#[tauri::command]
+pub async fn store_skill_file_read(
+    args: StoreFileArgs,
+) -> Result<file_preview::FileContent, AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    if registry_id == registry::PLAZA_REGISTRY_ID {
+        let key = args.repo.as_deref().ok_or_else(|| {
+            AppError::new("REPO_UNKNOWN_REPO", "没有指定是哪个技能库,请返回列表后重试")
+        })?;
+        let (owner, repo) = parse_owner_repo(key)?;
+        let http = crate::core::gitea::app_http_client_proxied()?;
+        return file_preview::read_plaza(
+            plaza_file_cache(),
+            &http,
+            plaza::PLAZA_API_BASE,
+            file_preview::PlazaFileKey {
+                repo_key: registry::repo_key(owner, repo),
+                commit_sha: args.commit_sha,
+                dir_slug: args.dir_slug,
+            },
+            &args.file,
+        )
+        .await;
+    }
+    let (client, repo) = read_source(registry_id, args.repo.as_deref()).await?;
+    store_file_for_client(
+        &client,
+        gitea_file_cache(),
+        registry_id,
+        &repo,
+        &args.commit_sha,
+        &args.skill_path,
+        &args.file,
+    )
+    .await
+}
+
+fn gitea_file_cache() -> &'static file_preview::GiteaFileCache {
+    static CACHE: OnceLock<file_preview::GiteaFileCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn app_store() -> Result<state::Store, AppError> {
@@ -3891,6 +4039,7 @@ mod tests {
             "vercel-labs/skills",
             PlazaBlobDetail {
                 api_base: &skillssh.uri(),
+                stash: &Mutex::new(HashMap::new()),
                 skill_id: Some("vercel-labs/skills/weekly-report"),
                 wanted_name: Some("weekly-report"),
                 prefetched: Some((&head, &tree)),
@@ -3953,6 +4102,7 @@ mod tests {
             "vercel-labs/skills",
             PlazaBlobDetail {
                 api_base: &skillssh.uri(),
+                stash: &Mutex::new(HashMap::new()),
                 skill_id: Some("vercel-labs/skills/vercel-react-best-practices"),
                 wanted_name: Some("vercel-react-best-practices"),
                 prefetched: Some((&head, &tree)),
@@ -4007,6 +4157,7 @@ mod tests {
             "vercel-labs/skills",
             PlazaBlobDetail {
                 api_base: &skillssh.uri(),
+                stash: &Mutex::new(HashMap::new()),
                 skill_id: Some("vercel-labs/skills/weekly-report"),
                 wanted_name: Some("weekly-report"),
                 prefetched: Some((&head, &tree)),
@@ -4042,6 +4193,7 @@ mod tests {
             "vercel-labs/skills",
             PlazaBlobDetail {
                 api_base: &skillssh.uri(),
+                stash: &Mutex::new(HashMap::new()),
                 skill_id: Some("vercel-labs/skills/weekly-report"),
                 wanted_name: Some("weekly-report"),
                 prefetched: Some((&head, &tree)),
@@ -4078,6 +4230,7 @@ mod tests {
             "vercel-labs/skills",
             PlazaBlobDetail {
                 api_base: &skillssh.uri(),
+                stash: &Mutex::new(HashMap::new()),
                 skill_id: Some("vercel-labs/skills/weekly-report"),
                 wanted_name: Some("weekly-report"),
                 prefetched: None,
@@ -4115,6 +4268,7 @@ mod tests {
             "vercel-labs/skills",
             PlazaBlobDetail {
                 api_base: &skillssh.uri(),
+                stash: &Mutex::new(HashMap::new()),
                 skill_id: None,
                 wanted_name: None,
                 prefetched: Some((&head, &tree)),
@@ -4125,6 +4279,142 @@ mod tests {
 
         assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(result[0].dir_slug, "weekly-report");
+    }
+
+    // ============================================================ 读单文件(v8 任务 9)
+
+    /// `LocalFileArgs` 是本仓第一处 `#[serde(flatten)]` 参数;tauri 的反序列化不在
+    /// `cargo test` 里、前端又 mock 掉了 invoke,不钉的话只有真机点文件才会报错。
+    #[test]
+    fn local_file_args_accept_both_skill_locators_flattened() {
+        let a: LocalFileArgs =
+            serde_json::from_value(serde_json::json!({"dirSlug": "x", "file": "a/b.md"})).unwrap();
+        assert_eq!(
+            (a.skill.dir_slug.as_deref(), a.skill.path.as_deref(), a.file.as_str()),
+            (Some("x"), None, "a/b.md")
+        );
+        let b: LocalFileArgs =
+            serde_json::from_value(serde_json::json!({"path": "/p/x", "file": "SKILL.md"})).unwrap();
+        assert_eq!(
+            (b.skill.dir_slug.as_deref(), b.skill.path.as_deref(), b.file.as_str()),
+            (None, Some("/p/x"), "SKILL.md")
+        );
+    }
+
+    /// 🔴 测试清单 6:详情走 blob 拉过一次之后,点开其中的文件**零新请求**。
+    /// blob 桩 `.expect(1)`:详情那一次就是全部;读文件若再发一次,这里当场变红。
+    #[tokio::test]
+    async fn a_plaza_file_read_after_a_blob_detail_sends_no_new_request() {
+        let skillssh = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/download/vercel-labs/skills/weekly-report"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "files": [
+                    {"path": "SKILL.md", "contents": "---\nname: weekly-report\ndescription: d\n---\n"},
+                    {"path": "templates/dept.md", "contents": "部门模板"}
+                ]
+            })))
+            .expect(1)
+            .mount(&skillssh)
+            .await;
+        let files: file_preview::PlazaFileCache = Mutex::new(HashMap::new());
+        let (head, tree) = (blob_head(), nested_tree("weekly-report"));
+
+        let detail = plaza_detail_for_client(
+            &counting_source("weekly-report"),
+            &some_repo(),
+            &Mutex::new(HashMap::new()),
+            "vercel-labs/skills",
+            PlazaBlobDetail {
+                api_base: &skillssh.uri(),
+                stash: &files,
+                skill_id: Some("vercel-labs/skills/weekly-report"),
+                wanted_name: Some("weekly-report"),
+                prefetched: Some((&head, &tree)),
+            },
+        )
+        .await
+        .unwrap();
+
+        let key = file_preview::PlazaFileKey {
+            repo_key: "vercel-labs/skills".into(),
+            commit_sha: detail[0].commit_sha.clone(),
+            dir_slug: detail[0].dir_slug.clone(),
+        };
+        let got = file_preview::read_plaza(
+            &files,
+            &reqwest::Client::builder().no_proxy().build().unwrap(),
+            &skillssh.uri(),
+            key,
+            "templates/dept.md",
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, file_preview::FileContent::Text { text: "部门模板".into() });
+        skillssh.verify().await;
+    }
+
+    /// 🔴 测试清单 7:自定义 GitHub 源 → 正面断言「看不了」那一档,而且**一个请求都不发**。
+    #[tokio::test]
+    async fn a_custom_github_source_says_file_content_is_unavailable() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = SourceClient::Github(github::GithubClient::new(
+            &server.uri(),
+            None,
+            reqwest::Client::builder().no_proxy().build().unwrap(),
+        ));
+        let got = store_file_for_client(
+            &client,
+            &Mutex::new(HashMap::new()),
+            "custom-1",
+            &some_repo(),
+            "aaa1111",
+            "skills/weekly-report",
+            "SKILL.md",
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, file_preview::FileContent::Unavailable);
+        server.verify().await;
+    }
+
+    /// 包装层的 Gitea 臂真的转发到了"按 sha 取"那一条(与 `commit_page` 漏转发同一类靶子)。
+    #[tokio::test]
+    async fn the_read_wrapper_reads_gitea_files_at_the_listed_commit() {
+        use base64::Engine as _;
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/v1/repos/vercel-labs/skills/contents/skills/weekly-report/SKILL.md",
+            ))
+            .and(wiremock::matchers::query_param("ref", "aaa1111"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "sha": "b",
+                "encoding": "base64",
+                "content": base64::engine::general_purpose::STANDARD.encode("那一版"),
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = SourceClient::Gitea(GiteaClient::new(server.uri(), None).unwrap());
+        let got = store_file_for_client(
+            &client,
+            &Mutex::new(HashMap::new()),
+            "company",
+            &some_repo(),
+            "aaa1111",
+            "skills/weekly-report",
+            "SKILL.md",
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, file_preview::FileContent::Text { text: "那一版".into() });
+        server.verify().await;
     }
 
     // ============================================================ 安装走 blob(M10 任务 3)

@@ -202,6 +202,8 @@ pub fn run() {
             commands::skill_install_batch,
             commands::installed_list,
             commands::skill_local_detail,
+            commands::skill_local_file_read,
+            commands::store_skill_file_read,
             commands::skill_reveal,
             commands::skill_remove,
             commands::skill_create,

@@ -936,6 +936,31 @@ pub async fn fetch_skill_detail_via_blob(
     head: &gitea::BranchHead,
     tree: &crate::core::github::RepoTree,
 ) -> Result<store::SkillDetail, AppError> {
+    fetch_skill_detail_and_files_via_blob(
+        repo,
+        blob_http,
+        blob_api_base,
+        id,
+        wanted_name,
+        head,
+        tree,
+    )
+    .await
+    .map(|(detail, _)| detail)
+}
+
+/// 与 [`fetch_skill_detail_via_blob`] 完全同一条判据链,只是**连 blob 拿到的文件一起交出**
+/// (v8 任务 9):详情面板点开某个文件时从这份里取,不为单个文件再发请求。
+/// 只在全部判据都通过、返回 `Ok` 时才交出文件——回退路径拿到的半成品不该被复用。
+pub async fn fetch_skill_detail_and_files_via_blob(
+    repo: &gitea::RepoRef,
+    blob_http: &reqwest::Client,
+    blob_api_base: &str,
+    id: &str,
+    wanted_name: &str,
+    head: &gitea::BranchHead,
+    tree: &crate::core::github::RepoTree,
+) -> Result<(store::SkillDetail, Vec<BlobFile>), AppError> {
     let skill_slug = skill_name_from_id(id, &repo.owner, &repo.repo)
         .ok_or_else(|| plaza_blob_err(format!("无法从 id 解出技能名: {id}")))?;
 
@@ -951,7 +976,7 @@ pub async fn fetch_skill_detail_via_blob(
     let detail = detail_from_blob_files(
         skill_slug,
         &path,
-        files,
+        files.clone(),
         head.sha.clone(),
         head.committed_at.clone(),
     )?;
@@ -962,7 +987,7 @@ pub async fn fetch_skill_detail_via_blob(
             detail.name
         )));
     }
-    Ok(detail)
+    Ok((detail, files))
 }
 
 // ============================================================ 安装走 blob(M10 任务 3)

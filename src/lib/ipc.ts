@@ -293,6 +293,33 @@ export const skillLocalDetail = (target: LocalSkillTarget) =>
 export const skillReveal = (target: LocalSkillTarget) =>
   call<void>("skill_reveal", { args: target });
 
+/**
+ * 读本机某个技能本体目录下的一个文件(v8 任务 9)。`file` 相对技能目录。
+ *
+ * 两处用:「我的技能」详情的文件预览;分享确认屏里「新增文件」的按需读
+ * (`AddedBody` 的 `text` 档刻意不带内容,就是走这一条)。🔴 core 侧**不缓存**:
+ * 本地内容随时在变,每次点开都是磁盘此刻的字节。
+ */
+export const skillLocalFileRead = (target: LocalSkillTarget, file: string) =>
+  call<FileContent>("skill_local_file_read", { args: { ...target, file } });
+
+/**
+ * 读技能库 / 技能广场里某个技能的一个文件(v8 任务 9)。
+ *
+ * `skillPath`/`commitSha`/`dirSlug` 原样取自手上那份 `SkillDetail`(`path`/
+ * `commitSha`/`dirSlug`)——文件列表就是从它来的,core 按**同一个版本**取。
+ * 广场(`registryId: "plaza"`)的 `repo` 必填。自定义 GitHub 源返回
+ * `{ kind: "unavailable" }`,不是错误。
+ */
+export const storeSkillFileRead = (args: {
+  registryId?: string;
+  repo?: string;
+  dirSlug: string;
+  skillPath: string;
+  commitSha: string;
+  file: string;
+}) => call<FileContent>("store_skill_file_read", { args });
+
 export const authStatus = () => call<SessionStatus>("auth_status", { args: {} });
 export const authLoginOauth = () => call<SessionUser>("auth_login_oauth", { args: {} });
 export const authLogout = () => call<void>("auth_logout", { args: {} });
@@ -837,6 +864,21 @@ export type FileDiff
   | { kind: "tooLarge"; limit: SizeLimit; bytes: number; lines: number };
 
 export type SizeLimit = "bytes" | "lines" | "both";
+
+/**
+ * 一个文件的内容(v8 任务 9,`core::file_preview::FileContent`)。前三档与
+ * `DeletedBody` 逐一对应(core 侧同一处判定产出),多出来的只有 `unavailable`。
+ */
+export type FileContent =
+  | { kind: "text"; text: string }
+  /** 非 UTF-8。只能说「不是文本格式」,不能说"这是图片"(UTF-16 文本也在这一档)。 */
+  | { kind: "binary" }
+  | { kind: "tooLarge"; limit: SizeLimit; bytes: number; lines: number }
+  /**
+   * 🔴 **这个来源看不了文件内容**(设计 Q15,目前是自定义 GitHub 源)。
+   * 明确的一档,不是错误、也不是空内容(空内容会被当成"这是个空文件")。
+   */
+  | { kind: "unavailable" };
 
 /** 一处改动及其上下文。行号是 **1 基**,与 `git diff` 的 `@@` 同口径。 */
 export interface DiffHunk {

@@ -7,6 +7,7 @@ pub mod auth;
 pub mod builtin;
 pub mod converge;
 pub mod create;
+pub mod file_preview;
 pub mod fsops;
 pub mod gitea;
 pub mod github;

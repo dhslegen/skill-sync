@@ -1938,7 +1938,7 @@ fn plan_changes(
         // 被删的那一侧本地没有字节可喂,喂空即可:远端内容变没变由 `remote_rev`
         // 那条凭据负责,这一条只回答"我这次要动的东西还是不是那些"。
         rev.push(&format!("-{rel}"), b"");
-        out.plan.deleted.push(DeletedFile { path: rel, body: deleted_body(existing) });
+        out.plan.deleted.push(DeletedFile { path: rel, body: file_body(existing) });
         out.delete.push(path.clone());
     }
     out.plan_rev = rev.finish();
@@ -1954,7 +1954,12 @@ fn added_body(bytes: &[u8]) -> AddedBody {
 }
 
 /// 被删文件带上库里那一版的正文,超限与二进制两档只带标记。
-fn deleted_body(bytes: &[u8]) -> DeletedBody {
+///
+/// 🔴 **这是"二进制 / 超限"判定唯一的一处**:v8 任务 9 的文件预览
+/// (`core::file_preview::classify`)也从这里取,只在外面做一层一一对应的映射
+/// ——别在预览那边另写一份 `from_utf8` + 限额判定,两份一漂,同一个文件在确认屏
+/// 与详情页就会一处能看、一处说"太大了"。
+pub(crate) fn file_body(bytes: &[u8]) -> DeletedBody {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return DeletedBody::Binary;
     };

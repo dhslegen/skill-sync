@@ -578,14 +578,38 @@ impl GiteaClient {
         Ok(Some(content.sha))
     }
 
-    /// 读单个文件的内容与 blob sha(contents API)。404 → None。
+    /// 读单个文件的内容与 blob sha(contents API),**按分支头**。404 → None。
     ///
     /// M7 任务 5:分享时要拿库根 authors.json 的现值做归因修订——
     /// `tree_files` 只给 sha 不给内容,`download_archive` 又是整库 zip,按单文件取最省。
+    ///
+    /// 🔴 **这条路要的就是分支头**(v8 任务 9 刻意没改它):归因修订要跟着"库里此刻
+    /// 是什么"走,提交时的 blob sha 也必须是分支头上那一份,换成某个旧 sha 就会拿
+    /// 过期的 blob sha 去 update。按版本取的是另一件事,见 [`Self::file_content_at`]
+    /// ——加一个函数而不是给这里加参数,是为了让既有调用方一个字都不用动、
+    /// 也就不可能在改签名时被"顺手"改成按 sha 取(`tests/file_preview.rs` 有对照组钉着)。
     pub async fn file_content(
         &self,
         r: &RepoRef,
         path: &str,
+    ) -> Result<Option<(String, Vec<u8>)>, AppError> {
+        self.file_content_at(r, path, &r.branch).await
+    }
+
+    /// 读单个文件**在指定版本上**的内容(`git_ref` 可以是分支名,也可以是 commit sha)。
+    /// 404 → None。
+    ///
+    /// v8 任务 9(设计顾问③):详情面板的文件列表来自索引的 `commit_sha`,预览时必须
+    /// 按同一个 sha 取——按分支头取的表现是"列表里有、拉回来 404",或者更隐蔽的
+    /// "拉回来的内容与列表那一版对不上"。
+    ///
+    /// `path` 按段做百分号编码:技能里的文件名可以带空格、`#`、`?`、中文,
+    /// 裸拼进 URL 的话 `#`/`?` 之后的部分会被当成锚点/查询串吃掉。
+    pub async fn file_content_at(
+        &self,
+        r: &RepoRef,
+        path: &str,
+        git_ref: &str,
     ) -> Result<Option<(String, Vec<u8>)>, AppError> {
         #[derive(Deserialize)]
         struct Content {
@@ -595,9 +619,13 @@ impl GiteaClient {
             #[serde(default)]
             encoding: String,
         }
+        let encoded: Vec<String> = path.split('/').map(encode_path_segment).collect();
         let url = self.api(&format!(
             "/repos/{}/{}/contents/{}?ref={}",
-            r.owner, r.repo, path, r.branch
+            r.owner,
+            r.repo,
+            encoded.join("/"),
+            encode_path_segment(git_ref)
         ));
         let resp = self
             .http_send(self.request(reqwest::Method::GET, url))
@@ -775,6 +803,22 @@ impl RepoSource for GiteaClient {
 /// `is_connect()` **不涵盖 DNS 解析失败**(任务 13 的测试实测):员工不在内网时,
 /// 解析不了内网域名恰恰是最常见的失败形态。顺着 source 链找 io 层错误与
 /// hyper 的 dns 措辞把它们补进来。
+/// URL 路径的一段做百分号编码:只放行 RFC 3986 的 unreserved 字符,其余按 UTF-8
+/// 字节逐个转成 `%XX`。给 [`GiteaClient::file_content_at`] 用——文件名里的
+/// `#`/`?`/空格/中文裸拼进 URL 会被截断或误读。纯 ASCII 的 `authors.json`、`main`、
+/// commit sha 编码前后逐字相同,所以既有调用方拿到的 URL 一个字节都没变。
+fn encode_path_segment(seg: &str) -> String {
+    let mut out = String::with_capacity(seg.len());
+    for b in seg.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 pub(crate) fn is_unreachable(e: &reqwest::Error) -> bool {
     if e.is_timeout() || e.is_connect() {
         return true;
