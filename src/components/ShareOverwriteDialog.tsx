@@ -109,13 +109,15 @@ export function ShareOverwriteDialog() {
           </p>
         )}
 
-        {/* 🔴 本地那一侧按 `dirSlug` 定位:这一屏的两个发起方都走 `skill_share_changes`,
-            core 算这份清单时就是按 `dirSlug` 找本体(`converge::home_of`),读新增文件
-            用同一个解析,看到的才是要推的那一份。 */}
+        {/* 🔴 本地那一侧去哪读,**由发起方决定**(定向复审 I-1):这一屏的发起方走的
+            是两条不同的 core 通道(`share_installed` 按 dirSlug、无基线的「分享改动」
+            走 `share()` 按扫描定位),各自带上与算清单时一致的那个目标。
+            此前这里写死 `{ dirSlug }`,在"本体住在工具目录、canonical 为空"的旗舰
+            场景下,新增文件与「全文」一律读不出来。 */}
         <SharePlanList
           key={`${pending.dirSlug}:${round}`}
           plan={plan}
-          localTarget={{ dirSlug: pending.dirSlug }}
+          localTarget={pending.localTarget}
         />
 
         <div className="mt-4 flex justify-end gap-2">

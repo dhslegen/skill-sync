@@ -588,17 +588,38 @@ fn parse_curated(archive: &RepoArchive) -> Vec<String> {
 /// ①同一个 [`fsops::ContentHasher`];②同一份排除清单([`fsops::is_excluded_rel`]);
 /// ③同样按相对路径字典序喂入(entries 是 BTreeMap,天然有序),两边就一定一致。
 /// 有测试逐字节钉住这条等式——它一旦不成立,界面会永远显示"有更新"。
+///
+/// ⚠️ ③ 这句**并不总成立**:字符串字典序与 `dir_content_hash` 用的 `Path` 逐段序在
+/// `a-b.md` 与 `a/b.md` 这类兄弟名上不同,那样的技能两侧指纹不等(既有缺口,
+/// 原委与实测见 [`files_content_hash`])。
 pub(crate) fn remote_content_hash(archive: &RepoArchive, dir: &str) -> String {
     let prefix = format!("{dir}/");
+    files_content_hash(archive.entries.iter().filter_map(|(full, entry)| {
+        let rel = full.strip_prefix(prefix.as_str())?;
+        Some((rel, entry.bytes.as_slice()))
+    }))
+}
+
+/// 从**内存里的** `(相对路径, 字节)` 算技能指纹——[`remote_content_hash`] 与分享成功后
+/// 记基线(`share::plan_changes` 的 `local_hash`)共用的那一份实现。
+///
+/// 这里共用的只是**哈希器与排除清单**(同一个 [`fsops::ContentHasher`]、同一份
+/// [`fsops::is_excluded_rel`],空相对路径跳过)。🔴 **喂入顺序由调用方负责,这里不重排**,
+/// 而两个调用方的顺序并不相同:
+/// - 分享基线(`share::plan_changes`)按 [`fsops::list_files`] 的顺序喂,即 `Path` 的
+///   逐段比较序,与 `dir_content_hash` 相同,有等式测试钉住;
+/// - ⚠️ [`remote_content_hash`] 按 `archive.entries`(`BTreeMap<String,_>`)的**字符串序**喂。
+///   同一技能里有 `a-b.md` 与 `a/b.md` 这类兄弟名时两种顺序不同(`-` 0x2D < `/` 0x2F,
+///   而 `Path` 先比段),远端指纹与 `dir_content_hash` **不相等**(2026-09-23 一次性 probe
+///   实测:`SKILL.md`/`a-b.md`/`a/b.md` 三个文件,两侧结果不同)。这是**既有缺口**,
+///   不是这个函数引入的;修它会改变缓存里的指纹,要随 `INDEX_SCHEMA_VERSION` 一起拍板。
+pub(crate) fn files_content_hash<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> String {
     let mut hasher = fsops::ContentHasher::new();
-    for (full, entry) in &archive.entries {
-        let Some(rel) = full.strip_prefix(prefix.as_str()) else {
-            continue;
-        };
+    for (rel, bytes) in files {
         if rel.is_empty() || fsops::is_excluded_rel(rel) {
             continue;
         }
-        hasher.push(rel, &entry.bytes);
+        hasher.push(rel, bytes);
     }
     hasher.finish()
 }

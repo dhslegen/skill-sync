@@ -514,6 +514,9 @@ async function pushMyChanges(
         // 时 `.skills.find` 直接抛,分享会变成"分享失败",真发生过)。
         name: displayName || dirSlug,
         plan: outcome.plan,
+        // 这一条路只走 `skill_share_changes`(core 按 dirSlug 用 `home_of` 定位本体),
+        // 读新增文件用同一个解析(定向复审 I-1)
+        localTarget: { dirSlug },
         warning: outcome.overwrite,
         // 用户看清单的这段时间里情况又变了 → 这是重算过的第二份(终审 C-1);
         // 变的是哪一头要一起带过去,那是两句不同的话(v8 任务 8)

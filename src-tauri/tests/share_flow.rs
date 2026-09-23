@@ -2877,3 +2877,131 @@ async fn share_refuses_to_commit_a_plan_the_user_never_saw() {
         .count();
     assert_eq!(posts, 0, "用户没看过这份清单,一个写请求都不许发");
 }
+
+// ============================================================ 基线按推出去的字节算(v8 定向复审 I-2)
+//
+// 病灶:提交成功后对盘上**重新**跑 `dir_content_hash` 当基线。提交那几秒里编辑器若又
+// 改了一个字,基线记进的就是**没推出去**的内容——此后本地 = 基线、库里 ≠ 基线,
+// 界面把库里那份更旧的内容说成「更新」。
+//
+// 判别力来自**在提交请求挂起的那一刻改盘**:wiremock 的 responder 收到 POST 时才写文件,
+// 所以"提交之后再读盘"的实现一定读到新内容,"用算清单那份字节"的实现一定读不到。
+// 每条都带一句对照断言(改盘确实发生了),免得"responder 根本没跑"让它空转成绿。
+
+/// 收到提交请求的那一刻改本地文件,然后照常回 201。
+struct EditsDiskDuringCommit {
+    file: PathBuf,
+    text: &'static str,
+}
+
+impl wiremock::Respond for EditsDiskDuringCommit {
+    fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+        std::fs::write(&self.file, self.text).unwrap();
+        ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "commit": { "sha": "newsha1", "html_url": "http://x/commit/newsha1" }
+        }))
+    }
+}
+
+/// 本机 shell 设着 `http_proxy`(Clash)时,裸 `GiteaClient::new` 连 wiremock 也会绕代理。
+fn direct_client(server: &MockServer) -> GiteaClient {
+    GiteaClient::with_http(server.uri(), None, reqwest::Client::builder().no_proxy().build().unwrap())
+}
+
+const EDITED_DURING_COMMIT: &str = "---\nname: my-notes\ndescription: 提交途中又改了一个字\n---\n正文\n";
+
+#[tokio::test]
+async fn first_share_records_the_bytes_it_pushed_not_what_is_on_disk_afterwards() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "my-notes", "记点东西");
+    let pushed = std::fs::read(dir.join("SKILL.md")).unwrap();
+    let pushed_hash = fsops::dir_content_hash(&dir).unwrap();
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", false).await;
+    mount_repo_info(&server, true).await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/repos/skills/skills/contents"))
+        .respond_with(EditsDiskDuringCommit { file: dir.join("SKILL.md"), text: EDITED_DURING_COMMIT })
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = direct_client(&server);
+    let repo = repo_ref();
+
+    let outcome = confirmed_share(&client, &c, &env, &repo, "my-notes").await.unwrap();
+    assert!(matches!(outcome, ShareOutcome::Shared { .. }), "应当分享成功:{outcome:?}");
+
+    // (a) 推出去的就是改盘之前那一份
+    let reqs = server.received_requests().await.unwrap();
+    let post = reqs.iter().find(|r| r.method.as_str() == "POST").unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
+    let skill_md = body["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["path"] == "skills/my-notes/SKILL.md")
+        .unwrap();
+    use base64::Engine as _;
+    let sent = base64::engine::general_purpose::STANDARD
+        .decode(skill_md["content"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(sent, pushed, "前提:提交的是算清单那一刻的字节");
+    // 对照:改盘确实发生在提交途中
+    assert_ne!(fsops::dir_content_hash(&dir).unwrap(), pushed_hash, "前提:提交途中盘上确实变了");
+
+    // (b) 基线仍是推出去那份,不是改过之后的
+    let state = state_of(&c);
+    assert_eq!(state.shared[0].content_hash, pushed_hash, "state.shared 的基线必须是推出去的那份");
+    assert_eq!(state.installed[0].content_hash, pushed_hash, "补记的安装基线同样必须是推出去的那份");
+}
+
+#[tokio::test]
+async fn pushing_changes_records_the_bytes_it_pushed_not_what_is_on_disk_afterwards() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("weekly-report");
+    write_skill(&dir, "weekly-report", "原版");
+    let mut state = state_of(&c);
+    state.installed.push(install_record(&c, &dir));
+    c.store.save_state(&state).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: weekly-report\ndescription: 我改过\n---\n正文\n").unwrap();
+    let pushed_hash = fsops::dir_content_hash(&dir).unwrap();
+
+    let server = MockServer::start().await;
+    mount_repo_info(&server, true).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/repos/skills/skills/branches/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "commit": { "id": "head1", "timestamp": "2026-07-31T08:00:00Z" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/api/v1/repos/skills/skills/git/trees/.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "tree": [ { "path": "skills/weekly-report/SKILL.md", "sha": "oldsha", "type": "blob" } ],
+            "truncated": false
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/repos/skills/skills/contents"))
+        .respond_with(EditsDiskDuringCommit {
+            file: dir.join("SKILL.md"),
+            text: "---\nname: weekly-report\ndescription: 提交途中又改了一个字\n---\n正文\n",
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_archive(&server, zip_of_weekly(WEEKLY_PRISTINE)).await;
+    let client = direct_client(&server);
+
+    let outcome = confirmed_push(&client, &c, &env, "weekly-report").await.unwrap();
+    assert!(matches!(outcome, share::ShareInstalledOutcome::Submitted(_)), "应当直接提交:{outcome:?}");
+
+    assert_ne!(fsops::dir_content_hash(&dir).unwrap(), pushed_hash, "前提:提交途中盘上确实变了");
+    let after = state_of(&c).installed[0].clone();
+    assert_eq!(after.commit_sha, "newsha1");
+    assert_eq!(after.content_hash, pushed_hash, "基线必须是推出去的那份,不是提交途中改过之后的");
+}

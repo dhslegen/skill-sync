@@ -1063,6 +1063,13 @@ async function runShareChanges(
         // ——见 `shareChanges` 的文档。取不到退回文件夹名,不比今天更糟。
         name: displayName || dirSlug,
         plan: outcome.plan,
+        // 🔴 读本地文件的目录必须与 core 算清单时的一致(定向复审 I-1):
+        // 无基线这一支走的是 `share()`(`converge::locate` 扫描定位),读盘就用
+        // 那一行的 `body`;有基线那一支走 `share_installed`(`home_of` 按 dirSlug)。
+        // `body` 为空(列表里没有这一行 / 第 4 源)时退回 dirSlug——那两种情形
+        // `share()` 本身就算不出清单,走不到这一屏。
+        localTarget:
+          viaFirstShare && skill?.body ? { path: skill.body } : { dirSlug },
         warning: outcome.overwrite,
         // 🔴 闭包捕获**这一份清单**的凭据(终审 C-1):确认那一跳带着它回去,
         // core 比不上就重新算一份再问一次,不会提交一份用户没看过的清单。

@@ -193,7 +193,7 @@ function DiffView({ diff }: { diff: FileDiff }) {
     case "binary":
       return <Note>{t("viewer.binary")}</Note>;
     case "tooLarge":
-      return <Note>{tooLargeText(diff.limit, diff.bytes, diff.lines)}</Note>;
+      return <Note>{diffTooLargeText(diff.limit)}</Note>;
   }
 }
 
@@ -270,7 +270,24 @@ function Note({ children }: { children: string }) {
   return <p className="text-[12px] leading-[1.6] text-text-3">{children}</p>;
 }
 
-/** 说清是**哪条**超了,并带上实测值(设计 Q4 / Q12)。 */
+/**
+ * 差异那一档的超限说法(定向复审 M-4)。**不带数字**:core 给的 `bytes`/`lines`
+ * 是两版各自的最大值,可能一个来自旧版、一个来自新版——说「这个文件有 300 KB」
+ * 对一个删减到 1 KB 的文件是假话,`both` 档还会把旧版的大小和新版的行数拼成一句。
+ * 只说"改动前后有一版超过了",哪一版不点名,这句话才是真的。
+ */
+function diffTooLargeText(limit: SizeLimit): string {
+  switch (limit) {
+    case "bytes":
+      return t("viewer.diffTooLargeBytes");
+    case "lines":
+      return t("viewer.diffTooLargeLines");
+    case "both":
+      return t("viewer.diffTooLargeBoth");
+  }
+}
+
+/** 说清是**哪条**超了,并带上实测值(设计 Q4 / Q12)。只用于**单个版本**的内容。 */
 function tooLargeText(limit: SizeLimit, bytes: number, lines: number): string {
   const size = formatBytes(bytes);
   switch (limit) {

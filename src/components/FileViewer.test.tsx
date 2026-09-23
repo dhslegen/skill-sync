@@ -154,7 +154,25 @@ describe("文件查看器:看不了内容的四档说明(断言文案本身)", (
     ).toBeInTheDocument();
   });
 
-  it("超限:说清是行数超了,带实际行数", () => {
+  it("超限:单个版本说清是行数超了,带实际行数", () => {
+    render(
+      <FileViewer
+        path="long.txt"
+        body={{
+          kind: "content",
+          content: { kind: "tooLarge", limit: "lines", bytes: 9000, lines: 3500 },
+        }}
+      />,
+    );
+    expect(
+      screen.getByText("这个文件有 3500 行,超过了 2000 行的显示上限,看不了内容。"),
+    ).toBeInTheDocument();
+  });
+
+  // 🔴 定向复审 M-4:差异那一档的数字是**两版各自的最大值**,可能来自不同的两侧。
+  // 用户把库里 300 KB 的文件删减成 1 KB 时,说「这个文件有 300 KB」是假话;`both`
+  // 档还会把旧版的大小和新版的行数拼成一句。所以差异这一档不说数字、不点名哪一版。
+  it("超限(差异):只说改动前后有一版超了,不报一个可能属于另一版的数字", () => {
     render(
       <FileViewer
         path="long.txt"
@@ -165,9 +183,23 @@ describe("文件查看器:看不了内容的四档说明(断言文案本身)", (
         }}
       />,
     );
-    expect(
-      screen.getByText("这个文件有 3500 行,超过了 2000 行的显示上限,看不了内容。"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(t("viewer.diffTooLargeLines"))).toBeInTheDocument();
+    expect(screen.queryByText(/3500/)).toBeNull();
+  });
+
+  it("超限(差异)两条都超:不把旧版的大小与新版的行数拼成一句", () => {
+    render(
+      <FileViewer
+        path="huge.txt"
+        body={{
+          kind: "diff",
+          diff: { kind: "tooLarge", limit: "both", bytes: 300 * 1024, lines: 3500 },
+          readFull: async () => ({ kind: "text", text: "" }),
+        }}
+      />,
+    );
+    expect(screen.getByText(t("viewer.diffTooLargeBoth"))).toBeInTheDocument();
+    expect(screen.queryByText(/300\.0 KB|3500/)).toBeNull();
   });
 
   it("超限:两条都超时两个数都说", () => {

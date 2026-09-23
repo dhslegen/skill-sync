@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { OverwriteWarning, SharePlan, StaleReason } from "@/lib/ipc";
+import type { LocalSkillTarget, OverwriteWarning, SharePlan, StaleReason } from "@/lib/ipc";
 
 /**
  * 一次待拍板的分享(v8 任务 4 / 决策 D2,任务 5 / D9 扩成统一确认屏)。
@@ -24,6 +24,23 @@ export interface OverwriteDecision {
    * ——差集为空时 core 根本不会走到这里(那一档是「库里已与本地一致」)。
    */
   plan: SharePlan;
+  /**
+   * 确认屏上点开「新增」文件、切到「全文」时,**去哪个目录读本地字节**(v8 定向复审 I-1)。
+   *
+   * 🔴 **必须与 core 算这份清单时定位本体的方式一致**,看到的才是要推的那一份。
+   * 两个发起方走的是两条不同的 core 通道,定位方式也不同:
+   * - `share_installed`(「分享改动」有安装基线 /「保留并分享」)按 `dirSlug` 找本体
+   *   (`converge::home_of`),传 `{ dirSlug }`;
+   * - 没有安装基线的「分享改动」改走 `share()`,它用 `converge::locate` **扫描**出本体
+   *   ——无记账、本体住在工具目录、canonical 下没有链接时,`home_of` 按 `dirSlug`
+   *   只会给出 canonical 下一个不存在的路径,新增文件与「全文」一律读不出来。
+   *   这一支传 `{ path: <那一行的 body> }`(「我的技能」那一行的 `body` 就是
+   *   `locate` 的结果,与 `ShareConfirm` 同一个理由)。
+   *
+   * **必填**:让 `tsc` 逼每个发起方都表态,别再有人照着"两个发起方都走同一条通道"
+   * 这种已经不成立的前提默认一个。
+   */
+  localTarget: LocalSkillTarget;
   /**
    * 库里那一版还会被顶掉时的警告,摆在清单**顶部**。
    * `null` = 库里那一版与本地基线一致,没有人会被顶掉,这一段整条不摆。

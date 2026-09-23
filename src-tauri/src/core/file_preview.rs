@@ -117,6 +117,22 @@ fn check_rel(rel: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 技能目录名必须是**单段**:在 [`check_rel`] 那套规则(非空、非 `.`/`..`、
+/// 无反斜杠)之上,再不许 `/`(多段就换了一个技能甚至一个端点)、
+/// `?` `#`(会把 URL 截成查询串或锚点)。**不用 `sanitize_name` 的不动点**:
+/// 广场仓的目录名可以有大写,那一把尺子会把合法的目录名拒掉。
+fn check_slug(slug: &str) -> Result<(), AppError> {
+    let bad = || {
+        AppError::new("FS_UNSAFE_PATH", "这个技能的文件夹名不合规,不能打开它的文件")
+            .with_detail(format!("unsafe dir slug: {slug}"))
+    };
+    check_rel(slug).map_err(|_| bad())?;
+    if slug.contains(['/', '?', '#']) {
+        return Err(bad());
+    }
+    Ok(())
+}
+
 fn unsafe_path(rel: &str) -> AppError {
     AppError::new("FS_UNSAFE_PATH", "这个文件路径不在技能文件夹里,不能打开")
         .with_detail(format!("unsafe path: {rel}"))
@@ -223,6 +239,9 @@ pub async fn read_plaza(
     rel: &str,
 ) -> Result<FileContent, AppError> {
     check_rel(rel)?;
+    // 🔴 目录名原样拼进 skills.sh 的 URL(`/api/download/{owner}/{repo}/{slug}`),
+    // 先过校验再谈缓存与请求(定向复审 M-1)。
+    check_slug(&key.dir_slug)?;
     let hit = cache.lock().expect("文件预览缓存锁不该中毒").get(&key).cloned();
     let files = match hit {
         Some(files) => files,
@@ -414,6 +433,29 @@ mod tests {
         let b = read_plaza(&cache, &http, &server.uri(), plaza_key(), "SKILL.md").await.unwrap();
         assert_eq!(a, FileContent::Text { text: "正文".into() });
         assert_eq!(b, FileContent::Text { text: "# x".into() });
+        server.verify().await;
+    }
+
+    /// 🔴 目录名拼进 URL 之前先校验(定向复审 M-1):多段、`..`、`?`、`#`、空串
+    /// 一律拒绝,**一个请求都不发**——连缓存都不查(`.expect(0)` + 请求条数)。
+    #[tokio::test]
+    async fn plaza_rejects_a_dir_slug_that_is_not_a_single_segment_before_any_request() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "files": [{"path": "SKILL.md", "contents": "# x"}]
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        for slug in ["a/b", "..", ".", "", "a?x=1", "a#frag", "a\\b"] {
+            let cache: PlazaFileCache = Mutex::new(HashMap::new());
+            let key = PlazaFileKey { dir_slug: slug.into(), ..plaza_key() };
+            let err = read_plaza(&cache, &http, &server.uri(), key, "SKILL.md").await.unwrap_err();
+            assert_eq!(err.code, "FS_UNSAFE_PATH", "{slug:?} 应当被拒");
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 0, "不合规的目录名一个请求都不该发");
         server.verify().await;
     }
 

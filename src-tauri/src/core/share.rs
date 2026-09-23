@@ -724,10 +724,13 @@ pub async fn share(
         SharePrecheck::Fresh => format!("新增技能:{share_name}"),
         _ => format!("更新技能:{share_name}"),
     };
+    // 🔴 基线取**推出去的那份字节**的指纹(定向复审 I-2),在 `changes` 被
+    //    `submit` 拿走之前取出。提交之后再读盘,会把提交窗口里的新改动记成"已分享"。
+    let pushed_hash = changes.local_hash.clone();
     let submitted =
         submit(client, req.repo, &prefix, fresh, changes, &message, &share_name).await?;
 
-    // ⑥ 记账:content_hash 从**本体**算——"有未分享的改动"的判据就是它
+    // ⑥ 记账:content_hash 是**推出去的那份本体内容**——"有未分享的改动"的判据就是它
     let mut next = loaded.value.clone();
     let entry = SharedSkill {
         name: share_name.clone(),
@@ -743,7 +746,7 @@ pub async fn share(
             git_ref: req.repo.branch.clone(),
         },
         last_pushed_sha: submitted.commit_sha.clone(),
-        content_hash: fsops::dir_content_hash(&body)?,
+        content_hash: pushed_hash,
     };
     let content_hash = entry.content_hash.clone();
     // 🔴 **钥匙是本体路径,不是远端名**:CLAUDE.md 记着 `state.shared` 读写双键
@@ -1162,13 +1165,15 @@ pub async fn share_installed(
     }
 
     let message = format!("更新技能:{dir_slug}");
+    // 基线取推出去的那份字节(定向复审 I-2,原委见 [`PlannedChanges::local_hash`])
+    let pushed_hash = changes.local_hash.clone();
     // fresh=false:已装技能的回推,远端必然已有这组文件
     let submitted = submit(client, &repo, &prefix, false, changes, &message, dir_slug).await?;
 
     // 内容确实进库了才更新基线(D3)。`submit` 只有直推一条路,走到这里就是成功。
     let mut next = loaded.value.clone();
     next.installed[idx].commit_sha = submitted.commit_sha.clone();
-    next.installed[idx].content_hash = fsops::dir_content_hash(&source_dir)?;
+    next.installed[idx].content_hash = pushed_hash;
     next.installed[idx].updated_at = now.to_string();
     store.save_state(&next)?;
     Ok(ShareInstalledOutcome::Submitted(submitted))
@@ -1859,6 +1864,18 @@ pub(crate) struct PlannedChanges {
     /// `dir_content_hash`**:那等于在"算指纹"与"读要推的字节"之间再开一个
     /// 时间窗,而这个字段的全部意义正是关掉那个窗。
     pub plan_rev: String,
+    /// 🔴 **这一轮读到的本地字节的技能指纹**——提交成功后记进基线的就是它
+    /// (v8 定向复审 I-2)。
+    ///
+    /// 此前提交成功后是对盘上**重新**跑一遍 `dir_content_hash`:提交那几秒里
+    /// Claude Code 若又改了一个字,基线就记进了**没推出去**的内容,此后本地指纹 =
+    /// 基线、库里 ≠ 基线,界面把库里那份更旧的内容说成「更新」,`is_mine` 判不出来时
+    /// 手动/定时更新还会静默覆盖掉那笔修改。与 `plan_rev` 同一份数据算出,不再读盘。
+    ///
+    /// 口径与 [`fsops::dir_content_hash`] 逐字节相等(界面判"一不一样"的尺子,
+    /// 漂一个字节就永远误报"有更新"),实现复用
+    /// [`crate::core::store::files_content_hash`]——不写第三份。
+    pub local_hash: String,
 }
 
 /// 算出"让库里与本地一致"需要做的事。**纯函数,不发任何请求。**
@@ -1884,6 +1901,14 @@ pub(crate) struct PlannedChanges {
 /// 2. **删除路径必须落在这个技能目录内**。`..` 段、绝对路径、空段一律拒绝整笔
 ///    提交(不是"跳过这一条"):远端清单里出现越界路径说明上游数据已经不可信,
 ///    此时最该做的是停手,而不是挑着做一半。
+///
+/// # 清单只列技能目录内的文件
+///
+/// 同一笔提交里还可能有一处**库根 `authors.json` 的归因修订**(M7 起由
+/// `submit_gitea` 自动追加:新增分享记分享者、更新别人的技能追加贡献者)。
+/// 它**不在清单里,也不在 `plan_rev` / `local_hash` 里**:那是技能库的元数据,
+/// 不是用户这个技能的内容。所以「确认屏上看到的 = 推出去的」这句承诺的范围是
+/// **这个技能目录**,不是整笔提交——别据此把归因也塞进清单或指纹(定向复审 M-5)。
 fn plan_changes(
     prefix: &str,
     remote: &BTreeMap<String, Vec<u8>>,
@@ -1896,6 +1921,16 @@ fn plan_changes(
         )
         .with_detail(format!("empty payload for {prefix}")));
     }
+    // 基线指纹按**入参的顺序**喂(调用方 [`payload_files`] 给的是 `fsops::list_files`
+    // 的顺序,与 `dir_content_hash` 同一个排序);下面转成 `BTreeMap` 之后是字符串序,
+    // 两者在 `a-b` 与 `a/b` 这类名字上不同,所以必须在转换之前算。
+    let rels = local
+        .iter()
+        .map(|(path, _)| strip_within(prefix, path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let local_hash = crate::core::store::files_content_hash(
+        rels.iter().zip(&local).map(|(rel, (_, bytes))| (rel.as_str(), bytes.as_slice())),
+    );
     let local: BTreeMap<String, Vec<u8>> = local.into_iter().collect();
 
     let mut out = PlannedChanges {
@@ -1903,6 +1938,7 @@ fn plan_changes(
         upload: Vec::new(),
         delete: Vec::new(),
         plan_rev: String::new(),
+        local_hash,
     };
     // 清单指纹与清单本身同一次算出来(见 [`PlannedChanges::plan_rev`])。
     // 动作进 hash:同一个路径"新增"与"修改"是两件不同的事,指纹必须分得开。
@@ -1978,6 +2014,10 @@ pub(crate) fn file_body(bytes: &[u8]) -> DeletedBody {
 ///    不归一化就直接 diff 的话,一个 CRLF 文件的每一行都带着 `\r`,
 ///    **整屏都是红绿**——而"改了行尾又改了一句话"这种混合情形更糟:
 ///    真正改的那一行会淹没在几百行假改动里。
+///
+/// ⚠️ 超限那一档的 `bytes`/`lines` 是**两版各自的最大值**,可能分别来自旧版与新版
+/// (定向复审 M-4),所以界面在差异这一档**不说具体数字**,只说"改动前后有一版超过了
+/// 上限"——说「这个文件有 300 KB」对一个删减到 1 KB 的文件是假话。
 fn diff_of(old: &[u8], new: &[u8]) -> FileDiff {
     let (Ok(old), Ok(new)) = (std::str::from_utf8(old), std::str::from_utf8(new)) else {
         return FileDiff::Binary;
@@ -2885,5 +2925,34 @@ mod tests {
         ));
         let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(doc["authors"]["weekly-report"]["contributors"][0], "王富荣");
+    }
+
+    /// 🔴 **等式护栏**(定向复审 I-2 (c)):提交成功后记进基线的 `local_hash`,
+    /// 必须与 [`crate::core::fsops::dir_content_hash`] 对同一个目录逐字节相等。
+    /// 漂一个字节,分享完的那一行就永远显示"和库里不一样"/「更新」。
+    ///
+    /// fixture 刻意覆盖口径最容易漂的几处:子目录、`a-b` 与 `a/b` 这对**字符串序
+    /// 与路径序不同**的名字(按 `BTreeMap` 的字符串序喂就会与 `dir_content_hash` 不等)、
+    /// 被排除的系统元文件,以及大小写混排。
+    #[test]
+    fn the_pushed_baseline_uses_the_same_ruler_as_dir_content_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("my-notes");
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "---\nname: my-notes\ndescription: d\n---\n").unwrap();
+        std::fs::write(dir.join("a").join("b.md"), "子目录").unwrap();
+        std::fs::write(dir.join("a-b.md"), "同级").unwrap();
+        std::fs::write(dir.join("Zeta.txt"), "大写").unwrap();
+        std::fs::write(dir.join(".DS_Store"), [0u8, 1, 2]).unwrap();
+        std::fs::write(dir.join("logo.png"), [0x89u8, 0x50, 0xff]).unwrap();
+
+        let prefix = "skills/my-notes/";
+        let payload = super::payload_files(&dir, prefix).unwrap();
+        let planned = super::plan_changes(prefix, &BTreeMap::new(), payload).unwrap();
+        assert_eq!(
+            planned.local_hash,
+            crate::core::fsops::dir_content_hash(&dir).unwrap(),
+            "基线指纹与界面比对用的那把尺子必须逐字节相等",
+        );
     }
 }

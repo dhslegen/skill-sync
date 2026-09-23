@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ShareOverwriteDialog } from "./ShareOverwriteDialog";
 import { useOverwrite } from "@/store/overwrite";
+import { useMySkills } from "@/store/my-skills";
+import type { InstalledSkillView } from "@/lib/ipc";
 import { t } from "@/i18n";
 import { planOf } from "@/test/share-plan";
 
@@ -11,6 +13,7 @@ const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (cmd: string, args: unknown) => invoke(cmd, args),
 }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 
 function reset() {
   invoke.mockReset();
@@ -21,6 +24,7 @@ const ask = (over: Partial<{ lastAuthor: string | null; lastAt: string | null; h
   useOverwrite.getState().ask({
     dirSlug: "weekly-report",
     name: "weekly-report",
+    localTarget: { dirSlug: "weekly-report" },
     plan: planOf({ modified: ["SKILL.md"] }),
     warning: {
       lastAuthor: "李四",
@@ -105,6 +109,7 @@ describe("覆盖确认屏(v8 任务 4)", () => {
     useOverwrite.getState().ask({
       dirSlug: "weekly-report",
       name: "weekly-report",
+      localTarget: { dirSlug: "weekly-report" },
       plan: planOf({ deleted: ["同事刚加的.md"] }),
       warning: null,
       stale: true,
@@ -120,6 +125,7 @@ describe("覆盖确认屏(v8 任务 4)", () => {
     useOverwrite.getState().ask({
       dirSlug: "weekly-report",
       name: "weekly-report",
+      localTarget: { dirSlug: "weekly-report" },
       plan: planOf({ added: ["刚写的.md"] }),
       warning: null,
       stale: true,
@@ -135,6 +141,7 @@ describe("覆盖确认屏(v8 任务 4)", () => {
     useOverwrite.getState().ask({
       dirSlug: "weekly-report",
       name: "周报生成",
+      localTarget: { dirSlug: "weekly-report" },
       plan: planOf({ deleted: ["旧的.md"] }),
       warning: null,
       stale: false,
@@ -158,13 +165,18 @@ describe("覆盖确认屏(v8 任务 4)", () => {
 describe("🔴 v8 任务 10 / Q16:这一屏的清单同样能就地展开", () => {
   beforeEach(reset);
 
-  it("新增文件按需读本地盘(按这个技能定位,与算清单的那一次同一个解析),修改的文件展开是差异", async () => {
+  // 🔴 定向复审 I-1:这条原先断言的是"按 `{ dirSlug }` 读",把一个已经不成立的前提
+  // ("这一屏的发起方都走 `skill_share_changes`")钉成了正确答案。判据改成
+  // **读盘目标就是发起方给的那一个**——fixture 刻意给 `path`,与 `dirSlug` 不同值,
+  // 退回写死 `{ dirSlug }` 的实现会红在下面的 `toHaveBeenCalledWith`。
+  it("新增文件按需读本地盘,读哪个目录由发起方给的 localTarget 决定;修改的文件展开是差异", async () => {
     invoke.mockImplementation(async (cmd: string) =>
       cmd === "skill_local_file_read" ? { kind: "text", text: "新写的正文" } : null,
     );
     useOverwrite.getState().ask({
       dirSlug: "weekly-report",
       name: "周报生成",
+      localTarget: { path: "/h/.claude/skills/weekly-report" },
       plan: {
         added: [{ path: "新写的.txt", body: { kind: "text" } }],
         modified: [
@@ -203,7 +215,89 @@ describe("🔴 v8 任务 10 / Q16:这一屏的清单同样能就地展开", () =
     await userEvent.click(screen.getByRole("button", { name: /新写的\.txt/ }));
     expect(await screen.findByText("新写的正文")).toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith("skill_local_file_read", {
-      args: { dirSlug: "weekly-report", file: "新写的.txt" },
+      args: { path: "/h/.claude/skills/weekly-report", file: "新写的.txt" },
     });
+  });
+});
+
+describe("🔴 定向复审 I-1:无安装基线的「分享改动」,确认屏读的是 core 算清单时的那个本体", () => {
+  beforeEach(reset);
+
+  // 旗舰场景:作者在 `~/.claude/skills/my-notes` 开发,没有记账,canonical 下也没有
+  // 指向它的链接。core 这一支走 `share()`(`converge::locate` 扫描定位),而按
+  // `dirSlug` 解析(`converge::home_of`)只会给出 canonical 下一个不存在的路径。
+  // 桩如实模拟这一点:按 `path` 读得到,按 `dirSlug` 读报「不是技能」。
+  const BODY = "/h/.claude/skills/my-notes";
+  const row = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
+    dirSlug: "my-notes",
+    commitSha: "",
+    contentHash: "",
+    agents: ["claude-code"],
+    installedAt: "",
+    updatedAt: "",
+    localModified: false,
+    sourceOwner: "skills",
+    sourceRepo: "skills",
+    registryId: "company",
+    sourceRemoved: false,
+    libraryRemoved: false,
+    relation: "shared",
+    localPresent: true,
+    sourceLabel: "skills/skills",
+    body: BODY,
+    localHash: "sha256:local",
+    tools: [],
+    versions: [],
+    shareBlocked: null,
+    section: "sharedTo",
+    libraryUrl: null,
+    canonicalReaders: null,
+    ...over,
+  });
+
+  const needsConfirm = {
+    plan: planOf({ added: ["新写的.md"] }),
+    overwrite: null,
+    remoteRev: "sha256:seen",
+    planRev: "sha256:plan",
+    stale: false,
+    staleReason: null,
+  };
+
+  function mockCore() {
+    invoke.mockImplementation(async (cmd: string, payload: { args: Record<string, unknown> }) => {
+      if (cmd === "skill_share") return { outcome: "needsConfirm", ...needsConfirm };
+      if (cmd === "skill_share_changes") return { kind: "needsConfirm", ...needsConfirm };
+      if (cmd === "skill_local_file_read") {
+        if (payload.args.path === BODY) return { kind: "text", text: "本体里新写的正文" };
+        throw { code: "FS_NOT_A_SKILL", message: "这个文件夹不是技能" };
+      }
+      return null;
+    });
+  }
+
+  it("点开新增文件读得到内容(读的是那一行的本体,不是按文件夹名去 canonical 找)", async () => {
+    mockCore();
+    useMySkills.setState({ list: [row()] });
+
+    await useMySkills.getState().shareChanges("my-notes");
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_share")).toBe(true);
+    render(<ShareOverwriteDialog />);
+
+    await userEvent.click(screen.getByRole("button", { name: /新写的\.md/ }));
+    expect(await screen.findByText("本体里新写的正文")).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("skill_local_file_read", {
+      args: { path: BODY, file: "新写的.md" },
+    });
+  });
+
+  it("对照:有安装基线的一支走 `share_installed`,读盘仍按文件夹名(与 core 的 `home_of` 同一个解析)", async () => {
+    mockCore();
+    useMySkills.setState({ list: [row({ contentHash: "sha256:base" })] });
+
+    await useMySkills.getState().shareChanges("my-notes");
+
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "skill_share_changes")).toBe(true);
+    expect(useOverwrite.getState().pending?.localTarget).toEqual({ dirSlug: "my-notes" });
   });
 });
