@@ -77,6 +77,21 @@ describe("local-detail store", () => {
     expect(got?.skillMd).toBe(detail.skillMd);
     expect(got?.dirSlug).toBe("weekly-report");
     expect(useLocalDetail.getState().target).not.toBeNull(); // 面板是开着的
+    // v8 任务 10:记下这份详情来自库里哪一版,文件预览据此按库里那一版读
+    // (`detail.path` 在这一档是库里的相对路径,拿去读本地盘必然失败)
+    expect(useLocalDetail.getState().library).toEqual({
+      registryId: "company",
+      repo: "skills/skills",
+      skillPath: got?.path,
+      commitSha: "c",
+    });
+  });
+
+  it("普通的本地详情不带库里的版本(文件从本地盘读)", async () => {
+    invoke.mockResolvedValue(detail);
+    await useLocalDetail.getState().openFromLibrary({ dirSlug: "weekly-report", registryId: "company", repo: "skills/skills" });
+    await useLocalDetail.getState().open({ dirSlug: "weekly-report" });
+    expect(useLocalDetail.getState().library).toBeNull();
   });
 
   it("从库里取失败时错误同样留在面板上;迟到的结果不顶回已关掉的面板", async () => {
@@ -102,6 +117,7 @@ describe("local-detail store", () => {
       target: null,
       detail: null,
       error: null,
+      library: null,
     });
   });
 

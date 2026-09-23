@@ -38,7 +38,7 @@ function themeColorTokens(): Set<string> {
 
 // 我们的自定义 token 全是这些词开头;只有这样扫才不会把 text-left、border-t
 // 这类 Tailwind 自带工具类误伤进来。
-const CUSTOM_TOKEN_HEADS = ["surface", "bg", "text", "border", "accent", "ok"];
+const CUSTOM_TOKEN_HEADS = ["surface", "bg", "text", "border", "accent", "ok", "diff"];
 
 describe("设计 token 拼写守卫", () => {
   it("组件里引用的自定义 color token 必须真的存在于 @theme", () => {

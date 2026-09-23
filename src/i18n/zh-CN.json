@@ -437,5 +437,21 @@
   "mine.toolsNeedLook": "有 {count} 处需要你看一下",
   "mine.toolsNeedLookFor": "「{name}」有 {count} 处需要你看一下",
   "mine.openFolderOf": "打开 {tool} 那个位置的文件夹",
-  "mine.openFolderFailed": "打不开那个文件夹"
+  "mine.openFolderFailed": "打不开那个文件夹",
+  "viewer.modeLabel": "查看方式",
+  "viewer.modeDiff": "改动",
+  "viewer.modeRendered": "渲染",
+  "viewer.modeRaw": "原文",
+  "viewer.modeFull": "全文",
+  "viewer.binary": "这不是文本格式,看不了内容。",
+  "viewer.tooLargeBytes": "这个文件有 {size},超过了 256 KB 的显示上限,看不了内容。",
+  "viewer.tooLargeLines": "这个文件有 {lines} 行,超过了 2000 行的显示上限,看不了内容。",
+  "viewer.tooLargeBoth": "这个文件有 {size}、{lines} 行,超过了 256 KB 与 2000 行的显示上限,看不了内容。",
+  "viewer.lineEndingsOnly": "两份内容只有行尾的换行符不同。",
+  "viewer.unavailable": "这个来源看不了文件内容。",
+  "viewer.hiddenHunks": "还有 {count} 处改动没有显示。",
+  "viewer.loading": "正在读取「{file}」…",
+  "viewer.readFailed": "读取「{file}」失败",
+  "viewer.empty": "这个文件是空的。",
+  "viewer.back": "返回文件列表"
 }

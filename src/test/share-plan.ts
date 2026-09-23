@@ -15,7 +15,24 @@ export const addedFile = (path: string): AddedFile => ({ path, body: { kind: "te
 
 export const modifiedFile = (path: string): ModifiedFile => ({
   path,
-  diff: { kind: "hunks", hunks: [], hiddenHunks: 0 },
+  // 一处真实的改动:core 的 `hunks` 恒非空(归一化后相同走 `lineEndingsOnly`),
+  // 空数组是生产上造不出来的形状,拿它当"普通那一档"会让测试走进不可达分支
+  diff: {
+    kind: "hunks",
+    hunks: [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: [
+          { op: "delete", text: "改之前的一行" },
+          { op: "insert", text: "改之后的一行" },
+        ],
+      },
+    ],
+    hiddenHunks: 0,
+  },
 });
 
 export const deletedFile = (path: string): DeletedFile => ({

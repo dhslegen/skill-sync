@@ -36,6 +36,10 @@
   --shadow-card: 0 1px 3px rgba(20, 18, 12, 0.06);
   --shadow-pop: 0 8px 24px rgba(20, 18, 12, 0.12), 0 2px 6px rgba(20, 18, 12, 0.05);
   --sidebar-bg: rgba(247, 246, 243, 0.85);
+  /* 文件查看器差异态的加减行底色(v8 任务 10)。只是底色,文字仍用 --text:
+     靠颜色区分之外,每行还有 +/- 前缀,色弱用户不靠颜色也分得出来。 */
+  --diff-add: rgba(46, 139, 87, 0.12);
+  --diff-del: rgba(192, 57, 43, 0.1);
 }
 
 [data-theme="dark"] {
@@ -51,6 +55,8 @@
   --shadow-card: none;
   --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.4);
   --sidebar-bg: rgba(22, 21, 20, 0.85);
+  --diff-add: rgba(74, 186, 122, 0.16);
+  --diff-del: rgba(224, 112, 95, 0.16);
 }
 
 [data-accent="clay"] {
@@ -100,6 +106,8 @@
   --color-accent-hover: var(--accent-hover);
   --color-accent-soft: var(--accent-soft);
   --color-ok: var(--ok);
+  --color-diff-add: var(--diff-add);
+  --color-diff-del: var(--diff-del);
   --radius-ctl: var(--r-ctl);
   --radius-card: var(--r-card);
   --radius-pop: var(--r-pop);

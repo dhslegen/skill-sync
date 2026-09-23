@@ -18,6 +18,14 @@ interface LocalDetailState {
   target: LocalSkillTarget | null;
   detail: LocalSkillDetail | null;
   error: AppError | null;
+  /**
+   * 这份详情是从技能库索引里取的(`openFromLibrary`,本地没有本体那一档)时,
+   * 记下它来自哪个库的哪一版(v8 任务 10)。文件预览据此按**库里那一版**读
+   * (`store_skill_file_read`),而不是去读一个根本不存在的本地文件夹——那一档的
+   * `detail.path` 是技能库里的相对路径(`skills/<目录名>`),不是本地路径。
+   * `null` = 普通的本地详情,文件从本地盘读。
+   */
+  library: { registryId: string; repo: string; skillPath: string; commitSha: string } | null;
 
   open: (target: LocalSkillTarget) => Promise<void>;
   /**
@@ -50,9 +58,10 @@ export const useLocalDetail = create<LocalDetailState>((set, get) => ({
   target: null,
   detail: null,
   error: null,
+  library: null,
 
   open: async (target) => {
-    set({ target, detail: null, error: null });
+    set({ target, detail: null, error: null, library: null });
     try {
       const detail = await skillLocalDetail(target);
       // 等待期间面板被关掉/换了目标,迟到的结果不能顶掉现状
@@ -64,7 +73,7 @@ export const useLocalDetail = create<LocalDetailState>((set, get) => ({
 
   openFromLibrary: async ({ dirSlug, registryId, repo }) => {
     const target: LocalSkillTarget = { dirSlug };
-    set({ target, detail: null, error: null });
+    set({ target, detail: null, error: null, library: null });
     try {
       const d = await storeSkillDetail(dirSlug, registryId, repo);
       const detail: LocalSkillDetail = {
@@ -76,12 +85,13 @@ export const useLocalDetail = create<LocalDetailState>((set, get) => ({
         files: d.files,
         hasScripts: d.hasScripts,
       };
-      if (get().target === target) set({ detail });
+      if (get().target === target)
+        set({ detail, library: { registryId, repo, skillPath: d.path, commitSha: d.commitSha } });
     } catch (raw) {
       if (get().target === target) set({ error: toAppError(raw) });
     }
   },
 
-  close: () => set({ target: null, detail: null, error: null }),
+  close: () => set({ target: null, detail: null, error: null, library: null }),
 
 }));

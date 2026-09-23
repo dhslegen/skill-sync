@@ -1,6 +1,7 @@
-import { ExternalLink, FileCode, FileText, Folder, TriangleAlert, X } from "lucide-react";
+import { ChevronLeft, ExternalLink, FileCode, FileText, Folder, TriangleAlert, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { FileViewer } from "@/components/FileViewer";
 import { Icon } from "@/components/Icon";
 import { InstallPanel } from "@/components/InstallPanel";
 import { Markdown } from "@/components/Markdown";
@@ -10,21 +11,28 @@ import { WhereBlocks } from "@/components/WhereBlocks";
 import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { formatBytes, updatedAtLabel } from "@/lib/format";
+import { stripFrontmatter } from "@/lib/markdown";
 import {
   BUILTIN_REGISTRY_ID,
   isAppError,
   openLibraryUrl,
+  PLAZA_REGISTRY_ID,
   sharePreview,
   skillClaimAttribution,
+  skillLocalFileRead,
   skillReveal,
+  storeSkillFileRead,
   type AppError,
+  type FileContent,
   type LocalSkillDetail,
   type SkillDetail,
 } from "@/lib/ipc";
+import { sourceCanShowFiles, useFilePreview } from "@/store/file-preview";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { cardFor, hasUpdate, remoteChangedForShareable, useMySkills } from "@/store/my-skills";
 import { locatePlazaSkill, usePlaza } from "@/store/plaza";
+import { useRegistries } from "@/store/registries";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
 
@@ -210,6 +218,8 @@ export function revealLabel(userAgent: string): string {
 
 function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
   const close = useLocalDetail((s) => s.close);
+  const library = useLocalDetail((s) => s.library);
+  const registries = useRegistries((s) => s.list);
   const [tab, setTab] = useState<"readme" | "files">("readme");
   const { skill, agentNames, remoteChanged, card } = useWhereSkill(detail.dirSlug);
   // 🔴 取回/更新失败的渲染点(终审复审轮 1,C-A)。`SkillActionsBlock` 的
@@ -299,8 +309,31 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
             ) : (
               <p className="text-[12.5px] text-text-3">{t("detail.noBody")}</p>
             )
+          ) : library ? (
+            // 本地没有本体、内容取自技能库索引的那一档:按库里**那一版**读
+            <FilesTab
+              detail={detail}
+              owner={`lib:${library.registryId}:${library.repo}:${detail.dirSlug}`}
+              readable={sourceCanShowFiles(library.registryId, registries)}
+              read={(file) =>
+                storeSkillFileRead({
+                  registryId: library.registryId,
+                  repo: library.repo,
+                  dirSlug: detail.dirSlug,
+                  skillPath: library.skillPath,
+                  commitSha: library.commitSha,
+                  file,
+                })
+              }
+            />
           ) : (
-            <FileTree detail={detail} />
+            <FilesTab
+              detail={detail}
+              owner={`local:${detail.path}`}
+              readable
+              // 🔴 按本体的绝对路径读,不按 dirSlug:本体不一定住在统一目录里
+              read={(file) => skillLocalFileRead({ path: detail.path }, file)}
+            />
           )}
         </div>
       </ScrollArea>
@@ -522,6 +555,12 @@ function PanelBody({
   // ——广场(GitHub)与任何非内建源都不满足,摆出来就是一个必然报错的按钮。
   const registryId = useStoreIndex((s) => s.index?.registryId);
   const activeRepo = useStoreIndex((s) => s.activeRepo);
+  // 文件预览按**打开这份详情时用的那个库**取(`openDetail` 用的就是这两个值),
+  // 广场走它自己的坐标。`commitSha` 取详情里那一版,不是分支头(顾问③)。
+  const activeRegistry = useStoreIndex((s) => s.activeRegistry);
+  const registries = useRegistries((s) => s.list);
+  const fileRegistryId = plaza ? PLAZA_REGISTRY_ID : activeRegistry;
+  const fileRepo = plaza ? plaza.ownerRepo : (activeRepo ?? undefined);
   const signedIn = useSession((s) => s.status === "signedIn");
   const canClaimAttribution = !plaza && registryId === BUILTIN_REGISTRY_ID && signedIn;
 
@@ -603,7 +642,21 @@ function PanelBody({
               <p className="text-[12.5px] text-text-3">{t("detail.noBody")}</p>
             )
           ) : (
-            <FileTree detail={detail} />
+            <FilesTab
+              detail={detail}
+              owner={`store:${fileRegistryId}:${fileRepo ?? ""}:${detail.dirSlug}`}
+              readable={sourceCanShowFiles(fileRegistryId, registries)}
+              read={(file) =>
+                storeSkillFileRead({
+                  registryId: fileRegistryId,
+                  ...(fileRepo ? { repo: fileRepo } : {}),
+                  dirSlug: detail.dirSlug,
+                  skillPath: detail.path,
+                  commitSha: detail.commitSha,
+                  file,
+                })
+              }
+            />
           )}
         </div>
       </ScrollArea>
@@ -829,14 +882,93 @@ function Tab({
   );
 }
 
+/**
+ * 「文件」页签(v8 任务 10 / 设计 Q19-B):列表,或者**替换整栏**的单文件预览。
+ *
+ * - 点文件 → 预览顶替列表,顶上一颗「返回」;Esc 同样先回列表(见 `store/file-preview.ts`,
+ *   那一层 Esc 在 `useDesktopChrome` 的链上,比关面板先一步);
+ * - `readable` 是**点之前**的判定(设计 Q15):来源看不了文件内容就不给点,并在列表上直说
+ *   ——等点了才返回 `unavailable` 只能算兜底;
+ * - `owner` 标明"哪个来源的哪个技能"。换技能或本页签卸载时清掉自己名下的预览,
+ *   别让上一个技能的文件挂在下一个技能上。
+ */
+function FilesTab({
+  detail,
+  owner,
+  readable,
+  read,
+}: {
+  detail: Pick<SkillDetail, "dirSlug" | "files" | "hasScripts">;
+  owner: string;
+  readable: boolean;
+  read: (file: string) => Promise<FileContent>;
+}) {
+  const file = useFilePreview((s) => (s.owner === owner ? s.file : null));
+  const show = useFilePreview((s) => s.show);
+  const back = useFilePreview((s) => s.back);
+  useEffect(() => () => useFilePreview.getState().release(owner), [owner]);
+
+  if (file) {
+    return (
+      <FilePreview
+        // 🔴 按"哪个技能的哪个文件"重挂:加载态与失败态活在查看器实例里
+        key={`${owner}\n${file}`}
+        file={file}
+        onBack={back}
+        read={() => read(file)}
+      />
+    );
+  }
+  return <FileTree detail={detail} readable={readable} onPick={(f) => show(owner, f)} />;
+}
+
+function FilePreview({
+  file,
+  onBack,
+  read,
+}: {
+  file: string;
+  onBack: () => void;
+  read: () => Promise<FileContent>;
+}) {
+  const backRef = useRef<HTMLButtonElement>(null);
+  // 点下去的那一行已经不在了,焦点交给「返回」,别让它掉回 <body>
+  useEffect(() => backRef.current?.focus(), []);
+  return (
+    <div>
+      <div className="mb-2.5 flex items-center gap-2">
+        <button
+          ref={backRef}
+          type="button"
+          onClick={onBack}
+          aria-label={t("viewer.back")}
+          title={t("viewer.back")}
+          className="grid size-6 shrink-0 place-items-center rounded-ctl text-text-2 hover:bg-surface-3 hover:text-text"
+        >
+          <Icon icon={ChevronLeft} size={14} />
+        </button>
+        <span className="min-w-0 truncate font-mono text-[12px] text-text-2" title={file}>
+          {file}
+        </span>
+      </div>
+      <FileViewer path={file} body={{ kind: "read", read }} />
+    </div>
+  );
+}
+
 const SCRIPT_EXT = /\.(sh|bash|zsh|py|js|mjs|ps1|rb)$/i;
 
 /** 文件树。对脚本文件单独用另一种图标,并在目录行给出"含可执行脚本"警示(UX 增强 #2)。
- *  商店详情与本地详情共用,只依赖两者都有的三个字段。 */
+ *  商店详情与本地详情共用,只依赖两者都有的三个字段。
+ *  `readable` 为假时文件名照样列着(看不了内容不等于不告诉他有哪些文件),只是不能点。 */
 function FileTree({
   detail,
+  readable,
+  onPick,
 }: {
   detail: Pick<SkillDetail, "dirSlug" | "files" | "hasScripts">;
+  readable: boolean;
+  onPick: (file: string) => void;
 }) {
   return (
     <div className="overflow-hidden rounded-card border border-border">
@@ -850,28 +982,43 @@ function FileTree({
           </span>
         )}
       </div>
-      {detail.files.map((file) => (
-        <div
-          key={file.path}
-          className="flex items-center gap-2 border-t border-border px-3 py-1.5 text-[12.5px]"
-        >
-          <Icon icon={SCRIPT_EXT.test(file.path) ? FileCode : FileText} />
-          <span className="truncate font-mono text-[12px]">{file.path}</span>
-          <span className="ml-auto shrink-0 text-[11px] text-text-3">
-            {formatBytes(file.size)}
-          </span>
-        </div>
-      ))}
+      {!readable && (
+        <p className="border-t border-border px-3 py-1.5 text-[12px] text-text-3">
+          {t("viewer.unavailable")}
+        </p>
+      )}
+      {detail.files.map((file) => {
+        const row = (
+          <>
+            <Icon icon={SCRIPT_EXT.test(file.path) ? FileCode : FileText} />
+            <span className="truncate font-mono text-[12px]">{file.path}</span>
+            <span className="ml-auto shrink-0 text-[11px] text-text-3">
+              {formatBytes(file.size)}
+            </span>
+          </>
+        );
+        return readable ? (
+          <button
+            key={file.path}
+            type="button"
+            onClick={() => onPick(file.path)}
+            className="flex w-full items-center gap-2 border-t border-border px-3 py-1.5 text-left text-[12.5px] hover:bg-surface-2"
+          >
+            {row}
+          </button>
+        ) : (
+          <div
+            key={file.path}
+            className="flex items-center gap-2 border-t border-border px-3 py-1.5 text-[12.5px]"
+          >
+            {row}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-/**
- * 渲染正文时去掉 frontmatter。
- *
- * 缓存里存的是 SKILL.md 全文(详情要能离线打开),而 frontmatter 是给机器看的元数据,
- * 直接渲染会在正文顶部露出一段 `name:`/`description:`。
- */
 /** 贡献者展示文案:3 人以内全列,超出列前 3 并缀「等 N 人」(N = 总人数)。
  *  元信息区是一行窄栏,十几个名字全列会把整行挤崩——截断是版式约束,不是隐藏信息,
  *  完整名单在技能库页面上本来就查得到。 */
@@ -884,7 +1031,5 @@ export function contributorsText(names: string[]): string {
   });
 }
 
-export function stripFrontmatter(raw: string): string {
-  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(raw);
-  return match ? raw.slice(match[0].length) : raw;
-}
+/** 实现挪到了 `lib/markdown.ts`(文件查看器也要用它),这里保留导出口,既有调用方不用改。 */
+export { stripFrontmatter };

@@ -34,13 +34,16 @@ export interface OverwriteDecision {
    * **重新算出来的**第二份清单(终审 C-1)。界面据此如实说一句;静默换掉清单,
    * 用户会以为自己看花了眼,而这一屏最重要的那一栏是"库里哪几个文件会没"。
    */
-  stale?: boolean;
+  stale: boolean;
   /**
    * 变的是库里那一头(别人推了东西)还是本地这一头(编辑器/用户自己改的)。
    * 🔴 **两种原因是两句不同的话**,指向的下一步也不同——合成一句就是对其中
    * 一半用户说假话(v8 任务 8 / 顾问①)。
+   *
+   * 🔴 **必填**(v8 任务 10 收口):可选的时候,漏传的发起方会静默落回「库里变了」
+   * 那一句——对本地改了的人说是同事改的。必填之后漏传的地方 `tsc` 当场指出来。
    */
-  staleReason?: StaleReason | null;
+  staleReason: StaleReason | null;
   /**
    * 用户按「仍然覆盖」时重跑的那一跳。
    *
@@ -59,6 +62,12 @@ export interface OverwriteDecision {
 
 interface OverwriteState {
   pending: OverwriteDecision | null;
+  /**
+   * 第几次 `ask`(v8 任务 10)。确认屏里展开过的文件内容属于**那一份**清单;
+   * 重算过的第二份清单进来时,界面按它换一个 key 把展开状态清掉——
+   * 过期的差异留在屏上,等于让用户照着旧清单点确认。
+   */
+  round: number;
   busy: boolean;
   ask: (decision: OverwriteDecision) => void;
   confirmOverwrite: () => Promise<void>;
@@ -69,8 +78,9 @@ interface OverwriteState {
 export const useOverwrite = create<OverwriteState>((set, get) => ({
   pending: null,
   busy: false,
+  round: 0,
 
-  ask: (decision) => set({ pending: decision, busy: false }),
+  ask: (decision) => set({ pending: decision, busy: false, round: get().round + 1 }),
 
   confirmOverwrite: async () => {
     const pending = get().pending;

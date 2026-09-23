@@ -29,7 +29,7 @@ import { useOverwrite } from "@/store/overwrite";
  * 与 `RemoveDialog` 同一条规矩:回车绝不等于覆盖同事的版本。
  */
 export function ShareOverwriteDialog() {
-  const { pending, busy, confirmOverwrite, cancel } = useOverwrite();
+  const { pending, busy, round, confirmOverwrite, cancel } = useOverwrite();
   const cancelRef = useRef<HTMLButtonElement>(null);
   const open = pending !== null;
 
@@ -109,7 +109,14 @@ export function ShareOverwriteDialog() {
           </p>
         )}
 
-        <SharePlanList plan={plan} />
+        {/* 🔴 本地那一侧按 `dirSlug` 定位:这一屏的两个发起方都走 `skill_share_changes`,
+            core 算这份清单时就是按 `dirSlug` 找本体(`converge::home_of`),读新增文件
+            用同一个解析,看到的才是要推的那一份。 */}
+        <SharePlanList
+          key={`${pending.dirSlug}:${round}`}
+          plan={plan}
+          localTarget={{ dirSlug: pending.dirSlug }}
+        />
 
         <div className="mt-4 flex justify-end gap-2">
           <button

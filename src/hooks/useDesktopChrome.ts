@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 import { useAppearance } from "@/store/appearance";
+import { useFilePreview } from "@/store/file-preview";
 import { useLocalDetail } from "@/store/local-detail";
 import { usePlaza } from "@/store/plaza";
 import { useStoreIndex } from "@/store/store-index";
@@ -35,6 +36,10 @@ export function useDesktopChrome() {
       }
       if (e.key === "Escape") {
         if (ui.paletteOpen) ui.setPaletteOpen(false);
+        // 详情面板里正在预览一个文件(v8 任务 10):这一下只回到文件列表,
+        // 再按一次才关面板。盖在面板上的确认屏在捕获阶段拦走 Esc 并停止传播,
+        // 这条链根本收不到——所以确认屏开着时预览不会被连带关掉。
+        else if (useFilePreview.getState().file !== null) useFilePreview.getState().back();
         else if (useLocalDetail.getState().target !== null) useLocalDetail.getState().close();
         else if (usePlaza.getState().detailOwnerRepo !== null) usePlaza.getState().closeDetail();
         else useStoreIndex.getState().closeDetail();

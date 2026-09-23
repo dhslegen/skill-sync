@@ -14,7 +14,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 function reset() {
   invoke.mockReset();
-  useOverwrite.setState({ pending: null, busy: false });
+  useOverwrite.setState({ pending: null, busy: false, round: 0 });
 }
 
 const ask = (over: Partial<{ lastAuthor: string | null; lastAt: string | null; historyUrl: string | null }> = {}, confirm = vi.fn(async () => {})) => {
@@ -28,6 +28,8 @@ const ask = (over: Partial<{ lastAuthor: string | null; lastAt: string | null; h
       historyUrl: "http://g/skills/skills/commits/branch/main/skills/weekly-report",
       ...over,
     },
+    stale: false,
+    staleReason: null,
     confirm,
   });
   return confirm;
@@ -135,6 +137,8 @@ describe("覆盖确认屏(v8 任务 4)", () => {
       name: "周报生成",
       plan: planOf({ deleted: ["旧的.md"] }),
       warning: null,
+      stale: false,
+      staleReason: null,
       confirm: vi.fn(async () => {}),
     });
     render(<ShareOverwriteDialog />);
@@ -148,5 +152,58 @@ describe("覆盖确认屏(v8 任务 4)", () => {
     // 但清单必须在——这一屏存在的主要理由就是"库里哪几个文件会没"
     expect(screen.getByText("旧的.md")).toBeInTheDocument();
     expect(screen.queryByText(t("share.planChanged"))).toBeNull();
+  });
+});
+
+describe("🔴 v8 任务 10 / Q16:这一屏的清单同样能就地展开", () => {
+  beforeEach(reset);
+
+  it("新增文件按需读本地盘(按这个技能定位,与算清单的那一次同一个解析),修改的文件展开是差异", async () => {
+    invoke.mockImplementation(async (cmd: string) =>
+      cmd === "skill_local_file_read" ? { kind: "text", text: "新写的正文" } : null,
+    );
+    useOverwrite.getState().ask({
+      dirSlug: "weekly-report",
+      name: "周报生成",
+      plan: {
+        added: [{ path: "新写的.txt", body: { kind: "text" } }],
+        modified: [
+          {
+            path: "SKILL.md",
+            diff: {
+              kind: "hunks",
+              hiddenHunks: 0,
+              hunks: [
+                {
+                  oldStart: 3,
+                  oldLines: 1,
+                  newStart: 3,
+                  newLines: 1,
+                  lines: [
+                    { op: "delete", text: "同事写的那句" },
+                    { op: "insert", text: "我改的那句" },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+        deleted: [],
+      },
+      warning: null,
+      stale: false,
+      staleReason: null,
+      confirm: vi.fn(async () => {}),
+    });
+    render(<ShareOverwriteDialog />);
+
+    await userEvent.click(screen.getByRole("button", { name: /SKILL\.md/ }));
+    expect(screen.getByText("我改的那句")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /新写的\.txt/ }));
+    expect(await screen.findByText("新写的正文")).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("skill_local_file_read", {
+      args: { dirSlug: "weekly-report", file: "新写的.txt" },
+    });
   });
 });

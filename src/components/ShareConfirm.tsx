@@ -187,7 +187,15 @@ export function ShareConfirm() {
         {changes && "inSync" in changes && (
           <p className="mt-2.5 text-[12px] leading-[1.6] text-text-2">{t("mine.shareInSync")}</p>
         )}
-        {changes && "plan" in changes && <SharePlanList plan={changes.plan} />}
+        {/* 本地那一侧按本体的绝对路径读,与上面读名称描述同一个理由(本体不一定住在
+            统一目录里)。key 带上清单指纹:重算过的清单进来,展开过的旧内容一并清掉。 */}
+        {changes && "plan" in changes && (
+          <SharePlanList
+            key={`${changes.dirSlug}:${changes.confirm.remoteRev}:${changes.confirm.planRev}`}
+            plan={changes.plan}
+            localTarget={{ path: skill.body }}
+          />
+        )}
 
         {shareError && (
           <p className="mt-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">

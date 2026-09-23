@@ -12,6 +12,11 @@ import { usePlaza } from "@/store/plaza";
 import { useProjects } from "@/store/project";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
+import { useDesktopChrome } from "@/hooks/useDesktopChrome";
+import { useRegistries } from "@/store/registries";
+import { useUi } from "@/store/ui";
+import { useFilePreview } from "@/store/file-preview";
+import type { RegistryView } from "@/lib/ipc";
 
 // agent 探测走 IPC:mock 掉才能让"点安装 → 展开勾选"这条路走通。
 // spy 形式暴露出来,本地详情的 reveal 测试要断言调用参数。
@@ -1649,5 +1654,241 @@ describe("DetailPanel(技能广场详情态)", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(useStoreIndex.getState().detailSlug).toBeNull();
     expect(useLocalDetail.getState().target).toBeNull();
+  });
+});
+
+// ---- 文件预览(v8 任务 10 / Q19-B):点文件 → 预览替换文件列表那一栏 ----
+
+/** 面板 + 真实的全局快捷键:Esc 分层要在**两者同时在场**时才测得出来。 */
+function PanelWithShortcuts() {
+  useDesktopChrome();
+  return <DetailPanel />;
+}
+
+const registry = (over: Partial<RegistryView>): RegistryView => ({
+  id: "company",
+  name: "公司技能库",
+  kind: "gitea",
+  baseUrl: "http://g",
+  builtin: true,
+  repo: null,
+  repos: [],
+  ...over,
+});
+
+describe("DetailPanel · 文件预览(v8 任务 10)", () => {
+  beforeEach(() => {
+    invokeMock.mockClear();
+    useUi.setState({ paletteOpen: false, composing: false });
+    useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null, activeRegistry: "company", activeRepo: null });
+    useLocalDetail.setState({ target: null, detail: null, error: null, library: null });
+    usePlaza.setState({ detailOwnerRepo: null, detailSkills: null, detailStatus: "idle", selectedDirSlug: null });
+    useRegistries.setState({ list: [registry({})] });
+    // 预览层是全局 store:不在这里清,上一条用例留下的预览会让下一条一上来就停在预览里
+    // (注入验证当场撞到:红了,但红的原因是用例之间串了状态,不是被测的那条断言)
+    useFilePreview.setState({ owner: null, file: null });
+  });
+
+  const fileCalls = (cmd: string) => invokeMock.mock.calls.filter(([c]) => c === cmd);
+
+  it("🔴 点文件替换整栏 → Esc 先回列表(面板还在)→ 再按 Esc 才关面板", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "store_skill_file_read") return { kind: "text", text: "print('收集')" };
+      if (cmd === "project_list") return useProjects.getState().groups;
+      if (cmd === "installed_list") return [];
+      return null;
+    });
+    open();
+    render(<PanelWithShortcuts />);
+    await userEvent.click(screen.getByRole("tab", { name: /文件/ }));
+    await userEvent.click(screen.getByRole("button", { name: /scripts\/collect\.py/ }));
+
+    expect(await screen.findByText("print('收集')")).toBeInTheDocument();
+    // 替换整栏:列表里的其他文件不在屏上了
+    expect(screen.queryByText("logo.png")).toBeNull();
+    // 按的是索引里那一版,不是分支头
+    expect(fileCalls("store_skill_file_read")[0][1]).toEqual({
+      args: {
+        registryId: "company",
+        dirSlug: "weekly-report",
+        skillPath: "skills/weekly-report",
+        commitSha: "a1b2c3d4e5f6",
+        file: "scripts/collect.py",
+      },
+    });
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(await screen.findByText("logo.png")).toBeInTheDocument();
+    expect(screen.queryByText("print('收集')")).toBeNull();
+    expect(useStoreIndex.getState().detailSlug).toBe("weekly-report");
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(useStoreIndex.getState().detailSlug).toBeNull();
+  });
+
+  it("「返回」按钮同样回到列表", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "store_skill_file_read") return { kind: "text", text: "print('收集')" };
+      if (cmd === "project_list") return [];
+      return null;
+    });
+    open();
+    render(<DetailPanel />);
+    await userEvent.click(screen.getByRole("tab", { name: /文件/ }));
+    await userEvent.click(screen.getByRole("button", { name: /scripts\/collect\.py/ }));
+    await screen.findByText("print('收集')");
+    await userEvent.click(screen.getByRole("button", { name: t("viewer.back") }));
+    expect(screen.getByText("logo.png")).toBeInTheDocument();
+  });
+
+  it("🔴 Q15:自定义 GitHub 源的文件点不了,列表上直说,一个请求都不发", async () => {
+    useRegistries.setState({
+      list: [registry({}), registry({ id: "custom-1", name: "外部", kind: "github", builtin: false })],
+    });
+    useStoreIndex.setState({ activeRegistry: "custom-1" });
+    open();
+    render(<DetailPanel />);
+    await userEvent.click(screen.getByRole("tab", { name: /文件/ }));
+
+    expect(screen.getByText("这个来源看不了文件内容。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /scripts\/collect\.py/ })).toBeNull();
+    // 文件名照样列着——看不了内容不等于不告诉他有哪些文件
+    expect(screen.getByText("scripts/collect.py")).toBeInTheDocument();
+    expect(fileCalls("store_skill_file_read")).toHaveLength(0);
+  });
+
+  it("🔴 技能广场虽然也是 GitHub,但能看(走 blob),而且带上仓坐标", async () => {
+    useRegistries.setState({
+      list: [registry({}), registry({ id: "plaza", name: "技能广场", kind: "github", builtin: false })],
+    });
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "store_skill_file_read") return { kind: "text", text: "广场里的正文" };
+      if (cmd === "project_list") return [];
+      return null;
+    });
+    usePlaza.setState({
+      detailOwnerRepo: "vercel-labs/skills",
+      detailWantedName: "React 最佳实践",
+      detailSlug: "vercel-labs/skills/react-best-practices",
+      detailStatus: "ready",
+      detailError: null,
+      detailSkills: [
+        {
+          name: "React 最佳实践",
+          dirSlug: "react-best-practices",
+          description: "",
+          path: "skills/react-best-practices",
+          skillMd: "正文",
+          files: [{ path: "rules/hooks.txt", size: 10 }],
+          hasScripts: false,
+          commitSha: "def4567890",
+          committedAt: "",
+          updatedAt: { kind: "unknown" },
+          tags: [],
+          attribution: null,
+        },
+      ],
+    });
+    render(<DetailPanel />);
+    await userEvent.click(screen.getByRole("tab", { name: /文件/ }));
+    await userEvent.click(screen.getByRole("button", { name: /rules\/hooks\.txt/ }));
+
+    expect(await screen.findByText("广场里的正文")).toBeInTheDocument();
+    expect(fileCalls("store_skill_file_read")[0][1]).toEqual({
+      args: {
+        registryId: "plaza",
+        repo: "vercel-labs/skills",
+        dirSlug: "react-best-practices",
+        skillPath: "skills/react-best-practices",
+        commitSha: "def4567890",
+        file: "rules/hooks.txt",
+      },
+    });
+  });
+
+  it("🔴 本地详情读本地盘;读失败点名这一个文件,换一个文件后不再显示上一个的失败", async () => {
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "skill_local_file_read") {
+        const file = (args as { args: { file: string } }).args.file;
+        if (file === "scripts/collect.py") throw { code: "FS_READ", message: "磁盘读不出来" };
+        return { kind: "text", text: "本地的说明原文" };
+      }
+      if (cmd === "project_list") return [];
+      if (cmd === "installed_list") return [];
+      return null;
+    });
+    const d = openLocal();
+    render(<DetailPanel />);
+    await userEvent.click(screen.getByRole("tab", { name: /文件/ }));
+    await userEvent.click(screen.getByRole("button", { name: /scripts\/collect\.py/ }));
+
+    expect(await screen.findByText(/读取「scripts\/collect\.py」失败/)).toBeInTheDocument();
+    expect(fileCalls("skill_local_file_read")[0][1]).toEqual({
+      args: { path: d.path, file: "scripts/collect.py" },
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: t("viewer.back") }));
+    await userEvent.click(screen.getByRole("button", { name: /SKILL\.md/ }));
+    await userEvent.click(await screen.findByRole("button", { name: t("viewer.modeRaw") }));
+    expect(await screen.findByText("本地的说明原文")).toBeInTheDocument();
+    expect(screen.queryByText(/失败/)).toBeNull();
+    expect(screen.queryByText(/磁盘读不出来/)).toBeNull();
+  });
+
+  it("换一个技能看详情时,上一个技能的预览不留下来", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_local_file_read") return { kind: "text", text: "甲技能的脚本" };
+      if (cmd === "project_list") return [];
+      if (cmd === "installed_list") return [];
+      return null;
+    });
+    openLocal();
+    const { rerender } = render(<PanelWithShortcuts />);
+    await userEvent.click(screen.getByRole("tab", { name: /文件/ }));
+    await userEvent.click(screen.getByRole("button", { name: /scripts\/collect\.py/ }));
+    await screen.findByText("甲技能的脚本");
+
+    act(() => {
+      useLocalDetail.setState({
+        target: { dirSlug: "other" },
+        detail: localDetail({ dirSlug: "other", name: "另一个", path: "/home/u/.agents/skills/other" }),
+        error: null,
+      });
+    });
+    rerender(<PanelWithShortcuts />);
+    expect(screen.queryByText("甲技能的脚本")).toBeNull();
+    // 预览层已清:一次 Esc 直接关面板,而不是被一层看不见的预览吞掉
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(useLocalDetail.getState().target).toBeNull();
+  });
+
+  it("「只在库里、本地没本体」那一档的详情按库里的版本读,不去读本地盘", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "store_skill_file_read") return { kind: "text", text: "库里那一版" };
+      if (cmd === "project_list") return [];
+      if (cmd === "installed_list") return [];
+      return null;
+    });
+    useLocalDetail.setState({
+      target: { dirSlug: "weekly-report" },
+      detail: localDetail({ path: "skills/weekly-report" }),
+      error: null,
+      library: { registryId: "company", repo: "skills/skills", skillPath: "skills/weekly-report", commitSha: "c0ffee" },
+    });
+    render(<DetailPanel />);
+    await userEvent.click(screen.getByRole("tab", { name: /文件/ }));
+    await userEvent.click(screen.getByRole("button", { name: /scripts\/collect\.py/ }));
+    expect(await screen.findByText("库里那一版")).toBeInTheDocument();
+    expect(fileCalls("skill_local_file_read")).toHaveLength(0);
+    expect(fileCalls("store_skill_file_read")[0][1]).toEqual({
+      args: {
+        registryId: "company",
+        repo: "skills/skills",
+        dirSlug: "weekly-report",
+        skillPath: "skills/weekly-report",
+        commitSha: "c0ffee",
+        file: "scripts/collect.py",
+      },
+    });
   });
 });

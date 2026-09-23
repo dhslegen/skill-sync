@@ -453,3 +453,86 @@ describe("改动清单(v8 任务 5 / D5、D6、D9)", () => {
     expect(screen.getByRole("button", { name: t("conflict.cancel") })).toBeInTheDocument();
   });
 });
+
+describe("🔴 v8 任务 10 / Q20:清单里的文件就地展开看内容", () => {
+  const PLAN_WITH_CONTENT = {
+    added: [{ path: "新写的.md", body: { kind: "text" as const } }],
+    modified: [
+      {
+        path: "SKILL.md",
+        diff: {
+          kind: "hunks" as const,
+          hiddenHunks: 0,
+          hunks: [
+            {
+              oldStart: 1,
+              oldLines: 1,
+              newStart: 1,
+              newLines: 1,
+              lines: [
+                { op: "delete" as const, text: "旧的一句" },
+                { op: "insert" as const, text: "改过的一句" },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+    deleted: [{ path: "踩过的坑.txt", body: { kind: "text" as const, text: "库里那一版的坑" } }],
+  };
+
+  function openWithContent() {
+    openWith(view(), {
+      dirSlug: "weekly-report",
+      plan: PLAN_WITH_CONTENT,
+      overwrite: null,
+      confirm: { remoteRev: "sha256:seen", planRev: "sha256:plan" },
+      stale: false,
+      staleReason: null,
+    });
+  }
+
+  it("新增文件点开才按需读本地盘,读的是这个技能本体下的这一个文件", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "skill_local_file_read") return { kind: "text", text: "新写的正文" };
+      if (cmd === "skill_local_detail")
+        return { name: "周报生成", dirSlug: "weekly-report", description: "", path: BODY, skillMd: "", files: [], hasScripts: false };
+      return { agents: [], canonicalDir: "" };
+    });
+    openWithContent();
+    await screen.findByText("周报生成");
+    // 没点之前一次都不读(按需读,不是预取)
+    expect(invoke.mock.calls.filter(([c]) => c === "skill_local_file_read")).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole("button", { name: /新写的\.md/ }));
+    await userEvent.click(await screen.findByRole("button", { name: t("viewer.modeRaw") }));
+    expect(await screen.findByText("新写的正文")).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("skill_local_file_read", {
+      args: { path: BODY, file: "新写的.md" },
+    });
+  });
+
+  it("修改的文件展开是差异,删除的文件展开是库里那一版的内容", async () => {
+    openWithContent();
+    await screen.findByText("周报生成");
+    expect(screen.queryByText("改过的一句")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /SKILL\.md/ }));
+    expect(screen.getByText("旧的一句")).toBeInTheDocument();
+    expect(screen.getByText("改过的一句")).toBeInTheDocument();
+
+    expect(screen.queryByText("库里那一版的坑")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /踩过的坑\.txt/ }));
+    expect(screen.getByText("库里那一版的坑")).toBeInTheDocument();
+  });
+
+  it("再点一次收起", async () => {
+    openWithContent();
+    await screen.findByText("周报生成");
+    const row = screen.getByRole("button", { name: /SKILL\.md/ });
+    await userEvent.click(row);
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(row);
+    expect(row).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("改过的一句")).toBeNull();
+  });
+});
