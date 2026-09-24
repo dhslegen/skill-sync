@@ -136,3 +136,27 @@ describe("侧边栏 · 技能更新角标", () => {
     expect(region?.className ?? "").not.toContain("pointer-events-none");
   });
 });
+
+describe("品牌标志与应用图标同源", () => {
+  // 🔴 0.7.1 真机:安装包图标换成「同步环 + 中心四角星」之后,侧边栏左上角的品牌标志
+  // 仍是旧字形(只有双箭头)——两处各手写一份同一个字形,改了一边另一边就落后。
+  // 这条测试读图标源文件,逐条比对路径:以后只改一边,这里当场变红。
+  it("侧边栏标志的每一条路径都与 icons/icon-source.svg 的字形一致", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const source = readFileSync(resolve(__dirname, "../../src-tauri/icons/icon-source.svg"), "utf8");
+    const glyph = source.slice(source.indexOf("<g transform"));
+    const pick = (text: string) => ({
+      d: [...text.matchAll(/\sd="([^"]+)"/g)].map((m) => m[1]).sort(),
+      points: [...text.matchAll(/points="([^"]+)"/g)].map((m) => m[1]).sort(),
+    });
+
+    const { container } = render(<Sidebar version="0.7.2" />);
+    const mark = container.querySelector('[data-testid="brand-mark"] svg');
+    expect(mark).not.toBeNull();
+
+    const expected = pick(glyph);
+    expect(expected.d.length).toBeGreaterThanOrEqual(2); // 双箭头 + 星:防止源文件解析落空而空转
+    expect(pick(mark!.outerHTML)).toEqual(expected);
+  });
+});

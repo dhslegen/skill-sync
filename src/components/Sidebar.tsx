@@ -53,12 +53,15 @@ export function Sidebar({ version }: { version: string }) {
       <div className="absolute inset-x-0 top-0 h-[52px]" data-tauri-drag-region />
 
       <div className="mb-3.5 mt-[52px] flex items-center gap-2 px-2.5">
-        <span className="grid size-[22px] place-items-center rounded-[6px] bg-accent text-white">
-          {/* 品牌标记:同步双箭头。这是唯一手写的 svg,Lucide 里没有同形状的 */}
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <span data-testid="brand-mark" className="grid size-[22px] place-items-center rounded-[6px] bg-accent text-white">
+          {/* 品牌标记:同步双箭头 + 中心四角星,与应用图标 `src-tauri/icons/icon-source.svg`
+              **同一个字形**(0.7.2 起;此前只有双箭头,换了安装包图标后两处对不上)。
+              两处各手写一份,由 Sidebar.test.tsx「品牌标志与应用图标同源」逐条比对路径。 */}
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M21 12a9 9 0 0 1-15.5 6.2M3 12a9 9 0 0 1 15.5-6.2" />
             <polyline points="21 3 21 9 15 9" />
             <polyline points="3 21 3 15 9 15" />
+            <path d="M12 7.6C12.55 10.6 13.4 11.45 16.4 12C13.4 12.55 12.55 13.4 12 16.4C11.45 13.4 10.6 12.55 7.6 12C10.6 11.45 11.45 10.6 12 7.6Z" fill="currentColor" stroke="none" />
           </svg>
         </span>
         <b className="text-[13.5px] font-semibold tracking-[-0.01em]">{t("app.name")}</b>

@@ -200,6 +200,12 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
   `android/` `ios/` `64x64.png`,本项目不要,删掉。🔴 **16px 那一档要单独替换**成
   `icon-source-16.svg`(去星、加粗、去边距)——整版缩到 16px 会糊成一团,Windows 任务栏天天看得到;
   `.icns` 用 `iconutil` 解包替换再打包,`.ico` 用 Pillow 按尺寸替换(见 0.7.x 那笔提交)。
+  🔴 **侧边栏品牌标志与图标是同一个字形的两份手写**(`Sidebar.tsx` 的 svg 与 `icon-source.svg`),
+  0.7.1 只改了图标、侧边栏没跟上。现由 `Sidebar.test.tsx`「品牌标志与应用图标同源」逐条比对路径钉住。
+  🔴 **Windows 换图标后任务栏固定项不会自己刷新**(图标缓存;0.7.1 解包核实 exe 内嵌图标已是新的):
+  NSIS 钩子 `src-tauri/windows/installer-hooks.nsh` 在安装后跑 `ie4uinit -show` + `SHChangeNotify`,
+  **不许有任何会拦住安装的语句**(守卫 `bundle_config.rs::windows_installer_refreshes_the_icon_cache_without_blocking_install`)。
+  钩子只在 Windows 打包时编译——改它时先用本机 `makensis` 编一个最小脚本(含写错宏的反向对照)。
 - 桌面细节:全局 `cursor: default`、`user-select: none`(详情正文例外)、拦截默认右键菜单、`Cmd/Ctrl+K` 命令面板(cmdk)、搜索处理 IME composition 事件
 
 ## IPC 契约(见 docs/开发交接包-待澄清与任务分解.md 3.3)

@@ -586,3 +586,32 @@ fn the_publish_script_stamps_and_commits_the_release_date() {
          发出去的包里就没有日期,而本地看一切正常。实际那行:{add_line}"
     );
 }
+
+/// Windows 安装器装完要刷新图标缓存(0.7.2)。
+///
+/// 0.7.1 真机:exe 内嵌图标已是新的(解包核实),标题栏与托盘也是新的,**任务栏上固定的
+/// 快捷方式仍显示旧图标**——Windows 图标缓存不会因为 exe 换了图标而自己刷新。
+/// 钩子只在 Windows 打安装包时编译,本机与 macOS CI 都走不到;这里钉住三件事:
+/// 接上了、确实刷新缓存、**不会拦住安装**(刷新失败只是图标晚些换,不能让升级失败)。
+/// 语法由 `makensis` 本地编过一次(含写错宏的反向对照),见提交说明。
+#[test]
+fn windows_installer_refreshes_the_icon_cache_without_blocking_install() {
+    let c = conf();
+    let hooks = c["bundle"]["windows"]["nsis"]["installerHooks"]
+        .as_str()
+        .expect("缺 bundle.windows.nsis.installerHooks:升级后任务栏会一直显示旧图标");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(hooks);
+    let body = std::fs::read_to_string(&path).expect("installerHooks 指向的文件不存在");
+    // 只看指令,不看注释(注释里本身就写着这些词,不剥的话删掉真实调用照样绿)
+    let code: String = body
+        .lines()
+        .filter(|l| !l.trim_start().starts_with(';'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(code.contains("!macro NSIS_HOOK_POSTINSTALL"), "刷新必须在安装完成之后");
+    assert!(code.contains("ie4uinit.exe\" -show"), "缺少刷新图标缓存的调用");
+    assert!(code.contains("SHChangeNotify"), "缺少通知资源管理器重读图标");
+    for blocker in ["Abort", "MessageBox", "Quit", "SetErrorLevel"] {
+        assert!(!code.contains(blocker), "钩子里不许有 {blocker}:刷新失败绝不能拦住安装或升级");
+    }
+}
