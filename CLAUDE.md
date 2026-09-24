@@ -194,6 +194,12 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
   (那时主区 952 < 980,从未生效),全屏时却让右半边空一大片。🔴 **别加 `mx-auto` 居中定宽**
   ——用户拍板:那是网页味,桌面程序(Finder/系统设置/VS Code)左锚定。截图 harness 的
   30–34 号屏覆盖 2000/2560 宽,改布局时一起看。
+- **应用图标**(0.7.x 起):源文件 `src-tauri/icons/icon-source.svg`(1024 画布、macOS 网格:主体 824 居中、
+  圆角 185、陶土橙纵向微渐变 + 白色同步双箭头 + 中心四角星;字形与侧边栏品牌标志同源)。
+  改图标 = 改 SVG → `rsvg-convert -w 1024` 出 PNG → `pnpm tauri icon <png>`;🔴 生成器会多造
+  `android/` `ios/` `64x64.png`,本项目不要,删掉。🔴 **16px 那一档要单独替换**成
+  `icon-source-16.svg`(去星、加粗、去边距)——整版缩到 16px 会糊成一团,Windows 任务栏天天看得到;
+  `.icns` 用 `iconutil` 解包替换再打包,`.ico` 用 Pillow 按尺寸替换(见 0.7.x 那笔提交)。
 - 桌面细节:全局 `cursor: default`、`user-select: none`(详情正文例外)、拦截默认右键菜单、`Cmd/Ctrl+K` 命令面板(cmdk)、搜索处理 IME composition 事件
 
 ## IPC 契约(见 docs/开发交接包-待澄清与任务分解.md 3.3)
@@ -580,7 +586,8 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 内容 = v8 分享链路简化(T1–T7)+ 文件级差异与文件预览(T8–T11)。发版前:Rust full
 981 passed / 0 failed / 3 ignored;四条门控 live 真跑(13.5s/11.3s/6.1s/0.2s);
 **首次由 agent 在上线前用正式签名包做真机验收**(流程见「真机验收:agent 自主完成」)。
-⚠️ 已知小缺陷未修:`Cmd+4` 会 `setPage(undefined)`(`PAGE_ORDER` 只有三项)。
+发版后顺手修掉两处:`⌘4` 会 `setPage(undefined)`(页序从 `lib/nav.ts` 的 `NAV` 推出,`⌘N` = 侧边栏第 N 项);
+安装包图标一直是 Tauri 默认图标(换成品牌图标,源文件 `src-tauri/icons/icon-source.svg` + 16px 专用 `icon-source-16.svg`)。
 
 (以下是 v0.6.3 当时的记录)
 
@@ -2867,8 +2874,8 @@ M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重�
 - 🔴 **鼠标点击在这台机器上基本用不了**:工具的命中检测会撞上系统全屏透明窗口
   (实测报「通知中心」「程序坞」,清掉通知也没用),截图里却什么都看不到。
   **悬停有效、键盘有效**——所以**整套操作走键盘**:
-  - `Cmd+1` 商店 / `Cmd+2` 我的技能 / `Cmd+3` 设置(`PAGE_ORDER` 只有三项,
-    「项目里的技能」没有快捷键;⚠️ `Cmd+4` 会 `setPage(undefined)`,是已知小缺陷,别按);
+  - `Cmd+1`–`Cmd+4` = 侧边栏从上往下:商店 / 我的技能 / 项目里的技能 / 设置
+    (页序由 `src/lib/nav.ts` 的 `NAV` 推出;0.7.0 及更早 `Cmd+3` 是设置、`Cmd+4` 会切成空白页);
   - `Cmd+K` 命令面板 → 输入技能名 → 回车 = 打开该技能详情;**再按一次 `Cmd+K` 关面板**;
   - `Cmd+U` 切换深浅色(测深色模式就用它);`Cmd+R` 强制重建商店索引;
   - `Tab` / `Shift+Tab` 移焦点,回车触发。

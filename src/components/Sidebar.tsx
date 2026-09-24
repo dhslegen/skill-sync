@@ -1,40 +1,17 @@
-import { Store, Laptop, FolderOpen, Settings, LogIn } from "lucide-react";
+import { LogIn } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
 import { UpdatePill } from "@/components/UpdatePill";
-import { t, type MessageKey } from "@/i18n";
+import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
+import { NAV } from "@/lib/nav";
 import { skillGlyph } from "@/lib/tint";
 import { updateCount, useMySkills } from "@/store/my-skills";
 import { useSession } from "@/store/session";
 import { useStoreIndex } from "@/store/store-index";
-import { useUi, type PageId } from "@/store/ui";
+import { useUi } from "@/store/ui";
 
-const NAV: { group: MessageKey; items: { id: PageId; label: MessageKey; icon: typeof Store }[] }[] = [
-  {
-    group: "nav.groupSkills",
-    items: [
-      // 🔴 v7.3 Q25/Q26:这一组的轴是**技能在哪**(远端商店 / 这台电脑 / 项目文件夹),
-      // 所以三个图标都必须落在"位置"这个轴上。换掉的两个原本不在:
-      // `LayoutGrid` 说的是**布局**,`Check` 说的是**已完成/已勾选**——它表达的是
-      // 状态,与"在哪"无关。`Store`(店面 = 一个地方)与 `Laptop`(这台电脑)才在轴上。
-      // `Laptop` 还与详情面板打通:`WhereBlocks` 里它已经代表「这台电脑上」,两处同义。
-      // ⚠️ **别把 `Library` 拿来用**:它在详情面板里特指"公司技能库",而侧边栏这一条
-      // 含义更宽(可切库、含技能广场),复用会把详情面板那块的含义稀释掉。
-      { id: "store", label: "nav.store", icon: Store },
-      { id: "mine", label: "nav.mine", icon: Laptop },
-      // 🔴 v7.3:「项目里的技能」从「我的技能」的第四个页签升成侧边栏一条
-      // ——见 `store/ui.ts` 的 `PageId` 注释(那一行页签混了两个轴)。
-      // **刻意不摆角标**:项目级链路算不出"有几个要处理"这个数(不联动
-      // scheduler,是 v5 拍板的边界),摆一个没有含义的点比不摆更糟。
-      { id: "projects", label: "nav.projects", icon: FolderOpen },
-    ],
-  },
-  {
-    group: "nav.groupApp",
-    items: [{ id: "settings", label: "nav.settings", icon: Settings }],
-  },
-];
+
 
 /** 窄侧边栏(208px)。macOS 顶部留出红绿灯位——brand 的上边距就是那 52px。 */
 export function Sidebar({ version }: { version: string }) {

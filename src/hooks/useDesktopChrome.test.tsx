@@ -31,13 +31,23 @@ describe("桌面快捷键", () => {
     expect(useUi.getState().paletteOpen).toBe(false);
   });
 
-  it("Cmd/Ctrl+1..3 切页", async () => {
+  it("Cmd/Ctrl+N 切到侧边栏从上往下第 N 项", async () => {
     render(<Harness />);
-    // 「分享」页整页已撤销(v6 二期),顺序变成 商店/我的技能/设置 三页
-    await userEvent.keyboard("{Control>}3{/Control}");
-    expect(useUi.getState().page).toBe("settings");
-    await userEvent.keyboard("{Control>}1{/Control}");
-    expect(useUi.getState().page).toBe("store");
+    // 🔴 v7.3 把「项目里的技能」挪进侧边栏时,快捷键的页序没跟上:侧边栏 4 项、
+    // 快捷键只认 3 项,⌘3 跳到设置、⌘4 把页面切成 undefined(整页空白)。
+    // 页序现在直接从侧边栏的 NAV 推出来——这里逐项断言,钉住"第 N 项"这个口径。
+    const expected = ["store", "mine", "projects", "settings"] as const;
+    for (const [i, page] of expected.entries()) {
+      await userEvent.keyboard(`{Control>}${i + 1}{/Control}`);
+      expect(useUi.getState().page).toBe(page);
+    }
+  });
+
+  it("超出侧边栏项数的数字键不切页(不会把页面切成 undefined)", async () => {
+    render(<Harness />);
+    useUi.setState({ page: "mine" });
+    await userEvent.keyboard("{Control>}5{/Control}");
+    expect(useUi.getState().page).toBe("mine");
   });
 
   it("Esc 先关命令面板,再关详情面板", async () => {

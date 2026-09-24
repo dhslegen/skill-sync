@@ -5,9 +5,9 @@ import { useFilePreview } from "@/store/file-preview";
 import { useLocalDetail } from "@/store/local-detail";
 import { usePlaza } from "@/store/plaza";
 import { useStoreIndex } from "@/store/store-index";
-import { useUi, type PageId } from "@/store/ui";
+import { PAGE_ORDER } from "@/lib/nav";
+import { useUi } from "@/store/ui";
 
-const PAGE_ORDER: PageId[] = ["store", "mine", "settings"];
 
 /** `/` 聚焦搜索时,不能把用户正在输入的内容抢走。 */
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -45,9 +45,11 @@ export function useDesktopChrome() {
         else useStoreIndex.getState().closeDetail();
         return;
       }
-      if (mod && e.key >= "1" && e.key <= "4") {
+      // 上限取侧边栏的实际项数,不写死:写死的 "4" 正是 ⌘4 切成 undefined 的成因
+      const n = mod ? Number(e.key) : NaN;
+      if (Number.isInteger(n) && n >= 1 && n <= PAGE_ORDER.length) {
         e.preventDefault();
-        ui.setPage(PAGE_ORDER[Number(e.key) - 1]);
+        ui.setPage(PAGE_ORDER[n - 1]);
         return;
       }
       if (mod && e.key.toLowerCase() === "r") {
