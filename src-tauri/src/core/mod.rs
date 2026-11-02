@@ -29,4 +29,5 @@ pub mod skill_lock;
 pub mod skills;
 pub mod state;
 pub mod store;
+pub mod unpublish;
 pub mod watcher;

@@ -914,7 +914,7 @@ fn record_pushed_skill(
 /// 两把尺子对齐,不会出现"指纹没变、清单变了"。
 ///
 /// 库里还没有这个技能时是空串——那一档压根没有远端文件,删除清单恒空。
-fn remote_rev(archive: &RepoArchive, remote_path: &str) -> String {
+pub(crate) fn remote_rev(archive: &RepoArchive, remote_path: &str) -> String {
     // entries 的键保留压缩包顶层目录,技能路径必须拼上 archive.root 才剥得到条目
     // (store.rs 建索引时的 s.dir 天然带着它,这里的记账路径没有)
     crate::core::store::remote_content_hash(archive, &format!("{}/{remote_path}", archive.root))

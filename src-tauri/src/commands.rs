@@ -2005,6 +2005,55 @@ pub async fn skill_keep_against(args: SkillCompareArgs) -> Result<(), AppError> 
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkillUnpublishArgs {
+    #[serde(default)]
+    pub registry_id: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+    pub dir_slug: String,
+    /// 确认轮带回上一轮的 `remoteRev`;缺省 = 预览轮(方向安全)。
+    #[serde(default)]
+    pub confirm_rev: Option<String>,
+    /// 同时把本机这份移到废纸篓(默认不勾)。
+    #[serde(default)]
+    pub also_trash_local: bool,
+}
+
+/// 作者把自己的技能从技能库里删掉(0.8.0 任务 5)。闸与顺序见 `core::unpublish` 模块头。
+///
+/// 库内路径与 frontmatter 名取自**索引缓存**(与比较、保留同一个取法);提交走
+/// 带凭证的 `share_source`,读压缩包走 `read_source`——检测走读、提交走写,与分享同款。
+#[tauri::command]
+pub async fn skill_unpublish(
+    args: SkillUnpublishArgs,
+) -> Result<crate::core::unpublish::UnpublishOutcome, AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    let (source, repo) = share_source(registry_id, args.repo.as_deref()).await?;
+    let (read, _) = read_source(registry_id, args.repo.as_deref()).await?;
+    let (skill, _) = cached_library_version(registry_id, &repo, &args.dir_slug)?;
+    let registry = AgentRegistry::builtin();
+    let installer = app_installer(&registry);
+    crate::core::unpublish::unpublish(
+        &source.as_share_client(),
+        &read,
+        &installer,
+        &SystemEnv,
+        &app_store()?,
+        crate::core::unpublish::UnpublishRequest {
+            registry_id,
+            repo: &repo,
+            dir_slug: &args.dir_slug,
+            skill_path: &skill.path,
+            display_name: &skill.name,
+            confirm: args.confirm_rev.as_deref(),
+            also_trash_local: args.also_trash_local,
+        },
+    )
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillClaimAttributionArgs {
     #[serde(default)]
     pub registry_id: Option<String>,
