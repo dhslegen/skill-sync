@@ -1923,6 +1923,62 @@ pub async fn skill_share(args: SkillShareArgs) -> Result<share::ShareOutcome, Ap
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkillCompareArgs {
+    #[serde(default)]
+    pub registry_id: Option<String>,
+    /// 技能库寻址键 `owner/repo`,缺省 = 该源主库。
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// 技能库中的技能目录名(也是本机查本体的键)。
+    pub dir_slug: String,
+}
+
+/// 「与库里不同」到底哪里不同(0.8.0 任务 2)。只读:不写盘、不发写请求。
+///
+/// 库里那一版取自**索引缓存**(与卡片做判定用的是同一份):`commit_sha` 钉住版本、
+/// `path` 是真实路径、`content_hash` 原样回传给界面(「已保留你的版本」记的就是它)。
+/// 缓存里没有这个技能 → 报「请刷新后再试」,**不现拉分支头凑一版**——那会比出
+/// 与卡片判定不是同一版的结果。
+#[tauri::command]
+pub async fn skill_compare_library(
+    args: SkillCompareArgs,
+) -> Result<crate::core::compare::Comparison, AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    let (read, repo) = read_source(registry_id, args.repo.as_deref()).await?;
+    let index = store::load_cache(&index_cache_file(registry_id, &repo)?)
+        .filter(|index| index.is_for(registry_id, &repo));
+    let Some((skill, commit_sha)) = index.as_ref().and_then(|index| {
+        index
+            .skills
+            .iter()
+            .find(|s| s.dir_slug == args.dir_slug)
+            .map(|s| (s, index.commit_sha.clone()))
+    }) else {
+        return Err(AppError::new(
+            "REPO_NOT_FOUND",
+            "技能库里没有找到这个技能,请刷新后再试",
+        )
+        .with_detail(format!("{} not in cached index of {registry_id}", args.dir_slug)));
+    };
+    let at = RepoRef { branch: commit_sha, ..repo.clone() };
+    let store = app_store()?;
+    crate::core::compare::compare_with_library(
+        &read,
+        &AgentRegistry::builtin(),
+        &SystemEnv,
+        &store,
+        &args.dir_slug,
+        crate::core::compare::LibraryVersion {
+            at: &at,
+            skill_path: &skill.path,
+            content_hash: &skill.content_hash,
+        },
+    )
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillClaimAttributionArgs {
     #[serde(default)]
     pub registry_id: Option<String>,

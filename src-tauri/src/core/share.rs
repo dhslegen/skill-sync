@@ -810,7 +810,7 @@ fn align_shared_baseline(
     }
 }
 
-fn missing_body_err(dir_slug: &str) -> AppError {
+pub(crate) fn missing_body_err(dir_slug: &str) -> AppError {
     AppError::new("FS_NOT_FOUND", "这个技能的内容已经不在了,请刷新后再试")
         .with_detail(format!("no body for {dir_slug}"))
 }
@@ -1909,7 +1909,7 @@ pub(crate) struct PlannedChanges {
 /// 它**不在清单里,也不在 `plan_rev` / `local_hash` 里**:那是技能库的元数据,
 /// 不是用户这个技能的内容。所以「确认屏上看到的 = 推出去的」这句承诺的范围是
 /// **这个技能目录**,不是整笔提交——别据此把归因也塞进清单或指纹(定向复审 M-5)。
-fn plan_changes(
+pub(crate) fn plan_changes(
     prefix: &str,
     remote: &BTreeMap<String, Vec<u8>>,
     local: Vec<(String, Vec<u8>)>,
@@ -2155,7 +2155,7 @@ pub(crate) fn remote_files(archive: &RepoArchive, prefix: &str) -> BTreeMap<Stri
 /// 把本地目录读成 `(远端路径, 字节)` 清单。来源无关:Gitea 侧再按远端 blob sha
 /// 分成 create/update,GitHub 侧原样进 createCommitOnBranch 的 additions
 /// (它对"新增"与"修改"不作区分)。
-fn payload_files(dir: &Path, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, AppError> {
+pub(crate) fn payload_files(dir: &Path, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, AppError> {
     let mut out = Vec::new();
     for rel in fsops::list_files(dir)? {
         let bytes = std::fs::read(dir.join(&rel)).map_err(|e| {

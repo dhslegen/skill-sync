@@ -5,6 +5,7 @@ pub mod agents;
 pub mod app_update;
 pub mod auth;
 pub mod builtin;
+pub mod compare;
 pub mod converge;
 pub mod create;
 pub mod file_preview;
