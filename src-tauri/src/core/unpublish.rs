@@ -225,7 +225,7 @@ pub async fn unpublish(
         // (`converge::set_agents` 建的那种),按既有判据落进「可分享到」,分享按钮回来。
         // 同事那边的记账没人动,照样显示"技能库里已经没有它了"——那正是他们该看到的。
         // 失败不回滚库里那一笔(已经发生了),只记日志:最坏是这一行暂时显示"库里没了"。
-        if let Err(e) = detach_local_record(installer, store, req.dir_slug) {
+        if let Err(e) = detach_local_record(installer, store, req.dir_slug, &library_slug, req.repo) {
             tracing::warn!(code = %e.code, "删除后清理本机记账来源失败");
         }
         LocalResult::Untouched
@@ -234,10 +234,21 @@ pub async fn unpublish(
 }
 
 /// 把这个技能本机记账的来源清空(见调用点的注释)。没有记账就什么都不做——**绝不凭空建账**。
-fn detach_local_record(installer: &Installer<'_>, store: &Store, dir_slug: &str) -> Result<(), AppError> {
+fn detach_local_record(
+    installer: &Installer<'_>,
+    store: &Store,
+    dir_slug: &str,
+    library_slug: &str,
+    repo: &RepoRef,
+) -> Result<(), AppError> {
     let key = crate::core::converge::record_key(installer, dir_slug)?;
     let mut next = store.load_state()?.value;
-    let mut changed = false;
+    // `state.shared` 里那条"分享到这个库"的记账也作废:它的基线指向一个已经删掉的远端版本。
+    // 今天 Fresh 那一档不跑覆盖闸、读不到它,但留着就是一条迟早误导人的脏账(与 `remove` 同款清理)。
+    let before = next.shared.len();
+    next.shared
+        .retain(|s| !(s.name == library_slug && s.target.owner == repo.owner && s.target.repo == repo.repo));
+    let mut changed = next.shared.len() != before;
     if let Some(rec) = next.installed.iter_mut().find(|s| s.name == key) {
         if rec.has_source() {
             rec.source.registry_id.clear();
@@ -330,7 +341,44 @@ pub(crate) fn remove_array_item(text: &str, top: &str, item: &str) -> Option<Str
 
 #[cfg(test)]
 mod tests {
-    use super::{remove_array_item, remove_object_key};
+    use super::{remove_array_item, remove_object_key, LocalResult, UnpublishOutcome};
+    use crate::error::AppError;
+
+    fn keys(v: &serde_json::Value) -> Vec<String> {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    }
+
+    /// 前端按这些键写类型(`src/lib/ipc.ts::UnpublishOutcome`)。**断言完整键集合**:
+    /// 只查"某个键存在"分不出字段被省略还是被拼错(`rename_all_fields` 当年炸过)。
+    #[test]
+    fn unpublish_outcome_serializes_every_field_in_camel_case() {
+        let confirm = serde_json::to_value(UnpublishOutcome::NeedsConfirm {
+            files: vec!["SKILL.md".into()],
+            remote_rev: "r".into(),
+            history_url: "h".into(),
+            stale: false,
+        })
+        .unwrap();
+        assert_eq!(keys(&confirm), ["files", "historyUrl", "outcome", "remoteRev", "stale"]);
+        assert_eq!(confirm["outcome"], "needsConfirm");
+
+        let done = serde_json::to_value(UnpublishOutcome::Unpublished {
+            commit_sha: "c".into(),
+            local: LocalResult::Failed { error: AppError::new("FS_X", "说明") },
+        })
+        .unwrap();
+        assert_eq!(keys(&done), ["commitSha", "local", "outcome"]);
+        assert_eq!(done["outcome"], "unpublished");
+        assert_eq!(keys(&done["local"]), ["error", "kind"]);
+        assert_eq!(done["local"]["kind"], "failed");
+        for (v, kind) in [(LocalResult::Untouched, "untouched"), (LocalResult::Trashed, "trashed")] {
+            let j = serde_json::to_value(v).unwrap();
+            assert_eq!(keys(&j), ["kind"]);
+            assert_eq!(j["kind"], kind);
+        }
+    }
 
     #[test]
     fn removes_only_the_named_key_and_keeps_the_rest_in_order() {

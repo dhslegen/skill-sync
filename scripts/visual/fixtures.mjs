@@ -595,6 +595,8 @@ export function buildFixtures() {
         user: { login: "zhaowenhao", displayName: "赵文浩", avatarUrl: "" },
       },
       installed_list: SKILLS.filter((s) => !s.notInstalled).map(installedSkill),
+      // 0.8.0 任务 4:「保留我的版本」(非作者那一档)只记一笔,无返回值
+      skill_keep_against: null,
       // 0.8.0 任务 6:「从技能库删除」预览轮(真 core 第二轮才删,截图停在确认屏)
       skill_unpublish: {
         outcome: "needsConfirm",

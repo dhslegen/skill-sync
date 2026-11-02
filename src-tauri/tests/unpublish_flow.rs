@@ -14,7 +14,7 @@ use skillsync_lib::core::gitea::{GiteaClient, RepoRef};
 use skillsync_lib::core::installer::Installer;
 use skillsync_lib::core::ownership::Identity;
 use skillsync_lib::core::share::ShareClient;
-use skillsync_lib::core::state::{Config, InstalledSkill, SkillSource, Store};
+use skillsync_lib::core::state::{Config, InstalledSkill, SharedSkill, SkillSource, Store};
 use skillsync_lib::core::unpublish::{unpublish, LocalResult, UnpublishOutcome, UnpublishRequest};
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -418,6 +418,19 @@ async fn keeping_the_local_copy_detaches_its_record_from_the_library() {
         origin: None, body: None, agents: vec![], links: vec![],
         installed_at: "2026-11-03T00:00:00Z".into(), updated_at: "2026-11-03T00:00:00Z".into(),
     });
+    for name in ["weekly-report", "meeting-notes"] {
+        state.shared.push(SharedSkill {
+            name: name.into(),
+            local_path: c.home.join(".agents").join("skills").join(name).to_string_lossy().into_owned(),
+            origin: "local".into(),
+            target: SkillSource {
+                registry_id: "company".into(), owner: "skills".into(), repo: "skills".into(),
+                path: format!("skills/{name}"), git_ref: "main".into(),
+            },
+            last_pushed_sha: "aaa".into(),
+            content_hash: "h".into(),
+        });
+    }
     c.store.save_state(&state).unwrap();
 
     let server = MockServer::start().await;
@@ -431,4 +444,9 @@ async fn keeping_the_local_copy_detaches_its_record_from_the_library() {
     assert_eq!(mine.agents, ["claude-code"], "别的记账(工具关联)一个字不动");
     let other = after.installed.iter().find(|s| s.name == "meeting-notes").unwrap();
     assert!(other.has_source(), "别的技能的记账不能被连带清掉");
+    assert!(
+        after.shared.iter().all(|s| s.name != "weekly-report"),
+        "「分享到这个库」的旧基线也作废"
+    );
+    assert!(after.shared.iter().any(|s| s.name == "meeting-notes"), "别的技能的分享记账不动");
 }

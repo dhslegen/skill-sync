@@ -143,3 +143,24 @@ pub fn keep_against(
     next.kept_against.insert(key, remote_hash.to_string());
     store.save_state(&next)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Comparison;
+    use crate::core::share::SharePlan;
+
+    /// 前端 `src/lib/ipc.ts::Comparison` 的键,完整集合断言(同 `unpublish` 那条的理由)。
+    #[test]
+    fn comparison_serializes_with_camel_case_keys() {
+        let v = serde_json::to_value(Comparison {
+            plan: SharePlan::default(),
+            local_path: "/x".into(),
+            remote_hash: "h".into(),
+            identical: true,
+        })
+        .unwrap();
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        assert_eq!(k, ["identical", "localPath", "plan", "remoteHash"]);
+    }
+}
