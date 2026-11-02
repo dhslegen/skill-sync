@@ -571,7 +571,9 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 ## 开发纪律
 - **M1–M5 全部完成**(分解文档在 docs/,只在本地)。新里程碑开工前**先做任务分解并给
   用户过目拍板**,之后逐任务:先写测试清单,再实现,DoD 全满足才进下一任务
-- 每完成一个任务 git commit,信息格式:`M<当前里程碑>-任务N: 摘要`(历史为 `M1-`…`M5-`)
+- 每完成一个任务 git commit,信息格式:`M<当前里程碑>-任务N: 摘要`(历史为 `M1-`…`M5-`;0.8.0 起是 `0.8.0-任务N:`)
+- 🔴 **设计与任务分解文档按应用版本号命名**(2026-11-02 用户定):`docs/设计-0.8.0-….md`、`docs/0.8.0-任务分解.md`。
+  此前的 v5…v8 是**设计轮次编号**,与应用版本号对不上(v8 是作为 0.7.0 发的),不符合直觉,不再新开 v 编号
 - 决策记录 C1-C12 + C-UI + C-OAuth 已全部拍板(见交接包),直接执行不复议
 - 文档未覆盖的决策:按决策记录精神自行选择,在 commit message 与代码注释中显式标注"假设:xxx";涉及删除用户数据、安全、对外网络请求的新增行为必须停下询问
 - 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
@@ -585,13 +587,19 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
   它就是这个项目的开发者文档。**别按全局规则把它加进 exclude 或重写历史**。
   仍然适用的部分:`docs/*`(除放行的两个)、`_*.md`、AI 流程产物一律不进版本控制。
 
-## 当前进度(2026-09-24,现役 **v0.7.1** —— 当天发布)
+## 当前进度(2026-11-03,现役 **v0.7.1**;**0.8.0 开发完成、待发布**)
 
-**0.7.2 已提交推送、未发布**(`44f9f8a`,2026-09-24;2026-11-02 核实 latest 仍是 0.7.1):侧边栏品牌标志补上中心
-四角星(与 `icon-source.svg` 同源,`Sidebar.test.tsx` 逐条比对路径)+ Windows 安装后刷新图标缓存的 NSIS 钩子
-(`src-tauri/windows/installer-hooks.nsh`)。闸全绿,发版说明与 README 已写。**欠真机验收**:Mac 上看一眼侧边栏
-标志;Windows 任务栏固定项是否换成新图标只能在 Windows 真机看(0.7.1 解包核实 exe 内嵌图标已是新的)。
-测试包是 9-24 构建的,发版前重出。
+**0.8.0 = 三项新功能 + 0.7.2 并入**(0.7.2 不单独发,用户 2026-11-02 定:「微不足道,不值得单发」)。
+设计 `docs/设计-0.8.0-库里查看·差异拍板·作者删除.md`,分解 `docs/0.8.0-任务分解.md`(均只在本地)。
+提交 `531e6ed..`(任务 1–7 各一笔):①详情头部统一「在技能库里查看」(所有源,没装过也有);
+②「与库里不同」逐文件差异 + 就地决定(4 处入口共用一个视图);③「保留我的版本」(作者进分享、其他人记住这一版);
+④作者「从技能库删除」(两轮绑快照、一笔提交清元数据、可选同时删本地);⑤同事侧「技能库里已经没有它了」。
+**撤销**:内置外网回退地址(用户 2026-11-02 定:不暴露公网,出差用 VPN)。
+**发版前还欠**:整分支终审、Rust full + 四条门控 live、agent 真机验收(要借用户屏幕)、README 里 0.8.0 那行的
+「待发布」改成发版日期(脚本不改 README)、Windows 真机看任务栏图标(0.7.2 那半)。
+
+(以下是 0.7.2 当时的记录:侧边栏品牌标志补上中心四角星 + Windows 安装后刷新图标缓存的 NSIS 钩子
+`src-tauri/windows/installer-hooks.nsh`,提交 `44f9f8a`,现并入 0.8.0。)
 
 **v0.7.1 已发布**(2026-09-24,curl 核实:内网 `v0.7.1` 五个产物齐全;`latest` version 0.7.1、三平台条目
 均带签名;版本号提交 `095b5a7` 的 CI macOS/Windows 两 job 均 success)。内容 = 品牌图标 + `⌘N` 与侧边栏对齐。
@@ -1245,9 +1253,36 @@ v8 的契约变更(分享链路简化):**删除** `ReviewView`/`InstalledRow.rev
 从裸路径改成带 `diff`/`body` 的对象。新增错误码 `REPO_FILE_NO_VERSION`。`StoreSkillCard`/`SkillDetail`/`IndexedSkill` 新增
 `updatedAt: SkillUpdatedAt`(三档可辨联合),索引缓存版本 **4 → 5**。**没有**新增事件。
 
+0.8.0 的契约变更:**新增** IPC `skill_compare_library`(`{registryId?, repo?, dirSlug}` → `Comparison{plan, localPath,
+remoteHash, identical}`,只读)、`skill_keep_against`(同参 → `()`)、`skill_unpublish`(`{registryId?, repo?, dirSlug,
+confirmRev?, alsoTrashLocal}` → `UnpublishOutcome = needsConfirm{files, remoteRev, historyUrl, stale} | unpublished{commitSha,
+local: untouched|trashed|failed{error}}`)。`SkillDetail` 新增 `libraryUrl`(出缓存后补,**不进索引缓存、不升版本**);
+`InstalledSkillView` 新增 `keptAgainst: string|null` 与 `goneFromLibrary: boolean`;`state.json` 新增可选顶层字段
+`keptAgainst`(记账键 → 库里那一版指纹),**不升 schemaVersion**。新增错误码 `REPO_UNSUPPORTED`。**没有**新增事件。
+
 ### 现役机制约束(动相关代码前必读)
 
 这些**都已实现**,列在这里是因为它们的不变量不看就会破坏。已完成的过程叙事在 git log。
+
+- 🔴 **0.8.0:比较 / 保留 / 删除 / 库里没了**——动 `core/compare.rs` / `core/unpublish.rs` / `CompareSection` /
+  `UnpublishDialog` / `my_skills::gone_from_library` 之前必读:
+  - **「库里那一版」只有一个取法**:`commands::cached_library_version`(索引缓存里的 `path`/`content_hash`/
+    `commit_sha`)。比较按 commit sha 下压缩包(Gitea 1.25 实测接受 sha),`remoteHash` 回传的就是索引指纹,
+    「保留」记的也是它——三处各取一次就会漂移成"标了已保留却还在提示"。缓存里没有就报"请刷新",不现拉分支头凑一版。
+  - **比较的本地侧走 `converge::locate`(与分享同一个入口)**,前端读本地文件一律用 core 回来的 `localPath`,
+    不用 `dirSlug`(无记账时会落回 canonical,本体在工具目录里就读不到,v8 I-1 同一个坑)。
+  - **「已保留」只在一处判**:`store/my-skills.ts::remoteContentDiffers` 认 `keptNow`(记的那一版 = 此刻库里那一版)。
+    角标、行、详情、更新提示共用它;散到显示层的话会"行上安静了、角标还在数"。三个出口清记录:换成库里的(acquire,
+    保留本地时不清)、分享成功(share / share_installed)、移除。
+  - **删除的作者闸比 `share_installed` 严一格**:库里没登记作者也**不**放行(那边放行)。两轮绑 `remote_rev`;
+    一笔提交删技能文件 + 清 authors/tags/curated(curated 按 frontmatter 名),元数据只跳过不拦,被拒时剥掉元数据重试。
+    🔴 **本机保留时清空这一行记账的来源**(`detach_local_record`),否则它会因 `builtin_record` 留在「安装自」、
+    被判成"库里没了"、再也分享不回去。
+  - **`gone_from_library` 不能用 `StoreIndex::is_for`**:它连分支一起比,而记账的 `git_ref` 存的是**提交 sha**
+    ——判定会恒为 false(注入钉着)。缓存不在就不下结论。
+  - **展开意图不在挂载时消费**(`CompareSection`):商店详情加载期间本机列表会重读,这一块会卸载再重挂,
+    挂载即清空的话从卡片点进来看到的是收起的(截图 harness 当场抓到,jsdom 测不出)。只在用户自己收起时清。
+  - **删除的成功与失败都在全局弹窗里说**:触发它的那一行删完会换区或消失,不是可靠的渲染点。
 
 - 🔴 **分享就是「让技能库里的这个技能和我本地的一致」(v8,2026-09-17)**——动 `share.rs` /
   `store/share.ts` / `ShareConfirm` / `ShareOverwriteDialog` 之前必读。设计与拍板在本地
