@@ -599,7 +599,7 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 修复波 `178b055`;Rust full 1016 passed(修复前)、四条门控 live 真跑过(两条广场 live 各偶发一次,重跑通过);
 agent 真机验收已做一轮(用 `orca computer` 后台操作,**不占用户屏幕**,点击 `aria-haspopup` 的按钮会被拒,
 绕道「我的技能」详情页的同名按钮)。**还欠**:修复波的定向复审、修复后的真机复验(商店详情不再有删除)、
-README 里 0.8.0 那行的「待发布」改成发版日期、Windows 真机看任务栏图标(0.7.2 那半)。
+Windows 真机看任务栏图标(0.7.2 那半)。
 
 (以下是 0.7.2 当时的记录:侧边栏品牌标志补上中心四角星 + Windows 安装后刷新图标缓存的 NSIS 钩子
 `src-tauri/windows/installer-hooks.nsh`,提交 `44f9f8a`,现并入 0.8.0。)
