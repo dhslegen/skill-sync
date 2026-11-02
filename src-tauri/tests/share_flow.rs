@@ -3031,7 +3031,7 @@ async fn sharing_back_a_detached_skill_restores_its_source_and_baseline() {
         body: None,
         agents: vec!["claude-code".into()],
         links: vec![],
-        installed_at: NOW.into(),
+        installed_at: "2026-01-01T00:00:00.000Z".into(),
         updated_at: NOW.into(),
     });
     c.store.save_state(&seeded).unwrap();
@@ -3052,6 +3052,7 @@ async fn sharing_back_a_detached_skill_restores_its_source_and_baseline() {
     assert_eq!(rec.commit_sha, "newsha1");
     assert_eq!(rec.content_hash, fsops::dir_content_hash(&dir).unwrap(), "基线对齐到推上去的内容");
     assert_eq!(rec.agents, ["claude-code"], "工具关联一个字不动");
+    assert_eq!(rec.installed_at, NOW, "写入来源的时刻要更新(gone_from_library 拿它比,复审 N-2)");
 }
 
 /// 对照:有来源的记账(从别处装来的)分享后照旧不被覆盖——既有约束不变。

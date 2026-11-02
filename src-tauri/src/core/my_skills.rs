@@ -707,7 +707,10 @@ fn gone_from_library(store: &Store, record: &state::InstalledSkill) -> bool {
     // 而盘上那份索引是分享**之前**建的、自然没有它——不加这一条,刚分享进去的那一行会立刻
     // 被说成「技能库里已经没有它了」。「这份缓存还没见过它」≠「库里没有它」,与 v7.6
     // `LocalProbe` 同一条教训。时间读不出来(存量记账格式不认识)就当不知道,不下结论。
-    let Some(recorded_at) = iso_utc_to_unix(&record.updated_at) else {
+    // 比的是 `installed_at`(这条记账**写入当前来源**的时刻),不是 `updated_at`(复审 N-2):
+    // 后者在勾工具、拍板版本时也会被刷新,同事那边勾一下工具,「库里没了」就会消失,
+    // 而命中缓存时盘上的 `fetched_at` 不更新——要等库里再有提交才恢复。
+    let Some(recorded_at) = iso_utc_to_unix(&record.installed_at) else {
         return false;
     };
     if index.fetched_at <= recorded_at {

@@ -1152,8 +1152,12 @@ async function runShareChanges(
       return;
     }
     set({ shareDone: { dirSlug, mode: outcome.mode, flow: "changes" } });
-    // 直推成功后 core 已更新记录,「有改动未分享」随刷新消失
-    await get().load();
+    // 直推成功后 core 已更新记录,「有改动未分享」随刷新消失。先刷这一行所在库的索引
+    // 再重读(修复复审观察项:旧写法只重读本页,索引还是推之前那一版,会短暂显示「更新」)
+    await refreshAfterLibraryWrite(
+      registryId || undefined,
+      skill?.sourceRepo ? `${skill.sourceOwner}/${skill.sourceRepo}` : undefined,
+    );
   } catch (raw) {
     const err = toAppError(raw);
     if (err.code === "CONFLICT_STALE") {

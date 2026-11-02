@@ -46,7 +46,7 @@ import { useRegistries } from "@/store/registries";
 // 模块顶层解构**(`import { useMySkills } from ...` 之后直接 `const { load } = useMySkills`
 // 那种写法会在其中一侧的模块求值时读到还没初始化完的绑定)。不要重构去消掉这个环
 // (牵动一片),但往这两个文件里加新引用前,先确认新代码也遵守"只在函数体内用"这条。
-import { useMySkills } from "@/store/my-skills";
+import { refreshAfterLibraryWrite, useMySkills } from "@/store/my-skills";
 import { useOverwrite } from "@/store/overwrite";
 import { useUi } from "@/store/ui";
 
@@ -589,7 +589,8 @@ async function pushMyChanges(
       return;
     }
     set({ shareResult: { mode: outcome.mode } });
-    await get().refreshInstalled();
+    // 先刷这次推进的那个库的索引,再重读(与 `refreshAfterLibraryWrite` 同一个顺序要求)
+    await refreshAfterLibraryWrite(get().registryId ?? undefined, get().repo ?? undefined);
   } catch (raw) {
     const err = toAppError(raw);
     if (err.code === "FS_NOT_INSTALLED") {

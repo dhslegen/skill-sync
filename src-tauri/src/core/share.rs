@@ -756,7 +756,7 @@ pub async fn share(
         Some(idx) => next.shared[idx] = entry,
         None => next.shared.push(entry),
     }
-    record_pushed_skill(&mut next, &req, &home, &submitted, content_hash, now);
+    record_pushed_skill(&mut next, &req, &home, &share_name, &submitted, content_hash, now);
     // 0.8.0 任务 4:库里已经是我的这一版了,「已保留」记录作废
     next.kept_against.remove(&home.dir_name);
     store.save_state(&next)?;
@@ -847,6 +847,8 @@ fn record_pushed_skill(
     next: &mut state::State,
     req: &ShareRequest,
     home: &crate::core::installer::SkillHome,
+    // 实际推到库里的目录名(复审 N-4):来源路径必须与推送路径同一个值,不另拼一份
+    share_name: &str,
     submitted: &Submitted,
     content_hash: String,
     now: &str,
@@ -855,7 +857,7 @@ fn record_pushed_skill(
         registry_id: req.registry_id.to_string(),
         owner: req.repo.owner.clone(),
         repo: req.repo.repo.clone(),
-        path: format!("skills/{}", home.dir_name),
+        path: format!("skills/{share_name}"),
         git_ref: req.repo.branch.clone(),
     };
     if let Some(existing) = next.installed.iter_mut().find(|s| s.name == home.dir_name) {
@@ -869,6 +871,9 @@ fn record_pushed_skill(
             existing.commit_sha = submitted.commit_sha.clone();
             existing.content_hash = content_hash;
             existing.updated_at = now.to_string();
+            // 「在这个来源下入账的时刻」也要更新:`my_skills::gone_from_library` 拿它与索引的
+            // 抓取时间比(复审 N-2),不更新的话会拿删库之前的旧时刻去比,刚分享回去又被说成"库里没了"
+            existing.installed_at = now.to_string();
         }
         return;
     }

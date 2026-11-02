@@ -478,6 +478,8 @@ fn a_skill_still_in_the_index_is_not_gone() {
     let ctx = ctx();
     skill_dir_with_hash(&ctx.home, ".agents/skills/weekly-report", "v1");
     write_index_cache(&ctx, vec![indexed_skill("weekly-report", None, &hash_for_marker("v1"))]);
+    // 复审 N-1:缓存必须晚于记账,否则这条用例被时间闸兜住、测的不是"还在索引里"
+    set_builtin_cache_fetched_at(&ctx, NOW_UNIX + 60);
     let rows = build_rows_with_state(&ctx, &state_with_builtin_record("weekly-report", "v1"));
     assert!(!row(&rows, "weekly-report").gone_from_library);
 }
@@ -489,4 +491,18 @@ fn without_a_cached_index_we_do_not_claim_it_is_gone() {
     skill_dir_with_hash(&ctx.home, ".agents/skills/weekly-report", "v1");
     let rows = build_rows_with_state(&ctx, &state_with_builtin_record("weekly-report", "v1"));
     assert!(!row(&rows, "weekly-report").gone_from_library);
+}
+
+/// 复审 N-2:同事那边勾一下工具会刷新记账的 `updated_at`,「库里没了」不能因此消失
+/// ——时间闸比的是 `installed_at`(写入来源的时刻)。
+#[test]
+fn touching_the_record_later_does_not_hide_that_it_is_gone() {
+    let ctx = ctx();
+    skill_dir_with_hash(&ctx.home, ".agents/skills/weekly-report", "v1");
+    write_index_cache(&ctx, vec![indexed_skill("other", None, "h")]);
+    set_builtin_cache_fetched_at(&ctx, NOW_UNIX + 60);
+    let mut state = state_with_builtin_record("weekly-report", "v1");
+    state.installed[0].updated_at = "2026-08-28T00:00:00.000Z".into(); // 缓存之后又勾了一次工具
+    let rows = build_rows_with_state(&ctx, &state);
+    assert!(row(&rows, "weekly-report").gone_from_library);
 }

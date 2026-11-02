@@ -2026,6 +2026,17 @@ describe("商店详情的「看看哪里不同」(0.8.0 任务 3)", () => {
     );
   });
 
+  // 复审 N-3:商店详情把 "store" 传给 keepMineFor 的那一处接线——作者在商店里也只给「保留我的版本」
+  it("作者在商店详情里只有「保留我的版本」,没有「保留并分享」", async () => {
+    withStore("sha256:mine");
+    useMySkills.setState({ list: [installedView({ contentHash: "", localHash: "sha256:mine", relation: "shared" })] });
+    useCompare.getState().expand("weekly-report");
+    render(<DetailPanel />);
+    expect(await screen.findByRole("button", { name: t("compare.keepMine") })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: t("compare.shareMine") })).toBeNull();
+    expect(screen.getByText(new RegExp(t("compare.keepMineStoreHint").slice(0, 10)))).toBeInTheDocument();
+  });
+
   it("内容一致(已在电脑上)→ 不摆", () => {
     withStore("sha256:lib");
     render(<DetailPanel />);
