@@ -85,6 +85,7 @@ function mk(dirSlug: string, section: Section, over: Partial<Fixture> = {}): Fix
     libraryUrl: null,
     canonicalReaders: null,
     keptAgainst: null,
+    goneFromLibrary: false,
     remote,
     author,
     ...rest,
@@ -2033,3 +2034,26 @@ describe("从技能库删除的入口(行)", () => {
   });
 });
 
+
+// ---- 0.8.0 任务 7:作者把它从库里删了,装过它的同事这边
+describe("技能库里已经没有它了", () => {
+  it("安静地说一句,不摆任何主按钮,即使本地改过也不说「和库里的不一样」", async () => {
+    seed([mk("a", "installedFrom", { goneFromLibrary: true, localModified: true })]);
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-a");
+    expect(within(row).getByText(t("mine.goneFromLibrary"))).toBeInTheDocument();
+    expect(within(row).queryByText(t("mine.differsFromLibrary"))).toBeNull();
+    expect(within(row).queryByRole("button", { name: /更新|取回|分享/ })).toBeNull();
+    // 出口仍在:「…」里能移除,但没有「改用库里的版本」(库里已经没有那一版)
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
+    expect(screen.getByRole("menuitem", { name: "移除" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "改用库里的版本" })).toBeNull();
+  });
+
+  it("对照:还在库里的行不说这句", async () => {
+    seed([mk("a", "installedFrom", { localModified: true })]);
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-a");
+    expect(within(row).queryByText(t("mine.goneFromLibrary"))).toBeNull();
+  });
+});

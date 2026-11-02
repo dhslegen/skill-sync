@@ -578,6 +578,12 @@ export interface InstalledSkillView {
    * null = 没选过。与**此刻**库里的指纹相同才算数(见 `store/my-skills.ts::keptNow`)。
    */
   keptAgainst: string | null;
+  /**
+   * 技能库里已经没有它了(0.8.0 任务 7:作者删掉之后,装过它的同事这边)。
+   * core 只在"有来源 + 那个库的索引缓存在手 + 索引里没有它"三条都成立时才给 true,
+   * 不知道就是 false——界面据此说一句安静的话,不提示更新、不摆「改用库里的版本」。
+   */
+  goneFromLibrary: boolean;
 }
 
 /** 「我的技能」页按公司技能库分的三区(`core::ownership::Section`)。 */

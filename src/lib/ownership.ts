@@ -122,7 +122,8 @@ export function rowAction(
   skill: Pick<
     InstalledSkillView,
     "section" | "versions" | "shareBlocked" | "localModified" | "localPresent" | "contentHash"
-  >,
+  > &
+    Partial<Pick<InstalledSkillView, "goneFromLibrary">>,
   remoteChanged: boolean,
   noWriteAccess = false,
   /** 「没有安装基线,但本地与库里的实时指纹对不上」——调用方算好传进来,
@@ -144,12 +145,17 @@ function rowActionIgnoringAccess(
   skill: Pick<
     InstalledSkillView,
     "section" | "versions" | "shareBlocked" | "localModified" | "localPresent" | "contentHash"
-  >,
+  > &
+    Partial<Pick<InstalledSkillView, "goneFromLibrary">>,
   remoteChanged: boolean,
   localDiffersNoBaseline: boolean,
 ): RowAction {
   if (skill.versions.length > 1) return { kind: "chooseVersion" };
   if (!skill.localPresent) return { kind: "pull" };
+  // 0.8.0 任务 7:技能库里已经没有它了——没有"库里那一版"可比、可取、可推,
+  // 任何主按钮都是一个必然报错的按钮(不摆比摆一个必然报错的按钮好)。
+  // 行上与详情里各说一句安静的话,出口只剩「…」里的移除。
+  if (skill.goneFromLibrary) return { kind: "none" };
 
   if (skill.section === "shareable") {
     if (skill.shareBlocked) {

@@ -52,6 +52,7 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   libraryUrl: null,
   canonicalReaders: null,
   keptAgainst: null,
+  goneFromLibrary: false,
   ...over,
 });
 

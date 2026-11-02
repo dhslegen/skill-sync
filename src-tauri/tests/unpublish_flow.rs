@@ -392,3 +392,43 @@ async fn a_commit_rejected_because_of_metadata_is_retried_without_it() {
     let retried: Vec<&str> = bodies[1]["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap()).collect();
     assert_eq!(retried, ["skills/weekly-report/SKILL.md", "skills/weekly-report/ref.md"], "重试只剩技能文件");
 }
+
+#[tokio::test]
+async fn keeping_the_local_copy_detaches_its_record_from_the_library() {
+    // 作者删库保留本机:记账来源清空,那一行才能落进「可分享到」重新分享
+    let c = ctx("张三");
+    let mut state = c.store.load_state().map(|l| l.value).unwrap_or_default();
+    state.installed.push(InstalledSkill {
+        name: "weekly-report".into(),
+        source: SkillSource {
+            registry_id: "company".into(), owner: "skills".into(), repo: "skills".into(),
+            path: "skills/weekly-report".into(), git_ref: "aaa".into(),
+        },
+        commit_sha: "aaa".into(), content_hash: "h".into(),
+        origin: None, body: None, agents: vec!["claude-code".into()], links: vec![],
+        installed_at: "2026-11-03T00:00:00Z".into(), updated_at: "2026-11-03T00:00:00Z".into(),
+    });
+    state.installed.push(InstalledSkill {
+        name: "meeting-notes".into(),
+        source: SkillSource {
+            registry_id: "company".into(), owner: "skills".into(), repo: "skills".into(),
+            path: "skills/meeting-notes".into(), git_ref: "aaa".into(),
+        },
+        commit_sha: "aaa".into(), content_hash: "h".into(),
+        origin: None, body: None, agents: vec![], links: vec![],
+        installed_at: "2026-11-03T00:00:00Z".into(), updated_at: "2026-11-03T00:00:00Z".into(),
+    });
+    c.store.save_state(&state).unwrap();
+
+    let server = MockServer::start().await;
+    mount_all(&server, Some("张三"), true, 201).await;
+    let rev = preview_rev(&c, &server).await;
+    run(&c, &server, Some(&rev), false).await.unwrap();
+
+    let after = c.store.load_state().unwrap().value;
+    let mine = after.installed.iter().find(|s| s.name == "weekly-report").unwrap();
+    assert!(!mine.has_source(), "这一行的来源应当清空");
+    assert_eq!(mine.agents, ["claude-code"], "别的记账(工具关联)一个字不动");
+    let other = after.installed.iter().find(|s| s.name == "meeting-notes").unwrap();
+    assert!(other.has_source(), "别的技能的记账不能被连带清掉");
+}

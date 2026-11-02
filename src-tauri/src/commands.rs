@@ -1628,6 +1628,8 @@ pub struct InstalledSkillView {
     pub canonical_readers: Option<Vec<String>>,
     /// 「保留我的版本」时库里那一版的指纹(0.8.0 任务 4)。见 `my_skills::InstalledRow`。
     pub kept_against: Option<String>,
+    /// 技能库里已经没有它了(0.8.0 任务 7)。见 `my_skills::gone_from_library`。
+    pub gone_from_library: bool,
 }
 
 /// 一个已装技能的来源还通不通(M4 任务 2)。返回 `(source_removed, library_removed)`。
@@ -1683,6 +1685,7 @@ impl From<my_skills::InstalledRow> for InstalledSkillView {
             library_url: r.library_url,
             canonical_readers: r.canonical_readers,
             kept_against: r.kept_against,
+            gone_from_library: r.gone_from_library,
         }
     }
 }

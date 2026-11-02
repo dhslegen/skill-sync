@@ -171,6 +171,9 @@ pub struct InstalledRow {
     /// `None` = 没选过。前端拿它与**此刻**库里的指纹比:相同就安静地说「已保留你的
     /// 版本」,不同(库里又更新了)就照常提示「与库里不同」。
     pub kept_against: Option<String>,
+    /// **技能库里已经没有它了**(0.8.0 任务 7:作者从库里删掉之后,装过它的同事这边)。
+    /// 判据见 [`gone_from_library`]:三条同时成立才是 `true`,不知道就是 `false`。
+    pub gone_from_library: bool,
 }
 
 /// 本体是不是就住在**统一技能目录**(canonical)里。
@@ -666,6 +669,43 @@ fn library_reachability(
     (false, !resolve_with(Some(&key)))
 }
 
+/// 「技能库里已经没有它了」(0.8.0 任务 7)。**三条同时成立**才说 `true`:
+///
+/// 1. 这条记账有来源,而且能推出库里的目录名;
+/// 2. **那个库的索引缓存在手**,而且确实是那个库的(`is_for`);
+/// 3. 索引里没有这个目录名。
+///
+/// 🔴 缓存不在、读不出来 → `false`(**不知道,不下结论**)。与 v7.6 的 `LocalProbe`
+/// 同一条教训:「还没探到」与「探过、没有」是两件事,拿前者说后者是撒谎。
+/// 来源整个没了(`source_removed`)或库不在源里(`library_removed`)是另外两句话,
+/// 调用方在那两种情况下根本不问这个问题。
+///
+/// 只读本地缓存,零网络——`installed_list` 的"同步、零网络"承诺不变。
+fn gone_from_library(store: &Store, record: &state::InstalledSkill) -> bool {
+    if !record.has_source() {
+        return false;
+    }
+    let Some(slug) = record.library_dir_slug() else {
+        return false;
+    };
+    // 🔴 **不能用 `StoreIndex::is_for`**:它连分支一起比,而记账的 `git_ref` 存的是
+    // **提交 sha** 不是分支名(见 `share_installed` 里同一条注释)——拿它比分支恒不等,
+    // 这个判定就恒为 false,成了空转。缓存文件按 (源, owner, repo) 分,不按分支,
+    // 这里同样只比这三样。
+    let repo = RepoRef {
+        owner: record.source.owner.clone(),
+        repo: record.source.repo.clone(),
+        branch: String::new(),
+    };
+    let path = store::cache_path(store.dir(), &record.source.registry_id, &repo);
+    let Some(index) = store::load_cache(&path).filter(|i| {
+        i.registry_id == record.source.registry_id && i.owner == repo.owner && i.repo == repo.repo
+    }) else {
+        return false;
+    };
+    !index.skills.iter().any(|s| s.dir_slug == slug)
+}
+
 /// [`library_reachability`] 的入口:**没有来源的记账不问这个问题**。
 ///
 /// 🔴 R10:`registry_id` 是空串时,通用算法会 `resolve("")` 失败 → 报「来源已移除」
@@ -811,6 +851,7 @@ pub fn build(
         let in_canonical = body_in_canonical(&home.body, canonical_dir.as_deref());
         let (recorded, _) = remove::state_links_to_recorded(&record.links);
         let (source_removed, library_removed) = reachability_of(builtin, config, record);
+        let gone = !source_removed && !library_removed && gone_from_library(store, record);
         rows.push(InstalledRow {
             dir_slug,
             commit_sha: record.commit_sha.clone(),
@@ -838,6 +879,7 @@ pub fn build(
             tools: tools_of(&tool_targets, &grouped, &home, &record.links, in_canonical),
             canonical_readers: in_canonical.then(|| canonical_readers.clone()),
             kept_against: None, // 统一在 build 末尾按记账键补,见那里
+            gone_from_library: gone,
             library_url,
             // 只跟**同一个字面目录名**的那些实体比版本:字面名不同的是另一个技能,
             // 把它摆进"留哪个"的选项里就是在诱导用户销毁另一个技能(R20)。
@@ -937,6 +979,8 @@ pub fn build(
             // 本地连本体都没有,谈不上"住在统一技能目录里",更没有谁在读它。
             canonical_readers: None,
             kept_against: None,
+            // 这一档本来就是从库索引里造出来的,按定义在库里
+            gone_from_library: false,
         });
     }
 
@@ -1140,6 +1184,8 @@ fn unmanaged_row(
         library_url,
         canonical_readers: in_canonical.then(|| canonical_readers.to_vec()),
         kept_against: None, // 统一在 build 末尾按记账键补,见那里
+        // 没有记账的行:没有"从哪个库来",谈不上"那个库里没了"
+        gone_from_library: false,
     }
 }
 

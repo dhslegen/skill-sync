@@ -218,9 +218,43 @@ pub async fn unpublish(
             Err(error) => LocalResult::Failed { error },
         }
     } else {
+        // 🔴 本机保留时,把这一行记账的**来源**清掉(0.8.0 任务 7 发现的接缝)。
+        // 不清的话,记账仍指向公司库 → `in_builtin_library` 的 `builtin_record` 支照样成立 →
+        // 这一行留在「安装自」并被判成"技能库里已经没有它了"、主按钮一个都不给——
+        // 作者想改改再分享回去,界面上没有路。清掉来源后它与纯本地技能的空来源账同形
+        // (`converge::set_agents` 建的那种),按既有判据落进「可分享到」,分享按钮回来。
+        // 同事那边的记账没人动,照样显示"技能库里已经没有它了"——那正是他们该看到的。
+        // 失败不回滚库里那一笔(已经发生了),只记日志:最坏是这一行暂时显示"库里没了"。
+        if let Err(e) = detach_local_record(installer, store, req.dir_slug) {
+            tracing::warn!(code = %e.code, "删除后清理本机记账来源失败");
+        }
         LocalResult::Untouched
     };
     Ok(UnpublishOutcome::Unpublished { commit_sha: commit.sha, local })
+}
+
+/// 把这个技能本机记账的来源清空(见调用点的注释)。没有记账就什么都不做——**绝不凭空建账**。
+fn detach_local_record(installer: &Installer<'_>, store: &Store, dir_slug: &str) -> Result<(), AppError> {
+    let key = crate::core::converge::record_key(installer, dir_slug)?;
+    let mut next = store.load_state()?.value;
+    let mut changed = false;
+    if let Some(rec) = next.installed.iter_mut().find(|s| s.name == key) {
+        if rec.has_source() {
+            rec.source.registry_id.clear();
+            rec.source.owner.clear();
+            rec.source.repo.clear();
+            rec.source.path.clear();
+            rec.source.git_ref.clear();
+            changed = true;
+        }
+    }
+    if next.kept_against.remove(&key).is_some() {
+        changed = true;
+    }
+    if changed {
+        store.save_state(&next)?;
+    }
+    Ok(())
 }
 
 /// 提交;被拒(且不是 403)时剥掉元数据重试一次。技能文件是"必须办成"的那部分,

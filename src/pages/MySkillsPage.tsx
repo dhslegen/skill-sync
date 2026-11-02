@@ -1065,6 +1065,11 @@ function Row({
                 技能,而他明明改过它。作者名取自索引里已有的归因数据(零新增查询);
                 **取不到就只说"不一样"**,绝不编一个名字出来(公司库里那个叫
                 「测试」的技能就是这一档)。 */}
+            {/* 0.8.0 任务 7:作者把它从库里删了。rowAction 已经落成 none(没有库里那一版
+                可比、可取),这一句是这一行全部的说明——不说的话,用户只会觉得它"安静得奇怪"。 */}
+            {skill.goneFromLibrary && (
+              <div className="mt-0.5 text-[11.5px] leading-[1.5] text-text-3">{t("mine.goneFromLibrary")}</div>
+            )}
             {action.kind === "differsFromLibrary" && kept && (
               <div className="mt-0.5 text-[11.5px] leading-[1.5] text-text-3">{t("mine.keptMine")}</div>
             )}

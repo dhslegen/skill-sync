@@ -139,6 +139,7 @@ const SKILLS = [
     tools: [{ agent: "claude-code", state: "body" }, { agent: "trae", state: "linked" }],
     canonicalReaders: null,
     keptAgainst: null,
+    goneFromLibrary: false,
   },
   {
     slug: "base-code-gen",
@@ -195,6 +196,7 @@ const SKILLS = [
     tools: [{ agent: "claude-code", state: "body" }],
     canonicalReaders: null,
     keptAgainst: null,
+    goneFromLibrary: false,
   },
   {
     slug: "riso-editorial-deck",
@@ -445,6 +447,7 @@ function installedSkill(s) {
         : `http://gitea.internal.example/skills/skills/src/branch/main/skills/${s.slug}`,
     canonicalReaders: s.canonicalReaders ?? null,
     keptAgainst: s.keptAgainst ?? null,
+    goneFromLibrary: s.goneFromLibrary ?? false,
   };
 }
 

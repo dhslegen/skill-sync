@@ -412,3 +412,55 @@ fn rows_report_the_kept_library_version_by_record_key_even_without_a_record() {
     assert_eq!(row(&rows, "weekly-report").kept_against.as_deref(), Some("h-lib"));
     assert_eq!(row(&rows, "other-skill").kept_against, None, "没选过的行不能沾上别人的记录");
 }
+
+// ---- 0.8.0 任务 7:作者把技能从库里删掉之后,装过它的同事这边
+fn state_with_builtin_record(dir_slug: &str, marker: &str) -> State {
+    let mut state = State::default();
+    state.installed.push(InstalledSkill {
+        name: dir_slug.into(),
+        source: SkillSource {
+            registry_id: BUILTIN_REGISTRY_ID.into(),
+            owner: "skills".into(),
+            repo: "skills".into(),
+            path: format!("skills/{dir_slug}"),
+            // 记账里存的是**提交 sha**,不是分支名——判定若拿它去比分支就会恒为 false
+            git_ref: "0123abcd".into(),
+        },
+        commit_sha: "0123abcd".into(),
+        content_hash: hash_for_marker(marker),
+        origin: Some("acquired".into()),
+        body: None,
+        agents: Vec::new(),
+        links: Vec::new(),
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    });
+    state
+}
+
+#[test]
+fn a_skill_missing_from_its_librarys_cached_index_is_reported_as_gone() {
+    let ctx = ctx();
+    skill_dir_with_hash(&ctx.home, ".agents/skills/weekly-report", "v1");
+    write_index_cache(&ctx, vec![indexed_skill("other", None, "h")]);
+    let rows = build_rows_with_state(&ctx, &state_with_builtin_record("weekly-report", "v1"));
+    assert!(row(&rows, "weekly-report").gone_from_library);
+}
+
+#[test]
+fn a_skill_still_in_the_index_is_not_gone() {
+    let ctx = ctx();
+    skill_dir_with_hash(&ctx.home, ".agents/skills/weekly-report", "v1");
+    write_index_cache(&ctx, vec![indexed_skill("weekly-report", None, &hash_for_marker("v1"))]);
+    let rows = build_rows_with_state(&ctx, &state_with_builtin_record("weekly-report", "v1"));
+    assert!(!row(&rows, "weekly-report").gone_from_library);
+}
+
+#[test]
+fn without_a_cached_index_we_do_not_claim_it_is_gone() {
+    // 「还没探到」不是「探过、没有」(v7.6 LocalProbe 同一条教训)
+    let ctx = ctx();
+    skill_dir_with_hash(&ctx.home, ".agents/skills/weekly-report", "v1");
+    let rows = build_rows_with_state(&ctx, &state_with_builtin_record("weekly-report", "v1"));
+    assert!(!row(&rows, "weekly-report").gone_from_library);
+}

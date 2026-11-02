@@ -97,6 +97,7 @@ describe("按页刷新", () => {
             libraryUrl: null,
             canonicalReaders: null,
             keptAgainst: null,
+            goneFromLibrary: false,
           },
         ];
       }

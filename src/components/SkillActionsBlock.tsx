@@ -470,6 +470,9 @@ export function SkillActionsBlock({
           就是它全部的可见性——不摆的话,用户看到的是一行什么都没有的技能,
           而他明明改过它。作者名取自索引里已有的归因数据(零新增查询);
           **取不到就只说"不一样"**,绝不编一个名字出来。 */}
+      {caps.shareFeedback && skill.goneFromLibrary && (
+        <p className="mt-1.5 basis-full text-[11.5px] leading-[1.6] text-text-3">{t("mine.goneFromLibrary")}</p>
+      )}
       {caps.shareFeedback && action.kind === "differsFromLibrary" && kept && (
         <p className="mt-1.5 basis-full text-[11.5px] leading-[1.6] text-text-3">{t("mine.keptMine")}</p>
       )}

@@ -418,6 +418,7 @@
   "compare.keptSummary": "你选择了保留你的版本,库里这一版不再提醒;库里更新时会重新提示。",
   "compare.keepFailed": "没能记住你的选择",
   "mine.keptMine": "已保留你的版本",
+  "mine.goneFromLibrary": "技能库里已经没有它了。你电脑上这一份照常能用,不会再提示更新。",
   "mine.unpublish": "从技能库删除",
   "mine.unpublishHint": "你是作者:把这个技能从技能库里删掉,同事们就获取不到它了。",
   "unpublish.title": "从技能库删除「{name}」",

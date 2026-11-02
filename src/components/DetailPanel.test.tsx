@@ -401,6 +401,7 @@ const installedView = (over: Partial<InstalledSkillView> = {}): InstalledSkillVi
   libraryUrl: null,
   canonicalReaders: null,
   keptAgainst: null,
+  goneFromLibrary: false,
   ...over,
 });
 

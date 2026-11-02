@@ -59,6 +59,7 @@ function localSkill(over: Partial<InstalledSkillView> & { dirSlug: string }): In
     libraryUrl: null,
     canonicalReaders: null,
     keptAgainst: null,
+    goneFromLibrary: false,
     ...over,
   };
 }

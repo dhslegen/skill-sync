@@ -58,6 +58,7 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   libraryUrl: null,
   canonicalReaders: null,
   keptAgainst: null,
+  goneFromLibrary: false,
   ...over,
 });
 
@@ -398,3 +399,11 @@ describe("从技能库删除的入口(详情动作区)", () => {
   });
 });
 
+
+describe("详情动作区:技能库里已经没有它了(0.8.0 任务 7)", () => {
+  it("「我的技能」详情说同一句,不摆主按钮", () => {
+    render(<SkillActionsBlock skill={view({ goneFromLibrary: true, localModified: true })} remoteChanged={false} subject="示例技能" host="mine" />);
+    expect(screen.getByText(t("mine.goneFromLibrary"))).toBeInTheDocument();
+    expect(screen.queryByText(t("mine.differsFromLibrary"))).toBeNull();
+  });
+});
