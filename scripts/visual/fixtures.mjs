@@ -592,6 +592,14 @@ export function buildFixtures() {
         user: { login: "zhaowenhao", displayName: "赵文浩", avatarUrl: "" },
       },
       installed_list: SKILLS.filter((s) => !s.notInstalled).map(installedSkill),
+      // 0.8.0 任务 6:「从技能库删除」预览轮(真 core 第二轮才删,截图停在确认屏)
+      skill_unpublish: {
+        outcome: "needsConfirm",
+        files: ["SKILL.md", "reference/模板.md", "scripts/gen.sh"],
+        remoteRev: "rev-demo",
+        historyUrl: "http://gitea.example/skills/skills/commits/branch/main/skills/rcs-generator",
+        stale: false,
+      },
       // 0.8.0 任务 3:「看看哪里不同」与冲突弹窗里的逐文件差异(只读,与分享清单同形)。
       // 键名都在 `fileContents` 里有内容,展开「只有你有」那一项能截到。
       skill_compare_library: {

@@ -199,7 +199,8 @@ export type RowMenuItemKind =
   | "update"
   | "share"
   | "useLibraryVersion"
-  | "remove";
+  | "remove"
+  | "unpublish";
 
 /** 一条「…」菜单项的**判定结果**,不含 `onClick`——两处调用方(行 / 详情动作区)
  *  各自把 `kind` 翻成自己那份回调,标签与出现条件只有这一处判定。 */
@@ -230,7 +231,7 @@ export interface RowMenuItemSpec {
  * 主按钮堵上 `shareBlocked`、却把「…」里那条漏掉是同一个洞。
  */
 export function buildRowMenuItems(
-  skill: Pick<InstalledSkillView, "body" | "localPresent" | "localModified" | "shareBlocked" | "section">,
+  skill: Pick<InstalledSkillView, "body" | "localPresent" | "localModified" | "shareBlocked" | "section" | "relation">,
   action: RowAction,
   remoteChanged: boolean,
   noBaselineDiffers: boolean,
@@ -271,6 +272,20 @@ export function buildRowMenuItems(
   }
   if (skill.localPresent && action.kind !== "chooseVersion") {
     items.push({ kind: "remove", labelKey: "mine.remove", separatorBefore: items.length > 0 });
+  }
+  // 0.8.0 任务 6:作者把技能从技能库里删掉。判据是 `relation === "shared"`——库里登记的
+  // 作者就是我(core 侧 `unpublish` 用的是同一个 `ownership::relation`,再拦一遍)。
+  // 本地没有本体的那一档(换电脑后只在库里)也给:作者在哪台电脑上都该删得掉。
+  // 破坏性动作,放在最后;前面有别的项才画分隔线(「移除」已经画过一条就不再画)。
+  if (skill.relation === "shared") {
+    // 不用 `.at(-1)`:超出 tsconfig 的 ES2020 lib(M2 任务 6 双平台 CI 一起红过)
+    const afterRemove = items[items.length - 1]?.kind === "remove";
+    items.push({
+      kind: "unpublish",
+      labelKey: "mine.unpublish",
+      titleKey: "mine.unpublishHint",
+      separatorBefore: items.length > 0 && !afterRemove,
+    });
   }
   return items;
 }

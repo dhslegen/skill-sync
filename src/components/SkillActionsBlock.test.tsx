@@ -8,6 +8,7 @@ import type { InstalledSkillView, Section } from "@/lib/ipc";
 import { useMySkills } from "@/store/my-skills";
 import { shareTargetKey, useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
+import { useUnpublish } from "@/store/unpublish";
 
 const invoke = vi.fn(async (cmd: string, args?: unknown): Promise<unknown> => {
   void cmd;
@@ -372,3 +373,28 @@ describe("详情动作区:已保留你的版本(0.8.0 任务 4)", () => {
     expect(screen.queryByText(t("mine.keptMine"))).toBeNull();
   });
 });
+
+// ---- 0.8.0 任务 6:商店详情的「…」里也有;「我的技能」详情摆在行上
+describe("从技能库删除的入口(详情动作区)", () => {
+  it("host=store:收进「…」;不是作者就没有", async () => {
+    useUnpublish.getState().close();
+    const { unmount } = render(
+      <SkillActionsBlock skill={view({ relation: "shared" })} remoteChanged={false} subject="示例技能" host="store" />,
+    );
+    await userEvent.setup().click(screen.getByRole("button", { name: /更多/ }));
+    await userEvent.setup().click(screen.getByRole("menuitem", { name: t("mine.unpublish") }));
+    expect(useUnpublish.getState().target).toMatchObject({ dirSlug: "weekly-report", displayName: "示例技能" });
+    unmount();
+    render(<SkillActionsBlock skill={view({ relation: "installed" })} remoteChanged={false} subject="示例技能" host="store" />);
+    await userEvent.setup().click(screen.getByRole("button", { name: /更多/ }));
+    expect(screen.queryByRole("menuitem", { name: t("mine.unpublish") })).toBeNull();
+  });
+
+  it("host=mine:作者行上直接有这颗按钮", async () => {
+    useUnpublish.getState().close();
+    render(<SkillActionsBlock skill={view({ relation: "shared" })} remoteChanged={false} subject="示例技能" host="mine" />);
+    await userEvent.setup().click(screen.getByRole("button", { name: t("mine.unpublish") }));
+    expect(useUnpublish.getState().target?.dirSlug).toBe("weekly-report");
+  });
+});
+

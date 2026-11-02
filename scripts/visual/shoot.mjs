@@ -561,6 +561,18 @@ const SCREENS = [
       await page.waitForTimeout(300);
     },
   },
+  {
+    id: "42-unpublish-confirm",
+    title: "「我的技能」· 作者从技能库删除 · 确认弹窗(清单 / 同事不受影响 / 可找回 / 同时移到废纸篓默认不勾)",
+    async run(page, ctx) {
+      await ctx.gotoMine(page);
+      await page.getByRole("tab", { name: /已分享到技能库/ }).click();
+      const row = page.getByTestId("row-rcs-generator");
+      await row.getByRole("button", { name: "更多操作", exact: false }).click();
+      await page.getByRole("menuitem", { name: "从技能库删除" }).click();
+      await page.getByTestId("unpublish-files").waitFor({ state: "visible" });
+    },
+  },
 
   // ---------------------------------------------------------------- 0.6.x 全屏
   // 用户真机全屏(~2000px)截图:内容列靠左封顶、顶栏全出血,右半边一大片空白。

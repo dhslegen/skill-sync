@@ -5,6 +5,7 @@ import { SkillRowMenu, type SkillRowMenuItem } from "@/components/SkillRowMenu";
 import { t } from "@/i18n";
 import { isAppError, skillReveal, type InstalledSkillView } from "@/lib/ipc";
 import { buildRowMenuItems, rowAction } from "@/lib/ownership";
+import { unpublishTargetOf, useUnpublish } from "@/store/unpublish";
 import { SHARE_BLOCK_LABEL, SHARE_DONE_LABEL, SHARE_FAILED_LABEL } from "@/lib/share-block";
 import {
   cardFor,
@@ -304,6 +305,8 @@ export function SkillActionsBlock({
     (spec) => spec.kind !== "remove" && (caps.allSecondaryItems || spec.kind === "reveal"),
   );
   const removeItem = allItems.find((spec) => spec.kind === "remove") ?? null;
+  // host="store" 下 `items` 只剩「打开文件夹」,「从技能库删除」与「移除」一样收进「…」
+  const unpublishItem = allItems.find((spec) => spec.kind === "unpublish") ?? null;
 
   const [revealError, setRevealError] = useState<string | null>(null);
 
@@ -321,6 +324,8 @@ export function SkillActionsBlock({
     void useMySkills.getState().shareChanges(skill.dirSlug, subject);
   const onShare = () => useMySkills.getState().beginShare(skill.dirSlug);
   const onRemove = () => useMySkills.getState().askRemove(skill.dirSlug);
+  // 0.8.0 任务 6:从技能库删除。弹窗全局挂着,成功与失败都在弹窗里说(见 `UnpublishDialog`)
+  const onUnpublish = () => void useUnpublish.getState().begin(unpublishTargetOf(skill, subject));
   const onChooseVersion = () =>
     useMySkills.setState({
       versionChoice: { dirSlug: skill.dirSlug, versions: skill.versions },
@@ -339,7 +344,7 @@ export function SkillActionsBlock({
           key={spec.kind}
           size="footer"
           title={spec.titleKey ? t(spec.titleKey) : undefined}
-          onClick={rowMenuHandler(spec.kind, { onReveal, onShareChanges, onPull, onShare, onRemove })}
+          onClick={rowMenuHandler(spec.kind, { onReveal, onShareChanges, onPull, onShare, onRemove, onUnpublish })}
         >
           {t(spec.labelKey)}
         </OutlineButton>
@@ -362,6 +367,17 @@ export function SkillActionsBlock({
             label: t(removeItem.labelKey),
             onClick: onRemove,
             separatorBefore: true,
+          },
+        ]
+      : []),
+    ...(unpublishItem
+      ? [
+          {
+            key: "unpublish",
+            label: t(unpublishItem.labelKey),
+            title: unpublishItem.titleKey ? t(unpublishItem.titleKey) : undefined,
+            onClick: onUnpublish,
+            separatorBefore: !removeItem,
           },
         ]
       : []),

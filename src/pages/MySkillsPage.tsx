@@ -11,6 +11,7 @@ import { buildRowMenuItems, needsAttention, rowAction, type RowAction } from "@/
 import { SHARE_BLOCK_LABEL, SHARE_DONE_LABEL, SHARE_FAILED_LABEL } from "@/lib/share-block";
 import { useInstall } from "@/store/install";
 import { useCompare } from "@/store/compare";
+import { unpublishTargetOf, useUnpublish } from "@/store/unpublish";
 import { useLocalDetail } from "@/store/local-detail";
 import { matchesMineQuery, useMineSearch } from "@/store/mine-search";
 import {
@@ -1008,7 +1009,14 @@ function Row({
     label: t(spec.labelKey),
     title: spec.titleKey ? t(spec.titleKey) : undefined,
     separatorBefore: spec.separatorBefore,
-    onClick: rowMenuHandler(spec.kind, { onReveal: () => onReveal(skill.body), onShareChanges, onPull, onShare, onRemove }),
+    onClick: rowMenuHandler(spec.kind, {
+      onReveal: () => onReveal(skill.body),
+      onShareChanges,
+      onPull,
+      onShare,
+      onRemove,
+      onUnpublish: () => void useUnpublish.getState().begin(unpublishTargetOf(skill, name)),
+    }),
   }));
 
   return (

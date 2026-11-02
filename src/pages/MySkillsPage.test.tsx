@@ -15,6 +15,7 @@ import { useSession } from "@/store/session";
 import { useShare } from "@/store/share";
 import { useStoreIndex } from "@/store/store-index";
 import { useUi } from "@/store/ui";
+import { useUnpublish } from "@/store/unpublish";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args: unknown) => invoke(cmd, args) }));
@@ -844,15 +845,18 @@ describe("搜索(v7 任务 7:搜展示名/dirSlug/来源都要搜得到)", () =>
 });
 
 describe("移除只在本体在这台电脑上时才摆", () => {
-  it("localPresent 为 false 的行:主按钮是「取回」,没有本体也没有「更多」可摆", async () => {
-    // 本体不在(取回之前)+ 没有可打开的文件夹路径 = 「更多」菜单空空如也,
-    // 按「不摆比摆一个没有意义的东西好」这条既定取舍,SkillRowMenu 索性不渲染。
+  // 🔴 0.8.0 任务 6 改了这条的命题(不是放宽):原来"只在库里的作者行「更多」空空如也、
+  // 索性不渲染";现在作者在这台电脑上没有本体也该删得掉库里那一份,所以「更多」里**只有**
+  // 「从技能库删除」这一项——仍然没有「移除」(本地没东西可移)也没有「打开文件夹」。
+  it("localPresent 为 false 的作者行:主按钮是「取回」,「更多」里只有「从技能库删除」", async () => {
     seed([mk("a", "sharedTo", { localPresent: false, body: "" })]);
     await renderAtTab(/已分享到技能库/);
     const row = await screen.findByTestId("row-a");
     expect(within(row).getByRole("button", { name: "取回" })).toBeInTheDocument();
-    expect(within(row).queryByRole("button", { name: /更多/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "移除" })).toBeNull();
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
+    const items = screen.getAllByRole("menuitem").map((e) => e.textContent);
+    expect(items).toEqual([t("mine.unpublish")]);
   });
 
   it("🔴 localPresent 为 false 的行点开详情:从技能库取内容,不读本地(换电脑场景,2026-09-14 真机)", async () => {
@@ -2015,3 +2019,17 @@ describe("基线自愈接线(v8 任务 2):挂载即对齐一次", () => {
     expect(invoke.mock.calls.filter(([c]) => c === "skill_align_baseline")).toHaveLength(0);
   });
 });
+
+// ---- 0.8.0 任务 6:作者那一行「…」里能从技能库删除,点了打开确认弹窗
+describe("从技能库删除的入口(行)", () => {
+  it("点「从技能库删除」→ 删除流程拿到这一行的库坐标", async () => {
+    seed([mk("a", "sharedTo")]);
+    useUnpublish.getState().close();
+    await renderAtTab(/已分享到技能库/);
+    const row = await screen.findByTestId("row-a");
+    await userEvent.click(within(row).getByRole("button", { name: /更多/ }));
+    await userEvent.click(screen.getByRole("menuitem", { name: t("mine.unpublish") }));
+    expect(useUnpublish.getState().target).toMatchObject({ dirSlug: "a", registryId: "company", repo: "skills/skills", localPresent: true });
+  });
+});
+

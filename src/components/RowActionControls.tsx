@@ -252,6 +252,8 @@ export interface RowMenuHandlers {
   onPull: () => void;
   onShare: () => void;
   onRemove: () => void;
+  /** 从技能库删除(0.8.0 任务 6)。 */
+  onUnpublish: () => void;
 }
 
 export function rowMenuHandler(kind: RowMenuItemKind, handlers: RowMenuHandlers): () => void {
@@ -268,5 +270,7 @@ export function rowMenuHandler(kind: RowMenuItemKind, handlers: RowMenuHandlers)
       return handlers.onPull;
     case "remove":
       return handlers.onRemove;
+    case "unpublish":
+      return handlers.onUnpublish;
   }
 }

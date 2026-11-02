@@ -6,6 +6,7 @@ import { DetailPanel } from "@/components/DetailPanel";
 import { ProjectDecisionDialog } from "@/components/ProjectDecisionDialog";
 import { ProjectSections } from "@/components/ProjectSections";
 import { RemoveDialog } from "@/components/RemoveDialog";
+import { UnpublishDialog } from "@/components/UnpublishDialog";
 import { ShareOverwriteDialog } from "@/components/ShareOverwriteDialog";
 import { ShareConfirm } from "@/components/ShareConfirm";
 import { VersionChooser } from "@/components/VersionChooser";
@@ -109,6 +110,7 @@ export default function App() {
       <CommandPalette />
       <ConflictDialog />
       <RemoveDialog />
+      <UnpublishDialog />
       {/* 覆盖确认屏挂全局:三个发起方(分享 / 分享改动 / 获取冲突的「保留并分享」)
           里有两个在 `MySkillsPage` 没挂载或被遮罩盖住的时候触发。 */}
       <ShareOverwriteDialog />

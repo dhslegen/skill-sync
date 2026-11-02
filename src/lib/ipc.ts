@@ -1073,6 +1073,37 @@ export const skillCompareLibrary = (args: { dirSlug: string; registryId?: string
 export const skillKeepAgainst = (args: { dirSlug: string; registryId?: string; repo?: string }) =>
   call<void>("skill_keep_against", { args });
 
+/** 本机那一份在删除之后怎么样了(0.8.0 任务 5,`core::unpublish::LocalResult`)。 */
+export type UnpublishLocal =
+  | { kind: "untouched" }
+  | { kind: "trashed" }
+  | { kind: "failed"; error: AppError };
+
+/** 作者删除库里技能的结果(`core::unpublish::UnpublishOutcome`)。 */
+export type UnpublishOutcome =
+  | {
+      outcome: "needsConfirm";
+      /** 将删除的文件(相对技能目录)。 */
+      files: string[];
+      remoteRev: string;
+      historyUrl: string;
+      /** 上一轮看过的清单已经过期(库里又变了),这是重算出来的新清单。 */
+      stale: boolean;
+    }
+  | { outcome: "unpublished"; commitSha: string; local: UnpublishLocal };
+
+/**
+ * 作者把自己的技能从技能库里删掉(0.8.0 任务 5)。`confirmRev` 缺省 = 预览轮(零写请求);
+ * 必须是上一轮 `needsConfirm` 原样回来的 `remoteRev`,对不上 core 就不删、重给一份清单。
+ */
+export const skillUnpublish = (args: {
+  dirSlug: string;
+  registryId?: string;
+  repo?: string;
+  confirmRev?: string;
+  alsoTrashLocal?: boolean;
+}) => call<UnpublishOutcome>("skill_unpublish", { args });
+
 export const skillShareChanges = (args: {
   dirSlug: string;
   registryId?: string;
