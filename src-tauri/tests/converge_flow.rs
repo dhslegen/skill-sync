@@ -137,6 +137,7 @@ fn state_with_body(name: &str, body: &Path) -> State {
             updated_at: NOW.into(),
         }],
         shared: Vec::new(),
+        kept_against: Default::default(),
     }
 }
 

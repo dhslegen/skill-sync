@@ -217,6 +217,21 @@ pub struct State {
     pub installed: Vec<InstalledSkill>,
     #[serde(default)]
     pub shared: Vec<SharedSkill>,
+    /// 「与库里不同」时用户选了「保留我的版本」(0.8.0 任务 4):记账键
+    /// (`converge::record_key`)→ **当时库里那一版的指纹**(索引 `content_hash`)。
+    ///
+    /// 🔴 **不能挂在 `installed` 那条记录上**:「与库里不同」大量出现在**没有记账**的行上
+    /// (自己在工具目录里写的、名字和库里撞上的),挂在记录上的话这些行无处可记。
+    ///
+    /// 语义是"对库里**这一版**已决定保留":库里再更新,指纹变了,记录自然失效、
+    /// 界面重新提示。换成库里的版本、分享成功、移除这三个出口会清掉它(见各自调用点)
+    /// ——不清的话,用户后来换成库里的版本、又改了一次,恰好与那一版相比不同时,
+    /// 会被这条旧记录静默压住。
+    ///
+    /// 可选字段、缺省为空,旧文件读入不报错:兼容变更,**不升 schemaVersion**
+    /// (与 `lastSeenVersion`、`config.projects` 同一类)。
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub kept_against: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for State {
@@ -225,6 +240,7 @@ impl Default for State {
             schema_version: SCHEMA_VERSION,
             installed: Vec::new(),
             shared: Vec::new(),
+            kept_against: Default::default(),
         }
     }
 }
@@ -661,6 +677,7 @@ mod tests {
                 updated_at: "2026-07-30T00:00:00.000Z".into(),
             }],
             shared: vec![],
+            kept_against: Default::default(),
         }
     }
 

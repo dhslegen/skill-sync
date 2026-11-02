@@ -26,15 +26,18 @@ import {
   storeSkillFileRead,
   type AppError,
   type FileContent,
+  type InstalledSkillView,
   type LocalSkillDetail,
   type SkillDetail,
 } from "@/lib/ipc";
+import { remoteHashOf } from "@/lib/update";
 import { sourceCanShowFiles, useFilePreview } from "@/store/file-preview";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import {
   cardFor,
   hasUpdate,
+  keptNow,
   localDiffersNoBaseline,
   remoteChangedForShareable,
   useMySkills,
@@ -224,6 +227,39 @@ export function revealLabel(userAgent: string): string {
   return t("detail.revealOther");
 }
 
+/**
+ * 「保留我的版本」按"是不是作者"分两档(0.8.0 任务 4),两个宿主共用这一份。
+ *
+ * - **作者**(`relation === "shared"`):十有八九是想让库里也变成他的版本 → 直接进分享流程。
+ *   有记账走「分享改动」(`share_installed`,带覆盖确认),没记账走「分享」(确认屏)。
+ *   分享改动的预览轮失败只写进 `useMySkills.shareError`,而那一处渲染点在商店详情里
+ *   **不在场**——这里把归属于这个技能的失败**抛回给按钮那一块**渲染,不让它零反馈。
+ * - **其他人**:记住"对库里这一版已保留",库里再更新时重新提示。
+ */
+export function keepMineFor(
+  skill: InstalledSkillView | null,
+  dirSlug: string,
+  displayName: string,
+  target?: { registryId?: string; repo?: string },
+): { kind: "share" | "remember"; run: () => Promise<void> } {
+  if (skill?.relation === "shared") {
+    return {
+      kind: "share",
+      run: async () => {
+        const mine = useMySkills.getState();
+        if (skill.contentHash) {
+          await mine.shareChanges(dirSlug, displayName);
+          const failed = useMySkills.getState().shareError;
+          if (failed?.dirSlug === dirSlug) throw failed.error;
+        } else {
+          mine.beginShare(dirSlug);
+        }
+      },
+    };
+  }
+  return { kind: "remember", run: () => useMySkills.getState().keepMine(dirSlug, target) };
+}
+
 function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
   const close = useLocalDetail((s) => s.close);
   const library = useLocalDetail((s) => s.library);
@@ -311,6 +347,8 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
             registryId={skill.registryId || undefined}
             repo={skill.sourceRepo ? `${skill.sourceOwner}/${skill.sourceRepo}` : undefined}
             onReplace={() => void useMySkills.getState().replaceWithLibrary(skill.dirSlug)}
+            keepMine={keepMineFor(skill, skill.dirSlug, detail.name)}
+            kept={keptNow(skill, card?.contentHash)}
           />
         )}
         {pullError && (
@@ -599,6 +637,7 @@ function PanelBody({
   const signedIn = useSession((s) => s.status === "signedIn");
   const canClaimAttribution = !plaza && registryId === BUILTIN_REGISTRY_ID && signedIn;
   const { state: storeState } = useStoreCardState(detail.dirSlug, plaza);
+  const storeIndex = useStoreIndex((s) => s.index);
 
   return (
     <>
@@ -678,6 +717,11 @@ function PanelBody({
                   repo: activeRepo ?? undefined,
                 })
             }
+            keepMine={keepMineFor(whereSkill, detail.dirSlug, detail.name, {
+              registryId: activeRegistry ?? undefined,
+              repo: activeRepo ?? undefined,
+            })}
+            kept={keptNow(whereSkill, remoteHashOf(storeIndex, detail.dirSlug))}
           />
         )}
 

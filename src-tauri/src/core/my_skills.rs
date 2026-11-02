@@ -167,6 +167,10 @@ pub struct InstalledRow {
     /// "core 不收窄、前端按 `agents_detected` 收窄"的哲学**刻意不同**
     /// (理由见 [`canonical_reader_names`])——前端拿到就直接显示,**别再收窄一次**。
     pub canonical_readers: Option<Vec<String>>,
+    /// 「保留我的版本」时库里那一版的指纹(0.8.0 任务 4,`state.kept_against`)。
+    /// `None` = 没选过。前端拿它与**此刻**库里的指纹比:相同就安静地说「已保留你的
+    /// 版本」,不同(库里又更新了)就照常提示「与库里不同」。
+    pub kept_against: Option<String>,
 }
 
 /// 本体是不是就住在**统一技能目录**(canonical)里。
@@ -833,6 +837,7 @@ pub fn build(
             local_hash,
             tools: tools_of(&tool_targets, &grouped, &home, &record.links, in_canonical),
             canonical_readers: in_canonical.then(|| canonical_readers.clone()),
+            kept_against: None, // 统一在 build 末尾按记账键补,见那里
             library_url,
             // 只跟**同一个字面目录名**的那些实体比版本:字面名不同的是另一个技能,
             // 把它摆进"留哪个"的选项里就是在诱导用户销毁另一个技能(R20)。
@@ -931,7 +936,19 @@ pub fn build(
             library_url: row_library_url(relation, builtin, Some(entry)),
             // 本地连本体都没有,谈不上"住在统一技能目录里",更没有谁在读它。
             canonical_readers: None,
+            kept_against: None,
         });
+    }
+
+    // 0.8.0 任务 4:「已保留你的版本」统一在这里按**记账键**补(三类行一处补齐,
+    // 不在三个构造点各查一遍)。键走 `converge::record_key`,与写入那一侧
+    // (`compare::keep_against`)是同一把尺子;算不出键的行就当没记过。
+    if !state.kept_against.is_empty() {
+        for row in &mut rows {
+            row.kept_against = converge::record_key(installer, &row.dir_slug)
+                .ok()
+                .and_then(|key| state.kept_against.get(&key).cloned());
+        }
     }
 
     Ok(rows)
@@ -1122,6 +1139,7 @@ fn unmanaged_row(
         section: ownership::section(relation),
         library_url,
         canonical_readers: in_canonical.then(|| canonical_readers.to_vec()),
+        kept_against: None, // 统一在 build 末尾按记账键补,见那里
     }
 }
 

@@ -2045,3 +2045,46 @@ fn precheck_and_outcome_serialize_with_camel_case_field_names() {
     assert_eq!(installed["outcome"], "installed");
     assert_eq!(installed["localKept"], true, "{}", json(&installed));
 }
+
+// ---- 0.8.0 任务 4:「已保留你的版本」在换成库里的之后作废,保留本地时不动
+fn seed_kept(c: &Ctx, key: &str, hash: &str) {
+    let mut s = c.store.load_state().unwrap().value;
+    s.kept_against.insert(key.into(), hash.into());
+    c.store.save_state(&s).unwrap();
+}
+
+#[tokio::test]
+async fn overwriting_with_the_library_version_clears_the_kept_marker() {
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "正文").await;
+    let (c, env) = ctx();
+    run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+    user_edits(&canonical(&c.home, "weekly-report"));
+    seed_kept(&c, "weekly-report", "h-old");
+    seed_kept(&c, "another-skill", "h-x");
+
+    let server2 = MockServer::start().await;
+    mount(&server2, "ccc3333", "weekly-report", "远端的新正文").await;
+    run(&server2, &c, &env, "weekly-report", &[], Some(Resolution::Overwrite)).await.unwrap();
+
+    let state = c.store.load_state().unwrap().value;
+    assert!(!state.kept_against.contains_key("weekly-report"), "换成库里的之后记录必须作废");
+    assert_eq!(state.kept_against.get("another-skill").map(String::as_str), Some("h-x"), "别的技能的记录不能被连带清掉");
+}
+
+#[tokio::test]
+async fn keeping_local_does_not_clear_the_kept_marker() {
+    let server = MockServer::start().await;
+    mount(&server, "aaa1111", "weekly-report", "正文").await;
+    let (c, env) = ctx();
+    run(&server, &c, &env, "weekly-report", &[], None).await.unwrap();
+    user_edits(&canonical(&c.home, "weekly-report"));
+    seed_kept(&c, "weekly-report", "h-old");
+
+    let server2 = MockServer::start().await;
+    mount(&server2, "ccc3333", "weekly-report", "远端的新正文").await;
+    run(&server2, &c, &env, "weekly-report", &[], Some(Resolution::KeepLocal)).await.unwrap();
+
+    let state = c.store.load_state().unwrap().value;
+    assert_eq!(state.kept_against.get("weekly-report").map(String::as_str), Some("h-old"));
+}

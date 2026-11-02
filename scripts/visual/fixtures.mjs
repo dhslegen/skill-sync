@@ -138,6 +138,7 @@ const SKILLS = [
     localModified: true, // 我分享的 + 本地改 → 「分享改动」
     tools: [{ agent: "claude-code", state: "body" }, { agent: "trae", state: "linked" }],
     canonicalReaders: null,
+    keptAgainst: null,
   },
   {
     slug: "base-code-gen",
@@ -193,6 +194,7 @@ const SKILLS = [
     shareBlocked: "nameMismatch",
     tools: [{ agent: "claude-code", state: "body" }],
     canonicalReaders: null,
+    keptAgainst: null,
   },
   {
     slug: "riso-editorial-deck",
@@ -442,6 +444,7 @@ function installedSkill(s) {
         ? null
         : `http://gitea.internal.example/skills/skills/src/branch/main/skills/${s.slug}`,
     canonicalReaders: s.canonicalReaders ?? null,
+    keptAgainst: s.keptAgainst ?? null,
   };
 }
 

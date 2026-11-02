@@ -573,6 +573,11 @@ export interface InstalledSkillView {
    * 工具一个都没装),它与 `null`(本体不在统一目录)是两件事。
    */
   canonicalReaders: string[] | null;
+  /**
+   * 选「保留我的版本」时库里那一版的指纹(0.8.0 任务 4,`state.keptAgainst`)。
+   * null = 没选过。与**此刻**库里的指纹相同才算数(见 `store/my-skills.ts::keptNow`)。
+   */
+  keptAgainst: string | null;
 }
 
 /** 「我的技能」页按公司技能库分的三区(`core::ownership::Section`)。 */
@@ -1060,6 +1065,13 @@ export interface Comparison {
 
 export const skillCompareLibrary = (args: { dirSlug: string; registryId?: string; repo?: string }) =>
   call<Comparison>("skill_compare_library", { args });
+
+/**
+ * 「保留我的版本」(0.8.0 任务 4,非作者那一档):记住对库里**这一版**已决定保留。
+ * 指纹由 core 从索引缓存取(与比较同一个值),这里不传。
+ */
+export const skillKeepAgainst = (args: { dirSlug: string; registryId?: string; repo?: string }) =>
+  call<void>("skill_keep_against", { args });
 
 export const skillShareChanges = (args: {
   dirSlug: string;

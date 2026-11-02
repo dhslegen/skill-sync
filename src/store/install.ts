@@ -23,6 +23,7 @@ import {
   PLAZA_REGISTRY_ID,
   plazaEnsureRepo,
   skillInstall,
+  skillKeepAgainst,
   skillSetAgents,
   skillShareChanges,
   type AppError,
@@ -145,6 +146,16 @@ interface InstallState {
   /** 「以本地为准」+ 把改动推回去。`displayName` 由调用方给(终审 I-2):
    *  确认屏要点名的是用户认得的名字,而 `ConflictDialog` 手上已经算好了它。 */
   keepLocalAndShareMine: (displayName?: string) => Promise<void>;
+  /**
+   * 冲突弹窗里「保留本地的」(0.8.0 任务 4):照旧 `run("keepLocal")`,成功后再记住
+   * "对库里这一版已保留"——与详情里「保留我的版本」是同一个决定,两处不能一处记、一处不记,
+   * 否则同一个技能从弹窗保留之后,行上第二天照样亮着「和库里的不一样」。
+   *
+   * 记不住**静默**(只少了"下次不提醒"这一层,保留本身已经成功;与 `align_baseline`
+   * 自愈失败同一个取舍):这时弹窗已关、结果屏说的"保留了"是真话,再弹一个错误
+   * 只会让人以为保留没成功。
+   */
+  keepLocalAndRemember: () => Promise<void>;
   cancel: () => void;
 
   /** 正在收敛的那个位置(结果面板里逐条「在工具里启用」)。 */
@@ -467,6 +478,18 @@ export const useInstall = create<InstallState>((set, get) => ({
       set({ phase: "error", error: toAppError(raw) });
     } finally {
       unlisten?.();
+    }
+  },
+
+  keepLocalAndRemember: async () => {
+    await get().run("keepLocal");
+    const { phase, localKept, mineKept, dirSlug, registryId, repo } = get();
+    if (phase !== "done" || !(localKept || mineKept) || !dirSlug) return;
+    try {
+      await skillKeepAgainst({ dirSlug, registryId: registryId ?? undefined, repo: repo ?? undefined });
+      await useMySkills.getState().load();
+    } catch {
+      // 见接口文档:静默是刻意的,不是漏了渲染点
     }
   },
 

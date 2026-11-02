@@ -75,6 +75,7 @@ function localSkill(over: Partial<InstalledSkillView> & { dirSlug: string }): In
     section: "shareable",
     libraryUrl: null,
     canonicalReaders: null,
+    keptAgainst: null,
     ...over,
   };
 }

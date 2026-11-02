@@ -30,6 +30,7 @@ import {
   installedList,
   isAppError,
   skillInstallBatch,
+  skillKeepAgainst,
   skillKeepVersion,
   skillAlignBaseline,
   skillRemove,
@@ -350,6 +351,11 @@ interface MySkillsState {
    * (`Mine` 档),自然落进全局挂载的 `ConflictDialog`,不需要这里另开一条通道。
    */
   pull: (dirSlug: string) => Promise<void>;
+  /**
+   * 「保留我的版本」,非作者那一档(0.8.0 任务 4):记住对库里这一版已决定保留,
+   * 然后重读列表让「已保留」显示出来。**失败往外抛**,由点按钮的那一处渲染。
+   */
+  keepMine: (dirSlug: string, target?: { registryId?: string; repo?: string }) => Promise<void>;
   /** 「看看哪里不同」之后换成库里的版本(0.8.0 任务 3)。`target` 缺省 = 这一行的记账来源。 */
   replaceWithLibrary: (dirSlug: string, target?: { registryId?: string; repo?: string }) => Promise<void>;
 }
@@ -819,6 +825,19 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
     await useInstall.getState().beginUpdate(dirSlug, agentIds, skill.registryId || undefined, repo);
   },
 
+  keepMine: async (dirSlug, target) => {
+    const skill = get().list?.find((s) => s.dirSlug === dirSlug);
+    // 记到哪个库那一版:调用方给了就用调用方的,否则按这一行的记账来源(与替换同口径)
+    const registryId = target ? target.registryId : skill?.registryId || undefined;
+    const repo = target
+      ? target.repo
+      : skill?.sourceRepo
+        ? `${skill.sourceOwner}/${skill.sourceRepo}`
+        : undefined;
+    await skillKeepAgainst({ dirSlug, registryId, repo });
+    await get().load();
+  },
+
   replaceWithLibrary: async (dirSlug, target) => {
     // 找不到这一行(列表还没加载到)**不能静默什么都不做**——用户看完差异点了按钮,
     // 零反馈就是 CLAUDE.md 记的那种"点了没反应"。没有行就按"账上没有工具"处理
@@ -1129,7 +1148,7 @@ async function runShareChanges(
 /** `hasUpdate` 与 `remoteChangedForShareable` 共用的坐标 + 内容指纹比对
  *  ——两者的差别只在"喂哪份索引",判据本身只有这一处实现。 */
 function remoteContentDiffers(
-  skill: Pick<InstalledSkillView, "registryId" | "sourceOwner" | "sourceRepo" | "dirSlug" | "contentHash">,
+  skill: Pick<InstalledSkillView, "registryId" | "sourceOwner" | "sourceRepo" | "dirSlug" | "contentHash" | "keptAgainst">,
   index: { registryId: string; owner: string; repo: string; skills: { dirSlug: string; contentHash: string }[] },
 ): boolean {
   if (
@@ -1142,7 +1161,23 @@ function remoteContentDiffers(
   const remote = remoteHashOf(index, skill.dirSlug);
   // 拿不到任一侧的指纹就说"没有更新":宁可漏报,也不能凭空催所有人去更新
   if (!remote || !skill.contentHash) return false;
+  // 🔴 0.8.0 任务 4:用户对库里**这一版**选过「保留我的版本」→ 这一版不再算"库里变了"。
+  // 判在这里(角标、行、详情、更新提示共用的唯一判定)而不是各处显示层各判一遍:
+  // 散在显示层的话,行上安静了、侧边栏角标还在数它。库里再更新,指纹对不上,照常提示。
+  if (keptNow(skill, remote)) return false;
   return remote !== skill.contentHash;
+}
+
+/**
+ * 「已保留你的版本」此刻还算不算数(0.8.0 任务 4)——**唯一实现**。
+ * 记的是选择那一刻库里那一版的指纹,与**此刻**库里的指纹相同才算数;库里更新过就失效。
+ * 任一侧没有指纹就是"不算",不猜。
+ */
+export function keptNow(
+  skill: Pick<InstalledSkillView, "keptAgainst"> | null | undefined,
+  remoteHash: string | null | undefined,
+): boolean {
+  return !!skill?.keptAgainst && !!remoteHash && skill.keptAgainst === remoteHash;
 }
 
 /**

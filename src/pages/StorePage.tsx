@@ -13,7 +13,7 @@ import { filterSkills, type StoreFilter } from "@/lib/search";
 import { cardState, isMine } from "@/lib/update";
 import { useInstall } from "@/store/install";
 import { useCompare } from "@/store/compare";
-import { useMySkills } from "@/store/my-skills";
+import { keptNow, useMySkills } from "@/store/my-skills";
 import { usePlaza } from "@/store/plaza";
 import { useRegistries } from "@/store/registries";
 import { useSession } from "@/store/session";
@@ -75,6 +75,11 @@ function StoreBody() {
     }
     return map;
   }, [myList]);
+  // dirSlug → 「我的技能」那一行(0.8.0 任务 4 读它的 keptAgainst),同样派生在组件里
+  const myRows = useMemo(
+    () => new Map((myList ?? []).map((s) => [s.dirSlug, s] as const)),
+    [myList],
+  );
   // 已安装集合来自 installed_list(core 的 state.json)**并上**本机有本体的
   // dirSlug(v7.5 Q42-A):筛选器要与卡片按钮用同一把尺子,否则点「未安装」会
   // 看到一批写着「已在电脑上」的卡片——筛选器和按钮当场打架。
@@ -241,7 +246,7 @@ function StoreBody() {
               "所有技能的更新时间都一样"正是这里。`index.committedAt` 仍被上面的
               汇总行与索引新鲜度判断用着,没有删。 */}
           {visible.map((skill) => {
-            const state = cardState(
+            const fact = cardState(
               records.get(skill.dirSlug),
               skill.contentHash,
               { registryId: index.registryId, owner: index.owner, repo: index.repo },
@@ -249,6 +254,9 @@ function StoreBody() {
                 ? { known: false as const }
                 : { known: true as const, hash: localHashes.get(skill.dirSlug) },
             );
+            // 0.8.0 任务 4:对库里**这一版**选过「保留我的版本」→ 安静地说已保留
+            const state =
+              fact === "differs" && keptNow(myRows.get(skill.dirSlug), skill.contentHash) ? "kept" : fact;
             return (
               <SkillCard
                 key={skill.dirSlug}
@@ -259,7 +267,7 @@ function StoreBody() {
                 state={state}
                 onOpen={() => {
                   // 0.8.0 任务 3:「与库里不同」点进来就是想看差别——详情一打开就展开
-                  if (state === "differs") useCompare.getState().expand(skill.dirSlug);
+                  if (fact === "differs") useCompare.getState().expand(skill.dirSlug);
                   void openDetail(skill.dirSlug);
                 }}
               />

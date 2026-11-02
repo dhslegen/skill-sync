@@ -56,6 +56,7 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   section: sectionOfRelation(over.relation ?? "installed"),
   libraryUrl: null,
   canonicalReaders: null,
+  keptAgainst: null,
   ...over,
 });
 
@@ -333,5 +334,41 @@ describe('host="store":只贡献次要动作(Q44-A,v7.6 任务 2 + 任务 3)', (
     const skill = view({ relation: "draft", localModified: false, shareBlocked: "nameMissing" });
     render(<SkillActionsBlock skill={skill} remoteChanged={false} subject="示例技能" host="store" />);
     expect(screen.queryByText(/请在 SKILL\.md 里补上 name/)).not.toBeInTheDocument();
+  });
+});
+
+// ---- 0.8.0 任务 4:详情动作区里那句「和库里的不一样」,保留过这一版就换成安静的一句
+describe("详情动作区:已保留你的版本(0.8.0 任务 4)", () => {
+  const withIndex = (hash: string) =>
+    useStoreIndex.setState({
+      index: {
+        registryId: "company", owner: "skills", repo: "skills", branch: "main", commitSha: "head",
+        committedAt: "", fetchedAt: 0, skipped: [], fromCache: false, offline: false, curated: [],
+        skills: [
+          {
+            name: "示例技能", dirSlug: "weekly-report", description: "", path: "skills/weekly-report",
+            hasScripts: false, fileCount: 1, contentHash: hash, tags: [], author: null,
+            updatedAt: { kind: "unknown" as const },
+          },
+        ],
+      },
+    });
+
+  it("对库里这一版保留过 → 只说「已保留你的版本」", () => {
+    withIndex("sha256:base");
+    render(
+      <SkillActionsBlock skill={view({ dirSlug: "weekly-report", localModified: true, keptAgainst: "sha256:base" })} remoteChanged={false} subject="示例技能" host="mine" />,
+    );
+    expect(screen.getByText(t("mine.keptMine"))).toBeInTheDocument();
+    expect(screen.queryByText(t("mine.differsFromLibrary"))).toBeNull();
+  });
+
+  it("没保留过 → 照旧「和库里的不一样」", () => {
+    withIndex("sha256:base");
+    render(
+      <SkillActionsBlock skill={view({ dirSlug: "weekly-report", localModified: true })} remoteChanged={false} subject="示例技能" host="mine" />,
+    );
+    expect(screen.getByText(t("mine.differsFromLibrary"))).toBeInTheDocument();
+    expect(screen.queryByText(t("mine.keptMine"))).toBeNull();
   });
 });

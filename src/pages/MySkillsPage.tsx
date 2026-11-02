@@ -17,6 +17,7 @@ import {
   cardFor,
   groupBySource,
   hasUpdate,
+  keptNow,
   libraryAuthorFor,
   localDiffersNoBaseline,
   remoteChangedForShareable,
@@ -364,6 +365,7 @@ export function MySkillsPage() {
         noBaselineDiffers={noBaselineDiffers}
         noWriteAccess={noAccessFor(skill)}
         libraryAuthor={libraryAuthorFor(skill, index)}
+        kept={keptNow(skill, cardOf(skill)?.contentHash)}
         pulling={activeSlug === skill.dirSlug && installPhase === "running"}
         sharing={shareBusy === skill.dirSlug}
         onPull={() => void pull(skill.dirSlug)}
@@ -956,6 +958,7 @@ function Row({
   noBaselineDiffers,
   noWriteAccess,
   libraryAuthor,
+  kept,
   pulling,
   sharing,
   onPull,
@@ -977,6 +980,8 @@ function Row({
   /** 库里登记的作者(v8 任务 6):`differsFromLibrary` 那一档提示"请联系谁"。
    *  `null` = 库里没登记,只说"和库里的不一样",不编名字。 */
   libraryAuthor: string | null;
+  /** 对库里这一版选过「保留我的版本」(0.8.0 任务 4):那句琥珀色提示换成安静的一句。 */
+  kept: boolean;
   pulling: boolean;
   sharing: boolean;
   onPull: () => void;
@@ -1052,7 +1057,10 @@ function Row({
                 技能,而他明明改过它。作者名取自索引里已有的归因数据(零新增查询);
                 **取不到就只说"不一样"**,绝不编一个名字出来(公司库里那个叫
                 「测试」的技能就是这一档)。 */}
-            {action.kind === "differsFromLibrary" && (
+            {action.kind === "differsFromLibrary" && kept && (
+              <div className="mt-0.5 text-[11.5px] leading-[1.5] text-text-3">{t("mine.keptMine")}</div>
+            )}
+            {action.kind === "differsFromLibrary" && !kept && (
               <div className="mt-0.5 text-[11.5px] leading-[1.5] text-[#9a6c00] dark:text-[#d4a017]">
                 {t("mine.differsFromLibrary")}
                 {libraryAuthor && (

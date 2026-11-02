@@ -757,6 +757,8 @@ pub async fn share(
         None => next.shared.push(entry),
     }
     record_pushed_skill(&mut next, &req, &home, &submitted, content_hash, now);
+    // 0.8.0 任务 4:库里已经是我的这一版了,「已保留」记录作废
+    next.kept_against.remove(&home.dir_name);
     store.save_state(&next)?;
 
     Ok(ShareOutcome::Shared {
@@ -1175,6 +1177,9 @@ pub async fn share_installed(
     next.installed[idx].commit_sha = submitted.commit_sha.clone();
     next.installed[idx].content_hash = pushed_hash;
     next.installed[idx].updated_at = now.to_string();
+    // 0.8.0 任务 4:库里已经是我的这一版了,「已保留」记录作废
+    let key = next.installed[idx].name.clone();
+    next.kept_against.remove(&key);
     store.save_state(&next)?;
     Ok(ShareInstalledOutcome::Submitted(submitted))
 }

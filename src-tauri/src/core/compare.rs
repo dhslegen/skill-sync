@@ -112,3 +112,34 @@ pub async fn compare_with_library(
         identical,
     })
 }
+
+/// 「保留我的版本」(0.8.0 任务 4,非作者那一档):记住"对库里**这一版**已决定保留"。
+///
+/// `remote_hash` 由调用方从**索引缓存**取(与 [`compare_with_library`] 回传的
+/// `remote_hash`、卡片判「与库里不同」用的是同一个值)——前端不传指纹,免得两处取值漂移。
+///
+/// 只写 `state.json`,不碰任何技能目录,所以不持 `app_write` 守卫。
+/// 键走 [`converge::record_key`](查账键的唯一实现),不手搓。
+pub fn keep_against(
+    installer: &Installer<'_>,
+    store: &Store,
+    dir_slug: &str,
+    remote_hash: &str,
+) -> Result<(), AppError> {
+    if remote_hash.is_empty() {
+        // 没有指纹就无从说"对哪一版保留"——记一个空串,下次任何一版都对不上,等于没记,
+        // 而用户以为自己记住了。如实拒绝。
+        return Err(AppError::new(
+            "REPO_NOT_FOUND",
+            "技能库里这个技能的版本信息还没准备好,请刷新后再试",
+        )
+        .with_detail(format!("empty remote hash for {dir_slug}")));
+    }
+    let key = converge::record_key(installer, dir_slug)?;
+    let mut next = store.load_state()?.value;
+    if next.kept_against.get(&key).map(String::as_str) == Some(remote_hash) {
+        return Ok(()); // 已经记过这一版,不白写一次
+    }
+    next.kept_against.insert(key, remote_hash.to_string());
+    store.save_state(&next)
+}

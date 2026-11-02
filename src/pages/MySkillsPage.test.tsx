@@ -83,6 +83,7 @@ function mk(dirSlug: string, section: Section, over: Partial<Fixture> = {}): Fix
     section,
     libraryUrl: null,
     canonicalReaders: null,
+    keptAgainst: null,
     remote,
     author,
     ...rest,
@@ -452,6 +453,22 @@ describe("三区排列与判定表接线", () => {
     await userEvent.click(await screen.findByTestId("row-b-body"));
     expect(useLocalDetail.getState().target).not.toBeNull();
     expect(useCompare.getState().expandedFor).toBeNull();
+  });
+
+  // 0.8.0 任务 4:对库里这一版选过「保留我的版本」→ 安静地说已保留;库里再更新就照常提示
+  it("和库里不一样但已保留 → 安静的「已保留你的版本」,不再亮琥珀色", async () => {
+    seed([mk("a", "installedFrom", { localModified: true, author: "李四", keptAgainst: "sha256:base-a" })]);
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-a");
+    expect(within(row).getByText(t("mine.keptMine"))).toBeInTheDocument();
+    expect(within(row).queryByText(t("mine.differsFromLibrary"))).toBeNull();
+  });
+
+  it("保留之后库里又更新了 → 不再算保留,照常提示", async () => {
+    seed([mk("a", "installedFrom", { localModified: true, remote: "NEW", keptAgainst: "sha256:base-a" })]);
+    render(<MySkillsPage />);
+    const row = await screen.findByTestId("row-a");
+    expect(within(row).queryByText(t("mine.keptMine"))).toBeNull();
   });
 
   it("有作者时提示联系谁,「…」里给「改用库里的版本」这条出路", async () => {

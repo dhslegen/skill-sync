@@ -207,3 +207,45 @@ async fn no_local_body_is_reported_before_any_network_request() {
     assert_eq!(err.code, "FS_NOT_FOUND");
     assert!(server.received_requests().await.unwrap().is_empty(), "本地都没有,不该去下压缩包");
 }
+
+// ---- 0.8.0 任务 4:「保留我的版本」
+mod keep {
+    use super::*;
+    use skillsync_lib::core::compare::keep_against;
+    use skillsync_lib::core::installer::Installer;
+
+    #[test]
+    fn keeps_against_the_given_library_version_under_the_record_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let env = TmpEnv { home: home.clone(), vars: HashMap::new() };
+        let store = Store::new(home.join(".skillsync"));
+        let registry = AgentRegistry::builtin();
+        let installer = Installer::new(&registry, &env);
+
+        // 大写目录名:记账键是清洗后的名字,不是调用方手上的原样
+        keep_against(&installer, &store, "Weekly-Report", "h-lib").unwrap();
+        let state = store.load_state().unwrap().value;
+        assert_eq!(state.kept_against.get("weekly-report").map(String::as_str), Some("h-lib"));
+        assert!(!state.kept_against.contains_key("Weekly-Report"));
+
+        // 库里换了一版之后再选保留:记的是新那一版
+        keep_against(&installer, &store, "weekly-report", "h-lib-2").unwrap();
+        let state = store.load_state().unwrap().value;
+        assert_eq!(state.kept_against.get("weekly-report").map(String::as_str), Some("h-lib-2"));
+    }
+
+    #[test]
+    fn refuses_an_empty_library_fingerprint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let env = TmpEnv { home: home.clone(), vars: HashMap::new() };
+        let store = Store::new(home.join(".skillsync"));
+        let registry = AgentRegistry::builtin();
+        let installer = Installer::new(&registry, &env);
+
+        let err = keep_against(&installer, &store, "weekly-report", "").unwrap_err();
+        assert_eq!(err.code, "REPO_NOT_FOUND");
+        assert!(store.load_state().unwrap().value.kept_against.is_empty());
+    }
+}

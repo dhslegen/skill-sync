@@ -25,7 +25,12 @@ import { cn } from "@/lib/cn";
  *  ⚠️ **「已启用」这个词没有消失,只是不再是这颗按钮的文案**——它在
  *  「已启用到 X、Y」、工具勾组那些地方描述的是**工具关联**,与本次改动无关,
  *  禁止全局替换(见 `lib/update.ts::cardState` 文档注释「行为翻转 2」)。 */
-export type InstallState = "install" | "onDisk" | "update" | "differs" | "otherLibrary";
+/**
+ * `kept`(0.8.0 任务 4)不是 `cardState` 的产物:它是 `differs` 之上叠加的
+ * "用户对库里这一版选过保留我的",由调用方用 `keptNow` 换档——`cardState` 只回答
+ * 磁盘与库里的事实,"用户的决定"不进那张判定表。
+ */
+export type InstallState = "install" | "onDisk" | "update" | "differs" | "otherLibrary" | "kept";
 
 /**
  * 这颗按钮长在哪儿。**只影响文案,不影响任何行为侧判定**
@@ -57,6 +62,8 @@ function labelOf(state: InstallState, variant: InstallButtonVariant): string {
       return t("skill.actionReplace");
     case "differs":
       return variant === "panel" ? t("install.replaceWithLibrary") : t("store.differs");
+    case "kept":
+      return variant === "panel" ? t("install.replaceWithLibrary") : t("store.kept");
     case "install":
       return t("skill.actionInstall");
   }
@@ -130,6 +137,8 @@ export function InstallButton({
         !inert &&
           (state === "otherLibrary" || state === "differs") &&
           "border-border bg-transparent text-text-2 hover:border-border-strong hover:text-text",
+        // kept:用户已经拍过板,不再用描边去招手——安静的文字,点了照样能进详情看差异
+        !inert && state === "kept" && "bg-transparent font-medium text-text-3 hover:text-text-2",
         terminal && "bg-transparent font-medium text-ok",
         inert && "cursor-default border-border bg-transparent font-medium text-text-3",
       )}

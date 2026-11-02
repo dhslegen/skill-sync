@@ -126,6 +126,7 @@ function mk(
     section,
     libraryUrl: null,
     canonicalReaders: null,
+    keptAgainst: null,
     ...over,
   };
 }
@@ -611,6 +612,7 @@ describe("WhereBlocks · 空勾选清单按成因分流(C-1)", () => {
     const skill = mk("x", "installedFrom", {
       tools: [],
       canonicalReaders: null,
+      keptAgainst: null,
       body: "/h/.claude/skills/x",
     });
     renderExpanded(<WhereBlocks skill={skill} agentNames={NAMES} remoteChanged={false} />);

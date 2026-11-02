@@ -30,7 +30,7 @@ import { useStoreIndex } from "@/store/store-index";
  * ——真出现了那种形状,用户看到的是错误态,不是一个不弹的弹窗。
  */
 export function ConflictDialog() {
-  const { phase, precheck, dirSlug, registryId, repo, run, keepLocalAndShareMine, cancel } =
+  const { phase, precheck, dirSlug, registryId, repo, run, keepLocalAndShareMine, keepLocalAndRemember, cancel } =
     useInstall();
   // 弹窗里要出现的是用户认得的名字(周报生成),不是内部目录名(weekly-report)。
   // core 里流转的一直是目录名,到界面这一层必须换回展示名。
@@ -155,7 +155,7 @@ export function ConflictDialog() {
                 primary
                 label={t("conflict.keepLocal")}
                 hint={t("conflict.keepLocalHint")}
-                onClick={() => void run("keepLocal")}
+                onClick={() => void keepLocalAndRemember()}
               />
               <Choice
                 label={t("conflict.overwrite")}
@@ -201,7 +201,7 @@ export function ConflictDialog() {
                 primary
                 label={t("conflict.localDiffersKeepLocal")}
                 hint={t("conflict.localDiffersKeepLocalHint")}
-                onClick={() => void run("keepLocal")}
+                onClick={() => void keepLocalAndRemember()}
               />
               <Choice
                 label={t("conflict.localDiffersUseRemote")}

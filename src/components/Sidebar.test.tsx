@@ -51,6 +51,7 @@ const view = (over: Partial<InstalledSkillView> = {}): InstalledSkillView => ({
   section: sectionOfRelation(over.relation ?? "installed"),
   libraryUrl: null,
   canonicalReaders: null,
+  keptAgainst: null,
   ...over,
 });
 

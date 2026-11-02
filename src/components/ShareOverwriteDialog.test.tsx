@@ -252,6 +252,7 @@ describe("🔴 定向复审 I-1:无安装基线的「分享改动」,确认屏�
     section: "sharedTo",
     libraryUrl: null,
     canonicalReaders: null,
+    keptAgainst: null,
     ...over,
   });
 

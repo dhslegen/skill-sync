@@ -7,6 +7,8 @@ import { isAppError, skillReveal, type InstalledSkillView } from "@/lib/ipc";
 import { buildRowMenuItems, rowAction } from "@/lib/ownership";
 import { SHARE_BLOCK_LABEL, SHARE_DONE_LABEL, SHARE_FAILED_LABEL } from "@/lib/share-block";
 import {
+  cardFor,
+  keptNow,
   libraryAuthorFor,
   localDiffersNoBaseline,
   shareTargetRegistryId,
@@ -270,6 +272,9 @@ export function SkillActionsBlock({
   const noBaselineDiffers = localDiffersNoBaseline(skill, index);
   // v8 任务 6:「和库里的不一样」那一档要提的作者名(零新增查询,取不到就是 null)。
   const libraryAuthor = libraryAuthorFor(skill, index);
+  // 0.8.0 任务 4:对库里这一版选过「保留我的版本」→ 那句琥珀色的提示换成安静的一句
+  const shareableIndexes = useMySkills((s) => s.shareableIndexes);
+  const kept = keptNow(skill, cardFor(skill, index, shareableIndexes)?.contentHash);
   // 🔴 v8 任务 3 / D8:没有写权限时分享族主按钮禁用 + 一句说明。`unknown`
   // (探不到)不禁——预检永远 fail-open。`host="store"` 下主按钮来自
   // `cardState` 不来自这里,但次要动作(「…」里的分享改动/分享)同样要拦,
@@ -449,7 +454,10 @@ export function SkillActionsBlock({
           就是它全部的可见性——不摆的话,用户看到的是一行什么都没有的技能,
           而他明明改过它。作者名取自索引里已有的归因数据(零新增查询);
           **取不到就只说"不一样"**,绝不编一个名字出来。 */}
-      {caps.shareFeedback && action.kind === "differsFromLibrary" && (
+      {caps.shareFeedback && action.kind === "differsFromLibrary" && kept && (
+        <p className="mt-1.5 basis-full text-[11.5px] leading-[1.6] text-text-3">{t("mine.keptMine")}</p>
+      )}
+      {caps.shareFeedback && action.kind === "differsFromLibrary" && !kept && (
         <p className="mt-1.5 basis-full rounded-card border border-[#b8860b]/40 px-2.5 py-1.5 text-[11.5px] leading-[1.6] text-[#9a6c00] dark:border-[#d4a017]/40 dark:text-[#d4a017]">
           {t("mine.differsFromLibrary")}
           {libraryAuthor && (

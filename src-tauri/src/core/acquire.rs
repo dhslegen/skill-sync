@@ -1109,6 +1109,11 @@ fn record(
     if mine && !keep_local {
         seed_shared_baseline(&mut next, report, home, skill, &req, remote_sha);
     }
+    if !keep_local {
+        // 0.8.0 任务 4:内容换成了库里的,「已保留你的版本」那条记录随之作废
+        // (不清的话,之后再改一次恰好与那一版不同时会被它静默压住,见 `State::kept_against`)
+        next.kept_against.remove(&report.dir_name);
+    }
 
     store.save_state(&next)?;
 

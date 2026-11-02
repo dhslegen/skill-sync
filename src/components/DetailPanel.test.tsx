@@ -400,6 +400,7 @@ const installedView = (over: Partial<InstalledSkillView> = {}): InstalledSkillVi
   section: sectionOfRelation(over.relation ?? "installed"),
   libraryUrl: null,
   canonicalReaders: null,
+  keptAgainst: null,
   ...over,
 });
 

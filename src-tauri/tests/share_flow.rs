@@ -641,6 +641,10 @@ async fn fresh_share_pushes_creates_and_records_the_books() {
     let dir = canonical(&c).join("my-notes");
     write_skill(&dir, "my-notes", "记点东西");
     std::fs::write(dir.join("logo.png"), [0x89u8, 0x50]).unwrap();
+    // 0.8.0 任务 4:分享成功后「已保留你的版本」作废——库里已经是我的这一版了
+    let mut seeded = state_of(&c);
+    seeded.kept_against.insert("my-notes".into(), "h-old".into());
+    c.store.save_state(&seeded).unwrap();
 
     let server = MockServer::start().await;
     mount_skill_exists(&server, "my-notes", false).await;
@@ -677,6 +681,7 @@ async fn fresh_share_pushes_creates_and_records_the_books() {
     assert_eq!(state.shared[0].name, "my-notes");
     assert_eq!(state.shared[0].last_pushed_sha, "newsha1");
     assert_eq!(state.shared[0].content_hash, fsops::dir_content_hash(&dir).unwrap());
+    assert!(!state.kept_against.contains_key("my-notes"), "分享成功后「已保留」记录必须作废");
 }
 
 // ============================================================ 归因维护(M7 任务 5)
@@ -2249,6 +2254,7 @@ async fn confirmed_overwrite_pushes_and_realigns_the_baseline() {
     write_skill(&dir, "weekly-report", "原版");
     let mut state = state_of(&c);
     state.installed.push(install_record(&c, &dir));
+    state.kept_against.insert("weekly-report".into(), "h-old".into());
     c.store.save_state(&state).unwrap();
     std::fs::write(dir.join("SKILL.md"), "---\nname: weekly-report\ndescription: 我改过\n---\n正文\n").unwrap();
     let local_hash = fsops::dir_content_hash(&dir).unwrap();
@@ -2270,6 +2276,7 @@ async fn confirmed_overwrite_pushes_and_realigns_the_baseline() {
     let after = state_of(&c).installed[0].clone();
     assert_eq!(after.commit_sha, "newsha1");
     assert_eq!(after.content_hash, local_hash, "覆盖成功后基线必须对齐到刚推上去的内容");
+    assert!(!state_of(&c).kept_against.contains_key("weekly-report"), "推回成功后「已保留」记录必须作废");
 }
 
 

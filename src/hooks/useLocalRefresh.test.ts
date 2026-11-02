@@ -96,6 +96,7 @@ describe("按页刷新", () => {
             section: "shareable",
             libraryUrl: null,
             canonicalReaders: null,
+            keptAgainst: null,
           },
         ];
       }

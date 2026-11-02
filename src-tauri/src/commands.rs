@@ -1626,6 +1626,8 @@ pub struct InstalledSkillView {
     /// `agents_detected` 收窄)刻意不同——理由见 `my_skills::canonical_reader_names`。
     /// 前端拿到直接显示,**别再收窄一次**。
     pub canonical_readers: Option<Vec<String>>,
+    /// 「保留我的版本」时库里那一版的指纹(0.8.0 任务 4)。见 `my_skills::InstalledRow`。
+    pub kept_against: Option<String>,
 }
 
 /// 一个已装技能的来源还通不通(M4 任务 2)。返回 `(source_removed, library_removed)`。
@@ -1680,6 +1682,7 @@ impl From<my_skills::InstalledRow> for InstalledSkillView {
             section: r.section,
             library_url: r.library_url,
             canonical_readers: r.canonical_readers,
+            kept_against: r.kept_against,
         }
     }
 }
@@ -1945,21 +1948,7 @@ pub async fn skill_compare_library(
 ) -> Result<crate::core::compare::Comparison, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
     let (read, repo) = read_source(registry_id, args.repo.as_deref()).await?;
-    let index = store::load_cache(&index_cache_file(registry_id, &repo)?)
-        .filter(|index| index.is_for(registry_id, &repo));
-    let Some((skill, commit_sha)) = index.as_ref().and_then(|index| {
-        index
-            .skills
-            .iter()
-            .find(|s| s.dir_slug == args.dir_slug)
-            .map(|s| (s, index.commit_sha.clone()))
-    }) else {
-        return Err(AppError::new(
-            "REPO_NOT_FOUND",
-            "技能库里没有找到这个技能,请刷新后再试",
-        )
-        .with_detail(format!("{} not in cached index of {registry_id}", args.dir_slug)));
-    };
+    let (skill, commit_sha) = cached_library_version(registry_id, &repo, &args.dir_slug)?;
     let at = RepoRef { branch: commit_sha, ..repo.clone() };
     let store = app_store()?;
     crate::core::compare::compare_with_library(
@@ -1975,6 +1964,43 @@ pub async fn skill_compare_library(
         },
     )
     .await
+}
+
+/// 卡片判「与库里不同」用的那一版:从**索引缓存**里取这个技能(0.8.0 任务 2/4 共用)。
+///
+/// 比较与「保留我的版本」都必须对着**同一个**指纹,两处各自取就会漂移(接缝表第一条),
+/// 所以取法只有这一份。缓存里没有 → 报「请刷新后再试」,不现拉分支头凑一版。
+fn cached_library_version(
+    registry_id: &str,
+    repo: &RepoRef,
+    dir_slug: &str,
+) -> Result<(store::IndexedSkill, String), AppError> {
+    store::load_cache(&index_cache_file(registry_id, repo)?)
+        .filter(|index| index.is_for(registry_id, repo))
+        .and_then(|index| {
+            let commit_sha = index.commit_sha.clone();
+            index.skills.into_iter().find(|s| s.dir_slug == dir_slug).map(|s| (s, commit_sha))
+        })
+        .ok_or_else(|| {
+            AppError::new("REPO_NOT_FOUND", "技能库里没有找到这个技能,请刷新后再试")
+                .with_detail(format!("{dir_slug} not in cached index of {registry_id}"))
+        })
+}
+
+/// 「保留我的版本」(0.8.0 任务 4,非作者那一档):记住对库里**这一版**已决定保留。
+/// 指纹在这里从索引缓存取,前端不传——与比较用的是同一个值。
+#[tauri::command]
+pub async fn skill_keep_against(args: SkillCompareArgs) -> Result<(), AppError> {
+    let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    let repo = resolve_registry(registry_id, args.repo.as_deref())?.repo;
+    let (skill, _) = cached_library_version(registry_id, &repo, &args.dir_slug)?;
+    let registry = AgentRegistry::builtin();
+    crate::core::compare::keep_against(
+        &app_installer(&registry),
+        &app_store()?,
+        &args.dir_slug,
+        &skill.content_hash,
+    )
 }
 
 #[derive(Debug, Deserialize)]

@@ -618,3 +618,21 @@ fn remove_outcome_serializes_with_camel_case_field_names() {
     keys.sort();
     assert_eq!(keys, vec!["lock", "outcome", "report"], "{v}");
 }
+
+// 0.8.0 任务 4:技能移走了,「已保留你的版本」那条记录一并清掉,别人的不动
+#[test]
+fn removing_clears_only_this_skills_kept_marker() {
+    let (c, env) = ctx();
+    install_one(&c, &env, "weekly-report");
+    install_one(&c, &env, "meeting-notes");
+    let mut s = c.store.load_state().unwrap().value;
+    s.kept_against.insert("weekly-report".into(), "h1".into());
+    s.kept_against.insert("meeting-notes".into(), "h2".into());
+    c.store.save_state(&s).unwrap();
+
+    do_remove(&c, &env, "weekly-report").unwrap();
+
+    let state = c.store.load_state().unwrap().value;
+    assert!(!state.kept_against.contains_key("weekly-report"));
+    assert_eq!(state.kept_against.get("meeting-notes").map(String::as_str), Some("h2"));
+}

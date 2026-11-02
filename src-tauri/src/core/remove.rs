@@ -104,6 +104,8 @@ pub fn remove(
     // v6 二期:按**本体**比,不按 canonical 比——本体可能住在某个工具目录里,
     // 而 `seed_shared_baseline`/`share` 记的 `local_path` 就是本体所在。
     next.shared.retain(|s| Path::new(&s.local_path) != home.body);
+    // 0.8.0 任务 4:技能都移走了,「已保留你的版本」那条记录一并清掉
+    next.kept_against.remove(&key);
     store.save_state(&next)?;
 
     // 外部契约同步。任何结果都不阻断——技能已经移除了,记账失败只该记日志。

@@ -58,6 +58,7 @@ function localSkill(over: Partial<InstalledSkillView> & { dirSlug: string }): In
     section: "shareable",
     libraryUrl: null,
     canonicalReaders: null,
+    keptAgainst: null,
     ...over,
   };
 }
@@ -414,6 +415,24 @@ describe("v7.5:商店认得出'这台电脑上已经有了'(docs/v7.5-共识.md)
     useCompare.setState({ expandedFor: null });
     await userEvent.click(screen.getAllByRole("button", { name: /^安装 —/ })[0]);
     expect(useCompare.getState().expandedFor).toBeNull();
+  });
+
+  // 0.8.0 任务 4:对库里这一版选过「保留我的版本」→ 卡片安静地说已保留;库里更新了就失效
+  it("与库里不同但已保留这一版 → 卡片写「已保留你的版本」", () => {
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha256:本地那份", keptAgainst: "sha256:weekly" })],
+    });
+    render(<StorePage />);
+    expect(screen.getByRole("button", { name: /^已保留你的版本/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^与库里不同/ })).toBeNull();
+  });
+
+  it("保留的是旧的那一版 → 照常写「与库里不同」", () => {
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha256:本地那份", keptAgainst: "sha256:更早的一版" })],
+    });
+    render(<StorePage />);
+    expect(screen.getByRole("button", { name: /^与库里不同/ })).toBeInTheDocument();
   });
 
   it("🔴 本机没有本体(localPresent: false)→ 仍是「获取」", () => {

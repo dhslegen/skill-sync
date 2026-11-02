@@ -396,3 +396,19 @@ fn a_sourceless_record_keeps_its_bodys_original_case_when_matched_against_the_co
     let rows = build(&ctx, &config, &state);
     assert_eq!(row(&rows, "weekly-report").section, Section::SharedTo);
 }
+
+
+// ---- 0.8.0 任务 4:「已保留你的版本」按记账键回到每一行,无记账的行也算
+#[test]
+fn rows_report_the_kept_library_version_by_record_key_even_without_a_record() {
+    let ctx = ctx();
+    // 本体住在 Claude Code 目录、没有任何记账——「与库里不同」最常见的那一档
+    skill_dir_with_hash(&ctx.home, ".claude/skills/weekly-report", "mine");
+    skill_dir_with_hash(&ctx.home, ".claude/skills/other-skill", "mine");
+    let mut state = State::default();
+    state.kept_against.insert("weekly-report".into(), "h-lib".into());
+
+    let rows = build_rows_with_state(&ctx, &state);
+    assert_eq!(row(&rows, "weekly-report").kept_against.as_deref(), Some("h-lib"));
+    assert_eq!(row(&rows, "other-skill").kept_against, None, "没选过的行不能沾上别人的记录");
+}
