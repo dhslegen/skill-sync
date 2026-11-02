@@ -2,8 +2,7 @@ import { create } from "zustand";
 
 import { t } from "@/i18n";
 import { isAppError, skillUnpublish, type AppError, type UnpublishLocal } from "@/lib/ipc";
-import { useMySkills } from "@/store/my-skills";
-import { useStoreIndex } from "@/store/store-index";
+import { refreshAfterLibraryWrite } from "@/store/my-skills";
 
 /**
  * 「从技能库删除」的确认流程(0.8.0 任务 6)。弹窗全局挂在 `App.tsx`,所以**成功与失败
@@ -26,7 +25,7 @@ type Phase =
   | { kind: "loading" }
   | { kind: "confirm"; files: string[]; remoteRev: string; historyUrl: string; stale: boolean }
   | { kind: "running"; files: string[]; remoteRev: string; historyUrl: string }
-  | { kind: "done"; local: UnpublishLocal; trashRequested: boolean }
+  | { kind: "done"; local: UnpublishLocal; trashRequested: boolean; historyUrl: string }
   | { kind: "error"; error: AppError };
 
 interface UnpublishState {
@@ -85,10 +84,18 @@ export const useUnpublish = create<UnpublishState>((set, get) => ({
         set({ phase: { kind: "confirm", files: out.files, remoteRev: out.remoteRev, historyUrl: out.historyUrl, stale: true } });
         return;
       }
-      set({ phase: { kind: "done", local: out.local, trashRequested: alsoTrashLocal && target.localPresent } });
-      // 库里那一版没了:索引与「我的技能」都要重读,这一行才会换区 / 消失
-      void useStoreIndex.getState().load(true);
-      void useMySkills.getState().load();
+      set({
+        phase: {
+          kind: "done",
+          local: out.local,
+          trashRequested: alsoTrashLocal && target.localPresent,
+          // 终审 M-6:删完才是用户真需要「去哪找回」的时候
+          historyUrl: phase.historyUrl,
+        },
+      });
+      // 库里那一版没了:先刷**被删的那个库**的索引,再重读「我的技能」(终审 I-1,
+      // 并发重读会读到删除前的缓存,刚删的技能以「只在库里 + 取回」复活)
+      void refreshAfterLibraryWrite(target.registryId, target.repo);
     } catch (raw) {
       set({ phase: { kind: "error", error: toAppError(raw) } });
     }

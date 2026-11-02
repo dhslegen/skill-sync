@@ -688,10 +688,10 @@ fn gone_from_library(store: &Store, record: &state::InstalledSkill) -> bool {
     let Some(slug) = record.library_dir_slug() else {
         return false;
     };
-    // 🔴 **不能用 `StoreIndex::is_for`**:它连分支一起比,而记账的 `git_ref` 存的是
-    // **提交 sha** 不是分支名(见 `share_installed` 里同一条注释)——拿它比分支恒不等,
-    // 这个判定就恒为 false,成了空转。缓存文件按 (源, owner, repo) 分,不按分支,
-    // 这里同样只比这三样。
+    // 🔴 **不能用 `StoreIndex::is_for`**:它连分支一起比,而记账的 `git_ref` 不可靠——
+    // 获取写的是**提交 sha**(见 `share_installed` 里同一条注释),分享写的是分支名
+    // (`record_pushed_skill`)。拿它比分支,获取来的那一大类恒不等,这个判定就恒为 false,
+    // 成了空转。缓存文件按 (源, owner, repo) 分,不按分支,这里同样只比这三样。
     let repo = RepoRef {
         owner: record.source.owner.clone(),
         repo: record.source.repo.clone(),
@@ -703,7 +703,41 @@ fn gone_from_library(store: &Store, record: &state::InstalledSkill) -> bool {
     }) else {
         return false;
     };
+    // 🔴 **缓存必须晚于这条记账**(终审 C-1):首次分享刚成功时,记账已经带上公司库来源,
+    // 而盘上那份索引是分享**之前**建的、自然没有它——不加这一条,刚分享进去的那一行会立刻
+    // 被说成「技能库里已经没有它了」。「这份缓存还没见过它」≠「库里没有它」,与 v7.6
+    // `LocalProbe` 同一条教训。时间读不出来(存量记账格式不认识)就当不知道,不下结论。
+    let Some(recorded_at) = iso_utc_to_unix(&record.updated_at) else {
+        return false;
+    };
+    if index.fetched_at <= recorded_at {
+        return false;
+    }
     !index.skills.iter().any(|s| s.dir_slug == slug)
+}
+
+/// `YYYY-MM-DDTHH:MM:SS[.fff]Z` → unix 秒。**只认本应用自己写的那一种 UTC 格式**
+/// (`commands::now_iso8601`),别的一律 `None`——调用方据此"不下结论",不猜时区。
+fn iso_utc_to_unix(s: &str) -> Option<i64> {
+    let s = s.strip_suffix('Z')?;
+    let (date, time) = s.split_once('T')?;
+    let mut d = date.split('-').map(|p| p.parse::<i64>().ok());
+    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
+    let time = time.split('.').next()?;
+    let mut t = time.split(':').map(|p| p.parse::<i64>().ok());
+    let (hh, mm, ss) = (t.next()??, t.next()??, t.next()??);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&day) || hh > 23 || mm > 59 || ss > 60 {
+        return None;
+    }
+    // Howard Hinnant 的 days_from_civil(与 `commands::civil_from_days` 互逆)
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hh * 3600 + mm * 60 + ss)
 }
 
 /// [`library_reachability`] 的入口:**没有来源的记账不问这个问题**。
@@ -1186,6 +1220,20 @@ fn unmanaged_row(
         kept_against: None, // 统一在 build 末尾按记账键补,见那里
         // 没有记账的行:没有"从哪个库来",谈不上"那个库里没了"
         gone_from_library: false,
+    }
+}
+
+#[cfg(test)]
+mod iso_tests {
+    use super::iso_utc_to_unix;
+
+    #[test]
+    fn parses_only_the_apps_own_utc_format() {
+        assert_eq!(iso_utc_to_unix("1970-01-01T00:00:00.000Z"), Some(0));
+        assert_eq!(iso_utc_to_unix("2026-11-03T08:00:00.000Z"), Some(1_793_692_800));
+        assert_eq!(iso_utc_to_unix("2000-03-01T00:00:01Z"), Some(951_868_801));
+        assert_eq!(iso_utc_to_unix("2026-11-03T08:00:00+08:00"), None, "带时区偏移的不认,不猜");
+        assert_eq!(iso_utc_to_unix(""), None);
     }
 }
 

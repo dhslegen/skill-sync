@@ -423,7 +423,7 @@ fn state_with_builtin_record(dir_slug: &str, marker: &str) -> State {
             owner: "skills".into(),
             repo: "skills".into(),
             path: format!("skills/{dir_slug}"),
-            // 记账里存的是**提交 sha**,不是分支名——判定若拿它去比分支就会恒为 false
+            // 获取写进记账的是**提交 sha**,不是分支名——判定若拿它去比分支就会恒为 false
             git_ref: "0123abcd".into(),
         },
         commit_sha: "0123abcd".into(),
@@ -438,13 +438,39 @@ fn state_with_builtin_record(dir_slug: &str, marker: &str) -> State {
     state
 }
 
+/// 把公司库索引缓存的 `fetched_at` 改成指定时刻(unix 秒)。`gone_from_library` 只信
+/// **晚于记账**的缓存(终审 C-1),测试要能分别构造"缓存在前 / 缓存在后"两种时序。
+fn set_builtin_cache_fetched_at(ctx: &Ctx, fetched_at: i64) {
+    let repo_ref = skillsync_lib::core::gitea::RepoRef { owner: "skills".into(), repo: "skills".into(), branch: "main".into() };
+    let path = store::cache_path(ctx.store.dir(), BUILTIN_REGISTRY_ID, &repo_ref);
+    let mut index = store::load_cache(&path).unwrap();
+    index.fetched_at = fetched_at;
+    store::save_cache(&path, &index).unwrap();
+}
+
+/// `NOW`(2026-08-27T00:00:00Z)的 unix 秒。
+const NOW_UNIX: i64 = 1_787_788_800;
+
 #[test]
-fn a_skill_missing_from_its_librarys_cached_index_is_reported_as_gone() {
+fn a_skill_missing_from_a_cache_built_after_its_record_is_reported_as_gone() {
     let ctx = ctx();
     skill_dir_with_hash(&ctx.home, ".agents/skills/weekly-report", "v1");
     write_index_cache(&ctx, vec![indexed_skill("other", None, "h")]);
+    set_builtin_cache_fetched_at(&ctx, NOW_UNIX + 60);
     let rows = build_rows_with_state(&ctx, &state_with_builtin_record("weekly-report", "v1"));
     assert!(row(&rows, "weekly-report").gone_from_library);
+}
+
+/// 🔴 终审 C-1:首次分享刚成功的那一刻——记账已带公司库来源,盘上索引是分享**之前**建的,
+/// 自然没有它。这时说"库里没了"是刚分享进去就说没了。
+#[test]
+fn a_cache_older_than_the_record_does_not_claim_the_skill_is_gone() {
+    let ctx = ctx();
+    skill_dir_with_hash(&ctx.home, ".agents/skills/weekly-report", "v1");
+    write_index_cache(&ctx, vec![indexed_skill("other", None, "h")]);
+    set_builtin_cache_fetched_at(&ctx, NOW_UNIX - 60);
+    let rows = build_rows_with_state(&ctx, &state_with_builtin_record("weekly-report", "v1"));
+    assert!(!row(&rows, "weekly-report").gone_from_library);
 }
 
 #[test]

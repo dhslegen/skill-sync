@@ -3012,3 +3012,77 @@ async fn pushing_changes_records_the_bytes_it_pushed_not_what_is_on_disk_afterwa
     assert_eq!(after.commit_sha, "newsha1");
     assert_eq!(after.content_hash, pushed_hash, "基线必须是推出去的那份,不是提交途中改过之后的");
 }
+
+/// 🔴 0.8.0 终审 C-2:作者删库、保留本机(记账被清成空来源,基线是旧的)→ 改几笔 → 再分享回去。
+/// 旧写法「已有记账一律不碰」让这一行永远没有来源、基线永远是旧的 → 主按钮卡在一颗必然失败的
+/// 「分享改动」上。分享成功后必须补上来源,并把基线对齐到推上去的内容。
+#[tokio::test]
+async fn sharing_back_a_detached_skill_restores_its_source_and_baseline() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "my-notes", "记点东西");
+    let mut seeded = state_of(&c);
+    seeded.installed.push(InstalledSkill {
+        name: "my-notes".into(),
+        source: SkillSource { registry_id: String::new(), owner: String::new(), repo: String::new(), path: String::new(), git_ref: String::new() },
+        commit_sha: "old".into(),
+        content_hash: "sha256:删库之前那一版".into(),
+        origin: None,
+        body: None,
+        agents: vec!["claude-code".into()],
+        links: vec![],
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    });
+    c.store.save_state(&seeded).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: my-notes\ndescription: 改了几笔\n---\n正文\n").unwrap();
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", false).await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+
+    confirmed_share(&client, &c, &env, &repo_ref(), "my-notes").await.unwrap();
+
+    let after = state_of(&c);
+    let rec = after.installed.iter().find(|s| s.name == "my-notes").unwrap();
+    assert!(rec.has_source(), "分享成功后要补上来源");
+    assert_eq!(rec.source.registry_id, "company");
+    assert_eq!(rec.commit_sha, "newsha1");
+    assert_eq!(rec.content_hash, fsops::dir_content_hash(&dir).unwrap(), "基线对齐到推上去的内容");
+    assert_eq!(rec.agents, ["claude-code"], "工具关联一个字不动");
+}
+
+/// 对照:有来源的记账(从别处装来的)分享后照旧不被覆盖——既有约束不变。
+#[tokio::test]
+async fn sharing_does_not_rewrite_a_record_that_already_has_a_source() {
+    let (c, env) = ctx();
+    let dir = canonical(&c).join("my-notes");
+    write_skill(&dir, "my-notes", "记点东西");
+    let mut seeded = state_of(&c);
+    seeded.installed.push(InstalledSkill {
+        name: "my-notes".into(),
+        source: SkillSource { registry_id: "custom-1".into(), owner: "team".into(), repo: "lib".into(), path: "skills/my-notes".into(), git_ref: "main".into() },
+        commit_sha: "old".into(),
+        content_hash: "sha256:原来的基线".into(),
+        origin: None,
+        body: None,
+        agents: vec![],
+        links: vec![],
+        installed_at: NOW.into(),
+        updated_at: NOW.into(),
+    });
+    c.store.save_state(&seeded).unwrap();
+
+    let server = MockServer::start().await;
+    mount_skill_exists(&server, "my-notes", false).await;
+    mount_repo_info(&server, true).await;
+    mount_commit_ok(&server).await;
+    let client = GiteaClient::new(server.uri(), None).unwrap();
+    confirmed_share(&client, &c, &env, &repo_ref(), "my-notes").await.unwrap();
+
+    let rec = state_of(&c).installed.into_iter().find(|s| s.name == "my-notes").unwrap();
+    assert_eq!(rec.source.registry_id, "custom-1");
+    assert_eq!(rec.content_hash, "sha256:原来的基线");
+}

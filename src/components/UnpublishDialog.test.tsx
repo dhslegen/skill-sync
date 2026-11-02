@@ -66,6 +66,11 @@ describe("「…」里的「从技能库删除」只给作者(0.8.0 任务 6)", 
     expect(items.map((i) => i.kind)).not.toContain("unpublish");
   });
 
+  it("没有写权限:不摆(终审 M-3)", () => {
+    const items = buildRowMenuItems(skill({}), { kind: "none" }, false, false, true);
+    expect(items.map((i) => i.kind)).not.toContain("unpublish");
+  });
+
   it("作者但本机没有本体:只剩这一项,没有分隔线", () => {
     const items = buildRowMenuItems(skill({ body: "", localPresent: false }), { kind: "pull" }, false, false);
     expect(items).toEqual([
@@ -172,3 +177,58 @@ describe("删除流程与确认弹窗", () => {
     ).toEqual({ dirSlug: "a", displayName: "甲", registryId: "company", repo: "skills/skills", localPresent: false });
   });
 });
+
+describe("删除之后的重读顺序与收尾(终审 I-1 / M-5 / M-6)", () => {
+  it("先刷**被删的那个库**的索引,等它回来再重读「我的技能」", async () => {
+    let releaseIndex: (v: unknown) => void = () => {};
+    let refreshArgs: unknown = null;
+    const seq: (UnpublishOutcome)[] = [preview(), { outcome: "unpublished", commitSha: "x", local: { kind: "untouched" } }];
+    invoke.mockImplementation(async (cmd: string, a?: unknown) => {
+      if (cmd === "skill_unpublish") return seq.shift();
+      if (cmd === "store_index" && JSON.stringify(a).includes('"force":true')) {
+        refreshArgs = a;
+        return new Promise((r) => (releaseIndex = r));
+      }
+      return cmd === "installed_list" ? [] : null;
+    });
+    render(<UnpublishDialog />);
+    await act(() => useUnpublish.getState().begin({ ...TARGET, registryId: "custom-1", repo: "team/lib" }));
+    await userEvent.click(screen.getByRole("button", { name: t("unpublish.confirm") }));
+    await waitFor(() => expect(refreshArgs).not.toBeNull());
+    expect(JSON.stringify(refreshArgs)).toContain("custom-1");
+    expect(JSON.stringify(refreshArgs)).toContain("team/lib");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(invoke).not.toHaveBeenCalledWith("installed_list", undefined);
+    await act(async () => releaseIndex({}));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("installed_list", undefined));
+  });
+
+  it("删完也给「在技能库里查看历史」", async () => {
+    answer([preview(), { outcome: "unpublished", commitSha: "x", local: { kind: "untouched" } }]);
+    render(<UnpublishDialog />);
+    await act(() => useUnpublish.getState().begin(TARGET));
+    await userEvent.click(screen.getByRole("button", { name: t("unpublish.confirm") }));
+    await screen.findByText("已从技能库删除「周报生成」");
+    expect(screen.getByRole("button", { name: t("unpublish.history") })).toBeInTheDocument();
+  });
+
+  it("删除进行中按 Esc:不关弹窗,也不漏到下层", async () => {
+    let release: (v: unknown) => void = () => {};
+    invoke.mockImplementation(async (cmd: string, a?: unknown) => {
+      if (cmd !== "skill_unpublish") return null;
+      if ((a as { args: { confirmRev?: string } }).args.confirmRev) return new Promise((r) => (release = r));
+      return preview();
+    });
+    render(<UnpublishDialog />);
+    await act(() => useUnpublish.getState().begin(TARGET));
+    await userEvent.click(screen.getByRole("button", { name: t("unpublish.confirm") }));
+    const below = vi.fn();
+    document.addEventListener("keydown", below);
+    await userEvent.keyboard("{Escape}");
+    document.removeEventListener("keydown", below);
+    expect(below).not.toHaveBeenCalled();
+    expect(screen.getByText("从技能库删除「周报生成」")).toBeInTheDocument();
+    await act(async () => release({ outcome: "unpublished", commitSha: "x", local: { kind: "untouched" } }));
+  });
+});
+

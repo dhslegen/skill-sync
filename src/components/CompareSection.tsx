@@ -36,7 +36,7 @@ export function CompareSection({
    * (`share`,标签「保留并分享我的版本」);其他人 → 记住对库里这一版已保留(`remember`)。
    * `run` 失败要抛出来,这一块自己渲染——它是点按钮那一处唯一看得见的地方。
    */
-  keepMine: { kind: "share" | "remember"; run: () => Promise<void> };
+  keepMine: { kind: "share" | "remember"; run: () => Promise<void>; hint?: string };
   /** 对库里这一版已经选过保留:摘要换成安静的一句,「保留」那颗不再摆。 */
   kept?: boolean;
 }) {
@@ -121,7 +121,9 @@ export function CompareSection({
             </button>
           </div>
           <p className="mt-1.5 text-[11.5px] leading-[1.6] text-text-3">
-            {!kept && (keepMine.kind === "share" ? t("compare.shareMineHint") : t("compare.keepMineHint"))}
+            {!kept &&
+              (keepMine.hint ??
+                (keepMine.kind === "share" ? t("compare.shareMineHint") : t("compare.keepMineHint")))}
             {!kept && " "}
             {t("compare.useLibraryHint")}
           </p>

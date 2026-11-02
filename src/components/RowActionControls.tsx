@@ -216,6 +216,7 @@ export function OutlineButton({
   disabled,
   title,
   size = "row",
+  danger = false,
   onClick,
   children,
 }: {
@@ -223,6 +224,8 @@ export function OutlineButton({
   /** 原生 `title`(悬浮提示)。目前只有动作区的「改用库里的版本」用它说明后果。 */
   title?: string;
   size?: ButtonSize;
+  /** 破坏性动作(0.8.0「从技能库删除」):文字用危险色,仍是描边按钮、不是主色。 */
+  danger?: boolean;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -233,7 +236,8 @@ export function OutlineButton({
       title={title}
       onClick={onClick}
       className={cn(
-        "rounded-ctl border border-border font-medium text-text-2 hover:border-border-strong hover:text-text disabled:opacity-50",
+        "rounded-ctl border border-border font-medium hover:border-border-strong disabled:opacity-50",
+        danger ? "text-[#c0392b] dark:text-[#e0705f]" : "text-text-2 hover:text-text",
         SIZE_CLASS[size],
       )}
     >

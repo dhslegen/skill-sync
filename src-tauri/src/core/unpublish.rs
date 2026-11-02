@@ -100,8 +100,12 @@ pub async fn unpublish(
     let prefix = format!("{skill_path}/");
     let library_slug = skill_path.rsplit('/').next().unwrap_or(skill_path).to_string();
 
-    // ① 此刻库里的样子(一次下载,作者闸与清单共用)
-    let archive = read.download_archive(req.repo).await?;
+    // ① 此刻库里的样子(一次下载,作者闸与清单共用)。🔴 **压缩包与下面的删除清单读同一个
+    // 提交**(终审 M-8):先取分支头,两处都按它的 sha 读——否则两次读之间被推进来的文件
+    // 会进删除清单,却从没出现在用户看过的清单上。
+    let head = read.branch_head(req.repo).await?;
+    let at_head = RepoRef { branch: head.sha.clone(), ..req.repo.clone() };
+    let archive = read.download_archive(&at_head).await?;
     let remote = share::remote_files(&archive, &prefix);
     if remote.is_empty() {
         return Err(AppError::new(
@@ -136,6 +140,17 @@ pub async fn unpublish(
         }
     }
 
+    // ③' 写权限——**排在预览轮之前**(终审 M-3):没有写权限的作者不该先看完清单、
+    //     点了确认才被告知删不了。这一步只读(查仓库信息),预览轮仍然零写请求。
+    let info = gitea.repo_info(&req.repo.owner, &req.repo.repo).await?;
+    if !info.permissions.push {
+        return Err(AppError::new(
+            "REPO_NO_WRITE_ACCESS",
+            "你对这个技能库没有写入权限,删不了。请找管理员开通后再试",
+        )
+        .with_detail(format!("no push permission on {}/{}", req.repo.owner, req.repo.repo)));
+    }
+
     // ③ 清单 + 快照指纹。两轮绑同一份快照(见模块头 2)
     let mut files: Vec<String> = remote
         .keys()
@@ -154,18 +169,7 @@ pub async fn unpublish(
         Some(_) => {}
     }
 
-    // ④ 写权限(与分享同一个早退位置:读元数据之前)
-    let info = gitea.repo_info(&req.repo.owner, &req.repo.repo).await?;
-    if !info.permissions.push {
-        return Err(AppError::new(
-            "REPO_NO_WRITE_ACCESS",
-            "你对这个技能库没有写入权限,删不了。请找管理员开通后再试",
-        )
-        .with_detail(format!("no push permission on {}/{}", req.repo.owner, req.repo.repo)));
-    }
-
     // ⑤ 删除清单:要每个文件此刻在分支头上的 blob sha(Gitea 拿它做乐观锁)
-    let head = gitea.branch_head(req.repo).await?;
     let mut changes: Vec<FileChange> = gitea
         .tree_files(&req.repo.owner, &req.repo.repo, &head.sha)
         .await?
@@ -225,7 +229,7 @@ pub async fn unpublish(
         // (`converge::set_agents` 建的那种),按既有判据落进「可分享到」,分享按钮回来。
         // 同事那边的记账没人动,照样显示"技能库里已经没有它了"——那正是他们该看到的。
         // 失败不回滚库里那一笔(已经发生了),只记日志:最坏是这一行暂时显示"库里没了"。
-        if let Err(e) = detach_local_record(installer, store, req.dir_slug, &library_slug, req.repo) {
+        if let Err(e) = detach_local_record(installer, store, req.dir_slug, &library_slug, req.registry_id, req.repo) {
             tracing::warn!(code = %e.code, "删除后清理本机记账来源失败");
         }
         LocalResult::Untouched
@@ -239,6 +243,7 @@ fn detach_local_record(
     store: &Store,
     dir_slug: &str,
     library_slug: &str,
+    registry_id: &str,
     repo: &RepoRef,
 ) -> Result<(), AppError> {
     let key = crate::core::converge::record_key(installer, dir_slug)?;
@@ -250,7 +255,13 @@ fn detach_local_record(
         .retain(|s| !(s.name == library_slug && s.target.owner == repo.owner && s.target.repo == repo.repo));
     let mut changed = next.shared.len() != before;
     if let Some(rec) = next.installed.iter_mut().find(|s| s.name == key) {
-        if rec.has_source() {
+        // 🔴 只清**指向被删的那个库**的来源(终审 I-4):同名技能可能装自别的库,
+        // 那条记账的更新去处与这次删除毫无关系,清掉它就再也绑不回去。
+        if rec.has_source()
+            && rec.source.registry_id == registry_id
+            && rec.source.owner == repo.owner
+            && rec.source.repo == repo.repo
+        {
             rec.source.registry_id.clear();
             rec.source.owner.clear();
             rec.source.repo.clear();

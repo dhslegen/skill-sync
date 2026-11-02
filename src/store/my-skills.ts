@@ -836,6 +836,9 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
         : undefined;
     await skillKeepAgainst({ dirSlug, registryId, repo });
     await get().load();
+    // 终审 M-1:「已保留」记的是盘上缓存的指纹,界面比的是内存里的索引——两者错开时
+    // 保留了仍会提示。重载一次(分支头没变就命中盘上缓存),让两边对齐
+    void useStoreIndex.getState().load();
   },
 
   replaceWithLibrary: async (dirSlug, target) => {
@@ -971,6 +974,28 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
  * 🔴 **两轮走同一个函数,不是两个**:目标库的分流(`shareTargetRepo`)只有一份
  * 实现,分两处算就会出现"确认屏说推去 A、实际推去 B",而用户是照着那句话点的。
  */
+/**
+ * 写过技能库之后的重读顺序(0.8.0 终审 C-1 / I-1):**先**把**被写的那个库**的索引强制刷新到盘上,
+ * **再**重读「我的技能」。
+ *
+ * 反过来(先重读本页、再 `void` 刷索引)的话,`installed_list` 读到的是写之前的旧缓存:首次分享
+ * 刚成功就被说成「库里没了」,删库之后刚删的技能以「只在库里 + 取回」复活。而且商店的
+ * `load(true)` 刷的是商店**当前选中**的库,不一定是被写的那个——这里按目标坐标刷。
+ * 刷索引失败不拦重读(网络断了,行状态退回旧缓存的说法,下次刷新纠正),也不额外报错:
+ * 写库这件事本身已经成功,有自己的成功提示。
+ */
+export async function refreshAfterLibraryWrite(registryId?: string, repo?: string) {
+  try {
+    await storeIndex(true, registryId, repo);
+  } catch {
+    // 见函数文档:刷不到就用旧缓存,不报错
+  }
+  await useMySkills.getState().load();
+  // 商店内存里那份索引也对齐(分支头没变时命中刚写好的缓存,不再下载)
+  void useStoreIndex.getState().load();
+  void useInstall.getState().refreshInstalled();
+}
+
 async function runShare(
   dirSlug: string,
   confirm: ShareConfirmToken | undefined,
@@ -1017,12 +1042,9 @@ async function runShare(
       return;
     }
     set({ shareTarget: null, sharePreview: null, shareDone: { dirSlug, mode: result.mode, flow: "share" } });
-    // 分享成功后要刷新的不止这一页:商店索引(库里多了一个技能)、
-    // 已装记录(商店卡片的按钮档位据它决定)、本页(直推进库的技能会被 core
-    // 当场记进账,状态从「尚未分享」变成「已同步」)。
-    await get().load();
-    void useStoreIndex.getState().load(true);
-    void useInstall.getState().refreshInstalled();
+    // 分享成功后要刷新的不止这一页:商店索引(库里多了一个技能)、已装记录、本页。
+    // 顺序与目标库见 `refreshAfterLibraryWrite`(0.8.0 终审 C-1)。
+    await refreshAfterLibraryWrite(registryId, repo);
   } catch (raw) {
     set({ shareError: { dirSlug, error: toAppError(raw), flow: "share" } });
   } finally {

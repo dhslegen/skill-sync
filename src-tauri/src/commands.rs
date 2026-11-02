@@ -3473,6 +3473,22 @@ mod tests {
         );
     }
 
+    /// `SkillDetail` 的完整键集合(终审 M-8):前端 `src/lib/ipc.ts::SkillDetail` 照它写,
+    /// 只查某个键存在分不出"被省略"与"被拼错"。
+    #[test]
+    fn skill_detail_serializes_with_camel_case_keys() {
+        let v = serde_json::to_value(detail_at("skills/x")).unwrap();
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        assert_eq!(
+            k,
+            [
+                "attribution", "commitSha", "committedAt", "description", "dirSlug", "files",
+                "hasScripts", "libraryUrl", "name", "path", "skillMd", "tags", "updatedAt",
+            ]
+        );
+    }
+
     #[test]
     fn plaza_store_detail_has_no_library_url_because_its_library_is_skills_sh() {
         let repo = RepoRef { owner: "team".into(), repo: "lib".into(), branch: "dev".into() };

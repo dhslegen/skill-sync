@@ -851,18 +851,30 @@ fn record_pushed_skill(
     content_hash: String,
     now: &str,
 ) {
-    if next.installed.iter().any(|s| s.name == home.dir_name) {
+    let source = SkillSource {
+        registry_id: req.registry_id.to_string(),
+        owner: req.repo.owner.clone(),
+        repo: req.repo.repo.clone(),
+        path: format!("skills/{}", home.dir_name),
+        git_ref: req.repo.branch.clone(),
+    };
+    if let Some(existing) = next.installed.iter_mut().find(|s| s.name == home.dir_name) {
+        // 🔴 **空来源的账要补上来源与基线**(0.8.0 终审 C-2):作者删库保留本机之后
+        // (`unpublish::detach_local_record`),或给纯本地技能勾过工具(`converge::set_agents`
+        // 建的 adopted 账),记账都在、来源是空的。照旧"已有记账一律不碰"的话,分享成功后
+        // 这一行没有来源、基线还是旧的 → 主按钮永远是「分享改动」,点了必然失败、刷新多少次都一样。
+        // **有来源的记账仍不覆盖**:那是从别处装来的,来源与基线另有主人(既有约束不变)。
+        if !existing.has_source() {
+            existing.source = source;
+            existing.commit_sha = submitted.commit_sha.clone();
+            existing.content_hash = content_hash;
+            existing.updated_at = now.to_string();
+        }
         return;
     }
     next.installed.push(state::InstalledSkill {
         name: home.dir_name.clone(),
-        source: SkillSource {
-            registry_id: req.registry_id.to_string(),
-            owner: req.repo.owner.clone(),
-            repo: req.repo.repo.clone(),
-            path: format!("skills/{}", home.dir_name),
-            git_ref: req.repo.branch.clone(),
-        },
+        source,
         commit_sha: submitted.commit_sha.clone(),
         // 基线取刚推上去的内容:不等就会立刻误报"有可用更新 / 有未分享的改动"
         content_hash,

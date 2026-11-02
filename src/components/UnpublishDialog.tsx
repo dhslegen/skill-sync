@@ -30,11 +30,11 @@ export function UnpublishDialog() {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      // 删除进行中不让 Esc 关掉:关掉了结果就没有地方说了
-      if (e.key === "Escape" && phase.kind !== "running") {
-        e.stopPropagation();
-        close();
-      }
+      if (e.key !== "Escape") return;
+      // 弹窗开着时 Esc 一律在这里截住,不漏到下层(终审 M-5:running 时漏下去会关掉底下的详情面板);
+      // 删除进行中只截不关——关掉了结果就没有地方说了
+      e.stopPropagation();
+      if (phase.kind !== "running") close();
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
@@ -122,6 +122,22 @@ export function UnpublishDialog() {
         {phase.kind === "done" && (
           <>
             <p className="mt-2 text-[12.5px] leading-[1.6] text-text-2">{t("unpublish.doneBody")}</p>
+            <p className="mt-1 text-[12px] leading-[1.6] text-text-3">
+              {t("unpublish.recoverable")}
+              <button
+                type="button"
+                onClick={() => {
+                  setLinkError(null);
+                  openLibraryUrl(phase.historyUrl).catch((raw: unknown) =>
+                    setLinkError(isAppError(raw) ? raw.message : t("error.generic")),
+                  );
+                }}
+                className="ml-1 font-medium text-accent underline-offset-2 hover:underline"
+              >
+                {t("unpublish.history")}
+              </button>
+            </p>
+            {linkError && <p className="mt-1 text-[11.5px] text-[#c0392b] dark:text-[#e0705f]">{linkError}</p>}
             {phase.local.kind === "trashed" && (
               <p className="mt-1 text-[12.5px] leading-[1.6] text-text-2">{t("unpublish.localTrashed")}</p>
             )}

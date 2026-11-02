@@ -708,6 +708,37 @@ describe("分享确认屏(零编辑)", () => {
     });
   });
 
+  // 🔴 0.8.0 终审 C-1:分享成功后**先**把目标库的索引强制刷新到盘上,**再**重读本页。
+  // 反过来的话 installed_list 读到分享前的旧缓存,刚分享进去的那一行会被说成「库里没了」
+  it("分享成功后先强制刷新目标库的索引,**等它回来**再重读「我的技能」", async () => {
+    useMySkills.setState({
+      list: [view({ relation: "shared", sourceOwner: "design", sourceRepo: "skills" })],
+      shareTarget: { dirSlug: "weekly-report" },
+      sharePreview: SEEN_PREVIEW,
+    });
+    let releaseIndex: (v: unknown) => void = () => {};
+    let refreshArgs: unknown = null;
+    invoke.mockImplementation(async (cmd, a) => {
+      if (cmd === "skill_share") return { outcome: "shared", mode: "pushed" };
+      if (cmd === "installed_list") return [view()];
+      if (cmd === "store_index" && JSON.stringify(a).includes('"force":true')) {
+        refreshArgs = a;
+        return new Promise((r) => (releaseIndex = r));
+      }
+      return AGENTS;
+    });
+    const done = useMySkills.getState().confirmShare();
+    await vi.waitFor(() => expect(refreshArgs).not.toBeNull());
+    expect(JSON.stringify(refreshArgs)).toContain("design/skills");
+    // 索引还没刷完:绝不能先重读——那会读到分享之前的旧缓存
+    const listCallsBefore = invoke.mock.calls.filter(([cmd]) => cmd === "installed_list").length;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "installed_list").length).toBe(listCallsBefore);
+    releaseIndex({});
+    await done;
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "installed_list").length).toBeGreaterThan(listCallsBefore);
+  });
+
   it("确认时带账上的来源坐标——缺省会推到该源主库,追加库的技能就推错了地方", async () => {
     useMySkills.setState({
       list: [view({ relation: "shared", sourceOwner: "design", sourceRepo: "skills" })],

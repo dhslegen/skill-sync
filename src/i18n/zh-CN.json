@@ -414,6 +414,7 @@
   "compare.keepMine": "保留我的版本",
   "compare.keepMineHint": "库里这一版不再提醒你;库里再更新时会重新提示。",
   "compare.shareMine": "保留并分享我的版本",
+  "compare.keepMineStoreHint": "库里这一版不再提醒你。你是作者:要把你的版本分享回技能库,请到「我的技能」里操作。",
   "compare.shareMineHint": "你是这个技能的作者:分享之后,技能库里的会和你电脑上的一致。",
   "compare.keptSummary": "你选择了保留你的版本,库里这一版不再提醒;库里更新时会重新提示。",
   "compare.keepFailed": "没能记住你的选择",

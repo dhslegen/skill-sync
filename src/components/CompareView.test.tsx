@@ -351,3 +351,19 @@ describe("keepMineFor:按是不是作者分两档(0.8.0 任务 4)", () => {
     expect(beginShare).toHaveBeenCalledWith("weekly-report");
   });
 });
+
+describe("商店宿主的「保留我的版本」(终审 I-2/I-3)", () => {
+  it("作者在商店里也只记住、不分享,并指路去「我的技能」", async () => {
+    const keepMine = vi.fn(async () => {});
+    const shareChanges = vi.fn(async () => {});
+    useMySkills.setState({ keepMine, shareChanges });
+    const view = { dirSlug: "weekly-report", relation: "shared", contentHash: "h" } as InstalledSkillView;
+    const k = keepMineFor(view, "weekly-report", "周报生成", { registryId: "custom-1", repo: "team/lib" }, "store");
+    expect(k.kind).toBe("remember");
+    expect(k.hint).toBe(t("compare.keepMineStoreHint"));
+    await k.run();
+    expect(keepMine).toHaveBeenCalledWith("weekly-report", { registryId: "custom-1", repo: "team/lib" });
+    expect(shareChanges).not.toHaveBeenCalled();
+  });
+});
+

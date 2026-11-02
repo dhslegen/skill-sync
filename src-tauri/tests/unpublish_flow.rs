@@ -113,7 +113,8 @@ async fn mount_meta(server: &MockServer, file: &str, text: Option<&str>) {
 /// 读链路 + 写链路的全套 mock。`push` 控制写权限,`commit_status` 控制提交结果。
 async fn mount_all(server: &MockServer, author: Option<&str>, push: bool, commit_status: u16) {
     Mock::given(method("GET"))
-        .and(path("/api/v1/repos/skills/skills/archive/main.zip"))
+        // 压缩包按分支头那一个提交读(终审 M-8),与删除清单用的文件树同一个 sha
+        .and(path("/api/v1/repos/skills/skills/archive/head1.zip"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(library_zip(author, &[])))
         .mount(server)
         .await;
@@ -265,8 +266,14 @@ async fn a_stale_confirmation_deletes_nothing_and_shows_the_new_list() {
     let server = MockServer::start().await;
     mount_all(&server, Some("张三"), true, 201).await;
 
+    let fresh = preview_rev(&c, &server).await;
     let out = run(&c, &server, Some("别人推之前那一版的指纹"), false).await.unwrap();
-    assert!(matches!(out, UnpublishOutcome::NeedsConfirm { stale: true, .. }));
+    // 标题承诺的另一半:退回来的是**此刻**的清单与凭据(终审 M-7),拿它就能确认
+    let UnpublishOutcome::NeedsConfirm { stale: true, files, remote_rev, .. } = out else {
+        panic!("快照对不上应当退回新清单:{out:?}");
+    };
+    assert_eq!(files, ["SKILL.md", "ref.md"]);
+    assert_eq!(remote_rev, fresh);
     assert!(posts(&server).await.is_empty());
 }
 
@@ -298,10 +305,11 @@ async fn no_write_access_and_protected_branch_each_get_their_own_sentence() {
     let c = ctx("张三");
     let server = MockServer::start().await;
     mount_all(&server, Some("张三"), false, 201).await;
-    let rev = preview_rev(&c, &server).await;
-    let err = run(&c, &server, Some(&rev), false).await.unwrap_err();
+    // 终审 M-3:写权限在**预览轮**就查——不让人看完清单、点了确认才知道删不了
+    let err = run(&c, &server, None, false).await.unwrap_err();
     assert_eq!(err.code, "REPO_NO_WRITE_ACCESS");
     assert!(err.message.contains("删不了"));
+    assert!(posts(&server).await.is_empty());
 
     let server = MockServer::start().await;
     mount_all(&server, Some("张三"), true, 403).await;
@@ -449,4 +457,58 @@ async fn keeping_the_local_copy_detaches_its_record_from_the_library() {
         "「分享到这个库」的旧基线也作废"
     );
     assert!(after.shared.iter().any(|s| s.name == "meeting-notes"), "别的技能的分享记账不动");
+}
+
+/// 终审 I-4:同名技能装自**别的库**时,那条记账的来源与这次删除无关,一个字段都不动。
+#[tokio::test]
+async fn detaching_leaves_a_record_from_another_library_alone() {
+    let c = ctx("张三");
+    let mut state = c.store.load_state().map(|l| l.value).unwrap_or_default();
+    state.installed.push(InstalledSkill {
+        name: "weekly-report".into(),
+        source: SkillSource {
+            registry_id: "custom-1".into(), owner: "team".into(), repo: "lib".into(),
+            path: "skills/weekly-report".into(), git_ref: "main".into(),
+        },
+        commit_sha: "aaa".into(), content_hash: "h".into(),
+        origin: None, body: None, agents: vec![], links: vec![],
+        installed_at: "2026-11-03T00:00:00Z".into(), updated_at: "2026-11-03T00:00:00Z".into(),
+    });
+    c.store.save_state(&state).unwrap();
+
+    let server = MockServer::start().await;
+    mount_all(&server, Some("张三"), true, 201).await;
+    let rev = preview_rev(&c, &server).await;
+    run(&c, &server, Some(&rev), false).await.unwrap();
+
+    let rec = c.store.load_state().unwrap().value.installed.into_iter().find(|s| s.name == "weekly-report").unwrap();
+    assert_eq!(rec.source.registry_id, "custom-1", "别的库的记账来源不能被清掉");
+    assert_eq!(rec.source.repo, "lib");
+}
+
+/// I-4 的鉴别力补充:**只有来源 registry 不同**(owner/repo 恰好同名)时同样不动。
+/// 上一条三个坐标全不同,去掉任何一项比较都会被另外两项兜住(空转模式 ③,注入实测过)。
+#[tokio::test]
+async fn detaching_leaves_a_same_named_repo_on_another_source_alone() {
+    let c = ctx("张三");
+    let mut state = c.store.load_state().map(|l| l.value).unwrap_or_default();
+    state.installed.push(InstalledSkill {
+        name: "weekly-report".into(),
+        source: SkillSource {
+            registry_id: "custom-1".into(), owner: "skills".into(), repo: "skills".into(),
+            path: "skills/weekly-report".into(), git_ref: "main".into(),
+        },
+        commit_sha: "aaa".into(), content_hash: "h".into(),
+        origin: None, body: None, agents: vec![], links: vec![],
+        installed_at: "2026-11-03T00:00:00Z".into(), updated_at: "2026-11-03T00:00:00Z".into(),
+    });
+    c.store.save_state(&state).unwrap();
+
+    let server = MockServer::start().await;
+    mount_all(&server, Some("张三"), true, 201).await;
+    let rev = preview_rev(&c, &server).await;
+    run(&c, &server, Some(&rev), false).await.unwrap();
+
+    let rec = c.store.load_state().unwrap().value.installed.into_iter().find(|s| s.name == "weekly-report").unwrap();
+    assert_eq!(rec.source.registry_id, "custom-1");
 }

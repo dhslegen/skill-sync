@@ -301,11 +301,21 @@ export function SkillActionsBlock({
   // `rowAction` 语境下的取回),v7.4 已拍板"推"的动作不摆在"拉"的界面里,见组件
   // 文档「两种宿主」一节。
   const caps = capsOf(host);
+  // 「从技能库删除」与「移除」一样不进普通次要动作那一组(终审 M-2:它是破坏性动作,
+  // 要放在右边的危险区,不能和「打开文件夹」同款并排)
   const items = allItems.filter(
-    (spec) => spec.kind !== "remove" && (caps.allSecondaryItems || spec.kind === "reveal"),
+    (spec) =>
+      spec.kind !== "remove" &&
+      spec.kind !== "unpublish" &&
+      (caps.allSecondaryItems || spec.kind === "reveal"),
   );
   const removeItem = allItems.find((spec) => spec.kind === "remove") ?? null;
-  // host="store" 下 `items` 只剩「打开文件夹」,「从技能库删除」与「移除」一样收进「…」
+  // 🔴 「从技能库删除」**只在「我的技能」宿主下摆**(0.8.0 终审 I-2,用户 2026-11-03 拍板):
+  // 它是「推」的动作,v7.4 定下「推」的动作不摆在「拉」的界面(商店)里;而且商店宿主下
+  // 这一行的库与商店正在浏览的库可能不是同一个,删出去的会是另一个库。
+  // 落实在**渲染结构**上:它只出现在下面 `removeInMenu === false`(「我的技能」)那一支;
+  // 商店那一支的「…」只收「移除」。别在这里再加一道宿主判断——同一条规则查两遍,
+  // 那一道永远不触发(注入实测过),只会吞掉注入信号。
   const unpublishItem = allItems.find((spec) => spec.kind === "unpublish") ?? null;
 
   const [revealError, setRevealError] = useState<string | null>(null);
@@ -370,17 +380,6 @@ export function SkillActionsBlock({
           },
         ]
       : []),
-    ...(unpublishItem
-      ? [
-          {
-            key: "unpublish",
-            label: t(unpublishItem.labelKey),
-            title: unpublishItem.titleKey ? t(unpublishItem.titleKey) : undefined,
-            onClick: onUnpublish,
-            separatorBefore: !removeItem,
-          },
-        ]
-      : []),
   ];
   // `host="mine"`:「移除」仍是常驻可见的 `OutlineButton`(§12「全部摆开」);
   // `host="store"`:「…」收下库链接与「移除」——两支的**存在条件不同**,
@@ -392,11 +391,23 @@ export function SkillActionsBlock({
         <SkillRowMenu items={menuItems} preferredPlacement={"up"} subject={subject} />
       </div>
     )
-  ) : removeItem ? (
-    <div className="ml-auto">
-      <OutlineButton size="footer" onClick={onRemove}>
-        {t(removeItem.labelKey)}
-      </OutlineButton>
+  ) : removeItem || unpublishItem ? (
+    <div className="ml-auto flex items-center gap-2">
+      {unpublishItem && (
+        <OutlineButton
+          size="footer"
+          onClick={onUnpublish}
+          title={unpublishItem.titleKey ? t(unpublishItem.titleKey) : undefined}
+          danger
+        >
+          {t(unpublishItem.labelKey)}
+        </OutlineButton>
+      )}
+      {removeItem && (
+        <OutlineButton size="footer" onClick={onRemove}>
+          {t(removeItem.labelKey)}
+        </OutlineButton>
+      )}
     </div>
   ) : null;
 

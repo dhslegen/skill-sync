@@ -283,7 +283,9 @@ export function buildRowMenuItems(
   // 作者就是我(core 侧 `unpublish` 用的是同一个 `ownership::relation`,再拦一遍)。
   // 本地没有本体的那一档(换电脑后只在库里)也给:作者在哪台电脑上都该删得掉。
   // 破坏性动作,放在最后;前面有别的项才画分隔线(「移除」已经画过一条就不再画)。
-  if (skill.relation === "shared") {
+  // 终审 M-3:没有写权限就不摆(设计 §3「作者**并且**有写权限」)——摆出来就是看完清单、
+  // 点了确认才被告知删不了。core 那侧在预览轮也拦,两层职责不同:这里是不摆,那里是不许。
+  if (skill.relation === "shared" && !noWriteAccess) {
     // 不用 `.at(-1)`:超出 tsconfig 的 ES2020 lib(M2 任务 6 双平台 CI 一起红过)
     const afterRemove = items[items.length - 1]?.kind === "remove";
     items.push({

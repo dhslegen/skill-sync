@@ -241,7 +241,20 @@ export function keepMineFor(
   dirSlug: string,
   displayName: string,
   target?: { registryId?: string; repo?: string },
-): { kind: "share" | "remember"; run: () => Promise<void> } {
+  /**
+   * 🔴 商店宿主传 `"store"`(0.8.0 终审 I-2/I-3,用户 2026-11-03 拍板):商店里**不摆「推」的动作**
+   * (v7.4)。作者在商店里也只「记住保留」,并提示去「我的技能」分享——否则会推去「我的技能」
+   * 那一行的库(不一定是商店正在浏览的),而且分享的成功与失败在商店详情里没有任何渲染点。
+   */
+  host: "mine" | "store" = "mine",
+): { kind: "share" | "remember"; run: () => Promise<void>; hint?: string } {
+  if (host === "store") {
+    return {
+      kind: "remember",
+      run: () => useMySkills.getState().keepMine(dirSlug, target),
+      hint: skill?.relation === "shared" ? t("compare.keepMineStoreHint") : undefined,
+    };
+  }
   if (skill?.relation === "shared") {
     return {
       kind: "share",
@@ -717,10 +730,13 @@ function PanelBody({
                   repo: activeRepo ?? undefined,
                 })
             }
-            keepMine={keepMineFor(whereSkill, detail.dirSlug, detail.name, {
-              registryId: activeRegistry ?? undefined,
-              repo: activeRepo ?? undefined,
-            })}
+            keepMine={keepMineFor(
+              whereSkill,
+              detail.dirSlug,
+              detail.name,
+              { registryId: activeRegistry ?? undefined, repo: activeRepo ?? undefined },
+              "store",
+            )}
             kept={keptNow(whereSkill, remoteHashOf(storeIndex, detail.dirSlug))}
           />
         )}

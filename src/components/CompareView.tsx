@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { SharePlanList } from "@/components/SharePlanList";
 import { t } from "@/i18n";
@@ -59,7 +59,16 @@ export function CompareView({
     };
   }, [dirSlug, registryId, repo]);
 
-  useEffect(() => load(), [load]);
+  // 重试也要能取消(终审 M-8):把最近一次请求的取消函数留着,卸载时一并调用
+  const cancelRef = useRef<(() => void) | null>(null);
+  const run = useCallback(() => {
+    cancelRef.current?.();
+    cancelRef.current = load();
+  }, [load]);
+  useEffect(() => {
+    run();
+    return () => cancelRef.current?.();
+  }, [run]);
 
   if (state.kind === "loading") {
     return <p className="mt-2 text-[12px] text-text-3">{t("compare.loading")}</p>;
@@ -72,7 +81,7 @@ export function CompareView({
         {state.error.message}
         <button
           type="button"
-          onClick={() => load()}
+          onClick={run}
           className="ml-2 font-medium text-accent underline-offset-2 hover:underline"
         >
           {t("compare.retry")}
