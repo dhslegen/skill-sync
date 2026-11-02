@@ -270,6 +270,8 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
             统一成后者:一个标签一个含义,两条渲染路径同一把尺子。
             取不到(纯本地草稿、外源算不出 per-skill 时间 —— D15 明确不算)就整栏
             不摆:少一行,好过显示一个含义不同的数。 */}
+        {skill?.libraryUrl && <LibraryLink url={skill.libraryUrl} label={t("mine.reviewLink")} />}
+
         <OverviewRow
           author={card?.author}
           updated={card ? updatedAtLabel(card.updatedAt) : null}
@@ -503,8 +505,15 @@ function PlazaSkillPicker({
   );
 }
 
-/** 跳去 skills.sh 的技能页——`open_library_url` 通道,同源白名单已在 core 放行(M9)。 */
-function PlazaBrowserLink({ slug }: { slug: string }) {
+/**
+ * 详情页头部的「在技能库里查看」(0.8.0 任务 1,两条渲染路径共用的唯一实现)。
+ *
+ * 广场的「库」是 skills.sh(M9),地址按 slug 前端拼——那是公开站点,不涉及铁律 5;
+ * 其余源的地址一律由 core 拼好下发(`detail.libraryUrl` / `skill.libraryUrl`),
+ * 这里只负责交给 `open_library_url`(它带同源白名单守卫),失败如实说出来。
+ * 没有地址就整个不摆:摆一颗点开是 404 或被守卫拒掉的按钮,比不摆糟。
+ */
+function LibraryLink({ url, label }: { url: string; label: string }) {
   const [openError, setOpenError] = useState<string | null>(null);
 
   return (
@@ -513,14 +522,14 @@ function PlazaBrowserLink({ slug }: { slug: string }) {
         type="button"
         onClick={() => {
           setOpenError(null);
-          openLibraryUrl(`https://skills.sh/${slug}`).catch((raw) =>
+          openLibraryUrl(url).catch((raw) =>
             setOpenError(isAppError(raw) ? raw.message : t("error.generic")),
           );
         }}
         className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-accent hover:underline"
       >
         <Icon icon={ExternalLink} size={12} />
-        {t("plaza.openInBrowser")}
+        {label}
       </button>
       {openError && (
         <p className="mt-1 text-[11px] text-[#c0392b] dark:text-[#e0705f]">{openError}</p>
@@ -587,7 +596,11 @@ function PanelBody({
             <Icon icon={X} />
           </button>
         </div>
-        {plaza && <PlazaBrowserLink slug={plaza.slug} />}
+        {plaza ? (
+          <LibraryLink url={`https://skills.sh/${plaza.slug}`} label={t("plaza.openInBrowser")} />
+        ) : (
+          detail.libraryUrl && <LibraryLink url={detail.libraryUrl} label={t("mine.reviewLink")} />
+        )}
 
         {/* 作者/贡献者来自技能库的 authors.json(服务端维护);没有就整栏不摆,
             换成「作者未登记 · 这是我分享的」这个入口(登录了、且是内建源才摆)。

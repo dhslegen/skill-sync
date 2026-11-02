@@ -1306,9 +1306,29 @@ pub struct StoreDetailArgs {
     pub dir_slug: String,
 }
 
+/// 给商店详情补上「在技能库里查看」的地址(0.8.0 任务 1)。
+///
+/// 广场返回 `None`:它的「库」是 skills.sh,由前端按 slug 拼那条链接(M9);
+/// 而且广场挂的 GitHub 仓不在 `url_allowed` 的白名单里(那里只认已配置源),
+/// 给了 github.com 的地址,用户点开只会被守卫拒掉。
+fn with_library_url(
+    mut detail: SkillDetail,
+    registry_id: &str,
+    resolved: &registry::ResolvedRegistry,
+    repo: &RepoRef,
+) -> SkillDetail {
+    detail.library_url = if registry_id == registry::PLAZA_REGISTRY_ID {
+        None
+    } else {
+        registry::web_url(resolved.kind, &resolved.base_url, repo, &detail.path)
+    };
+    detail
+}
+
 #[tauri::command]
 pub async fn store_skill_detail(args: StoreDetailArgs) -> Result<SkillDetail, AppError> {
     let registry_id = args.registry_id.as_deref().unwrap_or(BUILTIN_REGISTRY_ID);
+    let resolved = resolve_registry(registry_id, args.repo.as_deref())?;
     let (client, repo) = read_source(registry_id, args.repo.as_deref()).await?;
     let cache = index_cache_file(registry_id, &repo)?;
 
@@ -1317,7 +1337,7 @@ pub async fn store_skill_detail(args: StoreDetailArgs) -> Result<SkillDetail, Ap
         .filter(|index| index.is_for(registry_id, &repo))
         .and_then(|index| index.detail(&args.dir_slug))
     {
-        return Ok(detail);
+        return Ok(with_library_url(detail, registry_id, &resolved, &repo));
     }
 
     // 缓存里没有(首次进入、或缓存刚被丢弃):刷一次再找。
@@ -1330,7 +1350,10 @@ pub async fn store_skill_detail(args: StoreDetailArgs) -> Result<SkillDetail, Ap
         auth::now_unix(),
     )
     .await?;
-    index.detail(&args.dir_slug).ok_or_else(|| {
+    index
+        .detail(&args.dir_slug)
+        .map(|d| with_library_url(d, registry_id, &resolved, &repo))
+        .ok_or_else(|| {
         AppError::new(
             "REPO_NOT_FOUND",
             "这个技能已不在该技能库中,请返回列表刷新后再试",
@@ -3268,6 +3291,62 @@ pub async fn project_skill_set_agents(
 
 #[cfg(test)]
 mod tests {
+    // ---- 0.8.0 任务 1:商店详情的「在技能库里查看」
+
+    fn detail_at(path: &str) -> SkillDetail {
+        SkillDetail {
+            name: "周报生成".into(),
+            dir_slug: "weekly-report".into(),
+            description: String::new(),
+            path: path.into(),
+            skill_md: String::new(),
+            files: Vec::new(),
+            has_scripts: false,
+            commit_sha: "abc".into(),
+            committed_at: String::new(),
+            updated_at: store::SkillUpdatedAt::Unknown,
+            tags: Vec::new(),
+            attribution: None,
+            library_url: None,
+        }
+    }
+
+    fn resolved_of(id: &str, kind: registry::RegistryKind, base: &str) -> registry::ResolvedRegistry {
+        registry::ResolvedRegistry {
+            id: id.into(),
+            kind,
+            base_url: base.into(),
+            repo: RepoRef { owner: "team".into(), repo: "lib".into(), branch: "dev".into() },
+            builtin: false,
+        }
+    }
+
+    #[test]
+    fn store_detail_gets_a_library_url_from_its_own_source_kind_and_indexed_path() {
+        // 路径取索引里的真实路径(故意不是 skills/<dirSlug>),分支取那个仓自己的
+        let repo = RepoRef { owner: "team".into(), repo: "lib".into(), branch: "dev".into() };
+        let gitea = resolved_of("custom-1", registry::RegistryKind::Gitea, "http://g.example");
+        let d = with_library_url(detail_at("catalog/weekly-report"), "custom-1", &gitea, &repo);
+        assert_eq!(
+            d.library_url.as_deref(),
+            Some("http://g.example/team/lib/src/branch/dev/catalog/weekly-report")
+        );
+        let gh = resolved_of("custom-2", registry::RegistryKind::Github, "https://github.com");
+        let d = with_library_url(detail_at("catalog/weekly-report"), "custom-2", &gh, &repo);
+        assert_eq!(
+            d.library_url.as_deref(),
+            Some("https://github.com/team/lib/tree/dev/catalog/weekly-report")
+        );
+    }
+
+    #[test]
+    fn plaza_store_detail_has_no_library_url_because_its_library_is_skills_sh() {
+        let repo = RepoRef { owner: "team".into(), repo: "lib".into(), branch: "dev".into() };
+        let gh = resolved_of(registry::PLAZA_REGISTRY_ID, registry::RegistryKind::Github, "https://github.com");
+        let d = with_library_url(detail_at("skills/x"), registry::PLAZA_REGISTRY_ID, &gh, &repo);
+        assert_eq!(d.library_url, None);
+    }
+
     use super::*;
 
     /// 🔴 **断言的是键的完整集合,不是"某个键存在"**(本项目记着的空转模式 ②)。

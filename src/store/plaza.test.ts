@@ -239,6 +239,7 @@ describe("usePlaza 详情", () => {
     updatedAt: { kind: "unknown" },
     tags: [],
     attribution: null,
+    libraryUrl: null,
     ...over,
   });
 
@@ -325,6 +326,7 @@ describe("locatePlazaSkill", () => {
     updatedAt: { kind: "unknown" },
     tags: [],
     attribution: null,
+    libraryUrl: null,
   };
   const b: SkillDetail = { ...a, name: "合同审查", dirSlug: "contract-review" };
 

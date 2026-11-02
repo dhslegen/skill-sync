@@ -283,6 +283,13 @@ pub struct SkillDetail {
     pub tags: Vec<String>,
     /// 作者与贡献者(authors.json,服务端维护)。None = 库里没这条,整栏不摆、不编造。
     pub attribution: Option<SkillAttribution>,
+    /// 这个技能在技能库网页上的地址(0.8.0 任务 1,「在技能库里查看」)。
+    ///
+    /// **不进索引缓存**:索引只记 owner/repo/branch/path,不知道源的 kind 与 base_url;
+    /// 由 `commands::store_skill_detail` 在出缓存之后经 `registry::web_url` 补上。
+    /// 所以 [`StoreIndex::detail`] 与广场详情恒填 `None`(广场另有 skills.sh 链接),
+    /// 也因此**不升 `INDEX_SCHEMA_VERSION`**。拼不出来 = `None` = 前端不摆。
+    pub library_url: Option<String>,
 }
 
 // ============================================================ 缓存读写
@@ -715,6 +722,7 @@ impl StoreIndex {
             updated_at: s.updated_at.clone(),
             tags: s.tags.clone(),
             attribution: s.attribution.clone(),
+            library_url: None,
         })
     }
 }

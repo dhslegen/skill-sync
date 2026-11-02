@@ -710,6 +710,37 @@ pub fn remove(registries: &mut Vec<RegistryConfig>, id: &str) -> Result<Registry
     Ok(registries.remove(pos))
 }
 
+/// 技能在技能库网页上的浏览地址(0.8.0 任务 1,「在技能库里查看」的唯一拼法)。
+///
+/// 两家浏览路径不同:Gitea 是 `/{owner}/{repo}/src/branch/{branch}/{path}`,
+/// GitHub 是 `/{owner}/{repo}/tree/{branch}/{path}`——**形状知识只在这一处**,
+/// 前端只拿拼好的串(铁律 5:base_url 可能是编译期注入的内网地址,前端不拼)。
+///
+/// `path` 必须取自索引的真实路径(`IndexedSkill::path`),`branch` 必须取自那个仓
+/// 自己的分支——两者都不许现猜(见 `my_skills::library_url` 记的终审 I-4)。
+/// 任一段为空 → `None`,调用方据此**不摆**链接(摆一个必然 404 的链接比不摆糟)。
+///
+/// 拼出来的地址与 `base_url` 同源,所以交给 `open_library_url` 时天然过得了
+/// [`url_allowed`] 的白名单(只要这个源确实在配置里)。
+pub fn web_url(kind: RegistryKind, base_url: &str, repo: &RepoRef, path: &str) -> Option<String> {
+    let base = base_url.trim().trim_end_matches('/');
+    let path = path.trim_matches('/');
+    let branch = repo.branch.trim_matches('/');
+    if base.is_empty()
+        || repo.owner.is_empty()
+        || repo.repo.is_empty()
+        || path.is_empty()
+        || branch.is_empty()
+    {
+        return None;
+    }
+    let segment = match kind {
+        RegistryKind::Gitea => "src/branch",
+        RegistryKind::Github => "tree",
+    };
+    Some(format!("{base}/{}/{}/{segment}/{branch}/{path}", repo.owner, repo.repo))
+}
+
 /// `open_library_url` 的白名单判定:与任一已配置源(内建 + 自定义)同源才放行,
 /// **加上 skills.sh 的技能详情页**(技能广场的搜索结果指向那里,不是 github.com——
 /// `PLAZA_BASE_URL` 只是广场技能的**访问坐标**,不是它的展示页面)。
@@ -789,6 +820,35 @@ fn next_id(registries: &[RegistryConfig]) -> String {
 
 #[cfg(test)]
 mod tests {
+    // ---- web_url(0.8.0 任务 1)
+
+    fn rr(owner: &str, repo: &str, branch: &str) -> RepoRef {
+        RepoRef { owner: owner.into(), repo: repo.into(), branch: branch.into() }
+    }
+
+    #[test]
+    fn web_url_uses_each_hosts_own_browse_path() {
+        let r = rr("skills", "skills", "main");
+        assert_eq!(
+            web_url(RegistryKind::Gitea, "http://gitea.internal:3000/", &r, "/skills/weekly-report/").as_deref(),
+            Some("http://gitea.internal:3000/skills/skills/src/branch/main/skills/weekly-report"),
+        );
+        assert_eq!(
+            web_url(RegistryKind::Github, "https://github.com", &r, "skills/weekly-report").as_deref(),
+            Some("https://github.com/skills/skills/tree/main/skills/weekly-report"),
+        );
+    }
+
+    #[test]
+    fn web_url_refuses_to_guess_any_missing_segment() {
+        let ok = rr("o", "r", "main");
+        assert!(web_url(RegistryKind::Gitea, "", &ok, "p").is_none());
+        assert!(web_url(RegistryKind::Gitea, "http://h", &ok, "/").is_none());
+        assert!(web_url(RegistryKind::Gitea, "http://h", &rr("", "r", "main"), "p").is_none());
+        assert!(web_url(RegistryKind::Gitea, "http://h", &rr("o", "", "main"), "p").is_none());
+        assert!(web_url(RegistryKind::Gitea, "http://h", &rr("o", "r", ""), "p").is_none());
+    }
+
     use super::*;
 
     fn fake_builtin() -> BuiltinSource {

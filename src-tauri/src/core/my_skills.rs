@@ -570,19 +570,17 @@ pub fn library_url(
     if entry.registry_id != registry::BUILTIN_REGISTRY_ID {
         return None;
     }
-    let base = builtin.base_url?.trim_end_matches('/');
-    let path = entry.path.trim_matches('/');
-    let branch = entry.branch.trim_matches('/');
-    if base.is_empty()
-        || entry.owner.is_empty()
-        || entry.repo.is_empty()
-        || path.is_empty()
-        || branch.is_empty()
-    {
-        return None;
-    }
-    // Gitea 的文件浏览路径形状:/{owner}/{repo}/src/branch/{branch}/{path}
-    Some(format!("{base}/{}/{}/src/branch/{branch}/{path}", entry.owner, entry.repo))
+    // 拼法只有一份:`registry::web_url`(0.8.0 任务 1 收敛,商店详情也走它)
+    registry::web_url(
+        registry::RegistryKind::Gitea,
+        builtin.base_url?,
+        &crate::core::gitea::RepoRef {
+            owner: entry.owner.clone(),
+            repo: entry.repo.clone(),
+            branch: entry.branch.clone(),
+        },
+        &entry.path,
+    )
 }
 
 /// [`library_url`] 的行级包装:**只对确实在公司技能库里的行**给地址。

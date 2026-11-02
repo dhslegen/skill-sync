@@ -882,6 +882,8 @@ fn detail_from_blob_files(
         updated_at: store::SkillUpdatedAt::Unknown,
         tags: Vec::new(),
         attribution: None,
+        // 广场的「在技能库里查看」是 skills.sh 链接,由前端按 slug 拼(M9),不走这个字段
+        library_url: None,
     })
 }
 

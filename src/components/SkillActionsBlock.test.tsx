@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SkillActionsBlock } from "./SkillActionsBlock";
+import { t } from "@/i18n";
 import type { InstalledSkillView, Section } from "@/lib/ipc";
 import { useMySkills } from "@/store/my-skills";
 import { shareTargetKey, useShare } from "@/store/share";
@@ -193,39 +194,24 @@ describe("打开文件夹(Q3:详情面板里只此一处)", () => {
   });
 });
 
-describe("页脚的「在技能库里查看」:core 拼得出地址才摆", () => {
+describe("「在技能库里查看」0.8.0 起搬到详情头部,页脚与「…」都不再摆", () => {
   const URL = "http://gitea.internal.example/skills/skills/src/branch/main/skills/weekly-report";
 
-  it("core 给了地址就摆出来,点了原样交给 open_library_url", async () => {
-    const user = userEvent.setup();
-    render(<SkillActionsBlock skill={view({ libraryUrl: URL })} remoteChanged={false} subject="示例技能" host="mine" />);
-    expect(screen.getAllByRole("button", { name: "在技能库里查看" })).toHaveLength(1);
-    await user.click(screen.getByRole("button", { name: "在技能库里查看" }));
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith(
-        "open_library_url",
-        expect.objectContaining({ args: { url: URL } }),
-      ),
-    );
+  // 正向锚点(「打开文件夹」在)+ 用 i18n 键取文案:负向断言不会因为文案改名而空转。
+  // 头部那一处的正向行为由 DetailPanel.test.tsx「详情头部的在技能库里查看」钉住。
+  it.each(["mine", "store"] as const)("host=%s:有地址也不在页脚摆", async (host) => {
+    render(<SkillActionsBlock skill={view({ libraryUrl: URL })} remoteChanged={false} subject="示例技能" host={host} />);
+    expect(screen.getByRole("button", { name: "打开文件夹" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: t("mine.reviewLink") })).toBeNull();
+    if (host === "store") {
+      await userEvent.setup().click(screen.getByRole("button", { name: /更多/ }));
+      expect(screen.getByRole("menuitem", { name: "移除" })).toBeInTheDocument();
+      expect(screen.queryByRole("menuitem", { name: t("mine.reviewLink") })).toBeNull();
+    }
   });
+});
 
-  // 🔴 「拼不出来就不摆」——不摆比摆一个必然报错(404)的按钮好。
-  it("core 拼不出来(libraryUrl 为 null)时整颗不摆", () => {
-    render(<SkillActionsBlock skill={view()} remoteChanged={false} subject="示例技能" host="mine" />);
-    expect(screen.queryByRole("button", { name: "在技能库里查看" })).not.toBeInTheDocument();
-  });
-
-  it("打开失败要有渲染点,不能静默吞掉", async () => {
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "open_library_url") throw { code: "REPO_UNTRUSTED_URL", message: "这个链接不属于任何已配置的技能库" };
-      return null;
-    });
-    const user = userEvent.setup();
-    render(<SkillActionsBlock skill={view({ libraryUrl: URL })} remoteChanged={false} subject="示例技能" host="mine" />);
-    await user.click(screen.getByRole("button", { name: "在技能库里查看" }));
-    expect(await screen.findByText(/不属于任何已配置的技能库/)).toBeInTheDocument();
-  });
-
+describe("没有写权限时的分享族按钮(v8 任务 3)", () => {
   // 🔴 v8 任务 3 / D8:没有写权限时,详情面板动作区这一处也要禁用 + 说明。
   // 三处渲染点(行 / 详情动作区 / 分享确认屏)漏一处就是"行上禁了、详情里能点"。
   it("没有写权限:分享族主按钮禁用,并说清为什么,「打开文件夹」仍在", () => {
@@ -319,34 +305,6 @@ describe('host="store":只贡献次要动作(Q44-A,v7.6 任务 2 + 任务 3)', (
     render(<SkillActionsBlock skill={view()} remoteChanged={false} subject="示例技能" host="mine" />);
     expect(screen.getByRole("button", { name: "移除" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /更多/ })).not.toBeInTheDocument();
-  });
-
-  it("🔴 在技能库里查看收进「…」,不占行上的位置(2026-09-10 用户真机拍板)", async () => {
-    // 它仍然到得了 —— 只是从行上挪进了菜单。改的是位置不是可达性。
-    // 起因是硬约束:面板固定宽 480px、页脚可用 440px,而主按钮是「已在电脑上」
-    // (5 字 + 绿勾)那一档,五个元素合计约 472px,`flex-wrap` 把「…」挤到第二行
-    // ——省了「移除」的位置却赔上整行给一个 24px 的图标(用户原话"白折叠了")。
-    render(
-      <SkillActionsBlock
-        skill={view({ libraryUrl: "http://g.local/x" })}
-        remoteChanged={false} subject="示例技能" host="store"
-      />,
-    );
-    // 行上没有
-    expect(screen.queryByRole("button", { name: "在技能库里查看" })).toBeNull();
-    // 菜单里有 —— 改的是位置,不是可达性
-    await userEvent.setup().click(screen.getByRole("button", { name: /更多/ }));
-    expect(screen.getByRole("menuitem", { name: "在技能库里查看" })).toBeInTheDocument();
-  });
-
-  it("host=\"mine\" 不受影响:在技能库里查看仍在行上(§12「全部摆开」)", () => {
-    render(
-      <SkillActionsBlock
-        skill={view({ libraryUrl: "http://g.local/x" })}
-        remoteChanged={false} subject="示例技能" host="mine"
-      />,
-    );
-    expect(screen.getByRole("button", { name: "在技能库里查看" })).toBeInTheDocument();
   });
 
   it("分享结果(成功)不渲染 —— 触发它的按钮这个宿主下根本不存在", () => {

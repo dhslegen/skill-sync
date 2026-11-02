@@ -123,6 +123,9 @@ export interface SkillDetail {
   tags: string[];
   /** 作者与贡献者(authors.json)。null = 库里没这条,整栏不摆、不编造。 */
   attribution: SkillAttribution | null;
+  /** 这个技能在技能库网页上的地址(0.8.0 任务 1,core 按源类型拼)。
+   *  null = 拼不出来或是广场(广场另有 skills.sh 链接),「在技能库里查看」不摆。 */
+  libraryUrl: string | null;
 }
 
 /** 本地技能定位:已装技能给 dirSlug(core 自行解析 canonical 目录),

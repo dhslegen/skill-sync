@@ -520,6 +520,8 @@ export function buildFixtures() {
       committedAt: "2026-09-01T02:11:00Z",
       tags: s.tags ?? [],
       attribution: null,
+      // 0.8.0 任务 1:core 按源类型拼的「在技能库里查看」地址(示例域名,不是真实地址)
+      libraryUrl: `http://gitea.example/skills/skills/src/branch/main/skills/${s.slug}`,
       updatedAt: s.updatedAt ?? { kind: "at", at: "2026-09-14T03:12:00Z" },
     };
   }

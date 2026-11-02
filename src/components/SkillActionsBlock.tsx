@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { OutlineButton, PrimaryAction, rowMenuHandler } from "@/components/RowActionControls";
 import { SkillRowMenu, type SkillRowMenuItem } from "@/components/SkillRowMenu";
 import { t } from "@/i18n";
-import { isAppError, openLibraryUrl, skillReveal, type InstalledSkillView } from "@/lib/ipc";
+import { isAppError, skillReveal, type InstalledSkillView } from "@/lib/ipc";
 import { buildRowMenuItems, rowAction } from "@/lib/ownership";
 import { SHARE_BLOCK_LABEL, SHARE_DONE_LABEL, SHARE_FAILED_LABEL } from "@/lib/share-block";
 import {
@@ -38,7 +38,7 @@ import { useStoreIndex } from "@/store/store-index";
  * # 🔴 v7.1 任务 3:它变成了详情面板的**固定页脚**,「打开文件夹」只此一处
  *
  * 照设计画布 `Detail.dc.html` 最后那个 `border-top` 的 div:
- * 主按钮 → 打开文件夹 → 在技能库里查看(有链接才摆)→ 其余动作 → 撑开 → 移除。
+ * 主按钮 → 打开文件夹 → 其余动作 → 撑开 → 移除(「在技能库里查看」0.8.0 起在头部)。
  * 它不再夹在「在哪」与页签之间(那个位置把 md 正文挤出首屏,违反 Q1A
  * 「md 是主角」),而是钉在面板底部,正文区 `flex:1`。
  *
@@ -57,7 +57,7 @@ import { useStoreIndex } from "@/store/store-index";
  *   是**裸按钮**(不带外层容器、也不带自己的 row div,见下面「v7.6 任务 3」),
  *   由 `InstallPanel` 直接插进它自己那一行——这才是"并进底部页脚"的字面意思,
  *   不是两个 bordered 的 div 前后紧贴,也不是两行紧贴。**只贡献次要动作**
- *   (打开文件夹 / 在技能库里查看 / 移除):`items` 过滤掉除 `reveal`
+ *   (打开文件夹 / 移除):`items` 过滤掉除 `reveal`
  *   以外的所有 `buildRowMenuItems` 结果——分享/分享改动/更新这些都是"推"的
  *   动作,v7.4 已拍板"推"的动作不摆在"拉"的界面里,`rowAction` 本身
  *   也不该在这个宿主下驱动任何按钮。分享结果(`shareError`/`shareDone`/
@@ -78,7 +78,7 @@ import { useStoreIndex } from "@/store/store-index";
  * "同一行,危险动作收进「…」"。
  *
  * 现在改正:`host="store"` 下不再有自己的 `row` div——`secondaryButtons`
- * (reveal + libraryLink)与 `removeControl`(`ml-auto` 撑开的「…」触发器)都是
+ * (reveal)与 `removeControl`(`ml-auto` 撑开的「…」触发器)都是
  * 裸元素,直接作为 `SkillActionsBlock` 的返回值交给 `InstallPanel`,后者把它们
  * 插进自己那唯一一行(与主按钮、「装到项目…」同排)。`removeControl` 按
  * `caps.removeInMenu` 分流:`host="mine"` 仍是常驻可见的 `OutlineButton`
@@ -88,7 +88,7 @@ import { useStoreIndex } from "@/store/store-index";
  * (单项菜单,`items` 只有「移除」一条,复用它现成的
  * `aria-haspopup`/`Esc`/点外面关闭骨架,不重新发明一套下拉)。
  *
- * `messages`(`revealError`/`linkError`,`host="store"` 下仅有的两种反馈,
+ * `messages`(`revealError`,`host="store"` 下仅有的一种反馈,
  * `shareFeedback` 在这个宿主恒 `false`)给了 `basis-full`:这两段要和
  * `secondaryButtons`/`removeControl` 一起插进 `InstallPanel` 的
  * `flex flex-wrap` 行,`basis-full` 让它们在这个共享的换行容器里独占一整行、
@@ -111,22 +111,14 @@ import { useStoreIndex } from "@/store/store-index";
  * (v6 二期「本体住在它现在所在的地方」)。失败要有渲染点,见下面的 `revealError`:
  * 「这台电脑上」那一块被删掉时,它原来的失败渲染点也一起没了。
  *
- * # 「在技能库里查看」
+ * # 「在技能库里查看」:0.8.0 任务 1 起不在这里
  *
- * 照画布摆在页脚,数据是 core 新给的 `skill.libraryUrl`(v7.1 复审后用户裁定:
- * **改数据来源,不是接受现状**)。它由 core 侧的
- * `my_skills::library_url` 给出:用内建源的编译期地址 + 索引里这个技能的真实
- * `path` 拼出网页地址,只对确实在公司技能库里的行(`section` 是
- * `installedFrom`/`sharedTo`)给值。
- *
- * 🔴 **拼接必须在 core**(铁律 5:源码里不得出现真实内网地址),前端只是把串
- * 交给 `open_library_url`(带同源白名单守卫)。拼不出来 → `null` → **不摆**,
- * 而不是摆一颗点开是 404 的按钮。
- *
- * ⚠️ **v8 任务 3**:这里曾经还有一路数据来源 `review.url`(「审核中」那一档,
- * 那时 `libraryUrl` 对 `shareable` 区恒为 null)。提交审核整条链路下线之后,
- * 库链接只剩 `skill.libraryUrl` 这一个来源,没有就不摆——判据始终是"有没有一个
- * 能打开的地址"。
+ * v7.1 起它摆在这个页脚(数据是 core 给的 `skill.libraryUrl`);0.8.0 用户拍板
+ * **统一搬到详情页头部**——商店详情此前只有装过的公司库技能才有这个入口
+ * (数据挂在「我的技能」那一行上),没装过的一个都没有。现在两条渲染路径都在
+ * 头部摆 `DetailPanel.tsx::LibraryLink`:商店详情读 `detail.libraryUrl`(core 按源
+ * 类型拼,覆盖全部 Gitea/GitHub 源),「我的技能」详情读 `skill.libraryUrl`。
+ * 页脚与「…」里都不再摆,一个面板只出现一次。
  *
  * # 挂载位置与全局对话框的关系
  *
@@ -219,21 +211,6 @@ function capsOf(host: ActionsHost): {
    * 「更多」——§12 对那一处的裁定是"全部摆开、不收下拉",这里不改)。
    */
   removeInMenu: boolean;
-  /**
-   * 「在技能库里查看」收不收进「…」。
-   *
-   * 🔴 起因是**硬约束**(2026-09-10 用户真机):详情面板固定宽 480px
-   * (`DetailPanel.tsx`),页脚可用 440px,而 `[主按钮][装到项目…][打开文件夹]
-   * [在技能库里查看][⋯]` 在主按钮是「已在电脑上」(5 字 + 绿勾)那一档合计约
-   * 472px——`flex-wrap` 把「…」挤到第二行,**省了「移除」的位置却赔上整行给一个
-   * 24px 的图标**,用户原话"白折叠了"。
-   *
-   * 砍掉「在技能库里查看」而不是「打开文件夹」:后者是这个应用最常用的出口之一
-   * (v7.1 Q3 拍板「动作只留页脚这一处」时特意为它删掉了别处的重复入口),
-   * 前者是去浏览器看网页、低频。⚠️ 这是对 Q44-A 原文(「次要动作(打开文件夹、
-   * 在技能库里查看)」都在行上)的偏离,**用户 2026-09-10 看过测算后拍板同意**。
-   */
-  libraryLinkInMenu: boolean;
 } {
   switch (host) {
     case "mine":
@@ -243,7 +220,6 @@ function capsOf(host: ActionsHost): {
         shareFeedback: true,
         ownWrapper: true,
         removeInMenu: false,
-        libraryLinkInMenu: false,
       };
     case "store":
       return {
@@ -252,7 +228,6 @@ function capsOf(host: ActionsHost): {
         shareFeedback: false,
         ownWrapper: false,
         removeInMenu: true,
-        libraryLinkInMenu: true,
       };
   }
 }
@@ -325,10 +300,7 @@ export function SkillActionsBlock({
   );
   const removeItem = allItems.find((spec) => spec.kind === "remove") ?? null;
 
-  const libraryLink = skill.libraryUrl;
-
   const [revealError, setRevealError] = useState<string | null>(null);
-  const [linkError, setLinkError] = useState<string | null>(null);
 
   const onReveal = () => {
     setRevealError(null);
@@ -367,40 +339,17 @@ export function SkillActionsBlock({
           {t(spec.labelKey)}
         </OutlineButton>
       ))}
-      {libraryLink && !caps.libraryLinkInMenu && (
-        <OutlineButton
-          size="footer"
-          onClick={() => {
-            setLinkError(null);
-            // core 已经保证这个串与内建 Gitea 同源;`open_library_url` 自己
-            // 还有一道同源白名单守卫,这里不重复判,失败如实说出来。
-            openLibraryUrl(libraryLink).catch((raw: unknown) =>
-              setLinkError(isAppError(raw) ? raw.message : t("error.generic")),
-            );
-          }}
-        >
-          {t("mine.reviewLink")}
-        </OutlineButton>
-      )}
     </>
   );
 
   // 「移除」永远靠右(`ml-auto`)。v7.6 任务 3 之前两个宿主都是常驻可见的
   // `OutlineButton`;现在按 `caps.removeInMenu` 分流:`host="mine"` 不变,
   // `host="store"` 收进 `SkillRowMenu`(「…」),见组件文档「「…」收危险动作」。
-  const openLibrary = () => {
-    if (!libraryLink) return;
-    setLinkError(null);
-    openLibraryUrl(libraryLink).catch((raw: unknown) =>
-      setLinkError(isAppError(raw) ? raw.message : t("error.generic")),
-    );
-  };
+  // 「在技能库里查看」已于 0.8.0 任务 1 搬到详情页**头部**(两条渲染路径共用
+  // `LibraryLink`),页脚不再摆——一个面板里只出现一次。
   // 「…」里的项:库链接(如果收进来了)在前、「移除」在末并带分隔线
   // ——与 `buildRowMenuItems` 的自然顺序一致(破坏性动作永远在最后)。
   const menuItems: SkillRowMenuItem[] = [
-    ...(libraryLink && caps.libraryLinkInMenu
-      ? [{ key: "library", label: t("mine.reviewLink"), onClick: openLibrary }]
-      : []),
     ...(removeItem
       ? [
           {
@@ -458,7 +407,7 @@ export function SkillActionsBlock({
   // `host="store"` 下根本不存在,摆出来要么是孤儿反馈,要么会把「我的技能」页
   // 上一次操作的陈旧结果带进商店详情(见组件文档「两种宿主」一节)。
   //
-  // `basis-full`:`host="store"` 下 `revealError`/`linkError` 要和
+  // `basis-full`:`host="store"` 下 `revealError` 要和
   // `secondaryButtons`/`removeControl` 一起插进 `InstallPanel` 的
   // `flex flex-wrap` 行,这个属性让它们在那个共享容器里独占一整行、排在
   // 按钮下方。`host="mine"` 下 `messages` 是普通块级兄弟(不在 flex 容器里),
@@ -471,9 +420,6 @@ export function SkillActionsBlock({
           {t("punct.labelSeparator")}
           {revealError}
         </p>
-      )}
-      {linkError && (
-        <p className="mt-1.5 basis-full text-[12px] text-[#c0392b] dark:text-[#e0705f]">{linkError}</p>
       )}
       {/* 分享的成功与失败:归属过滤后自己摆一份,理由见组件文档。
           文案按 `flow` 分流,**不按渲染那一刻的 `action` 反推**——首次分享成功后

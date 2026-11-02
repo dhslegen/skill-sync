@@ -89,6 +89,7 @@ const detail = (over: Partial<SkillDetail> = {}): SkillDetail => ({
   updatedAt: { kind: "at", at: new Date(Date.now() - 3 * 86_400_000).toISOString() },
   tags: [],
   attribution: null,
+  libraryUrl: null,
   ...over,
 });
 
@@ -1289,6 +1290,7 @@ describe("DetailPanel(技能广场详情态)", () => {
     committedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
     tags: [],
     attribution: null,
+    libraryUrl: null,
     ...over,
   });
 
@@ -1786,6 +1788,7 @@ describe("DetailPanel · 文件预览(v8 任务 10)", () => {
           updatedAt: { kind: "unknown" },
           tags: [],
           attribution: null,
+          libraryUrl: null,
         },
       ],
     });
@@ -1890,5 +1893,67 @@ describe("DetailPanel · 文件预览(v8 任务 10)", () => {
         file: "scripts/collect.py",
       },
     });
+  });
+});
+
+// ---- 0.8.0 任务 1:「在技能库里查看」统一放在详情头部,两条渲染路径各一处
+describe("详情头部的在技能库里查看(0.8.0 任务 1)", () => {
+  const URL = "http://gitea.internal.example/team/lib/src/branch/dev/catalog/weekly-report";
+  const label = t("mine.reviewLink");
+
+  beforeEach(() => {
+    invokeMock.mockClear();
+    useStoreIndex.setState({ detailSlug: null, detail: null, detailError: null });
+    useLocalDetail.setState({ target: null, detail: null, error: null });
+    useMySkills.setState({ list: null });
+  });
+
+  it("商店详情:core 给了地址就在头部摆一颗,点了原样交给 open_library_url(没装过也有)", async () => {
+    useMySkills.setState({ list: [] }); // 本机没装——此前这一档一个入口都没有
+    open({ libraryUrl: URL });
+    render(<DetailPanel />);
+    expect(screen.getAllByRole("button", { name: label })).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: label }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("open_library_url", { args: { url: URL } }),
+    );
+  });
+
+  it("商店详情:core 拼不出来(null)就不摆", () => {
+    open({ libraryUrl: null });
+    render(<DetailPanel />);
+    expect(screen.getByRole("heading", { name: "周报生成" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: label })).toBeNull();
+  });
+
+  it("打开失败要有渲染点", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "open_library_url") {
+        throw { code: "REPO_UNTRUSTED_URL", message: "这个链接不属于任何已配置的技能库,已阻止打开" };
+      }
+      return original(cmd, args);
+    });
+    try {
+      open({ libraryUrl: URL });
+      render(<DetailPanel />);
+      await userEvent.click(screen.getByRole("button", { name: label }));
+      expect(await screen.findByText(/不属于任何已配置的技能库/)).toBeInTheDocument();
+    } finally {
+      invokeMock.mockImplementation(original);
+    }
+  });
+
+  it("「我的技能」详情:读这一行的 libraryUrl,头部同样只有一颗", () => {
+    useMySkills.setState({
+      list: [installedView({ libraryUrl: URL })],
+      agentNames: new Map(),
+      installedAgents: null,
+      canonicalDir: "/home/u/.agents/skills",
+      toolDirs: new Map(),
+    });
+    openLocal();
+    render(<DetailPanel />);
+    expect(screen.getAllByRole("button", { name: label })).toHaveLength(1);
   });
 });
