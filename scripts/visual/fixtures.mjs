@@ -589,6 +589,37 @@ export function buildFixtures() {
         user: { login: "zhaowenhao", displayName: "赵文浩", avatarUrl: "" },
       },
       installed_list: SKILLS.filter((s) => !s.notInstalled).map(installedSkill),
+      // 0.8.0 任务 3:「看看哪里不同」与冲突弹窗里的逐文件差异(只读,与分享清单同形)。
+      // 键名都在 `fileContents` 里有内容,展开「只有你有」那一项能截到。
+      skill_compare_library: {
+        plan: {
+          added: [{ path: "reference/template.md", body: { kind: "text" } }],
+          modified: [
+            {
+              path: "SKILL.md",
+              diff: {
+                kind: "hunks",
+                hunks: [
+                  {
+                    oldStart: 4, oldLines: 2, newStart: 4, newLines: 3,
+                    lines: [
+                      { op: "context", text: "## 步骤" },
+                      { op: "delete", text: "1. 读取本周提交记录。" },
+                      { op: "insert", text: "1. 读取本周提交记录与随笔。" },
+                      { op: "insert", text: "2. 按项目归类。" },
+                    ],
+                  },
+                ],
+                hiddenHunks: 0,
+              },
+            },
+          ],
+          deleted: [{ path: "scripts/legacy.md", body: { kind: "text", text: "旧脚本说明\n" } }],
+        },
+        localPath: "/Users/demo/.claude/skills/code-annotator",
+        remoteHash: "sha256:lib",
+        identical: false,
+      },
       // v8:分享现在是"让技能库和本地一致",预览轮回一份清单(可能带覆盖警告)。
       // 两屏都要能截到——这是本期唯一会**删服务端文件**的界面。
       // 🔴 v8 任务 11a 顺带修的一处漂移:三档从 T8 起就是带内容标记的对象

@@ -12,6 +12,7 @@ import { PLAZA_REGISTRY_ID, type PlazaSkillCard } from "@/lib/ipc";
 import { filterSkills, type StoreFilter } from "@/lib/search";
 import { cardState, isMine } from "@/lib/update";
 import { useInstall } from "@/store/install";
+import { useCompare } from "@/store/compare";
 import { useMySkills } from "@/store/my-skills";
 import { usePlaza } from "@/store/plaza";
 import { useRegistries } from "@/store/registries";
@@ -239,24 +240,31 @@ function StoreBody() {
               (`index.committedAt`)算一次、同一个值传给每张卡片——用户真机报障
               "所有技能的更新时间都一样"正是这里。`index.committedAt` 仍被上面的
               汇总行与索引新鲜度判断用着,没有删。 */}
-          {visible.map((skill) => (
-            <SkillCard
-              key={skill.dirSlug}
-              skill={skill}
-              repo={index.repo}
-              updatedAt={updatedAtLabel(skill.updatedAt)}
-              mine={isMine(skill.author, me)}
-              state={cardState(
-                records.get(skill.dirSlug),
-                skill.contentHash,
-                { registryId: index.registryId, owner: index.owner, repo: index.repo },
-                myList == null
-                  ? { known: false as const }
-                  : { known: true as const, hash: localHashes.get(skill.dirSlug) },
-              )}
-              onOpen={() => void openDetail(skill.dirSlug)}
-            />
-          ))}
+          {visible.map((skill) => {
+            const state = cardState(
+              records.get(skill.dirSlug),
+              skill.contentHash,
+              { registryId: index.registryId, owner: index.owner, repo: index.repo },
+              myList == null
+                ? { known: false as const }
+                : { known: true as const, hash: localHashes.get(skill.dirSlug) },
+            );
+            return (
+              <SkillCard
+                key={skill.dirSlug}
+                skill={skill}
+                repo={index.repo}
+                updatedAt={updatedAtLabel(skill.updatedAt)}
+                mine={isMine(skill.author, me)}
+                state={state}
+                onOpen={() => {
+                  // 0.8.0 任务 3:「与库里不同」点进来就是想看差别——详情一打开就展开
+                  if (state === "differs") useCompare.getState().expand(skill.dirSlug);
+                  void openDetail(skill.dirSlug);
+                }}
+              />
+            );
+          })}
         </div>
       )}
 

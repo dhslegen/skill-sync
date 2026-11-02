@@ -163,23 +163,12 @@ export function InstallPanel({
   );
 }
 
-function IdleFooter({
-  dirSlug,
-  plaza,
-  onBegin,
-  activeRegistryId,
-  activeRepoKey,
-  actions,
-}: {
-  dirSlug: string;
-  plaza?: { ownerRepo: string };
-  onBegin: () => void;
-  /** 当前浏览的库坐标(装到项目时要原样带上,否则会打到主仓)。 */
-  activeRegistryId?: string | null;
-  activeRepoKey?: string | null;
-  /** `SkillActionsBlock`(host="store")的裸按钮,合并进这一行的尾部(Q44-A)。 */
-  actions?: ReactNode;
-}) {
+/**
+ * 商店/广场详情里这个技能此刻的按钮状态(与卡片同一条判定)。0.8.0 任务 3 从
+ * `IdleFooter` 里抽出来,是因为详情面板的「看看哪里不同」也要按**同一个**结论
+ * 决定摆不摆——两处各算一遍就会出现"页脚说不同、上面却不给看"的口径漂移。
+ */
+export function useStoreCardState(dirSlug: string, plaza?: { ownerRepo: string }) {
   const installed = useInstall((s) => s.installed);
   const index = useStoreIndex((s) => s.index);
   const record = installed.get(dirSlug);
@@ -210,6 +199,27 @@ function IdleFooter({
         index ? { registryId: index.registryId, owner: index.owner, repo: index.repo } : undefined,
         local,
       );
+  return { state, record };
+}
+
+function IdleFooter({
+  dirSlug,
+  plaza,
+  onBegin,
+  activeRegistryId,
+  activeRepoKey,
+  actions,
+}: {
+  dirSlug: string;
+  plaza?: { ownerRepo: string };
+  onBegin: () => void;
+  /** 当前浏览的库坐标(装到项目时要原样带上,否则会打到主仓)。 */
+  activeRegistryId?: string | null;
+  activeRepoKey?: string | null;
+  /** `SkillActionsBlock`(host="store")的裸按钮,合并进这一行的尾部(Q44-A)。 */
+  actions?: ReactNode;
+}) {
+  const { state, record } = useStoreCardState(dirSlug, plaza);
   const requestInstall = useProjects((s) => s.requestInstall);
   const installing = useProjects((s) => s.installing);
 

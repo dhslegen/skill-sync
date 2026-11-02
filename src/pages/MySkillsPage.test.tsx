@@ -3,11 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MySkillsPage } from "./MySkillsPage";
+import { t } from "@/i18n";
 import type { InstalledSkillView, Section, StoreIndexView } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
 import { useMineSearch } from "@/store/mine-search";
 import { useCreate } from "@/store/create";
+import { useCompare } from "@/store/compare";
 import { useMySkills } from "@/store/my-skills";
 import { useSession } from "@/store/session";
 import { useShare } from "@/store/share";
@@ -431,8 +433,25 @@ describe("三区排列与判定表接线", () => {
     seed([mk("a", "installedFrom", { localModified: true, author: "李四" })]);
     render(<MySkillsPage />);
     const row = await screen.findByTestId("row-a");
-    expect(within(row).getByText("和库里的不一样")).toBeInTheDocument();
+    expect(within(row).getByText(t("mine.differsFromLibrary"))).toBeInTheDocument();
     expect(within(row).queryByRole("button", { name: /分享|贡献/ })).toBeNull();
+  });
+
+  // 0.8.0 任务 3:这一档点进来就是冲着差异来的
+  it("点「和库里的不一样」那一行 → 打开详情并声明展开差异;普通行不声明", async () => {
+    seed([
+      mk("a", "installedFrom", { localModified: true, author: "李四" }),
+      mk("b", "installedFrom", {}),
+    ]);
+    useCompare.setState({ expandedFor: null });
+    render(<MySkillsPage />);
+    await userEvent.click(await screen.findByTestId("row-a-body"));
+    expect(useCompare.getState().expandedFor).toBe("a");
+
+    useCompare.setState({ expandedFor: null });
+    await userEvent.click(await screen.findByTestId("row-b-body"));
+    expect(useLocalDetail.getState().target).not.toBeNull();
+    expect(useCompare.getState().expandedFor).toBeNull();
   });
 
   it("有作者时提示联系谁,「…」里给「改用库里的版本」这条出路", async () => {
@@ -450,7 +469,7 @@ describe("三区排列与判定表接线", () => {
     seed([mk("a", "installedFrom", { localModified: true })]);
     render(<MySkillsPage />);
     const row = await screen.findByTestId("row-a");
-    expect(within(row).getByText("和库里的不一样")).toBeInTheDocument();
+    expect(within(row).getByText(t("mine.differsFromLibrary"))).toBeInTheDocument();
     expect(within(row).queryByText(/请联系/)).toBeNull();
     expect(row.textContent ?? "").not.toMatch(/null|undefined/);
     // 出路仍在:「改用库里的版本」不依赖作者名
@@ -572,7 +591,7 @@ describe("三区排列与判定表接线", () => {
     seed([mk("a", "installedFrom", { localModified: true, shareBlocked: "nameFormat" })]);
     render(<MySkillsPage />);
     const row = await screen.findByTestId("row-a");
-    expect(within(row).getByText("和库里的不一样")).toBeInTheDocument();
+    expect(within(row).getByText(t("mine.differsFromLibrary"))).toBeInTheDocument();
     expect(within(row).queryByRole("button", { name: /分享|贡献/ })).toBeNull();
   });
 

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,6 +8,7 @@ import { useStoreIndex } from "@/store/store-index";
 import type { Precheck } from "@/lib/ipc";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+import { invoke } from "@tauri-apps/api/core";
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 
 function conflict(precheck: Parameters<typeof useInstall.setState>[0] extends never ? never : unknown) {
@@ -328,3 +329,32 @@ describe("冲突对话框", () => {
     expect(cancel).toHaveBeenCalled();
   });
 });
+
+// 0.8.0 任务 3:先看清哪里不同,再选。四档都要摆,比的是**这次要装的那个库**
+describe("冲突弹窗里的逐文件差异(0.8.0 任务 3)", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it.each([
+    ["locallyModified", { status: "locallyModified", installedSha: "aaa1111" }],
+    ["otherLibrary", { status: "otherLibrary", sourceOwner: "a", sourceRepo: "b" }],
+    ["mine", { status: "mine", localChanged: true, remoteChanged: true }],
+    ["localDiffers", { status: "localDiffers", existing: "/home/u/.claude/skills/weekly-report" }],
+  ])("%s 一档:按 useInstall 的库坐标去比", async (_name, precheck) => {
+    useInstall.setState({
+      phase: "conflict",
+      dirSlug: "weekly-report",
+      registryId: "custom-1",
+      repo: "team/lib",
+      precheck: precheck as never,
+    });
+    render(<ConflictDialog />);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("skill_compare_library", {
+        args: { dirSlug: "weekly-report", registryId: "custom-1", repo: "team/lib" },
+      }),
+    );
+  });
+});
+

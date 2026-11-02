@@ -1043,6 +1043,24 @@ export const skillShare = (args: {
   confirm?: ShareConfirmToken;
 }) => call<ShareOutcome>("skill_share", { args });
 
+/**
+ * 「与库里不同」到底哪里不同(0.8.0 任务 2/3)。只读。
+ *
+ * 比的是本机本体 vs **索引里那一版**(与卡片判定同一版)。`plan` 与分享清单同形:
+ * 新增 = 只有你有,删除 = 只有库里有。`localPath` 是本体的绝对路径——读本地文件
+ * **必须**用 `{ path: localPath }`,不能用 `{ dirSlug }`(无记账时会落回统一目录)。
+ */
+export interface Comparison {
+  plan: SharePlan;
+  localPath: string;
+  /** 比较的那一版的指纹(= 索引 contentHash)。「已保留你的版本」记的就是它。 */
+  remoteHash: string;
+  identical: boolean;
+}
+
+export const skillCompareLibrary = (args: { dirSlug: string; registryId?: string; repo?: string }) =>
+  call<Comparison>("skill_compare_library", { args });
+
 export const skillShareChanges = (args: {
   dirSlug: string;
   registryId?: string;

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { CompareView } from "@/components/CompareView";
 import { t } from "@/i18n";
 import { useInstall } from "@/store/install";
 import { useStoreIndex } from "@/store/store-index";
@@ -29,7 +30,7 @@ import { useStoreIndex } from "@/store/store-index";
  * ——真出现了那种形状,用户看到的是错误态,不是一个不弹的弹窗。
  */
 export function ConflictDialog() {
-  const { phase, precheck, dirSlug, run, keepLocalAndShareMine, cancel } =
+  const { phase, precheck, dirSlug, registryId, repo, run, keepLocalAndShareMine, cancel } =
     useInstall();
   // 弹窗里要出现的是用户认得的名字(周报生成),不是内部目录名(weekly-report)。
   // core 里流转的一直是目录名,到界面这一层必须换回展示名。
@@ -96,7 +97,9 @@ export function ConflictDialog() {
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="conflict-title"
-        className="w-[440px] rounded-pop border border-border-strong bg-surface-1 p-5 shadow-[var(--shadow-pop)]"
+        // 0.8.0 任务 3:嵌了逐文件差异之后加宽、限高可滚——差异展开后会很长,
+        // 选项按钮不能被顶出视口(与分享确认屏同一条教训,v8 终审 I-3)
+        className="max-h-[88vh] w-[560px] overflow-y-auto rounded-pop border border-border-strong bg-surface-1 p-5 shadow-[var(--shadow-pop)]"
       >
         <h2 id="conflict-title" className="text-[14px] font-semibold">
           {modified
@@ -128,6 +131,17 @@ export function ConflictDialog() {
                   // 不说的话,用户面对"已有一份不同的"根本不知道说的是哪个文件夹。
                   t("conflict.localDiffersBody", { path: localDiffers?.existing ?? "" })}
         </p>
+
+        {/* 🔴 0.8.0 任务 3:先看清哪里不同,再选。四档都摆——同名异库那一档比的是
+            「要换成的那个库」里的那一版,正是用户要拍板的对象。按技能 × 库重挂。 */}
+        {dirSlug && (
+          <CompareView
+            key={`${dirSlug}:${registryId ?? ""}:${repo ?? ""}`}
+            dirSlug={dirSlug}
+            registryId={registryId ?? undefined}
+            repo={repo ?? undefined}
+          />
+        )}
 
         <div className="mt-4 flex flex-col gap-2">
           {modified ? (

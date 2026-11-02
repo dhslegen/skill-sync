@@ -16,6 +16,7 @@ import { useDesktopChrome } from "@/hooks/useDesktopChrome";
 import { useRegistries } from "@/store/registries";
 import { useUi } from "@/store/ui";
 import { useFilePreview } from "@/store/file-preview";
+import { useCompare } from "@/store/compare";
 import type { RegistryView } from "@/lib/ipc";
 
 // agent 探测走 IPC:mock 掉才能让"点安装 → 展开勾选"这条路走通。
@@ -890,7 +891,7 @@ describe("DetailPanel(本地详情模式)", () => {
   it("安装自 · 本地改过 → 动作区说「和库里的不一样」并提示联系作者", () => {
     withLibraryAuthor("李四");
     render(<DetailPanel />);
-    expect(screen.getByText("和库里的不一样")).toBeInTheDocument();
+    expect(screen.getByText(t("mine.differsFromLibrary"))).toBeInTheDocument();
     expect(screen.getByText("想让作者采纳,请联系 李四")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /分享|贡献/ })).toBeNull();
   });
@@ -898,8 +899,30 @@ describe("DetailPanel(本地详情模式)", () => {
   it("库里没登记作者时只说「和库里的不一样」,一个名字都不编", () => {
     withLibraryAuthor(null);
     render(<DetailPanel />);
-    expect(screen.getByText("和库里的不一样")).toBeInTheDocument();
+    expect(screen.getByText(t("mine.differsFromLibrary"))).toBeInTheDocument();
     expect(screen.queryByText(/请联系/)).toBeNull();
+  });
+
+  // 0.8.0 任务 3:「和库里的不一样」时详情里能就地看差异;判据与行上同一个 rowAction
+  it("和库里的不一样 → 摆「看看哪里不同」,比的是这一行的记账来源", async () => {
+    withLibraryAuthor(null);
+    vi.mocked(invokeMock).mockClear();
+    render(<DetailPanel />);
+    expect(screen.getByTestId("compare-section")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: t("compare.toggle") }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("skill_compare_library", {
+        args: { dirSlug: "weekly-report", registryId: "company", repo: "skills/skills" },
+      }),
+    );
+  });
+
+  it("和库里一致时不摆「看看哪里不同」", () => {
+    withLibraryAuthor(null);
+    useMySkills.setState({ list: [installedView({ localModified: false })] });
+    render(<DetailPanel />);
+    expect(screen.getByRole("button", { name: t("detail.close") })).toBeInTheDocument();
+    expect(screen.queryByTestId("compare-section")).toBeNull();
   });
 
   it("没有主按钮(未改动、库里也没有新版)时,动作区仍摆着「移除」这类恒在项", () => {
@@ -1957,3 +1980,55 @@ describe("详情头部的在技能库里查看(0.8.0 任务 1)", () => {
     expect(screen.getAllByRole("button", { name: label })).toHaveLength(1);
   });
 });
+
+// ---- 0.8.0 任务 3:商店详情的「看看哪里不同」与页脚主按钮同一条判定
+describe("商店详情的「看看哪里不同」(0.8.0 任务 3)", () => {
+  const withStore = (localHash: string) => {
+    open();
+    useStoreIndex.setState({
+      activeRegistry: "custom-1",
+      activeRepo: "team/lib",
+      index: {
+        ...useStoreIndex.getState().index!,
+        skills: [
+          {
+            name: "周报生成", dirSlug: "weekly-report", description: "", path: "skills/weekly-report",
+            hasScripts: false, fileCount: 1, contentHash: "sha256:lib", tags: [], author: null,
+            updatedAt: { kind: "unknown" as const },
+          },
+        ],
+      },
+    });
+    // 本机有一份、没有记账(useInstall.installed 空):指纹不同即「与库里不同」
+    useInstall.setState({ installed: new Map() });
+    useMySkills.setState({ list: [installedView({ contentHash: "", localHash })] });
+  };
+
+  beforeEach(() => {
+    invokeMock.mockClear();
+    useCompare.setState({ expandedFor: null });
+    // 🔴 前面的用例会留下本地详情的 target——不清的话渲染的是「我的技能」那条路,
+    // 比对的库坐标随之变成账上来源,这条用例就在测另一个宿主(实测撞到过)
+    useLocalDetail.setState({ target: null, detail: null, error: null });
+  });
+
+  it("与库里不同 → 摆出来,比的是当前浏览的那个库", async () => {
+    withStore("sha256:mine");
+    useCompare.getState().expand("weekly-report");
+    render(<DetailPanel />);
+    expect(screen.getByTestId("compare-section")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("skill_compare_library", {
+        args: { dirSlug: "weekly-report", registryId: "custom-1", repo: "team/lib" },
+      }),
+    );
+  });
+
+  it("内容一致(已在电脑上)→ 不摆", () => {
+    withStore("sha256:lib");
+    render(<DetailPanel />);
+    expect(screen.getByRole("heading", { name: "周报生成" })).toBeInTheDocument();
+    expect(screen.queryByTestId("compare-section")).toBeNull();
+  });
+});
+

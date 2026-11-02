@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StorePage } from "./StorePage";
 import type { InstalledSkillView, PlazaSkillCard, StoreIndexView, StoreSkillCard } from "@/lib/ipc";
 import { useInstall } from "@/store/install";
+import { useCompare } from "@/store/compare";
 import { useMySkills } from "@/store/my-skills";
 import { usePlaza } from "@/store/plaza";
 import { useRegistries } from "@/store/registries";
@@ -398,6 +399,21 @@ describe("v7.5:商店认得出'这台电脑上已经有了'(docs/v7.5-共识.md)
 
     const button = screen.getByRole("button", { name: /^与库里不同/ });
     expect(button).not.toBeDisabled();
+  });
+
+  // 0.8.0 任务 3:「与库里不同」点进来就是想看差别——详情一打开就展开
+  it("点「与库里不同」那张卡片 → 打开详情并声明展开差异;点普通卡片不声明", async () => {
+    useMySkills.setState({
+      list: [localSkill({ dirSlug: "weekly-report", localPresent: true, localHash: "sha256:本地那份" })],
+    });
+    useCompare.setState({ expandedFor: null });
+    render(<StorePage />);
+    await userEvent.click(screen.getByRole("button", { name: /^与库里不同/ }));
+    expect(useCompare.getState().expandedFor).toBe("weekly-report");
+
+    useCompare.setState({ expandedFor: null });
+    await userEvent.click(screen.getAllByRole("button", { name: /^安装 —/ })[0]);
+    expect(useCompare.getState().expandedFor).toBeNull();
   });
 
   it("🔴 本机没有本体(localPresent: false)→ 仍是「获取」", () => {

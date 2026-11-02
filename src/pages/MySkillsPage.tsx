@@ -10,6 +10,7 @@ import { skillReveal, type InstalledSkillView, type Section } from "@/lib/ipc";
 import { buildRowMenuItems, needsAttention, rowAction, type RowAction } from "@/lib/ownership";
 import { SHARE_BLOCK_LABEL, SHARE_DONE_LABEL, SHARE_FAILED_LABEL } from "@/lib/share-block";
 import { useInstall } from "@/store/install";
+import { useCompare } from "@/store/compare";
 import { useLocalDetail } from "@/store/local-detail";
 import { matchesMineQuery, useMineSearch } from "@/store/mine-search";
 import {
@@ -380,6 +381,13 @@ export function MySkillsPage() {
               repo: `${skill.sourceOwner}/${skill.sourceRepo}`,
             });
           } else {
+            // 0.8.0 任务 3:「和库里的不一样」那几档(含两边都改过、无基线不一致)
+            // 点进来就是冲着差异来的——详情一打开就展开「看看哪里不同」。
+            // 判据与详情面板摆不摆那一块用的是同一个 `rowAction` 结论。
+            const kind = rowAction(skill, remoteChanged, false, noBaselineDiffers).kind;
+            if (noBaselineDiffers || kind === "differsFromLibrary" || kind === "conflict") {
+              useCompare.getState().expand(skill.dirSlug);
+            }
             void useLocalDetail
               .getState()
               .open(skill.body ? { path: skill.body } : { dirSlug: skill.dirSlug });

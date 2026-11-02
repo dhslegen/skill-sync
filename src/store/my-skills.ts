@@ -350,6 +350,8 @@ interface MySkillsState {
    * (`Mine` 档),自然落进全局挂载的 `ConflictDialog`,不需要这里另开一条通道。
    */
   pull: (dirSlug: string) => Promise<void>;
+  /** 「看看哪里不同」之后换成库里的版本(0.8.0 任务 3)。`target` 缺省 = 这一行的记账来源。 */
+  replaceWithLibrary: (dirSlug: string, target?: { registryId?: string; repo?: string }) => Promise<void>;
 }
 
 function toAppError(raw: unknown): AppError {
@@ -815,6 +817,25 @@ export const useMySkills = create<MySkillsState>((set, get) => ({
       }
     }
     await useInstall.getState().beginUpdate(dirSlug, agentIds, skill.registryId || undefined, repo);
+  },
+
+  replaceWithLibrary: async (dirSlug, target) => {
+    // 找不到这一行(列表还没加载到)**不能静默什么都不做**——用户看完差异点了按钮,
+    // 零反馈就是 CLAUDE.md 记的那种"点了没反应"。没有行就按"账上没有工具"处理
+    const skill = get().list?.find((s) => s.dirSlug === dirSlug);
+    // 去哪个库取:调用方给了就用调用方的(商店详情比的是**当前浏览的那个库**);
+    // 没给就按这一行的记账来源,与「取回 / 更新」同一个口径
+    const registryId = target ? target.registryId : skill?.registryId || undefined;
+    const repo = target
+      ? target.repo
+      : skill?.sourceRepo
+        ? `${skill.sourceOwner}/${skill.sourceRepo}`
+        : undefined;
+    // 🔴 只沿用账上已有的工具,**不按默认规则补勾**(与 pull 刻意不同):pull 面对的是
+    // "这台电脑上还没有",补勾是为了不装出一个哪个工具都用不上的半成品;这里本地
+    // 已经有一份、各工具的启用状态是用户自己定的,换内容不该顺手替他多启用几个工具。
+    const agentIds = skill?.agents ?? [];
+    await useInstall.getState().replaceWithLibrary(dirSlug, agentIds, registryId, repo);
   },
 
   ensureShareableIndexes: async (forceDirSlugs) => {

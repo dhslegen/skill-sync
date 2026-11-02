@@ -48,7 +48,21 @@ import { skillLocalFileRead, type LocalSkillTarget, type SharePlan } from "@/lib
  * 宿主还要按"哪个技能的哪一份清单"给这个组件 `key`——清单重算过(stale)之后,
  * 上一份展开的内容就是过期的,不能留在屏上。
  */
-export function SharePlanList({ plan, localTarget }: { plan: SharePlan; localTarget: LocalSkillTarget }) {
+export function SharePlanList({
+  plan,
+  localTarget,
+  mode = "share",
+}: {
+  plan: SharePlan;
+  localTarget: LocalSkillTarget;
+  /**
+   * 0.8.0 任务 3:同一份清单还用来回答「与库里不同到底哪里不同」。差集与展开能力
+   * 完全相同(core 用的是同一个 `plan_changes`),**变的只是怎么说**:分享时
+   * "删除"是这次会发生的后果,比较时它只是"库里有、你没有"——不能套用那句红色的
+   * 后果交代,那是在预告一件根本不会发生的事。
+   */
+  mode?: "share" | "compare";
+}) {
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const toggle = (id: string) =>
     setOpen((prev) => {
@@ -77,17 +91,41 @@ export function SharePlanList({ plan, localTarget }: { plan: SharePlan; localTar
 
   return (
     <div className="mt-3 rounded-card border border-border bg-surface-2 px-2.5 py-2">
-      <p className="text-[11.5px] text-text-3">{t("share.planTitle")}</p>
+      <p className="text-[11.5px] text-text-3">
+        {mode === "share" ? t("share.planTitle") : t("compare.planTitle")}
+      </p>
       {/* 展开之后一段差异就不止几行了,滚动盒跟着放高;删除后果那一句仍在盒外 */}
       <div
         data-testid="share-plan-files"
         className={open.size > 0 ? "max-h-[340px] overflow-y-auto pr-1" : "max-h-[168px] overflow-y-auto pr-1"}
       >
-        <Group group="added" label={t("share.planAdded")} files={added} open={open} onToggle={toggle} />
-        <Group group="modified" label={t("share.planModified")} files={modified} open={open} onToggle={toggle} />
-        <Group group="deleted" label={t("share.planDeleted")} files={deleted} open={open} onToggle={toggle} danger />
+        <Group
+          group="added"
+          label={mode === "share" ? t("share.planAdded") : t("compare.planOnlyMine")}
+          files={added}
+          open={open}
+          onToggle={toggle}
+        />
+        <Group
+          group="modified"
+          label={mode === "share" ? t("share.planModified") : t("compare.planModified")}
+          files={modified}
+          open={open}
+          onToggle={toggle}
+        />
+        <Group
+          group="deleted"
+          label={mode === "share" ? t("share.planDeleted") : t("compare.planOnlyLibrary")}
+          files={deleted}
+          open={open}
+          onToggle={toggle}
+          danger={mode === "share"}
+        />
       </div>
-      {plan.deleted.length > 0 && (
+      {mode === "compare" && plan.modified.length > 0 && (
+        <p className="mt-1.5 text-[11.5px] text-text-3">{t("compare.diffLegend")}</p>
+      )}
+      {mode === "share" && plan.deleted.length > 0 && (
         <p className="mt-1.5 text-[12px] leading-[1.6] text-[#c0392b] dark:text-[#e0705f]">
           {t("share.planDeleteHint", { count: String(plan.deleted.length) })}
         </p>

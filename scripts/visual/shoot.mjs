@@ -549,6 +549,19 @@ const SCREENS = [
     },
   },
 
+  // ---------------------------------------------------------------- 0.8.0 任务 3
+  {
+    id: "41-store-compare-expanded",
+    title: "商店 · 点「与库里不同」的卡片 → 详情里「看看哪里不同」直接展开 + 就地拍板",
+    async run(page, ctx) {
+      await ctx.openStoreDetail(page, "代码注释向导");
+      await page.getByTestId("compare-section").waitFor({ state: "visible" });
+      await page.getByText("只有你有").waitFor({ state: "visible" });
+      await page.getByRole("button", { name: "SKILL.md", exact: true }).click();
+      await page.waitForTimeout(300);
+    },
+  },
+
   // ---------------------------------------------------------------- 0.6.x 全屏
   // 用户真机全屏(~2000px)截图:内容列靠左封顶、顶栏全出血,右半边一大片空白。
   // 此前所有屏都是 1200 宽,**全屏这一档从来没人截过**——送审截图要覆盖最宽的窗口,

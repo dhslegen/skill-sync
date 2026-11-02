@@ -1,9 +1,10 @@
 import { ChevronLeft, ExternalLink, FileCode, FileText, Folder, TriangleAlert, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { CompareSection } from "@/components/CompareSection";
 import { FileViewer } from "@/components/FileViewer";
 import { Icon } from "@/components/Icon";
-import { InstallPanel } from "@/components/InstallPanel";
+import { InstallPanel, useStoreCardState } from "@/components/InstallPanel";
 import { Markdown } from "@/components/Markdown";
 import { SkillActionsBlock } from "@/components/SkillActionsBlock";
 import { SkillIcon } from "@/components/SkillIcon";
@@ -12,6 +13,7 @@ import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { formatBytes, updatedAtLabel } from "@/lib/format";
 import { stripFrontmatter } from "@/lib/markdown";
+import { rowAction } from "@/lib/ownership";
 import {
   BUILTIN_REGISTRY_ID,
   isAppError,
@@ -30,7 +32,13 @@ import {
 import { sourceCanShowFiles, useFilePreview } from "@/store/file-preview";
 import { useInstall } from "@/store/install";
 import { useLocalDetail } from "@/store/local-detail";
-import { cardFor, hasUpdate, remoteChangedForShareable, useMySkills } from "@/store/my-skills";
+import {
+  cardFor,
+  hasUpdate,
+  localDiffersNoBaseline,
+  remoteChangedForShareable,
+  useMySkills,
+} from "@/store/my-skills";
 import { locatePlazaSkill, usePlaza } from "@/store/plaza";
 import { useRegistries } from "@/store/registries";
 import { useSession } from "@/store/session";
@@ -233,6 +241,16 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
   const pullError = useInstall((s) =>
     s.dirSlug === detail.dirSlug && s.phase === "error" ? s.error : null,
   );
+  // 0.8.0 任务 3:「和库里的不一样」时摆「看看哪里不同」。判据与「我的技能」那一行
+  // 用的是同一个 `rowAction`(加上无基线那一档),不另写一份——两处口径一漂,就会
+  // 出现"行上说不一样,点进来却没有可看的"。
+  const index = useStoreIndex((s) => s.index);
+  const differsFromLibrary = (() => {
+    if (!skill || !skill.localPresent) return false;
+    const noBaseline = localDiffersNoBaseline(skill, index);
+    const kind = rowAction(skill, remoteChanged, false, noBaseline).kind;
+    return noBaseline || kind === "differsFromLibrary" || kind === "conflict";
+  })();
 
   return (
     <>
@@ -286,6 +304,14 @@ function LocalPanelBody({ detail }: { detail: LocalSkillDetail }) {
         {/* 「在哪」压成一行折叠头(Q2),默认收起——正文才是主角。 */}
         {skill && (
           <WhereBlocks skill={skill} agentNames={agentNames} remoteChanged={remoteChanged} />
+        )}
+        {skill && differsFromLibrary && (
+          <CompareSection
+            dirSlug={skill.dirSlug}
+            registryId={skill.registryId || undefined}
+            repo={skill.sourceRepo ? `${skill.sourceOwner}/${skill.sourceRepo}` : undefined}
+            onReplace={() => void useMySkills.getState().replaceWithLibrary(skill.dirSlug)}
+          />
         )}
         {pullError && (
           <p className="px-5 pt-2 text-[12px] text-[#c0392b] dark:text-[#e0705f]">
@@ -572,6 +598,7 @@ function PanelBody({
   const fileRepo = plaza ? plaza.ownerRepo : (activeRepo ?? undefined);
   const signedIn = useSession((s) => s.status === "signedIn");
   const canClaimAttribution = !plaza && registryId === BUILTIN_REGISTRY_ID && signedIn;
+  const { state: storeState } = useStoreCardState(detail.dirSlug, plaza);
 
   return (
     <>
@@ -633,6 +660,24 @@ function PanelBody({
             skill={whereSkill}
             agentNames={whereAgentNames}
             remoteChanged={whereRemoteChanged}
+          />
+        )}
+        {/* 0.8.0 任务 3:与页脚主按钮同一条判定(`useStoreCardState`),只在
+            「与库里不同」这一档摆;比的是**当前浏览的这个库**。广场没有指纹可比,
+            恒不会落进这一档。 */}
+        {!plaza && storeState === "differs" && (
+          <CompareSection
+            dirSlug={detail.dirSlug}
+            registryId={activeRegistry ?? undefined}
+            repo={activeRepo ?? undefined}
+            onReplace={() =>
+              void useMySkills
+                .getState()
+                .replaceWithLibrary(detail.dirSlug, {
+                  registryId: activeRegistry ?? undefined,
+                  repo: activeRepo ?? undefined,
+                })
+            }
           />
         )}
 

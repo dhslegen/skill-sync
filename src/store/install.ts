@@ -126,6 +126,12 @@ interface InstallState {
   beginFromPlaza: (ownerRepo: string, dirSlug: string) => Promise<void>;
   /** 「我的技能」页的更新:沿用上次记账的工具与**来源**,不再问一遍。冲突照走 ConflictDialog。 */
   beginUpdate: (dirSlug: string, agentIds: string[], registryId?: string, repo?: string | null) => Promise<void>;
+  /**
+   * 「看看哪里不同」之后点「换成库里的版本」(0.8.0 任务 3):用户**刚看完逐文件
+   * 差异**,这一下就是拍板,直接带 `overwrite` 跑,不再弹一次冲突框问同一件事。
+   * 与 `beginUpdate` 唯一的区别就是这个 resolution;本地那一份照旧进废纸篓、可找回。
+   */
+  replaceWithLibrary: (dirSlug: string, agentIds: string[], registryId?: string, repo?: string | null) => Promise<void>;
   toggleAgent: (name: string) => void;
   /** 确认安装。`resolution` 只在从冲突弹窗回来时带。 */
   run: (resolution?: Resolution) => Promise<void>;
@@ -355,6 +361,25 @@ export const useInstall = create<InstallState>((set, get) => ({
       shareResult: null,
     });
     await get().run();
+  },
+
+  replaceWithLibrary: async (dirSlug, agentIds, registryId, repo) => {
+    set({
+      phase: "running",
+      dirSlug,
+      registryId: registryId ?? null,
+      repo: repo ?? null,
+      agents: [],
+      selected: new Set(agentIds),
+      stage: null,
+      report: null,
+      error: null,
+      precheck: null,
+      localKept: false,
+      mineKept: null,
+      shareResult: null,
+    });
+    await get().run("overwrite");
   },
 
   toggleAgent: (name) => {
