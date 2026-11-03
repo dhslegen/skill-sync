@@ -65,7 +65,7 @@ pnpm verify:project-lock  # 同上,录制项目级 skills-lock.json(v1)与上游
 ——只动 `src/` 就只跑前端三道闸,只动 `src-tauri/` 就只跑 Rust + clippy;
 **提交信息里要写明"没跑哪一道、为什么与本次改动无关"**,别让读者以为是漏跑。
 
-**提交前的四道闸**:`pnpm test` + `pnpm lint` + **`pnpm build:web`** + `cargo test --workspace`
+**提交前的五道闸**:`pnpm test` + `pnpm lint` + **`pnpm build:web`** + `cargo test --workspace`
 + `cargo clippy --all-targets -- -D warnings`。`build:web` 那道最容易漏——vitest **不做类型检查**,
 eslint 也不管,只有 `tsc` 会拦。M2 任务 6 就因为只跑了 test+lint,把一处 `.at(-1)`
 (超出 tsconfig 的 ES2020 lib)提交进去,双平台 CI 一起红。
@@ -494,8 +494,8 @@ docs/              ⚠️ 整个目录在 `.git/info/exclude` 的 `docs/*` 里,*
     `name` 保持中文显示名、本地目录一律不改名)已于 2026-08-24 被用户推翻**,原因是它
     **本身就违反标准**——`name` 只能是 ASCII 小写且必须等于目录名,中文 `name` 两条都犯。
     新口径见「待处理」的 v6 二期:分享环节零编辑 + 按标准全量校验,不合格不让分享,
-    改名由用户在本地自行完成。`share.rs` 模块头与 `share.rs::adopt_into_management`
-    的相关注释**尚未改**(实施时一并改),别照着它们写新代码。
+    改名由用户在本地自行完成。`share.rs` 模块头已按新口径改写,`adopt_into_management`
+    已于 v6 二期任务 6 删除(记账现由 `share::record_pushed_skill` 负责)。
 
 **建链与解链**
 - **以「目录」为单位,不是按 agent**:多个 agent 共用同一 `globalSkillsDir` 是常态
@@ -578,10 +578,11 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 - 文档未覆盖的决策:按决策记录精神自行选择,在 commit message 与代码注释中显式标注"假设:xxx";涉及删除用户数据、安全、对外网络请求的新增行为必须停下询问
 - 保障 agent 范围(CI 验收矩阵):Claude Code / Cursor / Codex / Trae(国际版 `trae` 与国内版 `trae-cn` 都要覆盖),
   其余注册表 agent 尽力支持
-- **本文件体量已拍板维持现状**(2026-08-06):它 730 行 / 64KB,是平台建议预算(~200 行)
-  的 3.6 倍。**不要再提议拆分或压缩**——`docs/*` 默认不进版本控制,内容挪过去换机器就丢;
+- **本文件体量已拍板维持现状**(2026-08-06):它远超平台建议预算(~200 行)。
+  **不要再提议拆分或压缩**——`docs/*` 默认不进版本控制,内容挪过去换机器就丢;
   而本文件是这个项目唯一受控的开发者文档。里面的「现役机制约束」与「关键事实」
   是逐条用实测换来的,长是它的成本,不是它的缺陷。
+  (2026-11-03 hq 提议瘦到 200 行并挪进 docs/,用户再次否决,只采纳了 prompt-audit 的事实修正。)
 - **本项目对全局「隐藏 AI 痕迹」规则有例外**(2026-08-06 用户拍板):`CLAUDE.md` 本身
   **受版本控制且在公开仓里**,README 也公开链接它——理由是单人开发的开源项目,
   它就是这个项目的开发者文档。**别按全局规则把它加进 exclude 或重写历史**。
@@ -622,7 +623,7 @@ full 与门控 live 沿用 0.7.0 当天的结果。登记一条既有行为(未�
 
 (以下是 v0.6.3 当时的记录)
 
-## 当前进度(2026-09-15,现役 **v0.6.3** —— 当天发布)
+### v0.6.3 当时的记录(2026-09-15 发布)
 
 **v0.6.3 已发布**(2026-09-15,curl 核实:内网 `v0.6.3` 五个产物齐全;`latest` version 0.6.3、
 三平台条目均带签名、下载 200;版本号提交的 CI run 34953089836 macOS/Windows 两 job 均 success)。
@@ -999,9 +1000,8 @@ tags/curated 同款的库侧静态文件,分解在 docs/M7-任务分解.md,只�
 分享链路自动维护 authors.json(起因:git 历史把代传技能都算到上传者头上,
 "谁分享的"比"谁提交的"更接近真相)。细节见「关键事实」的作者条目与 git log。
 
-**下一阶段 = M8:Windows 发版**(2026-08-07 定,分解在 docs/M8-任务分解.md,只在本地)。
-用 Windows 的同事至今拿不到包,已经表达失望——**这是 M8 的首要目标,其余欠账全部
-排在它后面**(顺延清单见 M8 文档第三节,每条都有既有的推迟理由,别当遗漏重做)。
+**M8 = Windows 发版**(2026-08-07 定,已完成:v0.3.10 起含 Windows 包;分解在 docs/M8-任务分解.md,
+只在本地)。顺延清单见 M8 文档第三节,每条都有既有的推迟理由,别当遗漏重做。
 **构建路线 = 公开 GitHub Actions**(2026-08-07 用户拍板,**推翻了当日早前
 「不能走公开 CI」的红线**——理由:Windows 本机构建太麻烦)。保密边界随之重划:
 - **可以进公开 CI 的 secrets 与 artifact**:内网地址、仓库坐标、OAuth Client ID
@@ -1018,7 +1018,7 @@ macOS 交叉编译仍不通(aws-lc-sys 要 Windows SDK),但已无所谓——不
 
 **M1–M6 全部完成并提交**(M6 分解与拍板见 docs/M6-任务分解.md;任务 4/5 中途被用户
 推翻重做过,经过在 git log)。
-**现役版本 v0.6.0**(2026-09-11 发布)。上一版 v0.5.0(2026-08-22)。
+**v0.6.0**(2026-09-11 发布;现役版本以本节开头为准)。上一版 v0.5.0(2026-08-22)。
 **v0.5.0 = 项目级安装(v5)+ 升级后的更新日志(M11)**:技能可以只装进某个项目
 文件夹(与 `npx skills` 完全互通)、选完文件夹先确认再装、已装过可覆盖重装、
 详情页显示「已装到」哪些位置;升级后首屏卡片说清本版改动,历史版本(带日期)
@@ -2085,10 +2085,10 @@ local: untouched|trashed|failed{error}}`)。`SkillDetail` 新增 `libraryUrl`(�
   对本 app 自己装的技能整个失效。载体是 `acquire::SourceMeta`(registry_id + kind +
   base_url),`acquire` / `acquire_batch` / `scheduler::run_check` 都收它。
 
-- **分享直推进库后自动记进 `state.installed`**(M6 任务 5,`share::adopt_into_management`,
-  这个函数本身**没有**随 v6 撤销,仍在正常运行),四道闸:只认直推(走评审的还没
-  进库)/ 只认 canonical / **本地目录名必须等于远端目录名**(中文名技能另起 ASCII
-  远端名,两者不同时记账键对不上)/ 已有记账不覆盖。`origin` 记 `claimed`——
+- **分享直推进库后自动记进 `state.installed`**(`share::record_pushed_skill`;M6 的
+  `adopt_into_management` 已于 v6 二期任务 6 删除):没有记账就新建一条;已有记账时
+  **只给空来源的账补上来源与基线**(0.8.0 终审 C-2),有来源的账不覆盖。记账键取
+  `converge::record_key`,本体不在 canonical 时如实记 `body`。`origin` 记 `claimed`——
   ⚠️ **这个字段现在只读**,不再驱动"纳入管理/移出管理"这类用户动作(那条链路已随
   v6 撤销),只是留一份"这条记账不是走正常获取来的"的显式来历,`ownership::relation`
   才是判定技能与"我"关系的权威。
@@ -2520,8 +2520,8 @@ local: untouched|trashed|failed{error}}`)。`SkillDetail` 新增 `libraryUrl`(�
   schemaVersion 当时仍 1,现已随 v2 一起走)。同步方向唯一:**config 有值则 config 赢**;localStorage 降为首帧防闪
   与 IPC 不可用时的兜底。入口 `store/prefs.ts`:**未同步成功绝不反推 config**(不拿猜的值
   覆盖真数据)。agent 开关记在 `disabledAgents`(禁用名单而非启用白名单——注册表会新增 agent)。
-- **系统代理:一律直连**(任务 13):`gitea::app_http_client` 对全部请求 `.no_proxy()`
-  ——M1 只有内建源且必在内网,直连即正确语义。**M3 接外网源时必须按 registry 重新决定**。
+- **系统代理**:内建源直连(`gitea::app_http_client` 带 `.no_proxy()`),外部源跟随系统代理,
+  见上面「代理两档」一条(M3 任务 3 起;M1 时全部直连)。
   🔴 **订正(2026-09-23,v8 任务 11 复审核实)**:此前这里写「reqwest 对 loopback 目标
   **默认豁免代理**」——**是错的**。reqwest 0.13.4 走 hyper-util 的 `Matcher::intercept`,
   **唯一的豁免来源是 `NO_PROXY`**,loopback 没有特判。复审者用最小 probe 实测:
@@ -2584,8 +2584,6 @@ local: untouched|trashed|failed{error}}`)。`SkillDetail` 新增 `libraryUrl`(�
 - **`plugins.updater` 在 conf 里必须有空占位**:插件 setup 会反序列化它,缺该节应用**起不来**。
   真值走编译期注入并在运行时用 `updater_builder()` 覆盖,conf 里填真值就等于把内网地址
   写进仓库(铁律 5)。有守卫测试钉住。
-- **frontmatter 补齐会重建头部**:只在 SKILL.md 不合规时发生,重写后只保证 name/description
-  与正文;坏头部里残存的其他字段(license 等)不保证保留(见 share.rs 模块头)。
 - **进度事件只报阶段,不报字节**:压缩包一次性下完,没有可信的字节级进度可报。
 - **curated.json 约定**(fixture 即此约定):技能库根目录,`{"curated": ["<frontmatter name>", …]}`,
   按显示名记;对不上的条目在 view 层丢弃。真实公司库(2026-07-30 快照)还没有这个文件,
@@ -2888,9 +2886,9 @@ M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重�
   → 重启后 `resolve` 读回,这一整条没跑过。验法两分钟:本机 `config.lastSeenVersion`
   缺席时起 `pnpm dev` → 卡片在 → 点右上角 × → 查 `~/.skillsync/config.json` 是否
   落成当前版本 → 重启 dev → 卡片应当不再出现。
-  ⚠️ **这一步必须人工点**:GUI 自动化点击在本机被辅助功能权限挡下
-  (osascript `click at` 报 -25208),盲点坐标会落到别的窗口上——试过一次,
-  点到了系统登录窗口并把屏幕锁了。**别再用 osascript 盲点这个应用的界面。**
+  ⚠️ **要点这一步走 `orca computer`**(见「真机验收:agent 自主完成」)。**别用 osascript 盲点这个应用的界面**:
+  `click at` 被辅助功能权限挡下(报 -25208),盲点坐标会落到别的窗口上——试过一次,
+  点到了系统登录窗口并把屏幕锁了。
 - **Windows 上 `RELEASE_NOTES.md` 的包内落点未验**(M11):macOS 两档已实测
   (dev 的 `target/debug/` 与 `.app` 的 `Contents/Resources/`),NSIS 装出来的布局
   本地构造不了。表现如果错,是"升级后卡片永远不出现"——不报错、不崩,**看着像
@@ -2970,6 +2968,9 @@ M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重�
     (`permission_denied`)——改用"正常退出 → 从 `/Applications` 打开",核对 `Info.plist` 版本号与界面左上角版本。
   - **不算完全无感的两处**:`open -n` 启动测试包那一下系统可能把窗口带到前台一次;**锁屏状态下能不能用未核实**
     (11-02 锁屏时系统整屏截图是全黑)。
+  - 🔴 **后台截图可能是旧画面**(2026-11-03 实测):窗口被别的窗口挡住时应用不重绘,后台截到的是
+    缓存的旧帧——同一次连出两张过期图(详情面板没画出来、甚至是上次打开的别的页面),而无障碍树是新的。
+    **要拿真实像素就用 `--restore-window` 切前台**,会占用户屏幕,先借时间;截图结论以前台截的为准。
 
 **3. 设计用例:从这一版改了什么倒推**
 - 来源:`RELEASE_NOTES.md` 本版那一段(用户视角的承诺)+ 本地任务分解的 DoD。
