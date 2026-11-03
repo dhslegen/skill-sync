@@ -46,7 +46,8 @@ use crate::error::AppError;
 /// **两个值都还在写,只是没有任何判定再读它们**(v6 终审订正:原文写成
 /// "只剩读的意义",与紧随其后的两句自相矛盾——方向恰好反了):
 /// `ORIGIN_ACQUIRED` 由 [`record`] 写入(文件是本 app 装的),`ORIGIN_CLAIMED`
-/// 由 `share::adopt_into_management` 写入(文件是用户自己放的、本 app 只记了账),
+/// 由 `share::record_pushed_skill` 写入(分享直推后自动记账:文件是用户自己放的、
+/// 本 app 只记了账;v6 二期前叫 `adopt_into_management`),
 /// 存量 `state.json` 里还留着旧版认领写下的同名值。它们如今是**纯留痕**:
 /// 界面分区、能不能移除、能不能分享,一概不看这个字段。
 /// ⚠️ **别据此把它们删掉**——写进 `state.json` 的字段一旦停写,存量文件与新文件

@@ -599,8 +599,8 @@ M3 另有**可选**的 `SKILLSYNC_GITHUB_CLIENT_ID`(GitHub OAuth App,device flow
 过程:任务 1–7 → 整分支终审(2 Critical / 4 Important / 8 Minor)→ 修复波 `178b055` → 定向复审 → 复审修复 `09fb61e`;
 发版前 Rust full 1024 passed / 前端 1183;agent 真机验收两轮(`orca computer` 后台操作)。
 **登记未做**:删除后从历史恢复技能文件,归因条目回不来;冲突弹窗作者那一档「以本地为准,分享更新」按建议保留
-(v6 起在获取流程里,用户发版时未另定);广场仓在冲突弹窗里比较失败时「请刷新」无处可刷。
-**还欠**:Windows 真机看任务栏图标是否换新(0.7.2 那半,只能在 Windows 上看)。
+(v6 起在获取流程里;2026-11-03 用户定:维持保留);广场仓在冲突弹窗里比较失败时「请刷新」无处可刷。
+✅ Windows 任务栏图标已换新(2026-11-03 用户在 Windows 上确认,0.7.2 那半的 NSIS 钩子生效)。
 
 (以下是 0.7.2 当时的记录:侧边栏品牌标志补上中心四角星 + Windows 安装后刷新图标缓存的 NSIS 钩子
 `src-tauri/windows/installer-hooks.nsh`,提交 `44f9f8a`,现并入 0.8.0。)

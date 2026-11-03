@@ -266,7 +266,7 @@ pub struct InstalledSkill {
     pub agents: Vec<String>,
     /// 这条记账是怎么来的。`Some("claimed")` = 曾经的「纳入管理」认领而来
     /// (`skill_claim`/`skill_unclaim` 已随 v6 删除,见 `core::acquire::ORIGIN_CLAIMED`
-    /// 的文档),或分享直推后 `share::adopt_into_management` 自动记账——两种情况都是
+    /// 的文档),或分享直推后 `share::record_pushed_skill` 自动记账——两种情况都是
     /// "文件不是本 app 装的,本 app 只记了账"。
     ///
     /// v6 起技能与"我"的关系不再靠这个字段驱动(改由 `core::ownership::relation`
