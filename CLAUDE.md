@@ -2979,6 +2979,14 @@ M10 提速与排行榜,随 **v0.4.0** 出厂(2026-08-20)。**别再当待办重�
   - 🔴 **后台截图可能是旧画面**(2026-11-03 实测):窗口被别的窗口挡住时应用不重绘,后台截到的是
     缓存的旧帧——同一次连出两张过期图(详情面板没画出来、甚至是上次打开的别的页面),而无障碍树是新的。
     **要拿真实像素就用 `--restore-window` 切前台**,会占用户屏幕,先借时间;截图结论以前台截的为准。
+  - 🔴 **要重现「首次启动向导」用沙盒 HOME**(2026-11-04 录演示视频实测):正式包直接以
+    `HOME=/Users/Shared/<名> /Applications/SkillSync.app/Contents/MacOS/skillsync` 启动,应用数据
+    (`~/.skillsync`、`~/.agents` 等)全落沙盒,真实数据不动。两个坑:①向导完成标记还存在 WebKit 的
+    `localStorage`(不跟 `HOME` 走),沙盒 `config.json` 不写 `ui.wizardDone:false` 就会迁移过来、不弹向导;
+    ②**钥匙串跟着 `HOME` 找**,沙盒里不建 `Library/Keychains → ~/Library/Keychains` 软链接,登录会
+    「凭据保存失败」。凭证在 service `com.skillsync.app`、account `company`,**沙盒与正式版共用同一条**
+    ——要演「点登录」得先 `security delete-generic-password` 删掉它(正式版随之掉登录,沙盒登录后新令牌
+    正式版直接复用)。收尾先单独 `rm` 那条软链接再删沙盒,并退出沙盒、重开正式版核对「已登录」。
 
 **3. 设计用例:从这一版改了什么倒推**
 - 来源:`RELEASE_NOTES.md` 本版那一段(用户视角的承诺)+ 本地任务分解的 DoD。
